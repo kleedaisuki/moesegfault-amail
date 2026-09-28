@@ -620,10 +620,41 @@ async fn reserve_window_quota(
     Ok(())
 }
 
-/// Fail closed if the global stop switch is absent, held, or unreadable; account holds
-/// and do-not-contact entries only affect sending, never receiving or retrieval.
-/// 全局开关缺失、停用或不可读时拒绝发送；账户停用和禁止联系不影响收取或检索。
+/// The role-mail monitor owns this isolated D1 row; no user-mail migration may
+/// manufacture a healthy lease. An absent binding, row, or readable lease fails closed.
+/// 角色邮件监控器独占此隔离 D1 记录；用户邮件迁移不得伪造健康租约。绑定、记录或可读租约缺失时拒绝发送。
+async fn role_monitor_healthy(env: &Env) -> bool {
+    #[derive(Deserialize)]
+    struct HealthRow {
+        lease_until: i64,
+    }
+    let Ok(database) = env.d1("ROLE_MONITOR") else {
+        return false;
+    };
+    let result = database
+        .prepare("SELECT lease_until FROM role_monitor_health WHERE singleton=1")
+        .first::<HealthRow>(None)
+        .await;
+    matches!(result, Ok(Some(row)) if lease_is_current(row.lease_until, now()))
+}
+
+/// Equality is expired; both timestamps are Unix milliseconds. / 相等即过期；两个时间戳均为 Unix 毫秒。
+fn lease_is_current(lease_until: i64, now_ms: i64) -> bool {
+    lease_until > now_ms
+}
+
+/// The SQL trigger consumes a canary key only under the global hold. / SQL 触发器仅在全局停发时消费金丝雀键。
+fn canary_fallback_available(global_state: &str) -> bool {
+    global_state == "held"
+}
+
+/// Fail closed unless the manual release gates, global policy, and separately
+/// renewed role-monitor lease all permit public sending. A separately authorized
+/// one-use canary may test delivery only while the global switch is held, which
+/// is when the SQL admission trigger atomically consumes its idempotency key.
+/// 公开发信须同时满足人工上线确认、全局策略及独立续期的角色邮件监控租约；单次金丝雀仅在全局停发时可用，由 SQL 准入触发器原子消费幂等键。
 async fn check_send_policy(
+    env: &Env,
     database: &D1Database,
     user: &Principal,
     draft: &Draft,
@@ -661,7 +692,18 @@ async fn check_send_policy(
     }
     let verified = database.prepare("SELECT 1 AS verified FROM send_release_gates WHERE id=1 AND feedback_verified=1 AND abuse_contact_verified=1 AND delivery_canary_verified=1 AND preview_reviewed=1")
         .first::<serde_json::Value>(None).await?.is_some();
-    if global.state != "allowed" || !verified {
+    let public_ready = global.state == "allowed" && verified && role_monitor_healthy(env).await;
+    if !public_ready {
+        // The SQL canary guard consumes a key only under a global hold. If the
+        // monitor fails after a public launch, do not bypass the lease with an
+        // unconsumed grant; first return the global switch to held.
+        // SQL 金丝雀保护仅在全局停发时消费键；上线后监控失效不得通过未消费授权绕过租约。
+        if !canary_fallback_available(&global.state) {
+            return Err(AppError {
+                status: 403,
+                code: "send_held",
+            });
+        }
         let grant = database.prepare("SELECT canary_recipient_sha256,canary_used_by FROM send_release_gates WHERE id=1 AND canary_owner_iss=?1 AND canary_owner_sub=?2 AND canary_expires_at>unixepoch() AND canary_recipient_sha256 IS NOT NULL")
             .bind(&[bind_str(&user.iss),bind_str(&user.sub)])?
             .first::<CanaryRow>(None).await?;
@@ -1659,7 +1701,7 @@ async fn send_message(
         if row.state != "preparing" {
             return Err(AppError::conflict("send_outcome_unknown"));
         }
-        check_send_policy(&database, user, &draft, &idem).await?;
+        check_send_policy(env, &database, user, &draft, &idem).await?;
         (
             row.message_id
                 .ok_or_else(|| AppError::conflict("send_outcome_unknown"))?,
@@ -1669,7 +1711,7 @@ async fn send_message(
     } else {
         // A held account must not manufacture unbounded idempotency rows.
         // 被停用账户不得通过生成幂等键无限填充 D1。
-        check_send_policy(&database, user, &draft, &idem).await?;
+        check_send_policy(env, &database, user, &draft, &idem).await?;
         let id = uuid::Uuid::new_v4().to_string();
         let admitted = database.prepare("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,state,created_at) VALUES(?1,?2,?3,?4,?5,'preparing',?6)")
             .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem),bind_str(&payload_hash),bind_str(&id),bind_num(now())])?.run().await;
@@ -1677,7 +1719,7 @@ async fn send_message(
             // The SQL trigger may have raced an operator hold; preserve the
             // public hold code instead of misreporting that race as a replay.
             // SQL 触发器可能与管理员停用竞争；应返回停用码而非误报幂等冲突。
-            check_send_policy(&database, user, &draft, &idem).await?;
+            check_send_policy(env, &database, user, &draft, &idem).await?;
             return Err(AppError::conflict("send_in_progress"));
         }
         (id, false, true)
@@ -1705,7 +1747,7 @@ async fn send_message(
     if transition.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
         return Err(AppError::conflict("send_in_progress"));
     }
-    if let Err(err) = check_send_policy(&database, user, &draft, &idem).await {
+    if let Err(err) = check_send_policy(env, &database, user, &draft, &idem).await {
         // No provider call has happened; release the local claim for safe later retry.
         // 尚未调用提供商；释放本地占有状态，允许日后安全重试。
         database.prepare("UPDATE send_requests SET state='preparing' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='submitting'")
@@ -1989,6 +2031,18 @@ fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A lease must be strictly in the future, independent of the manually
+    /// attested send gates and the single-use canary exception.
+    /// 租约必须严格晚于当前时间，与人工发信确认和单次金丝雀例外相互独立。
+    #[test]
+    fn role_monitor_lease_boundary_is_fail_closed() {
+        assert!(!lease_is_current(0, 1_700_000_000_000));
+        assert!(!lease_is_current(1_700_000_000_000, 1_700_000_000_000));
+        assert!(lease_is_current(1_700_000_000_001, 1_700_000_000_000));
+        assert!(canary_fallback_available("held"));
+        assert!(!canary_fallback_available("allowed"));
+    }
 
     /// Only structured provider refusals can be replayed as terminal; uncertain
     /// transport outcomes must remain unknown rather than being sent twice.

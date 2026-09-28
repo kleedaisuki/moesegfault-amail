@@ -20,6 +20,12 @@ database_name = "moesegfault-mail-production"
 database_id = "ad06f7f3-8897-4150-b9a9-7a46a8e55b30"
 migrations_dir = "migrations"
 
+# Isolated role-mail monitor lease; this Worker only reads its health row. / 隔离的角色邮件监控租约；本 Worker 仅读取健康记录。
+[[d1_databases]]
+binding = "ROLE_MONITOR"
+database_name = "moesegfault-mail-ops-production"
+database_id = "06e84adb-fe29-4183-b131-5042a48bcdee"
+
 [[r2_buckets]]
 binding = "MAIL_BODIES"
 bucket_name = "moesegfault-mail-raw-production"
@@ -65,6 +71,13 @@ binding = "MAIL_DB"
 database_name = "moesegfault-mail-staging"
 database_id = "74f35f95-42ce-482c-86e6-dffbdd35cbbe"
 migrations_dir = "migrations"
+
+# An unset staging lease cannot unlock public sends; one-use canaries retain their existing policy.
+# 预发布租约缺失不能解锁公开发信；单次金丝雀沿用现有独立策略。
+[[env.staging.d1_databases]]
+binding = "ROLE_MONITOR"
+database_name = "moesegfault-mail-ops-staging"
+database_id = "272e024c-453a-461b-bea0-c37a62c89d24"
 
 [[env.staging.r2_buckets]]
 binding = "MAIL_BODIES"
