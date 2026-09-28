@@ -84,10 +84,17 @@ class RoleForwardTests(unittest.TestCase):
         """A pending destination is not created twice. / 待验证地址不会重复创建。"""
 
         client = FakeClient()
-        MODULE.execute(client, "request-verification", DESTINATION)
-        MODULE.execute(client, "request-verification", DESTINATION)
+        self.assertIn("pending", MODULE.execute(client, "request-verification", DESTINATION))
+        self.assertIn("pending", MODULE.execute(client, "request-verification", DESTINATION))
         self.assertEqual(client.posts, ["address"])
         self.assertEqual(client.current, [])
+
+        verified = FakeClient(verified=True)
+        self.assertEqual(
+            MODULE.execute(verified, "request-verification", DESTINATION),
+            "Destination already verified; no email action required.",
+        )
+        self.assertEqual(verified.posts, [])
 
     def test_apply_requires_verified_destination(self) -> None:
         """Unverified addresses cannot receive role rules. / 未验证不能建规则。"""

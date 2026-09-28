@@ -218,7 +218,9 @@ def execute(client: Client, phase: str, destination: str) -> str:
             state = destination_state(client, destination)
             if state == "missing":
                 raise ProvisionError("Destination creation missing on readback")
-        return f"Destination state: {state}. Complete private email verification before apply."
+        if state == "verified":
+            return "Destination already verified; no email action required."
+        return "Destination verification pending; complete the private email action before apply."
 
     if state != "verified":
         raise ProvisionError("Destination is not verified; run request-verification first")
