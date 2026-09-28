@@ -1,0 +1,17 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import '../styles/manual.css';
+
+/** 中文：目录直接取 Astro 生成的标题锚点，避免手写目录漂移。 English: Derive the table of contents from generated heading anchors to prevent drift. */
+interface Heading { depth: number; slug: string; text: string }
+interface Props { headings: Heading[]; frontmatter: { title: string; description: string } }
+const { headings, frontmatter } = Astro.props;
+const sections = headings.filter((heading) => heading.depth === 2 || heading.depth === 3);
+---
+<BaseLayout title={`${frontmatter.title} · amail`} description={frontmatter.description} current="manual">
+  <section class="page-head"><div class="wrap"><span class="eyebrow">The field guide</span><h1>用户手册<span class="period">.</span></h1><p>从第一次登录到发出一封完整的邮件。写给想掌握工作流的人，也写给会替你动手的 Agent。</p></div></section>
+  <div class="wrap reading-layout">
+    <nav class="toc" aria-label="用户手册目录"><p class="toc-title">目录 / Contents</p><ol>{sections.map((heading) => <li class={heading.depth === 3 ? 'toc-sub' : undefined}><a href={`#${heading.slug}`}>{heading.text}</a></li>)}</ol></nav>
+    <article class="prose manual-prose"><slot /></article>
+  </div>
+</BaseLayout>

@@ -1,0 +1,70 @@
+---
+import '../styles/global.css';
+
+/** 中文：所有页面共用的可访问导航与元信息。 English: Accessible shared navigation and metadata for every page. */
+interface Props {
+  title: string;
+  description: string;
+  current?: 'home' | 'manual' | 'changelog';
+}
+
+const { title, description, current } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site);
+const nav = [
+  { href: '/', label: '首页', id: 'home' },
+  { href: '/manual/', label: '用户手册', id: 'manual' },
+  { href: '/changelog/', label: '更新日志', id: 'changelog' },
+] as const;
+---
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#fff6ea" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#21130f" media="(prefers-color-scheme: dark)" />
+    <meta name="description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical.toString()} />
+    <!-- 中文：固定版本并自托管 MoeSegfault Style 的公共 CSS，避免运行时跨站依赖。 English: Pin and self-host public MoeSegfault Style CSS, avoiding a cross-site runtime dependency. -->
+    <link rel="stylesheet" href="/vendor/moesegfault-style/v0.1.2/css/tokens.css" />
+    <link rel="stylesheet" href="/vendor/moesegfault-style/v0.1.2/css/foundation.css" />
+    <link rel="stylesheet" href="/vendor/moesegfault-style/v0.1.2/css/components.css" />
+    <link rel="canonical" href={canonical.toString()} />
+    <link rel="icon" type="image/svg+xml" href="/vendor/moesegfault-style/v0.1.2/assets/icons/brand.svg" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳转到正文</a>
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <a class="brand" href="/" aria-label="amail 首页">
+          <img class="brand-mark" src="/vendor/moesegfault-style/v0.1.2/assets/icons/brand.svg" width="31" height="31" alt="" />
+          <span>amail<span class="brand-dot">.</span></span>
+        </a>
+        <nav class="main-nav" aria-label="主导航">
+          {nav.map((item) => <a href={item.href} aria-current={current === item.id ? 'page' : undefined}>{item.label}</a>)}
+        </nav>
+        <a class="header-cta" href="https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0">获取 v0.1.0 <span aria-hidden="true">↗</span></a>
+      </div>
+    </header>
+    <main id="main"><slot /></main>
+    <footer class="site-footer">
+      <div class="wrap footer-inner">
+        <div>
+          <a class="brand footer-brand" href="/"><img class="brand-mark" src="/vendor/moesegfault-style/v0.1.2/assets/icons/brand.svg" width="26" height="26" alt="" />amail<span class="brand-dot">.</span></a>
+          <p>邮件是给人写的。工作流也可以属于 Agent。</p>
+        </div>
+        <div class="footer-links">
+          <a href="/manual/">用户手册</a>
+          <a href="/changelog/">更新日志</a>
+          <a href="https://github.com/kleedaisuki/moesegfault-amail">GitHub ↗</a>
+          <a href="https://style.moesegfault.dev/">MoeSegfault Style ↗</a>
+        </div>
+        <small>© {new Date().getFullYear()} moeSegFault · GPL-3.0</small>
+      </div>
+    </footer>
+  </body>
+</html>

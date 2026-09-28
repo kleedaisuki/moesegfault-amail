@@ -1,0 +1,23 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import '../styles/changelog.css';
+import { getCollection, render } from 'astro:content';
+
+/** 中文：版本按发布日期倒序，目录锚点用版本号保持跨次发布稳定。 English: Releases sort newest-first; version-based anchors stay stable across additions. */
+const entries = (await getCollection('releases')).sort((a, b) => b.data.date.getTime() - a.data.date.getTime());
+const releases = await Promise.all(entries.map(async (entry) => ({ entry, Content: (await render(entry)).Content })));
+---
+<BaseLayout title="更新日志 · amail" description="查看 amail 的版本更新和产品变化。" current="changelog">
+  <section class="page-head"><div class="wrap"><span class="eyebrow">What's new</span><h1>更新日志<span class="period">.</span></h1><p>产品在变化，约定却应该清晰。每个版本的改动，都能在这里找到。</p></div></section>
+  <div class="wrap reading-layout">
+    <nav class="toc" aria-label="更新日志目录"><p class="toc-title">目录 / Contents</p><ol>{releases.map(({ entry }) => <li><a href={`#${entry.data.version}`}>{entry.data.version} · {entry.data.date.toLocaleDateString('zh-CN', { timeZone: 'UTC' })}</a></li>)}</ol></nav>
+    <div class="release-list">
+      {releases.map(({ entry, Content }) => <article class="release" aria-labelledby={entry.data.version}>
+        <div class="release-marker"><span class="release-tag">Release</span><time datetime={entry.data.date.toISOString().slice(0, 10)}>{entry.data.date.toLocaleDateString('zh-CN', { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' })}</time></div>
+        <h2 id={entry.data.version}>{entry.data.version}</h2><p class="release-summary">{entry.data.summary}</p>
+        <div class="prose"><Content /></div>
+        <a class="release-link" href={`https://github.com/kleedaisuki/moesegfault-amail/releases/tag/${entry.data.version}`}>GitHub Release <span aria-hidden="true">↗</span></a>
+      </article>)}
+    </div>
+  </div>
+</BaseLayout>

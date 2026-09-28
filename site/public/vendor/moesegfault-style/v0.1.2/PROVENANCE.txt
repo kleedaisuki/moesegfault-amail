@@ -1,0 +1,5 @@
+MoeSegfault Style v0.1.2 public static distribution
+Source: https://github.com/kleedaisuki/moesegfault-style/tree/main/static-releases/v0.1.2
+Canonical distribution: https://style.moesegfault.dev/v0.1.2/
+License: GPL-3.0-or-later; see repository root LICENSE.
+Vendored unmodified: css/tokens.css, css/foundation.css, css/components.css, assets/icons/brand.svg.
