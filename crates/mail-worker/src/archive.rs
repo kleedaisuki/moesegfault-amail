@@ -240,7 +240,19 @@ pub fn inbound_archive(
     let to_header = parsed.headers.get_first_value("To").unwrap_or_default();
     let recipients = mailparse::addrparse(&to_header)
         .ok()
-        .map(|addrs| addrs.iter().map(|a| a.to_string()).collect())
+        .map(|addrs| {
+            addrs
+                .iter()
+                .flat_map(|address| match address {
+                    mailparse::MailAddr::Single(mailbox) => vec![mailbox.addr.clone()],
+                    mailparse::MailAddr::Group(group) => group
+                        .addrs
+                        .iter()
+                        .map(|mailbox| mailbox.addr.clone())
+                        .collect(),
+                })
+                .collect()
+        })
         .unwrap_or_else(|| vec![to_header]);
     let subject = parsed
         .headers

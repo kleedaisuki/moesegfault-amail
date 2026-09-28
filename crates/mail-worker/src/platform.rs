@@ -237,7 +237,7 @@ pub async fn send(env: &Env, draft: &Draft) -> Result<String> {
         builder.set_reply_to(reply_to);
     }
     if m.in_reply_to.is_some() || !m.references.is_empty() {
-        let headers = js_sys::Object::new();
+        let headers = js_sys::Object::<js_sys::JsString>::new_typed();
         if let Some(id) = &m.in_reply_to {
             js_sys::Reflect::set(
                 &headers,
