@@ -1,5 +1,5 @@
 name = "amail-inbound"
-main = "src/index.js"
+main = "build/worker/shim.mjs"
 compatibility_date = "2026-09-25"
 workers_dev = false
 

@@ -79,6 +79,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "amail-ingress"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "uuid",
+ "worker",
+]
+
+[[package]]
 name = "amail-worker"
 version = "0.1.0"
 dependencies = [

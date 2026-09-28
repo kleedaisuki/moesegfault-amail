@@ -14,7 +14,7 @@ semantic matching. The default CLI output is compact, pipe-friendly text;
 | --- | --- | --- |
 | CLI | `crates/amail` | Rust, Windows/macOS/Linux |
 | Mail API and business logic | `crates/mail-worker` | Rust/Wasm on Cloudflare Workers |
-| Email-event transport adapter | `workers/mail-ingress` | Minimal JavaScript Worker forwarding into the Rust service |
+| Email-event transport Worker | `workers/mail-ingress` | Rust/Wasm Worker forwarding bounded MIME into the Rust mail API |
 | Public release site | `site` | Astro/TypeScript on Cloudflare Workers |
 
 ## Install

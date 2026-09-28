@@ -64,12 +64,19 @@ jobs:
           rustup target add wasm32-unknown-unknown
       - name: Run Rust Worker unit tests
         run: cargo test -p amail-worker --locked --all-targets
+      - name: Run Rust Email ingress contract tests
+        run: cargo test -p amail-ingress --locked --all-targets
       - name: Compile Worker target
         run: cargo check -p amail-worker --locked --target wasm32-unknown-unknown
+      - name: Compile Email ingress target
+        run: cargo check -p amail-ingress --locked --target wasm32-unknown-unknown
       - name: Install workers-rs bundler
         run: cargo install worker-build --version 0.8.3 --locked
       - name: Bundle Worker for Wrangler
         working-directory: crates/mail-worker
+        run: worker-build --release
+      - name: Bundle Rust Email ingress for Wrangler
+        working-directory: workers/mail-ingress
         run: worker-build --release
 
   site:
@@ -200,11 +207,11 @@ jobs:
         run: curl --fail --silent --show-error --retry 6 --retry-delay 5 https://mail.moesegfault.dev/health
 
   deploy-ingress:
-    name: Deploy SMTP ingress adapter
+    name: Deploy Rust SMTP ingress
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: deploy-worker
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     environment: production
     concurrency:
       group: deploy-ingress-production
@@ -218,12 +225,20 @@ jobs:
       INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install Wrangler
-        run: npm install --global wrangler@4.142.0
-      - name: Deploy email-event Worker with shared secret
+      - name: Install Rust bundler and Wrangler
+        run: |
+          cargo install worker-build --version 0.8.3 --locked
+          npm install --global wrangler@4.142.0
+      - name: Build Rust Email ingress
+        run: worker-build --release
+      - name: Deploy Rust Email-event Worker with shared secret
         shell: bash
         run: |
           test -n "$INGRESS_SECRET"
@@ -440,11 +455,11 @@ jobs:
         run: curl --fail --silent --show-error --retry 6 --retry-delay 5 https://mail-staging.moesegfault.dev/health
 
   staging-ingress:
-    name: Deploy isolated staging SMTP ingress
+    name: Deploy isolated Rust staging SMTP ingress
     if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
     needs: staging-worker
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     environment: staging
     concurrency:
       group: deploy-ingress-staging
@@ -458,12 +473,20 @@ jobs:
       INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install Wrangler
-        run: npm install --global wrangler@4.142.0
-      - name: Deploy staging email-event Worker
+      - name: Install Rust bundler and Wrangler
+        run: |
+          cargo install worker-build --version 0.8.3 --locked
+          npm install --global wrangler@4.142.0
+      - name: Build Rust Email ingress
+        run: worker-build --release
+      - name: Deploy staging Rust Email-event Worker
         shell: bash
         run: |
           test -n "$INGRESS_SECRET"
