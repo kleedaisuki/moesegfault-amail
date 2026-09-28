@@ -101,6 +101,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "amail-ops"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "jsonwebtoken 10.4.0",
+ "serde",
+ "serde_json",
+ "uuid",
+ "worker",
+]
+
+[[package]]
 name = "amail-worker"
 version = "0.1.0"
 dependencies = [
