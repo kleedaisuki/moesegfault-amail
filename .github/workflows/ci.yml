@@ -150,6 +150,16 @@ jobs:
       CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
       INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
     steps:
+      - name: Verify deployment secrets before installing tools
+        working-directory: .
+        shell: bash
+        run: |
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN OPENROUTER_API_KEY CF_EMAIL_ROUTING_TOKEN CF_ZONE_ID INGRESS_SECRET; do
+            if [ -z "${!key}" ]; then
+              echo "::error::Missing deployment value $key"
+              exit 1
+            fi
+          done
       - uses: actions/checkout@v4
       - name: Set up Rust Wasm target
         run: |
@@ -166,15 +176,6 @@ jobs:
           cargo install worker-build --version 0.8.3 --locked
           npm install --global wrangler@4.142.0
           python -m pip install -r ../../infra/dns/requirements.txt
-      - name: Verify deployment secrets
-        shell: bash
-        run: |
-          test -n "$CLOUDFLARE_ACCOUNT_ID"
-          test -n "$CLOUDFLARE_API_TOKEN"
-          test -n "$OPENROUTER_API_KEY"
-          test -n "$CF_EMAIL_ROUTING_TOKEN"
-          test -n "$CF_ZONE_ID"
-          test -n "$INGRESS_SECRET"
       - name: Verify authoritative Email Sending DNS
         working-directory: .
         run: python infra/dns/verify_sending.py
@@ -292,6 +293,16 @@ jobs:
       INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
       MAIL_SENDING_DOMAIN: mail-staging.moesegfault.dev
     steps:
+      - name: Verify staging secrets before installing tools
+        working-directory: .
+        shell: bash
+        run: |
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN OPENROUTER_API_KEY CF_EMAIL_ROUTING_TOKEN INGRESS_SECRET; do
+            if [ -z "${!key}" ]; then
+              echo "::error::Missing staging deployment value $key"
+              exit 1
+            fi
+          done
       - uses: actions/checkout@v4
       - name: Set up Rust Wasm target
         run: |
@@ -303,20 +314,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Verify staging resource isolation
+        run: python ../../infra/deploy/check_staging.py
       - name: Install deploy tools
         run: |
           cargo install worker-build --version 0.8.3 --locked
           npm install --global wrangler@4.142.0
           python -m pip install -r ../../infra/dns/requirements.txt
-      - name: Verify staging secrets and isolated config
-        shell: bash
-        run: |
-          test -n "$CLOUDFLARE_ACCOUNT_ID"
-          test -n "$CLOUDFLARE_API_TOKEN"
-          test -n "$OPENROUTER_API_KEY"
-          test -n "$CF_EMAIL_ROUTING_TOKEN"
-          test -n "$INGRESS_SECRET"
-          python ../../infra/deploy/check_staging.py
       - name: Verify staging authoritative Email Sending DNS
         working-directory: .
         run: python infra/dns/verify_sending.py
