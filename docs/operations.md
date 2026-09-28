@@ -87,6 +87,36 @@ zero impact. See [token TTL](https://developers.cloudflare.com/fundamentals/api/
 [routing-rule configuration](https://developers.cloudflare.com/email-service/configuration/email-routing-addresses/),
 and [Rules API permissions](https://developers.cloudflare.com/api/resources/email_routing/subresources/rules/methods/create/).
 
+In staging [run 36426742153, attempt 2](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36426742153/attempts/2),
+the newly configured secret passed the presence check but the Rules list
+returned HTTP 403 before any D1 migration or Worker deployment. The diagnostic
+probe now calls Cloudflare's [user-token](https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/verify/)
+or [account-token](https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/methods/verify/)
+verification endpoint after a failed list request, logging only HTTP status,
+bounded numeric Cloudflare error codes, and `active`/`disabled`/`expired`
+state—not the token, token ID, rules, or provider response body. An active
+token with Rules HTTP 403 points to a zone-resource or Email Routing Rules
+permission mismatch; an unconfirmed verify result is **not** proof of an
+invalid token. Cloudflare documents [Email Routing Rules Read/Write as zone
+permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)
+and the [Rules list endpoint](https://developers.cloudflare.com/api/resources/email_routing/subresources/rules/methods/list/)
+requires a `per_page` of at least 5. Re-provision the secret only after the
+diagnostic identifies the fault; do not rerun an unchanged unauthorized token.
+The next [diagnostic run 36429070159, attempt 2](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36429070159/attempts/2)
+returned Rules HTTP 403, Cloudflare code 10000, and `account:active` from the
+account-token verification endpoint. Thus the configured token is active, but
+the Rules API still denies it. Cloudflare's [account-token compatibility
+matrix](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/)
+lists Email Relay but not Email Routing; the [account-token permission-group
+schema](https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/)
+does allow zone-scoped permissions generally. These sources do **not** prove
+whether this denial is an unsupported product/token combination or a missing
+Rules/zone grant. The shortest supported route is a **user API token**, created
+under User Profile > API Tokens (not Account API Tokens), with both zone-level
+Email Routing Rules Read and Write and resource restricted to the single
+`moesegfault.dev` zone. Replace only the GitHub Secret, never share its value,
+then rerun failed staging jobs; do not widen the general deployment token.
+
 The deployment workflow uses GitHub-hosted runners, builds Rust/Wasm, applies
 remote D1 migrations, deploys the mail Worker atomically with its secrets, then
 deploys the email-event ingress adapter and Astro site. It probes `/health`, `/`, `/manual/`, and
@@ -117,6 +147,13 @@ then verifies an explicit isolation contract (`infra/deploy/check_staging.py`),
 checks `mail-staging.moesegfault.dev` sending DNS, probes OpenRouter, migrates
 only staging D1, deploys the mail and ingress Workers with `--env staging`, and
 checks staging `/health`. It does **not** deploy production or the public site.
+The main branch push runs build/test gates only. Production promotion is a
+separate reviewed `CI and deploy` manual dispatch with `target=production` on
+`main`; this runs the same gates, deploys API/ingress/lifecycle Workers, and
+deploys the public site only when the matching GitHub Release assets are
+published. Before this workflow is merged to `main`, GitHub cannot manually
+dispatch it or the new canary operator workflows; the candidate staging send
+policy remains held unless a restricted D1 operator grant is explicitly used.
 The staging CLI must explicitly use the staging issuer, client ID, and API base;
 staging OIDC registration and live delivery remain separate acceptance steps.
 The staging Astro launch page deploys independently to
@@ -184,6 +221,44 @@ state or commit them.
 
 ## Live acceptance checklist
 
+### Candidate staging Rules Write/Delete probe (not executed)
+
+After a replacement token passes the **read** gate and both staging mail/API
+and `amail-inbound-staging` are deployed, prefer an authenticated staging
+`amail address add` followed by `amail address delete` under a disposable test
+account: that checks the actual address-ownership and routing transaction, not
+just provider permissions. If browser authorization is not yet available, a
+smaller operator-only control-plane probe may verify Write/Delete without
+creating a user mailbox or sending SMTP:
+
+1. Read **all pages** of zone routing rules (`per_page=50`) and filter literal
+   recipient rules for `mail-staging.moesegfault.dev` only. Cloudflare's
+   [200-rule limit is per domain](https://developers.cloudflare.com/email-service/platform/limits/),
+   not per zone. Refuse to create if the staging domain already has 198 or
+   more rules, preserving the two reserved slots; do not count production
+   rules against staging. Confirm no rule already matches a new random
+   `probe-<nonce>@mail-staging.moesegfault.dev` address.
+2. POST one rule to the [Rules API](https://developers.cloudflare.com/api/resources/email_routing/subresources/rules/methods/create/)
+   with `enabled:false`, `source:"api"`, name
+   `amail-control-probe-<nonce>` (deliberately unlike the Worker's
+   `amail <address>` reconciliation name), one literal `to` matcher for that
+   staging address, and one `worker` action targeting **only**
+   `amail-inbound-staging`. Never create a production-domain rule or a
+   catch-all. Confirm the returned ID and disabled state without printing
+   the token, address, or provider response body.
+3. In a `finally` cleanup, DELETE **only the returned ID** using the
+   [delete endpoint](https://developers.cloudflare.com/api/resources/email_routing/subresources/rules/methods/delete/),
+   then list again to confirm absence. If POST timed out after creating a
+   rule, locate the unique nonce/name and delete that exact disabled rule.
+   If cleanup cannot be confirmed, stop acceptance and manually remove the
+   orphan before proceeding. A cancelled job may bypass `finally`, so audit
+   for the `amail-control-probe-` prefix on the next read.
+
+This candidate procedure is **not** a deployed workflow step and must not be
+executed before Rules Read succeeds. A passing provider probe would prove
+only scoped rule creation/deletion; it would not validate Identity, D1
+ownership/quota, inbound delivery, or the CLI's registration contract.
+
 Perform these checks against **deployed** services after the first successful
 Actions deployment or an SMTP/DNS change. Use a dedicated test account and
 recipient; do not put tokens, message bodies, or address ownership details in
@@ -230,21 +305,46 @@ that immutable source identity, not to a prior dry-run commit.
 For this first pre-merge candidate, the release workflow is not yet present
 on `main`, so GitHub cannot accept a `workflow_dispatch` for it even with
 `--ref codex/amail-v0.1.0` ([GitHub manual-workflow rule](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)).
-Instead, a push that **changes the release workflow file** on
-the exact `codex/amail-v0.1.0` branch also starts the same five-target
-dry-run. The path filter prevents unrelated candidate pushes from repeatedly
-building release archives. This candidate run uploads the verified bundle for
-14 days but cannot attest, publish a Release, or launch the public site:
-those jobs and steps require a version-tag ref. Inspect the run and archive
-before considering the first tag; the later `main` dispatch remains available
-for a final dry-run of the merged source.
+A temporary exact-branch, release-workflow-file path trigger enabled the
+first five-target dry-run without publishing or launching the site. That
+bootstrap trigger was removed after its successful run, avoiding repeated
+five-platform builds for later candidate edits. The verified bundle remains
+available for 14 days; the later `main` dispatch can dry-run merged source.
+
+The first candidate dry-run at commit `59c9b09` succeeded in
+[run 36426742183](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36426742183):
+all five hosted native platform tests/builds and assembly passed; attestation,
+Release publication, and public-site launch were correctly skipped. Its
+[`release-bundle-v0.1.0` artifact](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36426742183/artifacts/10971906268)
+has five `amail-v0.1.0-<target>` archives for x86_64/aarch64 Linux,
+x86_64/aarch64 macOS, and x86_64 Windows, plus
+`amail-agent-skill-v0.1.0.zip` and `SHA256SUMS`. The bundle's six recorded
+SHA-256 digests were independently recomputed after downloading into
+`.temp/release-verify` and all matched. The skill ZIP contains
+`amail/SKILL.md`, `amail/references/archive.md`, and
+`amail/references/search-jobs.md`. The CLI source at this commit uses `include_str!`
+for both local OAuth success/failure HTML pages; the released Windows binary
+contains the updated success-page title. This validates packaging of the
+candidate source, **not** a live browser login or mail delivery.
 
 Then create and push a version tag matching `crates/amail/Cargo.toml`,
 for example `v0.1.0`. The release workflow performs native builds on x64 and
 ARM64 Linux, Windows x64, Apple Silicon, and Intel macOS, tests each binary
 platform, first verifies the tag points to a commit merged into `main`, attests
 the archives and agent skill ZIP, checks all six SHA-256
-digests, creates a GitHub Release, and then deploys the production site.
+digests, and checks production outbound readiness **before** creating a GitHub
+Release. The tag-only prepublish job requires production mail `/health` and a
+read-only [D1 query](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/)
+against the exact production database: one global `send_policy` row in
+`allowed` state plus the sole `send_release_gates` row with
+`feedback_verified`, `abuse_contact_verified`, `delivery_canary_verified`,
+and `preview_reviewed` all equal to 1. Missing schema, held policy, absent or
+duplicate rows, failed API access, or unhealthy mail fails closed. It prints
+only a sanitized readiness result, never D1 identifiers, token, user fields,
+or response bodies. Candidate-branch and manual-main dry-runs skip this live
+gate; an accidental early tag may still build archives, but cannot publish or
+launch the public site while send remains held. Only after the gate passes
+does the workflow create the GitHub Release and deploy the production site.
 The workflow intentionally fails rather than silently replacing an existing
 release asset. Investigate a failed release run before publishing any tag
 replacement.

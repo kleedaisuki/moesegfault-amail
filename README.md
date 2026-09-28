@@ -4,6 +4,11 @@
 `mail.moesegfault.dev`. A moeSegFault account can manage up to ten
 `@mail.moesegfault.dev` addresses. Authentication is delegated to
 moeSegFault Identity; agents handle mailbox operations through the CLI.
+Public sending is scoped to agent-workflow transactional notifications and
+related replies, not campaigns or unrestricted person-to-person mail. The
+server starts with an operator-controlled global send hold; release evidence
+and abuse operations are in
+[`docs/outbound-abuse-operations.md`](docs/outbound-abuse-operations.md).
 
 Mail bodies and attachments cross the agent boundary as ZIP packages, not
 unstructured CLI output. Search supports structured filters and server-side
@@ -15,6 +20,7 @@ semantic matching. The default CLI output is compact, pipe-friendly text;
 | CLI | `crates/amail` | Rust, Windows/macOS/Linux |
 | Mail API and business logic | `crates/mail-worker` | Rust/Wasm on Cloudflare Workers |
 | Email-event transport Worker | `workers/mail-ingress` | Rust/Wasm Worker forwarding bounded MIME into the Rust mail API |
+| Sending lifecycle Worker | `workers/mail-events` | Rust/Wasm Queue consumer for delivery, bounce and complaint feedback |
 | Public release site | `site` | Astro/TypeScript on Cloudflare Workers |
 
 ## Install
@@ -38,8 +44,11 @@ does not replace the CLI's own authentication or authorization checks.
 Development builds and cross-platform tests run in GitHub Actions to avoid
 requiring a local Rust/Wasm/Node toolchain or large caches on a contributor's
 machine. `.github/workflows/ci.yml` tests the CLI on Linux, Windows, and macOS,
-builds the Worker for Wasm, checks the Astro site, deploys both Workers from
-`main`, and probes their public routes. `.github/workflows/release.yml` builds
+builds the Workers for Wasm, and checks the Astro site. Candidate pushes deploy
+isolated staging; reviewed `workflow_dispatch target=production` on `main`
+promotes the mail API, inbound transport, outbound lifecycle consumer and
+eligible release site, then probes public routes. A main push alone does not
+deploy production. `.github/workflows/release.yml` builds
 five native CLI archives plus the agent skill from a version tag, and publishes
 checksums and provenance attestations.
 
