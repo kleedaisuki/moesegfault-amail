@@ -1,0 +1,78 @@
+# Production mail API with a Cloudflare Worker Custom Domain. / 生产邮件 API 使用 Worker 自定义域名。
+name = "amail-mail"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-09-25"
+workers_dev = false
+routes = [{ pattern = "mail.moesegfault.dev", custom_domain = true }]
+
+[vars]
+# These identifiers are reviewed deployment configuration, not user input. / 以下标识来自已审查的部署配置，不来自用户输入。
+IDENTITY_ISSUER = "https://identity.moesegfault.dev"
+OIDC_CLIENT_ID = "amail-cli"
+CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"
+MAIL_DOMAIN = "mail.moesegfault.dev"
+EMAIL_INGRESS_WORKER_NAME = "amail-inbound"
+OPENROUTER_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
+
+[[d1_databases]]
+binding = "MAIL_DB"
+database_name = "moesegfault-mail-production"
+database_id = "ad06f7f3-8897-4150-b9a9-7a46a8e55b30"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "MAIL_BODIES"
+bucket_name = "moesegfault-mail-raw-production"
+
+[[send_email]]
+name = "EMAIL"
+remote = true
+
+[[send_email]]
+name = "OFFICIAL_EMAIL"
+# User ZIP sends never use this binding. / 用户 ZIP 发送绝不使用此绑定。
+allowed_sender_addresses = ["mail@moesegfault.dev"]
+remote = true
+
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[observability.logs]
+enabled = true
+
+[observability.traces]
+enabled = true
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[env.staging]
+name = "amail-mail-staging"
+workers_dev = false
+routes = [{ pattern = "mail-staging.moesegfault.dev", custom_domain = true }]
+
+[env.staging.vars]
+IDENTITY_ISSUER = "https://identity-staging.moesegfault.dev"
+OIDC_CLIENT_ID = "amail-cli-staging"
+CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"
+MAIL_DOMAIN = "mail-staging.moesegfault.dev"
+EMAIL_INGRESS_WORKER_NAME = "amail-inbound-staging"
+OPENROUTER_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
+
+[[env.staging.d1_databases]]
+binding = "MAIL_DB"
+database_name = "moesegfault-mail-staging"
+database_id = "74f35f95-42ce-482c-86e6-dffbdd35cbbe"
+migrations_dir = "migrations"
+
+[[env.staging.r2_buckets]]
+binding = "MAIL_BODIES"
+bucket_name = "moesegfault-mail-raw-staging"
+
+[[env.staging.send_email]]
+name = "EMAIL"
+remote = true
+
+[env.staging.triggers]
+crons = ["*/5 * * * *"]
