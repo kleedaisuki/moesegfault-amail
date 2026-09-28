@@ -14,7 +14,11 @@ use worker::*;
 use crate::archive::{parse_draft, Draft};
 use crate::auth::Principal;
 
-const MAX_SCAN: usize = 2000;
+/// Bound one synchronous search below D1's request query cap and Worker memory. / 将同步搜索限制在 D1 单次请求查询上限与 Worker 内存以内。
+const SEARCH_SQL_BUDGET: usize = 400;
+const SEARCH_TRANSFER_BUDGET: usize = 32 * 1024 * 1024;
+const SEARCH_BODY_BUDGET: usize = 64 * 1024 * 1024;
+const SEARCH_PAGE_SIZE: usize = 64;
 const RESERVED: &[&str] = &[
     "admin",
     "administrator",
@@ -455,20 +459,48 @@ async fn store_text(database: &D1Database, id: &str, text: &str) -> AppResult<St
     Ok(parts[0].to_string())
 }
 
-async fn full_text(database: &D1Database, row: &MessageRow) -> AppResult<String> {
+/// Reassemble exact text in small D1 pages, charging each query and byte. / 以小页重建精确正文，并计入每次查询及字节预算。
+async fn full_text(
+    database: &D1Database,
+    row: &MessageRow,
+    sql_calls: &mut usize,
+    prior_body_bytes: usize,
+) -> AppResult<String> {
     #[derive(Deserialize)]
     struct Chunk {
+        chunk_index: i64,
         body: String,
     }
     let mut body = row.body_text.clone();
-    let chunks = database
-        .prepare("SELECT body FROM message_text_chunks WHERE message_id=?1 ORDER BY chunk_index")
-        .bind(&[bind_str(&row.id)])?
-        .all()
-        .await?
-        .results::<Chunk>()?;
-    for chunk in chunks {
-        body.push_str(&chunk.body);
+    let mut next_index = 1i64;
+    loop {
+        if search_budget_exceeded(*sql_calls, 0, prior_body_bytes.saturating_add(body.len())) {
+            return Err(search_resource_limit());
+        }
+        let chunks = database
+            .prepare("SELECT chunk_index,body FROM message_text_chunks WHERE message_id=?1 AND chunk_index>=?2 ORDER BY chunk_index LIMIT 16")
+            .bind(&[bind_str(&row.id), bind_num(next_index)])?
+            .all()
+            .await?
+            .results::<Chunk>()?;
+        *sql_calls += 1;
+        let count = chunks.len();
+        for chunk in chunks {
+            if chunk.chunk_index != next_index {
+                return Err(AppError {
+                    status: 503,
+                    code: "search_index_corrupt",
+                });
+            }
+            next_index = chunk.chunk_index + 1;
+            body.push_str(&chunk.body);
+            if search_budget_exceeded(0, 0, prior_body_bytes.saturating_add(body.len())) {
+                return Err(search_resource_limit());
+            }
+        }
+        if count < 16 {
+            break;
+        }
     }
     Ok(body)
 }
@@ -588,11 +620,23 @@ struct AddressRow {
 }
 
 async fn list_addresses(env: &Env, user: &Principal, request_id: &str) -> AppResult<Response> {
-    let result = db(env)?.prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE owner_iss=?1 AND owner_sub=?2 AND state!='retired' ORDER BY created_at")
+    let database = db(env)?;
+    let result = database.prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE owner_iss=?1 AND owner_sub=?2 AND state!='retired' ORDER BY created_at")
         .bind(&[bind_str(&user.iss), bind_str(&user.sub)])?.all().await?;
     let addresses = result.results::<AddressRow>()?.into_iter().map(|a| serde_json::json!({"address":a.address,"state":if a.state=="provisioning" {"pending"} else {a.state.as_str()},"created_at":iso(a.created_at)})).collect::<Vec<_>>();
+    #[derive(Deserialize)]
+    struct CapacityRow {
+        n: i64,
+    }
+    // D1 shows known allocations; Cloudflare's route-limit response remains authoritative.
+    // D1 显示已知分配量；Cloudflare 的路由上限响应仍是最终依据。
+    let used = database
+        .prepare("SELECT COUNT(*) AS n FROM addresses WHERE state!='retired'")
+        .first::<CapacityRow>(None)
+        .await?
+        .map_or(0, |row| row.n);
     Ok(Response::from_json(
-        &serde_json::json!({"addresses":addresses,"limit":10,"request_id":request_id}),
+        &serde_json::json!({"addresses":addresses,"limit":10,"capacity":{"limit":200,"registered":used,"remaining_estimate":(200-used).max(0)},"request_id":request_id}),
     )?)
 }
 
@@ -923,8 +967,129 @@ struct SearchRequest {
 
 #[derive(Serialize, Deserialize)]
 struct SearchCursor {
+    version: u8,
     hash: String,
-    offset: usize,
+    high_water: i64,
+    last_time: i64,
+    last_id: String,
+    last_score_bits: Option<u64>,
+}
+
+/// Keep a bounded synchronous scan honest: a budget breach is an error, never a partial page. / 同步扫描有界；触及预算必须报错，不能返回不完整结果。
+fn search_resource_limit() -> AppError {
+    AppError {
+        status: 422,
+        code: "search_resource_limit",
+    }
+}
+
+/// Check whether issuing one more D1 call or retaining measured bytes would exceed the synchronous budget. / 判断再发一次 D1 查询或当前字节占用是否超出同步预算。
+pub fn search_budget_exceeded(sql_calls: usize, transfer_bytes: usize, body_bytes: usize) -> bool {
+    sql_calls >= SEARCH_SQL_BUDGET
+        || transfer_bytes > SEARCH_TRANSFER_BUDGET
+        || body_bytes > SEARCH_BODY_BUDGET
+}
+
+/// Compare semantic results in public order: score, time, then ID, all descending. / 按分数、时间、ID 全部降序比较语义结果。
+pub fn semantic_rank(a: (f64, i64, &str), b: (f64, i64, &str)) -> std::cmp::Ordering {
+    b.0.total_cmp(&a.0)
+        .then_with(|| b.1.cmp(&a.1))
+        .then_with(|| b.2.cmp(a.2))
+}
+
+/// True when a row follows a keyset marker in descending time/ID order. / 判断降序时间与 ID 排序中记录是否位于游标之后。
+pub fn search_keyset_before(row: (i64, &str), marker: (i64, &str)) -> bool {
+    row.0 < marker.0 || (row.0 == marker.0 && row.1 < marker.1)
+}
+
+/// Keep only the best K semantic hits while visiting every eligible row. / 遍历全部符合条件的记录时，仅保留最优 K 条语义结果。
+pub fn retain_semantic<T, F>(selected: &mut Vec<T>, candidate: T, keep: usize, rank: F)
+where
+    F: for<'a> Fn(&'a T) -> (f64, i64, &'a str),
+{
+    if keep == 0 {
+        return;
+    }
+    if selected.len() < keep {
+        selected.push(candidate);
+        return;
+    }
+    let Some(worst) = selected
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| semantic_rank(rank(a), rank(b)))
+        .map(|(index, _)| index)
+    else {
+        return;
+    };
+    if semantic_rank(rank(&candidate), rank(&selected[worst])) == std::cmp::Ordering::Less {
+        selected[worst] = candidate;
+    }
+}
+
+/// Select only columns needed by the predicates or response. / 只读取谓词或响应需要的列。
+fn search_projection(input: &SearchRequest) -> String {
+    let body = if input.body.is_some() {
+        "body_text"
+    } else {
+        "'' AS body_text"
+    };
+    let metadata = if input.metadata.as_ref().is_some_and(|m| !m.is_empty()) {
+        "metadata_json"
+    } else {
+        "'{}' AS metadata_json"
+    };
+    let vector = if input.semantic.is_some() {
+        "embedding_json"
+    } else {
+        "NULL AS embedding_json"
+    };
+    format!("SELECT id,address,direction,sender,recipients_json,subject,{body},{metadata},received_at,is_read,has_html,has_text,attachment_count,'' AS r2_key,size_bytes,{vector} FROM messages WHERE owner_iss=?1 AND owner_sub=?2 AND deleted_at IS NULL")
+}
+
+/// Make the indexed structural predicates explicit; never use SQLite LIKE as an exact text oracle. / 显式构造可索引的结构谓词，不将 SQLite LIKE 当作精确文本判定。
+fn search_page_query(
+    input: &SearchRequest,
+    user: &Principal,
+    after: Option<i64>,
+    before: Option<i64>,
+    high_water: i64,
+    marker: Option<&(i64, String)>,
+) -> (String, Vec<JsValue>) {
+    let mut sql = search_projection(input);
+    let mut binds = vec![bind_str(&user.iss), bind_str(&user.sub)];
+    if let Some(mailbox) = input.mailbox.as_deref() {
+        sql.push_str(&format!(" AND address=?{}", binds.len() + 1));
+        binds.push(bind_str(mailbox));
+    }
+    if let Some(read) = input.read {
+        sql.push_str(&format!(" AND is_read=?{}", binds.len() + 1));
+        binds.push(bind_num(read as i64));
+    }
+    if let Some(after) = after {
+        sql.push_str(&format!(" AND received_at>=?{}", binds.len() + 1));
+        binds.push(bind_num(after));
+    }
+    if let Some(before) = before {
+        sql.push_str(&format!(" AND received_at<?{}", binds.len() + 1));
+        binds.push(bind_num(before));
+    }
+    sql.push_str(&format!(" AND received_at<?{}", binds.len() + 1));
+    binds.push(bind_num(high_water));
+    if let Some((time, id)) = marker {
+        let index = binds.len() + 1;
+        sql.push_str(&format!(
+            " AND (received_at<?{index} OR (received_at=?{index} AND id<?{}))",
+            index + 1
+        ));
+        binds.push(bind_num(*time));
+        binds.push(bind_str(id));
+    }
+    sql.push_str(&format!(
+        " ORDER BY received_at DESC,id DESC LIMIT {}",
+        SEARCH_PAGE_SIZE
+    ));
+    (sql, binds)
 }
 
 async fn search(
@@ -955,67 +1120,38 @@ async fn search(
     let mut canonical =
         serde_json::to_value(&input).map_err(|_| AppError::bad("invalid_search"))?;
     canonical["cursor"] = serde_json::Value::Null;
+    canonical["limit"] = serde_json::json!(limit);
+    canonical["regex"] = serde_json::json!(input.regex.unwrap_or(false));
+    canonical["case_sensitive"] = serde_json::json!(input.case_sensitive.unwrap_or(false));
     let hash = format!(
         "{:x}",
         Sha256::digest(format!("{}:{}:{}", user.iss, user.sub, canonical).as_bytes())
     );
-    let offset = if let Some(cursor) = &input.cursor {
+    let cursor = if let Some(cursor) = &input.cursor {
         let bytes = URL_SAFE_NO_PAD
             .decode(cursor)
             .map_err(|_| AppError::bad("invalid_cursor"))?;
         let decoded: SearchCursor =
             serde_json::from_slice(&bytes).map_err(|_| AppError::bad("invalid_cursor"))?;
-        if decoded.hash != hash || decoded.offset > 100_000 {
+        if decoded.version != 2
+            || decoded.hash != hash
+            || decoded.high_water > now() + 60_000
+            || decoded.last_time >= decoded.high_water
+            || decoded.last_id.is_empty()
+            || decoded.last_score_bits.is_some() != input.semantic.is_some()
+            || decoded
+                .last_score_bits
+                .is_some_and(|bits| !f64::from_bits(bits).is_finite())
+        {
             return Err(AppError::bad("invalid_cursor"));
         }
-        decoded.offset
+        Some(decoded)
     } else {
-        0
+        None
     };
     let matcher = SearchMatcher::new(&input)?;
     let database = db(env)?;
-    let mut rows = Vec::new();
-    let mut scanned = 0usize;
-    let mut marker: Option<(i64, String)> = None;
-    loop {
-        let result = database.prepare("SELECT id,address,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,embedding_json FROM messages WHERE owner_iss=?1 AND owner_sub=?2 AND deleted_at IS NULL AND (?3 IS NULL OR address=?3) AND (?4 IS NULL OR is_read=?4) AND (?5 IS NULL OR received_at>=?5) AND (?6 IS NULL OR received_at<?6) AND (?7 IS NULL OR received_at<?7 OR (received_at=?7 AND id<?8)) ORDER BY received_at DESC,id DESC LIMIT 200")
-            .bind(&[
-                bind_str(&user.iss),bind_str(&user.sub),
-                input.mailbox.as_deref().map(bind_str).unwrap_or(JsValue::NULL),
-                input.read.map(|v|bind_num(v as i64)).unwrap_or(JsValue::NULL),
-                after.map(bind_num).unwrap_or(JsValue::NULL),before.map(bind_num).unwrap_or(JsValue::NULL),
-                marker.as_ref().map(|(t,_)|bind_num(*t)).unwrap_or(JsValue::NULL),
-                marker.as_ref().map(|(_,id)|bind_str(id)).unwrap_or(JsValue::NULL)
-            ])?.all().await?;
-        let page = result.results::<MessageRow>()?;
-        let page_len = page.len();
-        marker = page.last().map(|row| (row.received_at, row.id.clone()));
-        for mut row in page {
-            if input.body.is_some() {
-                row.body_text = full_text(&database, &row).await?;
-            }
-            if !matcher.matches(&row) {
-                continue;
-            }
-            rows.push(row);
-            if input.semantic.is_some() && rows.len() > MAX_SCAN {
-                return Err(AppError {
-                    status: 422,
-                    code: "search_candidate_limit",
-                });
-            }
-        }
-        scanned += page_len;
-        if page_len < 200 || (input.semantic.is_none() && rows.len() > offset + limit) {
-            break;
-        }
-        if scanned >= 100_000 {
-            return Err(AppError {
-                status: 422,
-                code: "search_scan_limit",
-            });
-        }
-    }
+    let semantic = input.semantic.is_some();
     let query_vector = if let Some(term) = input.semantic.as_deref() {
         Some(
             platform::embed(env, term, "search_query")
@@ -1028,50 +1164,146 @@ async fn search(
     } else {
         None
     };
-    let mut matches = Vec::new();
-    for row in rows {
-        let score = if let Some(query) = &query_vector {
-            let saved = row.embedding_json.as_deref().ok_or(AppError {
+    let high_water = cursor.as_ref().map_or_else(|| now() + 1, |c| c.high_water);
+    let mut marker = if semantic {
+        None
+    } else {
+        cursor.as_ref().map(|c| (c.last_time, c.last_id.clone()))
+    };
+    let mut selected: Vec<(MessageRow, Option<f64>)> = Vec::with_capacity(limit + 1);
+    let mut sql_calls = 0usize;
+    let mut transfer_bytes = 0usize;
+    let mut body_bytes = 0usize;
+    loop {
+        if search_budget_exceeded(sql_calls, 0, 0) {
+            return Err(search_resource_limit());
+        }
+        let (query, binds) =
+            search_page_query(&input, user, after, before, high_water, marker.as_ref());
+        let previous_marker = marker.clone();
+        let result = database.prepare(&query).bind(&binds)?.all().await?;
+        sql_calls += 1;
+        let page = result.results::<MessageRow>()?;
+        if previous_marker.as_ref().is_some_and(|(time, id)| {
+            page.iter()
+                .any(|row| !search_keyset_before((row.received_at, &row.id), (*time, id)))
+        }) {
+            return Err(AppError {
                 status: 503,
-                code: "semantic_index_incomplete",
-            })?;
-            let vector: Vec<f32> = serde_json::from_str(saved).map_err(|_| AppError {
-                status: 503,
-                code: "semantic_index_corrupt",
-            })?;
-            Some(cosine_exact(query, &vector).ok_or(AppError {
-                status: 503,
-                code: "semantic_index_corrupt",
-            })?)
-        } else {
-            None
-        };
-        matches.push((row, score));
+                code: "search_index_corrupt",
+            });
+        }
+        let page_len = page.len();
+        marker = page.last().map(|row| (row.received_at, row.id.clone()));
+        for mut row in page {
+            transfer_bytes = transfer_bytes.saturating_add(
+                row.subject.len()
+                    + row.sender.len()
+                    + row.recipients_json.len()
+                    + row.metadata_json.len()
+                    + row.body_text.len()
+                    + row.embedding_json.as_ref().map_or(0, String::len),
+            );
+            if search_budget_exceeded(0, transfer_bytes, body_bytes) {
+                return Err(search_resource_limit());
+            }
+            if !matcher.matches_without_body(&row) {
+                continue;
+            }
+            if matcher.has_body() {
+                if search_budget_exceeded(
+                    0,
+                    transfer_bytes,
+                    body_bytes.saturating_add(row.body_text.len()),
+                ) {
+                    return Err(search_resource_limit());
+                }
+                row.body_text = full_text(&database, &row, &mut sql_calls, body_bytes).await?;
+                body_bytes = body_bytes.saturating_add(row.body_text.len());
+                if search_budget_exceeded(0, transfer_bytes, body_bytes)
+                    || !matcher.matches_body(&row.body_text)
+                {
+                    continue;
+                }
+            }
+            // The match is decided; never retain a 25 MiB body in top-K or a future checkpoint.
+            // 匹配结果已确定；最优 K 集合及未来检查点不得保留 25 MiB 正文。
+            row.body_text.clear();
+            let score = if let Some(query) = &query_vector {
+                let saved = row.embedding_json.as_deref().ok_or(AppError {
+                    status: 503,
+                    code: "semantic_index_incomplete",
+                })?;
+                let vector: Vec<f32> = serde_json::from_str(saved).map_err(|_| AppError {
+                    status: 503,
+                    code: "semantic_index_corrupt",
+                })?;
+                Some(cosine_exact(query, &vector).ok_or(AppError {
+                    status: 503,
+                    code: "semantic_index_corrupt",
+                })?)
+            } else {
+                None
+            };
+            row.embedding_json = None;
+            if let (Some(previous), Some(score)) = (cursor.as_ref(), score) {
+                let previous_score = f64::from_bits(previous.last_score_bits.unwrap_or_default());
+                if semantic_rank(
+                    (score, row.received_at, &row.id),
+                    (previous_score, previous.last_time, &previous.last_id),
+                ) != std::cmp::Ordering::Greater
+                {
+                    continue;
+                }
+            }
+            if !semantic {
+                selected.push((row, None));
+                if selected.len() > limit {
+                    break;
+                }
+                continue;
+            }
+            retain_semantic(&mut selected, (row, score), limit + 1, |hit| {
+                (
+                    hit.1.unwrap_or_default(),
+                    hit.0.received_at,
+                    hit.0.id.as_str(),
+                )
+            });
+        }
+        if page_len < SEARCH_PAGE_SIZE || (!semantic && selected.len() > limit) {
+            break;
+        }
     }
-    if query_vector.is_some() {
-        matches.sort_by(|(a, sa), (b, sb)| {
-            sb.unwrap_or_default()
-                .total_cmp(&sa.unwrap_or_default())
-                .then_with(|| b.received_at.cmp(&a.received_at))
-                .then_with(|| b.id.cmp(&a.id))
+    if semantic {
+        selected.sort_by(|a, b| {
+            semantic_rank(
+                (a.1.unwrap_or_default(), a.0.received_at, &a.0.id),
+                (b.1.unwrap_or_default(), b.0.received_at, &b.0.id),
+            )
         });
     }
-    let next_cursor = if matches.len() > offset + limit {
-        let cursor = SearchCursor {
+    let has_more = selected.len() > limit;
+    selected.truncate(limit);
+    let next_cursor = if has_more {
+        let (last, score) = selected.last().expect("a full page has a final item");
+        let next = SearchCursor {
+            version: 2,
             hash,
-            offset: offset + limit,
+            high_water,
+            last_time: last.received_at,
+            last_id: last.id.clone(),
+            last_score_bits: score.map(f64::to_bits),
         };
         Some(
             URL_SAFE_NO_PAD
-                .encode(serde_json::to_vec(&cursor).map_err(|_| AppError::bad("invalid_cursor"))?),
+                .encode(serde_json::to_vec(&next).map_err(|_| AppError::bad("invalid_cursor"))?),
         )
     } else {
         None
     };
-    let messages = matches
+    let messages = selected
         .into_iter()
-        .skip(offset)
-        .take(limit)
         .map(|(row, score)| summary(&row, score))
         .collect::<Vec<_>>();
     Ok(Response::from_json(
@@ -1092,30 +1324,52 @@ impl<T> OptionTranspose<T> for Option<Option<T>> {
     }
 }
 
-struct SearchMatcher {
-    fields: Vec<(String, String)>,
-    regex: bool,
-    case_sensitive: bool,
-    metadata: Vec<(String, String)>,
+/// A text predicate is compiled once per request, not once per candidate. / 文本谓词每次请求仅编译一次，不按候选邮件重复编译。
+struct TextPredicate(regex::Regex);
+
+impl TextPredicate {
+    fn new(value: &str, regex: bool, case_sensitive: bool) -> AppResult<Self> {
+        if value.len() > 256 {
+            return Err(AppError::bad("invalid_pattern"));
+        }
+        let expression = if regex {
+            value.to_owned()
+        } else {
+            regex::escape(value)
+        };
+        regex::RegexBuilder::new(&expression)
+            .case_insensitive(!case_sensitive)
+            .size_limit(1 << 20)
+            .dfa_size_limit(1 << 20)
+            .build()
+            .map(Self)
+            .map_err(|_| AppError::bad("invalid_pattern"))
+    }
+
+    fn matches(&self, value: &str) -> bool {
+        self.0.is_match(value)
+    }
 }
+
+struct SearchMatcher {
+    title: Option<TextPredicate>,
+    from: Option<TextPredicate>,
+    to: Option<TextPredicate>,
+    body: Option<TextPredicate>,
+    metadata: Vec<(String, TextPredicate)>,
+}
+
 impl SearchMatcher {
     fn new(input: &SearchRequest) -> AppResult<Self> {
-        let fields = [
-            ("title", &input.title),
-            ("from", &input.from),
-            ("to", &input.to),
-            ("body", &input.body),
-        ]
-        .into_iter()
-        .filter_map(|(k, v)| v.as_ref().map(|s| (k.to_string(), s.clone())))
-        .collect::<Vec<_>>();
-        let metadata = input
-            .metadata
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .collect::<Vec<_>>();
-        for (key, value) in &metadata {
+        let regex = input.regex.unwrap_or(false);
+        let case = input.case_sensitive.unwrap_or(false);
+        let compile = |term: &Option<String>| {
+            term.as_deref()
+                .map(|s| TextPredicate::new(s, regex, case))
+                .transpose()
+        };
+        let mut metadata = Vec::new();
+        for (key, value) in input.metadata.as_ref().into_iter().flat_map(|m| m.iter()) {
             if ![
                 "message_id",
                 "in_reply_to",
@@ -1127,65 +1381,51 @@ impl SearchMatcher {
             {
                 return Err(AppError::bad("invalid_metadata_filter"));
             }
-        }
-        let regex = input.regex.unwrap_or(false);
-        for (_, term) in &fields {
-            if term.len() > 256
-                || (regex
-                    && regex::RegexBuilder::new(term)
-                        .case_insensitive(!input.case_sensitive.unwrap_or(false))
-                        .size_limit(1 << 20)
-                        .build()
-                        .is_err())
-            {
-                return Err(AppError::bad("invalid_pattern"));
-            }
+            metadata.push((key.clone(), TextPredicate::new(value, regex, case)?));
         }
         Ok(Self {
-            fields,
-            regex,
-            case_sensitive: input.case_sensitive.unwrap_or(false),
+            title: compile(&input.title)?,
+            from: compile(&input.from)?,
+            to: compile(&input.to)?,
+            body: compile(&input.body)?,
             metadata,
         })
     }
-    fn matches(&self, row: &MessageRow) -> bool {
-        let to = row.recipients_json.as_str();
-        for (field, term) in &self.fields {
-            let value = match field.as_str() {
-                "title" => &row.subject,
-                "from" => &row.sender,
-                "to" => to,
-                _ => &row.body_text,
-            };
-            if !self.test(value, term) {
-                return false;
-            }
+
+    fn has_body(&self) -> bool {
+        self.body.is_some()
+    }
+
+    fn matches_without_body(&self, row: &MessageRow) -> bool {
+        if self
+            .title
+            .as_ref()
+            .is_some_and(|p| !p.matches(&row.subject))
+            || self.from.as_ref().is_some_and(|p| !p.matches(&row.sender))
+            || self
+                .to
+                .as_ref()
+                .is_some_and(|p| !p.matches(&row.recipients_json))
+        {
+            return false;
+        }
+        if self.metadata.is_empty() {
+            return true;
         }
         let metadata: serde_json::Value =
             serde_json::from_str(&row.metadata_json).unwrap_or_default();
-        for (key, term) in &self.metadata {
-            let Some(value) = metadata.get(key).and_then(|v| v.as_str()) else {
-                return false;
-            };
-            if !self.test(value, term) {
-                return false;
-            }
-        }
-        true
+        self.metadata.iter().all(|(key, term)| {
+            metadata
+                .get(key)
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| term.matches(value))
+        })
     }
-    fn test(&self, value: &str, term: &str) -> bool {
-        if self.regex {
-            return regex::RegexBuilder::new(term)
-                .case_insensitive(!self.case_sensitive)
-                .size_limit(1 << 20)
-                .build()
-                .is_ok_and(|re| re.is_match(value));
-        }
-        if self.case_sensitive {
-            value.contains(term)
-        } else {
-            value.to_lowercase().contains(&term.to_lowercase())
-        }
+
+    fn matches_body(&self, body: &str) -> bool {
+        self.body
+            .as_ref()
+            .is_none_or(|predicate| predicate.matches(body))
     }
 }
 
@@ -1667,12 +1907,76 @@ mod tests {
             case_sensitive: Some(false),
             ..Default::default()
         };
-        assert!(SearchMatcher::new(&request).unwrap().matches(&row));
+        assert!(SearchMatcher::new(&request)
+            .unwrap()
+            .matches_without_body(&row));
         let strict = SearchRequest {
             case_sensitive: Some(true),
             ..request
         };
-        assert!(!SearchMatcher::new(&strict).unwrap().matches(&row));
+        assert!(!SearchMatcher::new(&strict)
+            .unwrap()
+            .matches_without_body(&row));
+        let body = SearchRequest {
+            body: Some("rollback safely".into()),
+            ..Default::default()
+        };
+        assert!(SearchMatcher::new(&body)
+            .unwrap()
+            .matches_body(&row.body_text));
+        let strict_body = SearchRequest {
+            body: Some("rollback safely".into()),
+            case_sensitive: Some(true),
+            ..Default::default()
+        };
+        assert!(!SearchMatcher::new(&strict_body)
+            .unwrap()
+            .matches_body(&row.body_text));
+        let literal = TextPredicate::new("[0-9]+", false, true).unwrap();
+        assert!(!literal.matches("Release 42"));
+        assert!(literal.matches("Release [0-9]+"));
+    }
+
+    /// Score, time and ID form a total deterministic order for semantic cursors. / 分数、时间及 ID 为语义游标提供确定性全序。
+    #[test]
+    fn semantic_cursor_rank_is_lossless() {
+        use std::cmp::Ordering;
+        let best = (0.9000000000000001, 10, "z");
+        let next = (0.9, 99, "z");
+        assert_eq!(semantic_rank(best, next), Ordering::Less);
+        assert_eq!(semantic_rank(next, best), Ordering::Greater);
+        assert_eq!(
+            semantic_rank((0.9, 10, "z"), (0.9, 10, "a")),
+            Ordering::Less
+        );
+        let cursor = SearchCursor {
+            version: 2,
+            hash: "h".into(),
+            high_water: 100,
+            last_time: 10,
+            last_id: "z".into(),
+            last_score_bits: Some(best.0.to_bits()),
+        };
+        let decoded: SearchCursor =
+            serde_json::from_slice(&serde_json::to_vec(&cursor).unwrap()).unwrap();
+        assert_eq!(decoded.last_score_bits, Some(best.0.to_bits()));
+    }
+
+    /// Response-only searches must not project body, vector or archive keys. / 仅请求摘要时不得读取正文、向量或归档键。
+    #[test]
+    fn search_projection_is_minimal() {
+        let list = search_projection(&SearchRequest::default());
+        assert!(list.contains("'' AS body_text"));
+        assert!(list.contains("NULL AS embedding_json"));
+        assert!(list.contains("'' AS r2_key"));
+        let detailed = search_projection(&SearchRequest {
+            body: Some("hello".into()),
+            semantic: Some("meaning".into()),
+            metadata: Some([("message_id".into(), "id".into())].into()),
+            ..Default::default()
+        });
+        assert!(detailed.contains("subject,body_text,metadata_json"));
+        assert!(detailed.contains("embedding_json FROM messages"));
     }
 
     /// A quota-denied preparing request cannot transition to provider submission on retry. / 额度拒绝后的预备请求重试不得进入供应商提交态。
