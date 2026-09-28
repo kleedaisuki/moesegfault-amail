@@ -9,6 +9,41 @@ const JOB_LEASE_MS: i64 = 2 * 60 * 1000;
 const JOB_LIMIT: i64 = 5;
 const JOB_TOTAL_LIMIT: i64 = 256;
 
+/// Bound scans that require Rust text/vector filtering; indexed newest/mailbox/date/read lists stay write-free. / 限制需由 Rust 逐条文本或向量筛选的扫描；可索引的最新/邮箱/日期/已读列表保持无写入。
+fn expensive(input: &SearchRequest) -> bool {
+    input.semantic.is_some()
+        || input.body.is_some()
+        || input.title.is_some()
+        || input.from.is_some()
+        || input.to.is_some()
+        || input.metadata.as_ref().is_some_and(|map| !map.is_empty())
+}
+
+/// Atomically admit one broad-filter request against account and shared daily budgets. / 按账户与共享每日额度原子准入一次宽泛筛选请求。
+async fn reserve_search_work(database: &D1Database, user: &Principal) -> AppResult<()> {
+    let quota = |error: AppError| {
+        if error.status == 429 {
+            AppError {
+                status: 429,
+                code: "search_work_quota",
+            }
+        } else {
+            error
+        }
+    };
+    reserve_quota(database, "search_work", user, 1, 300)
+        .await
+        .map_err(quota)?;
+    let global = Principal {
+        iss: "_global".into(),
+        sub: "_global".into(),
+    };
+    reserve_quota(database, "search_work_global", &global, 1, 20_000)
+        .await
+        .map_err(quota)?;
+    Ok(())
+}
+
 /// Read the mutation generation that protects a multi-invocation result. / 读取保护跨调用结果的变更代际。
 async fn generation(database: &D1Database, user: &Principal) -> AppResult<i64> {
     let row = database
@@ -127,6 +162,9 @@ pub(super) async fn search(
         hits: Vec::new(),
         query_vector: None,
     };
+    if !semantic && expensive(&input) {
+        reserve_search_work(&database, user).await?;
+    }
     // Most list/lexical searches finish without writing a job. Only continuation is durable.
     // 多数列表/词法检索无需写入任务；仅在确实需要续扫时持久化。
     if !semantic {
@@ -188,6 +226,7 @@ pub(super) async fn search(
         let prepared: AppResult<()> = async {
             // Reserve the D1 slot and daily provider budget before any billable call.
             // 任何可计费调用之前，先原子预留 D1 任务槽和每日供应商额度。
+            reserve_search_work(&database, user).await?;
             reserve_quota(&database, "semantic_queries", user, 1, 500)
                 .await
                 .map_err(|error| if error.status == 429 { AppError { status:429, code:"semantic_quota" } } else { error })?;
@@ -209,7 +248,7 @@ pub(super) async fn search(
         }.await;
         if let Err(error) = prepared {
             if let Ok(query) = database.prepare("DELETE FROM search_jobs WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='preparing'")
-                .and_then(|query| query.bind(&[bind_str(&id),bind_str(&user.iss),bind_str(&user.sub)]))
+                .bind(&[bind_str(&id),bind_str(&user.iss),bind_str(&user.sub)])
             {
                 let _ = query.run().await;
             }
@@ -319,7 +358,7 @@ async fn release(database: &D1Database, id: &str, version: i64, error: &AppError
     };
     if let Ok(query) = database
         .prepare(sql)
-        .and_then(|query| query.bind(&[bind_str(id), bind_num(version)]))
+        .bind(&[bind_str(id), bind_num(version)])
     {
         let _ = query.run().await;
     }
@@ -328,7 +367,7 @@ async fn release(database: &D1Database, id: &str, version: i64, error: &AppError
 async fn scrub_done(database: &D1Database, id: &str, version: i64) {
     if let Ok(query) = database
         .prepare("UPDATE search_jobs SET state='stale',request_json='{}',state_json='{}',version=version+1 WHERE id=?1 AND state='done' AND version=?2")
-        .and_then(|query| query.bind(&[bind_str(id),bind_num(version)]))
+        .bind(&[bind_str(id),bind_num(version)])
     {
         let _ = query.run().await;
     }
@@ -623,4 +662,50 @@ pub(super) async fn cleanup(env: &Env) -> Result<()> {
         .run()
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Indexed list predicates stay free of daily write admission; broad Rust filters do not. / 可索引列表谓词免除每日写入准入，宽泛 Rust 过滤则不免除。
+    #[test]
+    fn expensive_search_classification() {
+        assert!(!expensive(&SearchRequest::default()));
+        assert!(!expensive(&SearchRequest {
+            regex: Some(true),
+            ..Default::default()
+        }));
+        assert!(!expensive(&SearchRequest {
+            mailbox: Some("a@mail.moesegfault.dev".into()),
+            after: Some("2026-01-01T00:00:00Z".into()),
+            read: Some(false),
+            ..Default::default()
+        }));
+        for request in [
+            SearchRequest {
+                title: Some("x".into()),
+                ..Default::default()
+            },
+            SearchRequest {
+                body: Some("x".into()),
+                ..Default::default()
+            },
+            SearchRequest {
+                semantic: Some("x".into()),
+                ..Default::default()
+            },
+            SearchRequest {
+                from: Some("x".into()),
+                regex: Some(true),
+                ..Default::default()
+            },
+            SearchRequest {
+                metadata: Some([("message_id".into(), "x".into())].into()),
+                ..Default::default()
+            },
+        ] {
+            assert!(expensive(&request));
+        }
+    }
 }
