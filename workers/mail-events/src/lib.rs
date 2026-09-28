@@ -5,7 +5,7 @@ use chrono::DateTime;
 use serde::Deserialize;
 use serde_json::Value;
 use wasm_bindgen::JsValue;
-use worker::{console_log, console_warn, event, Env, MessageBatch, Result};
+use worker::{console_log, console_warn, event, Env, MessageBatch, MessageExt, Result};
 
 /// A typed subset of the provider schema; raw subject and SMTP detail are discarded.
 /// 提供商模式的类型化子集；丢弃原始标题及 SMTP 详情。
