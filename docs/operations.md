@@ -74,7 +74,9 @@ an end-to-end delivery test.
 The first candidate branch `codex/amail-v0.1.0` triggers a staging deployment
 on push after all CI gates because GitHub manual-dispatch workflows must first
 exist on the default branch. Remove this one-time branch trigger after the
-first successful staging run and merge. After the workflow exists on the default branch,
+first successful staging run and merge. This branch's duplicate PR matrix is
+skipped while the same commit is checked by the push matrix; remove that
+one-time skip together with the branch trigger. After the workflow exists on the default branch,
 later candidate branches can manually dispatch `CI and deploy` with
 `target=staging`. The workflow runs the same cross-platform and Wasm checks,
 then verifies an explicit isolation contract (`infra/deploy/check_staging.py`),

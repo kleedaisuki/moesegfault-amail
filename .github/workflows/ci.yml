@@ -24,6 +24,7 @@ concurrency:
 jobs:
   cli:
     name: CLI (${{ matrix.os }})
+    if: github.event_name != 'pull_request' || github.head_ref != 'codex/amail-v0.1.0'
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +53,7 @@ jobs:
 
   worker:
     name: Rust Worker (Wasm)
+    if: github.event_name != 'pull_request' || github.head_ref != 'codex/amail-v0.1.0'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -60,10 +62,10 @@ jobs:
         run: |
           rustup update stable
           rustup target add wasm32-unknown-unknown
-      - name: Compile Worker target
-        run: cargo check -p amail-worker --locked --target wasm32-unknown-unknown
       - name: Run Rust Worker unit tests
         run: cargo test -p amail-worker --locked --all-targets
+      - name: Compile Worker target
+        run: cargo check -p amail-worker --locked --target wasm32-unknown-unknown
       - name: Install workers-rs bundler
         run: cargo install worker-build --version 0.8.3 --locked
       - name: Bundle Worker for Wrangler
@@ -72,6 +74,7 @@ jobs:
 
   site:
     name: Astro release site
+    if: github.event_name != 'pull_request' || github.head_ref != 'codex/amail-v0.1.0'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -94,6 +97,7 @@ jobs:
 
   dns:
     name: Infrastructure probe unit tests
+    if: github.event_name != 'pull_request' || github.head_ref != 'codex/amail-v0.1.0'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
