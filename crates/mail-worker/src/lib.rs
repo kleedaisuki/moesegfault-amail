@@ -340,7 +340,9 @@ async fn dispatch(mut req: Request, env: Env, request_id: &str) -> AppResult<Res
     match (req.method(), segments.as_slice()) {
         (Method::Get, ["v1", "addresses"]) => list_addresses(&env, &user, request_id).await,
         (Method::Post, ["v1", "addresses"]) => add_address(&mut req, &env, &user, request_id).await,
-        (Method::Delete, ["v1", "addresses"]) => delete_address(&mut req, &env, &user, request_id).await,
+        (Method::Delete, ["v1", "addresses"]) => {
+            delete_address(&mut req, &env, &user, request_id).await
+        }
         (Method::Get, ["v1", "messages"]) => {
             let url = req.url()?;
             let limit = url
@@ -742,10 +744,17 @@ async fn delete_address(
 ) -> AppResult<Response> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
-    struct DeleteAddress { address:String }
-    let input:DeleteAddress=req.json().await.map_err(|_|AppError::bad("invalid_json"))?;
-    let address=input.address.to_ascii_lowercase();
-    if !address.ends_with(&format!("@{}",env.var("MAIL_DOMAIN")?.to_string())) || !valid_address(&address) {
+    struct DeleteAddress {
+        address: String,
+    }
+    let input: DeleteAddress = req
+        .json()
+        .await
+        .map_err(|_| AppError::bad("invalid_json"))?;
+    let address = input.address.to_ascii_lowercase();
+    if !address.ends_with(&format!("@{}", env.var("MAIL_DOMAIN")?.to_string()))
+        || !valid_address(&address)
+    {
         return Err(AppError::bad("invalid_address"));
     }
     let database = db(env)?;
