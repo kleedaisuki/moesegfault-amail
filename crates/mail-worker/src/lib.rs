@@ -103,9 +103,22 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
     if let Err(_) = reindex(&env).await {
         console_warn!("amail semantic index retry failed");
     }
+    if let Err(_) = reconcile_storage(&env).await {
+        console_warn!("amail storage ledger reconciliation failed");
+    }
     if let Err(_) = garbage_collect(&env).await {
         console_warn!("amail deleted message cleanup failed");
     }
+    if let Err(_) = clean_orphans(&env).await {
+        console_warn!("amail orphan object cleanup failed");
+    }
+}
+
+/// Finish ledger state changes after an indexed message survived an uncertain D1 response. / 在邮件索引已落盘但 D1 响应不确定时完成账本状态变更。
+async fn reconcile_storage(env: &Env) -> Result<()> {
+    env.d1("MAIL_DB")?.prepare("UPDATE storage_reservations SET state='indexed' WHERE state='reserved' AND EXISTS(SELECT 1 FROM messages WHERE messages.id=storage_reservations.id)")
+        .run().await?;
+    Ok(())
 }
 
 /// Reclaim deleted per-delivery content after D1 tombstones hide it from readers. / D1 墓碑阻止读取后，回收已删除投递的内容。
@@ -132,6 +145,52 @@ async fn garbage_collect(env: &Env) -> Result<()> {
             .await?;
         database
             .prepare("DELETE FROM messages WHERE id=?1 AND deleted_at IS NOT NULL")
+            .bind(&[bind_str(&row.id)])?
+            .run()
+            .await?;
+        database
+            .prepare("DELETE FROM storage_reservations WHERE id=?1")
+            .bind(&[bind_str(&row.id)])?
+            .run()
+            .await?;
+    }
+    Ok(())
+}
+
+/// Remove old R2 objects whose pre-write ledger never reached a visible message row. / 清除预写入账本未转为可见邮件的陈旧 R2 对象。
+async fn clean_orphans(env: &Env) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Orphan {
+        id: String,
+    }
+    #[derive(Deserialize)]
+    struct SendState {
+        state: String,
+    }
+    let database = env.d1("MAIL_DB")?;
+    let rows=database.prepare("SELECT r.id FROM storage_reservations r LEFT JOIN messages m ON m.id=r.id WHERE m.id IS NULL AND r.created_at<?1 LIMIT 20")
+        .bind(&[bind_num(now()-60*60_000)])?.all().await?.results::<Orphan>()?;
+    let bucket = env.bucket("MAIL_BODIES")?;
+    for row in rows {
+        let send = database
+            .prepare("SELECT state FROM send_requests WHERE message_id=?1")
+            .bind(&[bind_str(&row.id)])?
+            .first::<SendState>(None)
+            .await?;
+        if send.as_ref().is_some_and(|record| {
+            matches!(record.state.as_str(), "submitting" | "unknown" | "accepted")
+        }) {
+            continue;
+        }
+        bucket.delete(format!("messages/{}.zip", row.id)).await?;
+        bucket.delete(format!("raw/{}.eml", row.id)).await?;
+        database
+            .prepare("DELETE FROM message_text_chunks WHERE message_id=?1")
+            .bind(&[bind_str(&row.id)])?
+            .run()
+            .await?;
+        database
+            .prepare("DELETE FROM storage_reservations WHERE id=?1")
             .bind(&[bind_str(&row.id)])?
             .run()
             .await?;
@@ -229,6 +288,7 @@ async fn reconcile_outbound(env: &Env) -> Result<()> {
             .map_err(|_| worker::Error::RustError("reconcile_text_failed".into()))?;
         database.prepare("INSERT OR IGNORE INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,storage_bytes) VALUES(?1,?2,?3,?4,'outbound',?5,?6,?7,?8,?9,?10,1,?11,1,?12,?13,?14,?15)")
             .bind(&[bind_str(&row.message_id),bind_str(&m.from),bind_str(&row.owner_iss),bind_str(&row.owner_sub),bind_str(&m.from),bind_str(&recipients),bind_str(&m.subject),bind_str(&first_text),bind_str(&metadata),bind_num(row.created_at),bind_num(draft.html.is_some() as i64),bind_num(draft.assets.len() as i64),bind_str(&key),bind_num(bytes.len() as i64),bind_num(bytes.len() as i64)])?.run().await?;
+        mark_storage_indexed(&database, &row.message_id).await?;
         database
             .prepare(
                 "UPDATE send_requests SET state='sent' WHERE message_id=?1 AND state='accepted'",
@@ -442,20 +502,58 @@ async fn reserve_quota(
     Ok(())
 }
 
-/// Guard cumulative retained storage; deletion tombstones free the logical budget immediately. / 限制累计保留存储；删除墓碑立即释放逻辑额度。
-async fn ensure_storage(database: &D1Database, user: &Principal, additional: i64) -> AppResult<()> {
+/// Atomically reserve retained bytes before any R2 write; repeat IDs never double-charge. / 在任何 R2 写入前原子预留保留字节；重复 ID 不会重复计费。
+async fn reserve_storage(
+    database: &D1Database,
+    id: &str,
+    user: &Principal,
+    bytes: i64,
+) -> AppResult<()> {
     #[derive(Deserialize)]
-    struct Used {
-        used: i64,
+    struct Row {
+        owner_iss: String,
+        owner_sub: String,
+        bytes: i64,
     }
-    let used = database.prepare("SELECT COALESCE(SUM(storage_bytes),0) AS used FROM messages WHERE owner_iss=?1 AND owner_sub=?2 AND deleted_at IS NULL")
-        .bind(&[bind_str(&user.iss),bind_str(&user.sub)])?.first::<Used>(None).await?.map_or(0,|r|r.used);
-    if additional < 0 || used.saturating_add(additional) > 1024 * 1024 * 1024 {
+    if bytes < 0 || bytes > 1024 * 1024 * 1024 {
         return Err(AppError {
             status: 429,
             code: "mailbox_full",
         });
     }
+    let insert = database.prepare("INSERT OR IGNORE INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at) VALUES(?1,?2,?3,?4,'reserved',?5)")
+        .bind(&[bind_str(id),bind_str(&user.iss),bind_str(&user.sub),bind_num(bytes),bind_num(now())])?.run().await;
+    if let Err(err) = insert {
+        return if err.to_string().contains("mailbox_full") {
+            Err(AppError {
+                status: 429,
+                code: "mailbox_full",
+            })
+        } else {
+            Err(err.into())
+        };
+    }
+    let row = database
+        .prepare("SELECT owner_iss,owner_sub,bytes FROM storage_reservations WHERE id=?1")
+        .bind(&[bind_str(id)])?
+        .first::<Row>(None)
+        .await?
+        .ok_or_else(|| AppError {
+            status: 503,
+            code: "storage_reservation_missing",
+        })?;
+    if row.owner_iss != user.iss || row.owner_sub != user.sub || row.bytes != bytes {
+        return Err(AppError::conflict("storage_reservation_conflict"));
+    }
+    Ok(())
+}
+
+async fn mark_storage_indexed(database: &D1Database, id: &str) -> Result<()> {
+    database
+        .prepare("UPDATE storage_reservations SET state='indexed' WHERE id=?1")
+        .bind(&[bind_str(id)])?
+        .run()
+        .await?;
     Ok(())
 }
 
@@ -1242,7 +1340,7 @@ async fn send_message(
             .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
     }
     let r2_key = format!("messages/{id}.zip");
-    ensure_storage(&database, user, bytes.len() as i64).await?;
+    reserve_storage(&database, &id, user, bytes.len() as i64).await?;
     env.bucket("MAIL_BODIES")?
         .put(&r2_key, bytes.clone())
         .execute()
@@ -1276,6 +1374,9 @@ async fn send_message(
             status: 503,
             code: "send_index_pending",
         });
+    }
+    if mark_storage_indexed(&database, &id).await.is_err() {
+        console_warn!("amail storage ledger state deferred");
     }
     database.prepare("UPDATE send_requests SET state='sent' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3")
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
@@ -1356,7 +1457,7 @@ async fn inbound(req: &mut Request, env: &Env, request_id: &str) -> AppResult<Re
         sub: owner.owner_sub.clone(),
     };
     let storage_bytes = (raw.len() + archive.len()) as i64;
-    ensure_storage(&database, &user, storage_bytes).await?;
+    reserve_storage(&database, &id, &user, storage_bytes).await?;
     reserve_quota(
         &database,
         "inbound_bytes",
@@ -1383,6 +1484,9 @@ async fn inbound(req: &mut Request, env: &Env, request_id: &str) -> AppResult<Re
     let first_text = store_text(&database, &id, &text).await?;
     database.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,storage_bytes,embedding_json,embedding_model,embedding_dimensions) VALUES(?1,?2,?3,?4,'inbound',?5,?6,?7,?8,?9,?10,0,?11,?12,?13,?14,?15,?16,?17,?18,?19)")
         .bind(&[bind_str(&id),bind_str(&envelope_to),bind_str(&owner.owner_iss),bind_str(&owner.owner_sub),bind_str(&sender),bind_str(&serde_json::to_string(&to).unwrap_or_default()),bind_str(&subject),bind_str(&first_text),bind_str(&metadata),bind_num(received_at),bind_num(has_html as i64),bind_num(has_text as i64),bind_num(attachments as i64),bind_str(&r2_key),bind_num(archive.len() as i64),bind_num(storage_bytes),JsValue::NULL,JsValue::NULL,JsValue::NULL])?.run().await?;
+    if mark_storage_indexed(&database, &id).await.is_err() {
+        console_warn!("amail storage ledger state deferred");
+    }
     Ok(
         Response::from_json(&serde_json::json!({"id":id,"request_id":request_id}))?
             .with_status(201),
@@ -1598,5 +1702,41 @@ mod tests {
         db.execute("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,state,created_at,reservation_started_at) VALUES('i','s','k','h','m','reserving',0,1000)",[]).unwrap();
         assert_eq!(db.execute("UPDATE send_requests SET state='preparing' WHERE state='reserving' AND reservation_started_at<500",[]).unwrap(),0);
         assert_eq!(db.execute("UPDATE send_requests SET state='preparing' WHERE state='reserving' AND reservation_started_at<1500",[]).unwrap(),1);
+    }
+
+    /// The trigger reserves atomically, rejects over-cap writes, and releases after cleanup. / 触发器原子预留，拒绝超额写入，并在清理后释放额度。
+    #[test]
+    fn storage_ledger_cap_and_recovery() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0002_reservation_lease.sql"),
+            include_str!("../migrations/0003_storage_budget.sql"),
+            include_str!("../migrations/0004_storage_ledger.sql"),
+        ] {
+            db.execute_batch(sql).unwrap();
+        }
+        db.execute("INSERT INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at) VALUES('one','iss','sub',1073741824,'reserved',0)",[]).unwrap();
+        db.execute("INSERT OR IGNORE INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at) VALUES('one','iss','sub',1073741824,'reserved',0)",[]).unwrap();
+        let used: i64 = db
+            .query_row(
+                "SELECT used_bytes FROM storage_usage WHERE owner_iss='iss' AND owner_sub='sub'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(used, 1073741824);
+        assert!(db.execute("INSERT INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at) VALUES('two','iss','sub',1,'reserved',0)",[]).is_err());
+        db.execute("DELETE FROM storage_reservations WHERE id='one'", [])
+            .unwrap();
+        db.execute("INSERT INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at) VALUES('two','iss','sub',1,'reserved',0)",[]).unwrap();
+        let used: i64 = db
+            .query_row(
+                "SELECT used_bytes FROM storage_usage WHERE owner_iss='iss' AND owner_sub='sub'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(used, 1);
     }
 }
