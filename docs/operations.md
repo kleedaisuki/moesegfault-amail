@@ -226,6 +226,19 @@ site. Inspect or download the artifact under `.temp/release-verify`; repair
 any platform/packaging failure before freezing the tag. The final tag run
 builds the exact tagged source again because its attestations must bind to
 that immutable source identity, not to a prior dry-run commit.
+
+For this first pre-merge candidate, the release workflow is not yet present
+on `main`, so GitHub cannot accept a `workflow_dispatch` for it even with
+`--ref codex/amail-v0.1.0` ([GitHub manual-workflow rule](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)).
+Instead, a push that **changes the release workflow file** on
+the exact `codex/amail-v0.1.0` branch also starts the same five-target
+dry-run. The path filter prevents unrelated candidate pushes from repeatedly
+building release archives. This candidate run uploads the verified bundle for
+14 days but cannot attest, publish a Release, or launch the public site:
+those jobs and steps require a version-tag ref. Inspect the run and archive
+before considering the first tag; the later `main` dispatch remains available
+for a final dry-run of the merged source.
+
 Then create and push a version tag matching `crates/amail/Cargo.toml`,
 for example `v0.1.0`. The release workflow performs native builds on x64 and
 ARM64 Linux, Windows x64, Apple Silicon, and Intel macOS, tests each binary
