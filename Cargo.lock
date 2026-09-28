@@ -105,6 +105,7 @@ name = "amail-ops"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "getrandom 0.2.17",
  "js-sys",
  "jsonwebtoken 10.4.0",
  "serde",
