@@ -15,6 +15,8 @@ pnpm run deploy
 
 The build yields `dist/`; `wrangler.jsonc` deploys it as the `amail-release-site` Worker on the `amail.moesegfault.dev` custom domain. An isolated `staging` environment deploys `amail-release-site-staging` to `amail-staging.moesegfault.dev` with explicit route/asset settings; use `pnpm run deploy:staging`. CI owns deploy and live smoke checks. The expected routes are `/`, `/manual/`, and `/changelog/`. For production, use `pnpm run deploy` explicitly: pnpm 12.4.1 also has a built-in `deploy` command.
 
+The static asset `_headers` rule matches **only** the staging hostname and sends `X-Robots-Tag: noindex, nofollow`. The shared `robots.txt` remains crawlable so search engines can actually see the noindex header; production gets no such header. CI should smoke-check the staging response header after deploy. See [Cloudflare Workers Static Assets headers](https://developers.cloudflare.com/workers/static-assets/headers/).
+
 ## Appending a release
 
 Add **one** Markdown file named `src/content/releases/vX.Y.Z.md` with `version`, UTC `date`, and `summary` frontmatter. Keep the body reader-focused. The content collection validates versions and automatically sorts entries newest-first; its table of contents uses stable version anchors. Update the main-page download link and manual installation link when the latest public version changes. Do not publish a changelog claim ahead of release/smoke gates.

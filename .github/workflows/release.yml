@@ -1,10 +1,11 @@
-# 中文：仅从 vX.Y.Z 标签发布；每个平台原生编译并做构建来源证明。
-# English: Publish only version tags, with native platform builds and provenance attestations.
+# 中文：main 手动运行仅验证五平台发布包；仅 vX.Y.Z 标签可发布并生成来源证明。
+# English: A manual main run verifies five platform bundles; only version tags publish and attest.
 name: Release amail CLI
 
 on:
   push:
     tags: ['v*.*.*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,18 +19,28 @@ jobs:
     name: Verify release source
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Require merged main commit and matching CLI version
+      - name: Require trusted source and matching site/CLI version
+        id: version
         shell: bash
         run: |
-          git fetch origin main
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           version=$(sed -n '/^\[package\]/,/^\[/{s/^version *= *"\([^"]*\)"/\1/p;}' crates/amail/Cargo.toml | head -n 1)
           test -n "$version"
-          test "v$version" = "$GITHUB_REF_NAME"
+          site_version=$(python -c 'import json; print(json.load(open("site/package.json"))["version"])')
+          test "$site_version" = "$version"
+          if [ "$GITHUB_EVENT_NAME" = 'push' ]; then
+            git fetch origin main
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+            test "v$version" = "$GITHUB_REF_NAME"
+          else
+            test "$GITHUB_REF" = 'refs/heads/main'
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.target }}
@@ -50,6 +61,8 @@ jobs:
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
     permissions:
       contents: read
       id-token: write
@@ -68,33 +81,36 @@ jobs:
         run: |
           mkdir -p release-payload
           cp target/release/amail README.md LICENSE release-payload/
-          tar -C release-payload -czf "amail-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" amail README.md LICENSE
+          tar -C release-payload -czf "amail-${RELEASE_TAG}-${{ matrix.target }}.tar.gz" amail README.md LICENSE
       - name: Archive Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release-payload | Out-Null
           Copy-Item target/release/amail.exe,README.md,LICENSE release-payload/
-          Compress-Archive -Path release-payload/* -DestinationPath "amail-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip" -Force
+          Compress-Archive -Path release-payload/* -DestinationPath "amail-$($env:RELEASE_TAG)-${{ matrix.target }}.zip" -Force
       - name: Attest release archive
+        if: github.event_name == 'push'
         uses: actions/attest@v4
         with:
-          subject-path: amail-${{ github.ref_name }}-${{ matrix.target }}.*
+          subject-path: amail-${{ needs.preflight.outputs.tag }}-${{ matrix.target }}.*
       - name: Upload release archive
         uses: actions/upload-artifact@v4
         with:
           name: amail-${{ matrix.target }}
-          path: amail-${{ github.ref_name }}-${{ matrix.target }}.*
+          path: amail-${{ needs.preflight.outputs.tag }}-${{ matrix.target }}.*
           if-no-files-found: error
           retention-days: 14
 
-  publish:
-    name: Publish GitHub Release
-    needs: build
+  assemble:
+    name: Assemble and verify release bundle
+    needs: [preflight, build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
     permissions:
-      contents: write
+      contents: read
       id-token: write
       attestations: write
     steps:
@@ -109,11 +125,12 @@ jobs:
         run: |
           test -f skills/amail/SKILL.md
           cd skills
-          zip -q -r "../dist/amail-agent-skill-${GITHUB_REF_NAME}.zip" amail
+          zip -q -r "../dist/amail-agent-skill-${RELEASE_TAG}.zip" amail
       - name: Attest agent skill bundle
+        if: github.event_name == 'push'
         uses: actions/attest@v4
         with:
-          subject-path: dist/amail-agent-skill-${{ github.ref_name }}.zip
+          subject-path: dist/amail-agent-skill-${{ needs.preflight.outputs.tag }}.zip
       - name: Generate and verify release checksums
         shell: bash
         run: |
@@ -121,8 +138,83 @@ jobs:
           find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS
           test "$(wc -l < SHA256SUMS)" -eq 6
           sha256sum --check SHA256SUMS
+      - name: Upload verified bundle for dry-run inspection or publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle-${{ needs.preflight.outputs.tag }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    if: github.event_name == 'push'
+    needs: [preflight, assemble]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundle-${{ needs.preflight.outputs.tag }}
+          path: dist
       - name: Create immutable GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        run: gh release create "${{ needs.preflight.outputs.tag }}" dist/* --verify-tag --generate-notes --title "${{ needs.preflight.outputs.tag }}"
+
+  launch-site:
+    name: Launch public site after release assets
+    if: github.event_name == 'push'
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: deploy-site-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: site
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Verify Cloudflare deploy credentials
+        working-directory: .
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - name: Require deployed mail API before public launch
+        working-directory: .
+        shell: bash
+        run: curl --fail --silent --show-error --retry 6 --retry-delay 5 https://mail.moesegfault.dev/health > /dev/null
+      - name: Install locked site dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build launch site
+        run: pnpm build
+      - name: Deploy public launch site
+        run: pnpm run deploy
+      - name: Smoke test public launch pages
+        working-directory: .
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --retry 6 --retry-delay 5 https://amail.moesegfault.dev/ > /dev/null
+          curl --fail --silent --show-error https://amail.moesegfault.dev/manual/ > /dev/null
+          curl --fail --silent --show-error https://amail.moesegfault.dev/changelog/ > /dev/null
+          headers=$(curl --fail --silent --show-error --head https://amail.moesegfault.dev/)
+          if grep -iq '^x-robots-tag:.*noindex' <<< "$headers"; then
+            echo '::error::Production launch page must be indexable'
+            exit 1
+          fi

@@ -1,0 +1,4 @@
+# 中文：候选站允许抓取以便读取 noindex，但不能进入搜索索引；正式站不匹配此主机规则。
+# English: Let crawlers read noindex on staging while leaving the production hostname unaffected.
+https://amail-staging.moesegfault.dev/*
+  X-Robots-Tag: noindex, nofollow

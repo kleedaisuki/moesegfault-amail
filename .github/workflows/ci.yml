@@ -233,10 +233,51 @@ jobs:
           node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/ingress-secrets.json", JSON.stringify({INGRESS_SECRET: process.env.INGRESS_SECRET}));'
           wrangler deploy --secrets-file ../../.temp/ingress-secrets.json
 
+  release-ready:
+    name: Gate public site on published download assets
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check matching published GitHub Release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version=$(python -c 'import json; print(json.load(open("site/package.json"))["version"])')
+          release=$(gh release view "v$version" --json isDraft,assets 2>/dev/null || true)
+          ready=false
+          if [ -n "$release" ] && jq -e '.isDraft == false' <<< "$release" > /dev/null; then
+            ready=true
+            for asset in \
+              "amail-v$version-x86_64-unknown-linux-gnu.tar.gz" \
+              "amail-v$version-aarch64-unknown-linux-gnu.tar.gz" \
+              "amail-v$version-x86_64-pc-windows-msvc.zip" \
+              "amail-v$version-aarch64-apple-darwin.tar.gz" \
+              "amail-v$version-x86_64-apple-darwin.tar.gz" \
+              "amail-agent-skill-v$version.zip" \
+              SHA256SUMS; do
+              if ! jq -e --arg name "$asset" 'any(.assets[]; .name == $name)' <<< "$release" > /dev/null; then
+                ready=false
+                break
+              fi
+            done
+          fi
+          if [ "$ready" = true ]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo "Public site deferred: GitHub Release v$version and all expected assets are not published"
+          fi
+
   deploy-site:
     name: Deploy release site
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [deploy-ingress, site]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.release-ready.outputs.ready == 'true'
+    needs: [deploy-ingress, site, release-ready]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
@@ -270,6 +311,11 @@ jobs:
           curl --fail --silent --show-error --retry 6 --retry-delay 5 https://amail.moesegfault.dev/ > /dev/null
           curl --fail --silent --show-error https://amail.moesegfault.dev/manual/ > /dev/null
           curl --fail --silent --show-error https://amail.moesegfault.dev/changelog/ > /dev/null
+          headers=$(curl --fail --silent --show-error --head https://amail.moesegfault.dev/)
+          if grep -iq '^x-robots-tag:.*noindex' <<< "$headers"; then
+            echo '::error::Production launch page must be indexable'
+            exit 1
+          fi
 
   staging-site:
     name: Deploy isolated staging release site
@@ -314,6 +360,11 @@ jobs:
           curl --fail --silent --show-error --retry 6 --retry-delay 5 https://amail-staging.moesegfault.dev/ > /dev/null
           curl --fail --silent --show-error https://amail-staging.moesegfault.dev/manual/ > /dev/null
           curl --fail --silent --show-error https://amail-staging.moesegfault.dev/changelog/ > /dev/null
+          headers=$(curl --fail --silent --show-error --head https://amail-staging.moesegfault.dev/)
+          if ! grep -iq '^x-robots-tag:.*noindex' <<< "$headers"; then
+            echo '::error::Staging launch page must be noindex'
+            exit 1
+          fi
 
   staging-worker:
     name: Deploy isolated staging mail API
@@ -332,7 +383,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN_STAGING }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
       INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
       MAIL_SENDING_DOMAIN: mail-staging.moesegfault.dev

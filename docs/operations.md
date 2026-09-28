@@ -47,8 +47,7 @@ GitHub Actions requires these repository secrets:
 | `CLOUDFLARE_ACCOUNT_ID` | Wrangler account selection |
 | `CLOUDFLARE_API_TOKEN` | Scoped Workers/D1/R2 deployment token |
 | `OPENROUTER_API_KEY` | Worker-side embedding generation |
-| `CF_EMAIL_ROUTING_TOKEN` | Zone-scoped Email Routing Rules Read+Write token for production address rules and reconciliation; required, with no fallback |
-| `CF_EMAIL_ROUTING_TOKEN_STAGING` | Separate zone-scoped Email Routing Rules Read+Write token for staging; required, with no fallback |
+| `CF_EMAIL_ROUTING_TOKEN` | Dedicated zone-scoped Email Routing Rules Read+Write token for both environments' address rules and reconciliation; required, with no fallback |
 | `INGRESS_SECRET` | One stable random secret shared by the Email-event adapter and Rust mail Worker; provision once, never regenerate per deployment |
 | `INGRESS_SECRET_STAGING` | Different stable random secret for the two staging Workers; never copy the production value |
 
@@ -97,14 +96,36 @@ The staging Astro launch page deploys independently to
 not depend on mail deployment or the routing token. Production site remains
 gated on production mail and ingress deployment. Use `pnpm run deploy:staging`
 and `pnpm run deploy`, not pnpm's built-in `pnpm deploy` command.
+The staging site deployment succeeded in
+[run 36419037567, job 108917364676](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36419037567/job/108917364676)
+on 2026-09-28 (Worker version `81db8159-e051-4b9c-a40e-9741c528d747`).
+The job's HTTPS smoke eventually passed after an initial DNS-resolution retry;
+an independent probe returned HTTP 200 for `/`, `/manual/`, and `/changelog/`.
+This proves the **staging launch site**, not the mail service or production
+site, is reachable.
+Staging assets use a host-scoped `X-Robots-Tag: noindex, nofollow` rule in
+`site/public/_headers`; the CI smoke checks that staging HTML has `noindex`
+while production HTML does not. This keeps the pre-release CTA out of search
+results without changing the production `robots.txt` or sitemap.
+
+The production launch site intentionally does **not** deploy on the first
+`main` push while its `v0.1.0` download CTA would be dead. Main's
+`release-ready` job checks that the site's version has a published GitHub
+Release with all five platform archives, the agent skill ZIP, and
+`SHA256SUMS`; only then may the normal production site job deploy. The tag
+release workflow publishes those assets first, requires live mail API health,
+then launches the public site. This ordering preserves a working download path
+without blocking earlier mail API/ingress deployment and live acceptance.
 The deployment token lacks Email Routing Rules Read (HTTP 403 in staging run
 36416776818), so neither Worker is deployed with it as a routing-token fallback.
 Missing dedicated routing secrets fail immediately before checkout or tool
 installation, while the separate OpenRouter job can still establish provider
 evidence.
-Staging and production routing tokens should be separate, although both mail
-domains share a Cloudflare zone and zone-scoped tokens still have
-cross-environment control-plane privilege. The first real staging `amail address add`
+The same dedicated zone-scoped `CF_EMAIL_ROUTING_TOKEN` is used by staging and
+production because both mail domains share one Cloudflare zone. It is not an
+account-global deployment token, but its control-plane scope still spans both
+mail subdomains; isolation depends on the Workers' pinned `MAIL_DOMAIN`,
+distinct ingress secret and storage bindings. The first real staging `amail address add`
 is also the write-permission probe for Email Routing Rules; a read-only API
 check cannot prove that the token has the required Write permission.
 On the initial candidate branch only, the Windows CI matrix uploads the tested
@@ -162,13 +183,23 @@ unrelated passing checks need not be repeated.
 ## Release v0.1.0 and later
 
 Update the CLI version and append a dated changelog entry in the site. Merge
-to `main`, wait for CI and production deployment, and perform live acceptance.
+to `main`, wait for CI and production mail deployment, and perform live
+acceptance. Before tagging, manually dispatch `Release amail CLI` on `main`
+(`gh workflow run release.yml --ref main`). This uses GitHub-hosted runners to
+test and build all five native targets, assembles the skill ZIP and six-entry
+`SHA256SUMS`, verifies the checksums, and uploads
+`release-bundle-v0.1.0` as a short-lived workflow artifact. It does **not**
+create a GitHub Release, provenance attestations, or deploy the production
+site. Inspect or download the artifact under `.temp/release-verify`; repair
+any platform/packaging failure before freezing the tag. The final tag run
+builds the exact tagged source again because its attestations must bind to
+that immutable source identity, not to a prior dry-run commit.
 Then create and push a version tag matching `crates/amail/Cargo.toml`,
 for example `v0.1.0`. The release workflow performs native builds on x64 and
 ARM64 Linux, Windows x64, Apple Silicon, and Intel macOS, tests each binary
 platform, first verifies the tag points to a commit merged into `main`, attests
 the archives and agent skill ZIP, checks all six SHA-256
-digests, and creates a GitHub Release.
+digests, creates a GitHub Release, and then deploys the production site.
 The workflow intentionally fails rather than silently replacing an existing
 release asset. Investigate a failed release run before publishing any tag
 replacement.
