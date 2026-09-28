@@ -173,14 +173,20 @@ fn credential(cfg: &Runtime) -> Result<keyring::Entry> {
 /// 钥匙串仅保留 32 字节密钥；SQLite 存储经过认证的令牌密文。
 const KEY_PREFIX: &str = "amail:v2:";
 
+/// Scope the local session by its fixed issuer and public client ID.
+/// 以固定签发者和公开客户端 ID 限定本地会话。
 fn session_key(cfg: &Runtime) -> String {
     format!("{}|{}", cfg.issuer, cfg.client_id)
 }
 
+/// Bind ciphertext authentication to the protocol version and OAuth client context.
+/// 将密文认证绑定到协议版本与 OAuth 客户端上下文。
 fn aad(cfg: &Runtime) -> Vec<u8> {
     format!("amail-auth-v2\0{}\0{}", cfg.issuer, cfg.client_id).into_bytes()
 }
 
+/// Open the credential-only database with a private file mode on Unix.
+/// 打开仅存凭据的数据库，并在 Unix 上设置私有文件权限。
 fn auth_db(cfg: &Runtime) -> Result<Connection> {
     let path = cfg.home.join("auth.sqlite3");
     let conn = Connection::open(&path)?;
@@ -198,6 +204,8 @@ fn auth_db(cfg: &Runtime) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Encrypt the complete token set with a fresh nonce and context-bound AAD.
+/// 使用新随机数及绑定上下文的附加认证数据加密完整令牌集。
 fn seal(tokens: &Tokens, key: &[u8; 32], cfg: &Runtime) -> Result<([u8; 12], Vec<u8>)> {
     let mut nonce = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce);
@@ -215,6 +223,8 @@ fn seal(tokens: &Tokens, key: &[u8; 32], cfg: &Runtime) -> Result<([u8; 12], Vec
     Ok((nonce, ciphertext))
 }
 
+/// Authenticate and decode one stored token set; reject wrong context or tampering.
+/// 认证并解码存储的令牌集；拒绝上下文不匹配或数据篡改。
 fn open(nonce: &[u8], ciphertext: &[u8], key: &[u8; 32], cfg: &Runtime) -> Result<Tokens> {
     ensure!(nonce.len() == 12, "local OAuth session nonce is invalid");
     let cipher = ChaCha20Poly1305::new_from_slice(key).expect("fixed 32-byte AEAD key");
@@ -230,6 +240,8 @@ fn open(nonce: &[u8], ciphertext: &[u8], key: &[u8; 32], cfg: &Runtime) -> Resul
     serde_json::from_slice(&plaintext).context("local OAuth session is invalid")
 }
 
+/// Decode only the bounded v2 keyring form; `None` identifies a legacy JSON session.
+/// 仅解码有界的 v2 钥匙串格式；`None` 表示旧版 JSON 会话。
 fn parse_key(value: &str) -> Result<Option<[u8; 32]>> {
     let Some(encoded) = value.strip_prefix(KEY_PREFIX) else {
         return Ok(None);
