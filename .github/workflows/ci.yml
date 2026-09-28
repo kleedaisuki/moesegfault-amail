@@ -62,6 +62,8 @@ jobs:
           rustup target add wasm32-unknown-unknown
       - name: Compile Worker target
         run: cargo check -p amail-worker --locked --target wasm32-unknown-unknown
+      - name: Run Rust Worker unit tests
+        run: cargo test -p amail-worker --locked --all-targets
       - name: Install workers-rs bundler
         run: cargo install worker-build --version 0.8.3 --locked
       - name: Bundle Worker for Wrangler
@@ -157,6 +159,9 @@ jobs:
       - name: Verify authoritative Email Sending DNS
         working-directory: .
         run: python infra/dns/verify_sending.py
+      - name: Verify runtime Email Routing Rules read access
+        working-directory: .
+        run: python infra/provider/probe_routing.py
       - name: Probe OpenRouter Qwen 8B at 256 dimensions
         working-directory: .
         run: python infra/provider/probe_openrouter.py
@@ -299,6 +304,9 @@ jobs:
       - name: Verify staging authoritative Email Sending DNS
         working-directory: .
         run: python infra/dns/verify_sending.py
+      - name: Verify staging runtime Email Routing Rules read access
+        working-directory: .
+        run: python infra/provider/probe_routing.py
       - name: Probe OpenRouter Qwen 8B at 256 dimensions
         working-directory: .
         run: python infra/provider/probe_openrouter.py

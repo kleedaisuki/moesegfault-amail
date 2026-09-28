@@ -66,7 +66,9 @@ deploys the email-event ingress adapter and Astro site. It probes `/health`, `/`
 SPF, DKIM, and DMARC records against authoritative DNS and calls OpenRouter
 with synthetic text to require one finite 256-dimensional
 `qwen/qwen3-embedding-8b` vector under the Worker's zero-data-retention and
-data-collection-denied routing preferences. These are provider/availability probes, not
+data-collection-denied routing preferences. It also checks the runtime Routing
+token can list rules for cron reconciliation without logging any address; this
+does **not** prove Write permission. These are provider/availability probes, not
 an end-to-end delivery test.
 
 The first candidate branch `codex/amail-v0.1.0` triggers a staging deployment
@@ -148,3 +150,4 @@ replacement.
 - [GitHub manual workflow dispatch on default branch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 - [OpenRouter embeddings request contract](https://openrouter.ai/docs/api/api-reference/embeddings/create-embeddings)
 - [Cloudflare Email Sending generated DNS records](https://developers.cloudflare.com/api/resources/email_sending/subresources/subdomains/subresources/dns/methods/get/)
+- [Cloudflare Email Routing Rules Write requirement](https://developers.cloudflare.com/api/resources/email_routing/subresources/rules/methods/create/)
