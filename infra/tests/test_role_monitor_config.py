@@ -43,6 +43,20 @@ class RoleMonitorConfigTests(unittest.TestCase):
             self.assertNotIn("destination_address", binding)
             self.assertNotIn("allowed_destination_addresses", binding)
 
+    def test_private_observability_is_explicit_in_both_realms(self) -> None:
+        """No automatic Email spans or invocation metadata are retained. / 两个环境均不留存自动邮件跨度或调用元数据。"""
+
+        config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+        for observability in (
+            config["observability"],
+            config["env"]["staging"]["observability"],
+        ):
+            self.assertTrue(observability["enabled"])
+            self.assertEqual(observability["head_sampling_rate"], 1.0)
+            self.assertTrue(observability["logs"]["enabled"])
+            self.assertFalse(observability["logs"]["invocation_logs"])
+            self.assertFalse(observability["traces"]["enabled"])
+
 
 if __name__ == "__main__":
     unittest.main()

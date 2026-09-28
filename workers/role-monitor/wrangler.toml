@@ -30,11 +30,16 @@ crons = ["*/5 * * * *"]
 enabled = true
 head_sampling_rate = 1.0
 
+# 中文：仅保留经代码审查的应用日志；自动调用日志可能包含邮件信封。
+# English: Keep reviewed application logs; automatic invocation logs may contain envelope data.
 [observability.logs]
 enabled = true
+invocation_logs = false
 
+# 中文：自动 Email 根跨度包含举报者信封发件人，禁止留存。
+# English: Automatic Email root spans include the reporter envelope sender; do not retain them.
 [observability.traces]
-enabled = true
+enabled = false
 
 [env.staging]
 name = "amail-role-monitor-staging"
@@ -58,3 +63,16 @@ remote = true
 
 [env.staging.triggers]
 crons = ["*/5 * * * *"]
+
+# 中文：环境观测配置显式隔离，不能假定继承生产隐私设置。
+# English: Set staging observability explicitly; never assume privacy settings inherit.
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[env.staging.observability.logs]
+enabled = true
+invocation_logs = false
+
+[env.staging.observability.traces]
+enabled = false
