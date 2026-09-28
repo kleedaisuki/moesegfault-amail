@@ -1,6 +1,6 @@
 # Operational role mail: v0.1 forwarding
 
-Status 2026-09-28: **decision recorded, not a live acceptance claim**. The user selected the simplest v0.1.0 operation: exact Cloudflare Email Routing rules forward system-role mail to **one confidential, owner-controlled external mailbox**. There is no v0.1 operator Worker, Access application, ticket UI, internal agent CLI, report D1/R2 store or autonomous case queue. Existing `workers/mail-ops` source and two empty D1/R2 resource pairs are **unused prototypes**, not dependencies for this release. The global public send switch remains held; `abuse_contact_verified` is false until the forwarding and response path are actually proved.
+Status 2026-09-28: **decision recorded, not a live acceptance claim**. The user selected the simplest v0.1.0 operation: exact Cloudflare Email Routing rules forward system-role mail to **one confidential, owner-controlled external mailbox**. There is no v0.1 operator Worker, Access application, ticket UI, internal agent CLI, report D1/R2 store or autonomous case queue. The unused `workers/mail-ops` source was removed from the release tree after a read-only live inventory found no production role rule, deployed ops Worker, R2 report object, or D1 case table. The unused remote D1/R2 resources were **not deleted**. The global public send switch remains held; `abuse_contact_verified` is false until the forwarding and response path are actually proved.
 
 ## Purpose and addresses
 
@@ -28,11 +28,11 @@ Only after role-delivery and monitored response are evidenced may the audited re
 
 ## Future, not in v0.1.0
 
-The owner wants agent-first operational access eventually, not a daily human ticket page. [`operator-agent-workflow.md`](operator-agent-workflow.md) contains the **deferred** internal agent/CLI design and its trust boundaries. The existing `workers/mail-ops` Rust source, `wrangler.toml.template`, route helper and dedicated empty D1/R2 objects were exploratory implementation work; do not deploy or route real mail to them as part of the forwarding release. Existing empty resources:
+The owner wants agent-first operational access eventually, not a daily human ticket page. [`operator-agent-workflow.md`](operator-agent-workflow.md) contains the **deferred** internal agent/CLI design and its trust boundaries. The former `workers/mail-ops` Rust source, config template and Worker-route helper were exploratory implementation work and are preserved only in Git history; no current release path deploys them. The previously provisioned empty D1/R2 resources remain untouched pending a separate resource-retirement review:
 
 | Environment | D1 | R2 bucket | State |
 | --- | --- | --- | --- |
 | Staging | `moesegfault-mail-ops-staging` / `272e024c-453a-461b-bea0-c37a62c89d24` | `moesegfault-mail-ops-reports-staging` | Empty, unused |
 | Production | `moesegfault-mail-ops-production` / `06e84adb-fe29-4183-b131-5042a48bcdee` | `moesegfault-mail-ops-reports-production` | Empty, unused |
 
-Do not mistake these source files or resources for a functional intake route. Before any future replacement, migrate without dropping verified role rules, prove new delivery/alert/response end to end, and only then atomically switch the exact destinations. A broken or unverified destination is never an acceptable migration state.
+Do not mistake historical source or unused resources for a functional intake route. Before any future replacement, migrate without dropping verified role rules, prove new delivery/alert/response end to end, and only then atomically switch the exact destinations. A broken or unverified destination is never an acceptable migration state.

@@ -68,8 +68,6 @@ jobs:
         run: cargo test -p amail-ingress --locked --all-targets
       - name: Run Rust sending lifecycle contract tests
         run: cargo test -p amail-events --locked --all-targets
-      - name: Run isolated operator intake contract tests
-        run: cargo test -p amail-ops --locked --all-targets
       - name: Run staging Identity test inbox contract tests
         run: cargo test -p amail-identity-test-inbox --locked --all-targets
       - name: Compile Worker target
@@ -78,8 +76,6 @@ jobs:
         run: cargo check -p amail-ingress --locked --target wasm32-unknown-unknown
       - name: Compile Email lifecycle target
         run: cargo check -p amail-events --locked --target wasm32-unknown-unknown
-      - name: Compile operator intake target
-        run: cargo check -p amail-ops --locked --target wasm32-unknown-unknown
       - name: Compile staging Identity test inbox target
         run: cargo check -p amail-identity-test-inbox --locked --target wasm32-unknown-unknown
       - name: Install workers-rs bundler
@@ -92,9 +88,6 @@ jobs:
         run: worker-build --release
       - name: Bundle Rust Email lifecycle consumer for Wrangler
         working-directory: workers/mail-events
-        run: worker-build --release
-      - name: Bundle isolated operator intake for Wrangler
-        working-directory: workers/mail-ops
         run: worker-build --release
       - name: Bundle staging Identity test inbox for Wrangler
         working-directory: workers/identity-test-inbox
@@ -139,8 +132,6 @@ jobs:
         run: python -m pip install -r infra/dns/requirements.txt
       - name: Test DNS and provider probes
         run: python -m unittest discover -s infra/tests -v
-      - name: Test operator config and role-route safeguards
-        run: python -m unittest discover -s workers/mail-ops/tests -v
       - name: Test staging Identity exact-route safeguards
         run: python -m unittest discover -s workers/identity-test-inbox -p 'test_*.py' -v
       - name: Check private staging Identity inbox config
