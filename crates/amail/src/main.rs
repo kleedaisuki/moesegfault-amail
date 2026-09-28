@@ -174,25 +174,7 @@ struct SearchArgs {
 fn emit(value: &Value, human: bool) -> Result<()> {
     if human {
         if value.get("id").is_some() && value.get("subject").is_some() {
-            for (label, key) in [
-                ("ID", "id"),
-                ("Mailbox", "mailbox"),
-                ("From", "from"),
-                ("To", "to"),
-                ("Subject", "subject"),
-                ("Received", "received_at"),
-                ("Read", "read"),
-                ("Size", "size_bytes"),
-                ("Attachments", "has_attachments"),
-            ] {
-                if let Some(field) = value.get(key) {
-                    let display = field
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| field.to_string());
-                    println!("{label:<12} {display}");
-                }
-            }
+            println!("{}", human_detail(value));
         } else {
             println!("{}", serde_json::to_string_pretty(value)?);
         }
@@ -200,6 +182,53 @@ fn emit(value: &Value, human: bool) -> Result<()> {
         println!("{}", serde_json::to_string(value)?);
     }
     Ok(())
+}
+
+fn safe_human(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        if ch.is_control() {
+            escaped.push_str(&format!("\\u{:04x}", ch as u32));
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped
+}
+
+fn human_detail(value: &Value) -> String {
+    let ordered = [
+        ("ID", "id"),
+        ("Mailbox", "mailbox"),
+        ("From", "from"),
+        ("To", "to"),
+        ("Subject", "subject"),
+        ("Received", "received_at"),
+        ("Read", "read"),
+        ("Size", "size_bytes"),
+        ("Attachments", "has_attachments"),
+    ];
+    let mut lines = Vec::new();
+    let mut push = |label: &str, field: &Value| {
+        let text = field
+            .as_str()
+            .map(safe_human)
+            .unwrap_or_else(|| field.to_string());
+        lines.push(format!("{label:<16} {text}"));
+    };
+    for &(label, key) in &ordered {
+        if let Some(field) = value.get(key) {
+            push(label, field);
+        }
+    }
+    if let Some(fields) = value.as_object() {
+        for (key, field) in fields {
+            if !ordered.iter().any(|(_, known)| key.as_str() == *known) {
+                push(key, field);
+            }
+        }
+    }
+    lines.join("\n")
 }
 
 fn emit_items(value: &Value, human: bool, keys: &[&str]) -> Result<()> {
@@ -210,9 +239,9 @@ fn emit_items(value: &Value, human: bool, keys: &[&str]) -> Result<()> {
             for row in addresses {
                 println!(
                     "{:<40} {:<10} {}",
-                    field(row, "address"),
-                    field(row, "state"),
-                    field(row, "created_at")
+                    safe_human(field(row, "address")),
+                    safe_human(field(row, "state")),
+                    safe_human(field(row, "created_at"))
                 );
             }
             println!("{} address(es)", addresses.len());
@@ -236,15 +265,15 @@ fn emit_items(value: &Value, human: bool, keys: &[&str]) -> Result<()> {
                 };
                 println!(
                     "{:<36} {:<20} {:<6} {:<28} {}",
-                    clipped(field(row, "id"), 36),
-                    clipped(field(row, "received_at"), 20),
+                    clipped(&safe_human(field(row, "id")), 36),
+                    clipped(&safe_human(field(row, "received_at")), 20),
                     read,
-                    clipped(field(row, "from"), 28),
-                    field(row, "subject")
+                    clipped(&safe_human(field(row, "from")), 28),
+                    safe_human(field(row, "subject"))
                 );
             }
             if let Some(cursor) = value.get("next_cursor").and_then(Value::as_str) {
-                println!("Next cursor: {cursor}");
+                println!("Next cursor: {}", safe_human(cursor));
             }
             println!("{} message(s)", messages.len());
             return Ok(());
@@ -598,5 +627,27 @@ mod tests {
         write_new(&path, b"first").unwrap();
         assert!(write_new(&path, b"second").is_err());
         assert_eq!(std::fs::read(path).unwrap(), b"first");
+    }
+
+    #[test]
+    fn human_detail_preserves_extended_metadata_without_terminal_controls() {
+        let value = json!({
+            "id":"m1", "subject":"hello\u{001b}[31m", "direction":"inbound",
+            "has_html":true, "request_id":"r1", "metadata":{"message_id":"x"},
+            "attachments":[{"filename":"report.pdf"}],
+        });
+        let output = human_detail(&value);
+        for name in [
+            "direction",
+            "has_html",
+            "request_id",
+            "metadata",
+            "attachments",
+            "report.pdf",
+        ] {
+            assert!(output.contains(name), "missing {name}");
+        }
+        assert!(!output.contains('\u{001b}'));
+        assert!(output.contains("\\u001b"));
     }
 }
