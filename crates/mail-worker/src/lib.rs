@@ -20,6 +20,9 @@ const SEARCH_SQL_BUDGET: usize = 400;
 const SEARCH_TRANSFER_BUDGET: usize = 32 * 1024 * 1024;
 const SEARCH_BODY_BUDGET: usize = 64 * 1024 * 1024;
 const SEARCH_PAGE_SIZE: usize = 64;
+/// Two of Cloudflare's 200 literal rules are reserved for abuse and postmaster.
+/// Cloudflare 的 200 条精确路由规则中保留 2 条用于滥用举报及邮政主管入口。
+const USER_ADDRESS_CAPACITY: i64 = 198;
 const RESERVED: &[&str] = &[
     "admin",
     "administrator",
@@ -80,6 +83,38 @@ impl AppError {
     }
 }
 
+/// Only documented, structured provider refusals are definitive; an unknown
+/// exception may have submitted the mail and must never trigger blind retry.
+/// 仅文档化的结构化提供商拒绝属于确定结果；未知异常可能已提交邮件，绝不可盲重试。
+fn definitive_send_error(err: &worker::Error) -> Option<AppError> {
+    let (status, code) = match err {
+        worker::Error::EmailRecipientSuppressed(_) => (403, "recipient_suppressed"),
+        worker::Error::EmailRecipientNotAllowed(_) => (403, "recipient_not_allowed"),
+        worker::Error::RateLimitExceeded(_) => (429, "provider_rate_limited"),
+        worker::Error::DailyLimitExceeded(_) => (429, "provider_daily_limit"),
+        _ => return None,
+    };
+    Some(AppError { status, code })
+}
+
+/// Reproduce a terminal rejection on idempotent retry without another provider call.
+/// 幂等重试时重现确定性拒绝，不再调用提供商。
+fn stored_rejection(code: &str) -> Option<AppError> {
+    let status = match code {
+        "recipient_suppressed" | "recipient_not_allowed" => 403,
+        "provider_rate_limited" | "provider_daily_limit" => 429,
+        _ => return None,
+    };
+    let code = match code {
+        "recipient_suppressed" => "recipient_suppressed",
+        "recipient_not_allowed" => "recipient_not_allowed",
+        "provider_rate_limited" => "provider_rate_limited",
+        "provider_daily_limit" => "provider_daily_limit",
+        _ => unreachable!(),
+    };
+    Some(AppError { status, code })
+}
+
 /// Main API entry point; authentication precedes mailbox access. / 主 API 入口；邮箱访问始终在身份认证之后。
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -120,6 +155,27 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
     if let Err(_) = search_jobs::cleanup(&env).await {
         console_warn!("amail search job cleanup failed");
     }
+    if let Err(_) = expire_abuse_data(&env).await {
+        console_warn!("amail abuse data cleanup failed");
+    }
+}
+
+/// Retain the restricted envelope only for 90 days after submission. This
+/// deliberately outlives user archive deletion so late complaints still hold
+/// the responsible sender; complaint blocks and audit decisions are separate.
+/// 受限信封自提交起仅保留 90 天；有意晚于用户归档删除，以处理迟到投诉；
+/// 投诉封锁及审计决策另行保存。
+async fn expire_abuse_data(env: &Env) -> Result<()> {
+    let cutoff_ms = now() - 90 * 86_400_000;
+    let cutoff_sec = cutoff_ms / 1000;
+    let database = env.d1("MAIL_DB")?;
+    database.prepare("UPDATE send_requests SET sender=NULL,envelope_json=NULL WHERE rowid IN (SELECT rowid FROM send_requests WHERE created_at<?1 AND (sender IS NOT NULL OR envelope_json IS NOT NULL) ORDER BY created_at LIMIT 100)")
+        .bind(&[bind_num(cutoff_ms)])?.run().await?;
+    database.prepare("DELETE FROM provider_events WHERE rowid IN (SELECT rowid FROM provider_events WHERE received_at<?1 ORDER BY received_at LIMIT 100)")
+        .bind(&[bind_num(cutoff_sec)])?.run().await?;
+    database.prepare("DELETE FROM recipient_outcomes WHERE rowid IN (SELECT rowid FROM recipient_outcomes WHERE occurred_at<?1 ORDER BY occurred_at LIMIT 100)")
+        .bind(&[bind_num(cutoff_sec)])?.run().await?;
+    Ok(())
 }
 
 /// Finish ledger state changes after an indexed message survived an uncertain D1 response. / 在邮件索引已落盘但 D1 响应不确定时完成账本状态变更。
@@ -289,6 +345,11 @@ async fn reconcile_outbound(env: &Env) -> Result<()> {
             continue;
         };
         let m = &draft.manifest;
+        let envelope = outbound_envelope_json(&draft)?;
+        if row.created_at >= now() - 90 * 86_400_000 {
+            database.prepare("UPDATE send_requests SET sender=COALESCE(sender,?1),envelope_json=COALESCE(envelope_json,?2) WHERE message_id=?3 AND provider_id=?4")
+                .bind(&[bind_str(&m.from),bind_str(&envelope),bind_str(&row.message_id),bind_str(&row.provider_id)])?.run().await?;
+        }
         let metadata = outbound_metadata(&draft, &row.provider_id).to_string();
         let recipients = serde_json::to_string(&m.to)?;
         let first_text = store_text(&database, &row.message_id, &draft.text)
@@ -528,13 +589,26 @@ async fn reserve_quota(
     units: i64,
     limit: i64,
 ) -> AppResult<()> {
+    reserve_window_quota(database, kind, user, units, limit, 86_400_000).await
+}
+
+/// A separate hourly bucket bounds bursts without weakening daily recipient accounting.
+/// 独立小时桶限制突发量，同时不削弱每日收件人数核算。
+async fn reserve_window_quota(
+    database: &D1Database,
+    kind: &str,
+    user: &Principal,
+    units: i64,
+    limit: i64,
+    window_ms: i64,
+) -> AppResult<()> {
     if units < 0 || units > limit {
         return Err(AppError {
             status: 429,
             code: "quota_exhausted",
         });
     }
-    let day = now() / 86_400_000;
+    let day = now() / window_ms;
     let result = database.prepare("INSERT INTO daily_usage(kind,owner_iss,owner_sub,day,used) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(kind,owner_iss,owner_sub,day) DO UPDATE SET used=used+excluded.used WHERE used+excluded.used<=?6")
         .bind(&[bind_str(kind),bind_str(&user.iss),bind_str(&user.sub),bind_num(day),bind_num(units),bind_num(limit)])?.run().await?;
     if result.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
@@ -544,6 +618,103 @@ async fn reserve_quota(
         });
     }
     Ok(())
+}
+
+/// Fail closed if the global stop switch is absent, held, or unreadable; account holds
+/// and do-not-contact entries only affect sending, never receiving or retrieval.
+/// 全局开关缺失、停用或不可读时拒绝发送；账户停用和禁止联系不影响收取或检索。
+async fn check_send_policy(
+    database: &D1Database,
+    user: &Principal,
+    draft: &Draft,
+    idem: &str,
+) -> AppResult<()> {
+    #[derive(Deserialize)]
+    struct PolicyRow {
+        state: String,
+    }
+    #[derive(Deserialize)]
+    struct CanaryRow {
+        canary_recipient_sha256: String,
+        canary_used_by: Option<String>,
+    }
+    let global = database
+        .prepare("SELECT state FROM send_policy WHERE scope='global' AND owner_iss='*' AND owner_sub='*'")
+        .first::<PolicyRow>(None)
+        .await?;
+    let global = global.ok_or(AppError {
+        status: 403,
+        code: "send_held",
+    })?;
+    let account = database
+        .prepare(
+            "SELECT state FROM send_policy WHERE scope='account' AND owner_iss=?1 AND owner_sub=?2",
+        )
+        .bind(&[bind_str(&user.iss), bind_str(&user.sub)])?
+        .first::<PolicyRow>(None)
+        .await?;
+    if account.is_some_and(|row| row.state != "allowed") {
+        return Err(AppError {
+            status: 403,
+            code: "send_held",
+        });
+    }
+    let verified = database.prepare("SELECT 1 AS verified FROM send_release_gates WHERE id=1 AND feedback_verified=1 AND abuse_contact_verified=1 AND delivery_canary_verified=1 AND preview_reviewed=1")
+        .first::<serde_json::Value>(None).await?.is_some();
+    if global.state != "allowed" || !verified {
+        let grant = database.prepare("SELECT canary_recipient_sha256,canary_used_by FROM send_release_gates WHERE id=1 AND canary_owner_iss=?1 AND canary_owner_sub=?2 AND canary_expires_at>unixepoch() AND canary_recipient_sha256 IS NOT NULL")
+            .bind(&[bind_str(&user.iss),bind_str(&user.sub)])?
+            .first::<CanaryRow>(None).await?;
+        let permitted = grant.is_some_and(|grant| {
+            canary_matches(
+                draft,
+                idem,
+                &grant.canary_recipient_sha256,
+                grant.canary_used_by.as_deref(),
+            )
+        });
+        if !permitted {
+            return Err(AppError {
+                status: 403,
+                code: "send_held",
+            });
+        }
+    }
+    let recipients = draft
+        .manifest
+        .to
+        .iter()
+        .chain(&draft.manifest.cc)
+        .chain(&draft.manifest.bcc)
+        .map(|recipient| recipient.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let recipients_json =
+        serde_json::to_string(&recipients).map_err(|_| AppError::bad("invalid_mail_fields"))?;
+    let blocked = database.prepare("SELECT 1 AS blocked FROM recipient_blocks WHERE owner_iss=?1 AND owner_sub=?2 AND recipient IN (SELECT value FROM json_each(?3)) LIMIT 1")
+        .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&recipients_json)])?
+        .first::<serde_json::Value>(None).await?.is_some();
+    if blocked {
+        return Err(AppError {
+            status: 403,
+            code: "recipient_blocked",
+        });
+    }
+    Ok(())
+}
+
+/// The canary grant authorizes one exact recipient and idempotency key; it is
+/// not a general user-account exception to the launch hold.
+/// 金丝雀授权仅允许一个精确收件人和幂等键，不是用户账户的通用上线豁免。
+fn canary_matches(draft: &Draft, idem: &str, recipient_hash: &str, used_by: Option<&str>) -> bool {
+    if draft.manifest.to.len() != 1
+        || !draft.manifest.cc.is_empty()
+        || !draft.manifest.bcc.is_empty()
+        || used_by.is_some_and(|used| used != idem)
+    {
+        return false;
+    }
+    let recipient = draft.manifest.to[0].to_ascii_lowercase();
+    format!("{:x}", Sha256::digest(recipient.as_bytes())) == recipient_hash
 }
 
 /// Atomically reserve retained bytes before any R2 write; repeat IDs never double-charge. / 在任何 R2 写入前原子预留保留字节；重复 ID 不会重复计费。
@@ -651,7 +822,7 @@ async fn list_addresses(env: &Env, user: &Principal, request_id: &str) -> AppRes
         .await?
         .map_or(0, |row| row.n);
     Ok(Response::from_json(
-        &serde_json::json!({"addresses":addresses,"limit":10,"capacity":{"limit":200,"registered":used,"remaining_estimate":(200-used).max(0)},"request_id":request_id}),
+        &serde_json::json!({"addresses":addresses,"limit":10,"capacity":{"limit":USER_ADDRESS_CAPACITY,"registered":used,"remaining_estimate":(USER_ADDRESS_CAPACITY-used).max(0)},"request_id":request_id}),
     )?)
 }
 
@@ -704,7 +875,7 @@ async fn add_address(
             .first::<CountRow>(None)
             .await?
             .map_or(0, |r| r.n);
-        if count >= 200 {
+        if count >= USER_ADDRESS_CAPACITY {
             return Err(AppError::conflict("capacity_exhausted"));
         }
         // One conditional SQLite statement allocates a free slot; a partial unique index resolves races.
@@ -1361,6 +1532,65 @@ fn valid_message_id(id: &str) -> bool {
             .any(|c| c.is_ascii_control() || c.is_whitespace())
 }
 
+/// Reserve all exposure dimensions before submission. Earlier buckets remain
+/// conservatively charged if a later bucket fails; no provider call occurs.
+/// 提交前预留所有风险维度；后续额度失败时前序桶保守计费，但不调用提供商。
+async fn charge_outbound_quotas(
+    database: &D1Database,
+    user: &Principal,
+    draft: &Draft,
+) -> AppResult<()> {
+    let recipients = outbound_recipient_count(draft);
+    reserve_quota(database, "send", user, recipients, 50).await?;
+    let global = Principal {
+        iss: "_global".into(),
+        sub: "_global".into(),
+    };
+    reserve_quota(database, "send_global", &global, recipients, 10_000).await?;
+    reserve_quota(database, "send_messages", user, 1, 20).await?;
+    reserve_window_quota(database, "send_hour", user, 1, 5, 3_600_000).await?;
+    for recipient in draft
+        .manifest
+        .to
+        .iter()
+        .chain(&draft.manifest.cc)
+        .chain(&draft.manifest.bcc)
+    {
+        reserve_quota(database, &recipient_quota_kind(recipient), user, 1, 10).await?;
+    }
+    Ok(())
+}
+
+/// A single CAS winner claims quota; a quota failure releases its local claim
+/// and removes a never-submitted newly created key to prevent D1 growth.
+/// 单个 CAS 胜者预留额度；额度失败时释放本地占有，并清除从未提交的新键以防 D1 膨胀。
+async fn reserve_outbound_budget(
+    database: &D1Database,
+    user: &Principal,
+    draft: &Draft,
+    idem: &str,
+    inserted_new: bool,
+) -> AppResult<()> {
+    let claim = database.prepare("UPDATE send_requests SET state='reserving',reservation_started_at=?4 WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing' AND quota_reserved=0")
+        .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(idem),bind_num(now())])?.run().await?;
+    if claim.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
+        return Err(AppError::conflict("send_in_progress"));
+    }
+    let charged = charge_outbound_quotas(database, user, draft).await;
+    if charged.is_err() {
+        let _ = database.prepare("UPDATE send_requests SET state='preparing',reservation_started_at=NULL WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
+            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(idem)])?.run().await;
+        if inserted_new {
+            let _ = database.prepare("DELETE FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing' AND quota_reserved=0")
+                .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(idem)])?.run().await;
+        }
+    }
+    charged?;
+    database.prepare("UPDATE send_requests SET quota_reserved=1,state='preparing',reservation_started_at=NULL WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
+        .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(idem)])?.run().await?;
+    Ok(())
+}
+
 async fn send_message(
     req: &mut Request,
     env: &Env,
@@ -1400,63 +1630,72 @@ async fn send_message(
         }
     }
     let payload_hash = format!("{:x}", Sha256::digest(&bytes));
+    let envelope_json =
+        outbound_envelope_json(&draft).map_err(|_| AppError::bad("invalid_mail_fields"))?;
     #[derive(Deserialize)]
     struct SendRow {
         payload_hash: String,
         message_id: Option<String>,
         state: String,
         quota_reserved: i64,
+        rejection_code: Option<String>,
     }
-    let existing = database.prepare("SELECT payload_hash,message_id,state,quota_reserved FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3")
+    let existing = database.prepare("SELECT payload_hash,message_id,state,quota_reserved,rejection_code FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3")
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.first::<SendRow>(None).await?;
-    let (id, quota_reserved) = if let Some(row) = existing {
+    let (id, quota_reserved, inserted_new) = if let Some(row) = existing {
         if row.payload_hash != payload_hash {
             return Err(AppError::conflict("idempotency_payload_mismatch"));
         }
         if row.state == "sent" || row.state == "accepted" {
             return Ok(Response::from_json(&serde_json::json!({"id":row.message_id,"state":"accepted","request_id":request_id}))?.with_status(202));
         }
+        if row.state == "rejected" {
+            return Err(row
+                .rejection_code
+                .as_deref()
+                .and_then(stored_rejection)
+                .unwrap_or_else(|| AppError::conflict("send_outcome_unknown")));
+        }
         if row.state != "preparing" {
             return Err(AppError::conflict("send_outcome_unknown"));
         }
+        check_send_policy(&database, user, &draft, &idem).await?;
         (
             row.message_id
                 .ok_or_else(|| AppError::conflict("send_outcome_unknown"))?,
             row.quota_reserved != 0,
+            false,
         )
     } else {
+        // A held account must not manufacture unbounded idempotency rows.
+        // 被停用账户不得通过生成幂等键无限填充 D1。
+        check_send_policy(&database, user, &draft, &idem).await?;
         let id = uuid::Uuid::new_v4().to_string();
-        database.prepare("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,state,created_at) VALUES(?1,?2,?3,?4,?5,'preparing',?6)")
-            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem),bind_str(&payload_hash),bind_str(&id),bind_num(now())])?.run().await.map_err(|_| AppError::conflict("send_in_progress"))?;
-        (id, false)
-    };
-    if !quota_reserved {
-        let claim = database.prepare("UPDATE send_requests SET state='reserving',reservation_started_at=?4 WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing' AND quota_reserved=0")
-            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem),bind_num(now())])?.run().await?;
-        if claim.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
+        let admitted = database.prepare("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,state,created_at) VALUES(?1,?2,?3,?4,?5,'preparing',?6)")
+            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem),bind_str(&payload_hash),bind_str(&id),bind_num(now())])?.run().await;
+        if admitted.is_err() {
+            // The SQL trigger may have raced an operator hold; preserve the
+            // public hold code instead of misreporting that race as a replay.
+            // SQL 触发器可能与管理员停用竞争；应返回停用码而非误报幂等冲突。
+            check_send_policy(&database, user, &draft, &idem).await?;
             return Err(AppError::conflict("send_in_progress"));
         }
-        let account = reserve_quota(&database, "send", user, 1, 100).await;
-        if account.is_err() {
-            let _ = database.prepare("UPDATE send_requests SET state='preparing',reservation_started_at=NULL WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
-                .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await;
-        }
-        account?;
-        let global = Principal {
-            iss: "_global".into(),
-            sub: "_global".into(),
-        };
-        let global_result = reserve_quota(&database, "send_global", &global, 1, 10_000).await;
-        if global_result.is_err() {
-            let _ = database.prepare("UPDATE send_requests SET state='preparing',reservation_started_at=NULL WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
-                .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await;
-        }
-        global_result?;
-        database.prepare("UPDATE send_requests SET quota_reserved=1,state='preparing',reservation_started_at=NULL WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
-            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
+        (id, false, true)
+    };
+    if !quota_reserved {
+        reserve_outbound_budget(&database, user, &draft, &idem, inserted_new).await?;
     }
     let r2_key = format!("messages/{id}.zip");
-    reserve_storage(&database, &id, user, bytes.len() as i64).await?;
+    if let Err(err) = reserve_storage(&database, &id, user, bytes.len() as i64).await {
+        // A full mailbox is definitive: retain charged quota but not a fresh
+        // never-submitted idempotency row that could accumulate every day.
+        // 邮箱满为确定性拒绝：额度照常消耗，但不永久保留尚未提交的新幂等记录。
+        if inserted_new && err.code == "mailbox_full" {
+            let _ = database.prepare("DELETE FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing'")
+                .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await;
+        }
+        return Err(err);
+    }
     env.bucket("MAIL_BODIES")?
         .put(&r2_key, bytes.clone())
         .execute()
@@ -1466,9 +1705,21 @@ async fn send_message(
     if transition.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
         return Err(AppError::conflict("send_in_progress"));
     }
+    if let Err(err) = check_send_policy(&database, user, &draft, &idem).await {
+        // No provider call has happened; release the local claim for safe later retry.
+        // 尚未调用提供商；释放本地占有状态，允许日后安全重试。
+        database.prepare("UPDATE send_requests SET state='preparing' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='submitting'")
+            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
+        return Err(err);
+    }
     let provider_id = match platform::send(env, &draft).await {
         Ok(id) => id,
-        Err(_) => {
+        Err(err) => {
+            if let Some(rejection) = definitive_send_error(&err) {
+                database.prepare("UPDATE send_requests SET state='rejected',rejection_code=?1 WHERE owner_iss=?2 AND owner_sub=?3 AND idem_key=?4 AND state='submitting'")
+                    .bind(&[bind_str(rejection.code),bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
+                return Err(rejection);
+            }
             let _ = database.prepare("UPDATE send_requests SET state='unknown' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3")
                 .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await;
             return Err(AppError {
@@ -1477,8 +1728,8 @@ async fn send_message(
             });
         }
     };
-    database.prepare("UPDATE send_requests SET state='accepted',provider_id=?1 WHERE owner_iss=?2 AND owner_sub=?3 AND idem_key=?4 AND state='submitting'")
-        .bind(&[bind_str(&provider_id),bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
+    database.prepare("UPDATE send_requests SET state='accepted',provider_id=?1,sender=?2,envelope_json=?3,request_id=?4 WHERE owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND state='submitting'")
+        .bind(&[bind_str(&provider_id),bind_str(&draft.manifest.from),bind_str(&envelope_json),bind_str(request_id),bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
     let metadata = outbound_metadata(&draft, &provider_id);
     let recipients = serde_json::to_string(&draft.manifest.to)
         .map_err(|_| AppError::bad("invalid_mail_fields"))?;
@@ -1502,10 +1753,48 @@ async fn send_message(
     .with_status(202))
 }
 
+/// Count every To/Cc/Bcc envelope entry for daily sender exposure, not one ZIP per send. / 每个 To/Cc/Bcc 信封条目均计入每日发件风险，而非每 ZIP 只计一次。
+fn outbound_recipient_count(draft: &Draft) -> i64 {
+    (draft.manifest.to.len() + draft.manifest.cc.len() + draft.manifest.bcc.len()) as i64
+}
+
+/// Keep the complete private envelope on the idempotency row for late feedback,
+/// independent of whether the user later deletes the message ZIP/index.
+/// 在幂等记录中保留完整私密信封供延迟反馈使用，不依赖用户日后是否删除邮件 ZIP/索引。
+fn outbound_envelope_json(draft: &Draft) -> serde_json::Result<String> {
+    let envelope = draft
+        .manifest
+        .to
+        .iter()
+        .chain(&draft.manifest.cc)
+        .chain(&draft.manifest.bcc)
+        .map(|recipient| recipient.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    serde_json::to_string(&envelope)
+}
+
+/// Hash normalized recipients before storing per-recipient quota keys; never expose
+/// the hash as a stable public identifier or use it instead of a D1 recipient block.
+/// 收件人标准化后哈希用于额度键；哈希既不是公开稳定标识，也不代替 D1 禁止联系记录。
+fn recipient_quota_kind(recipient: &str) -> String {
+    let hash = Sha256::digest(recipient.to_ascii_lowercase().as_bytes());
+    format!("send_recipient:{hash:x}")
+}
+
+/// Persist owner-visible recipient roles and the full envelope for later provider feedback attribution. / 为后续供应商反馈归因持久化仅所有者可见的收件人角色和完整信封。
 fn outbound_metadata(draft: &Draft, provider_id: &str) -> serde_json::Value {
+    let envelope_recipients = draft
+        .manifest
+        .to
+        .iter()
+        .chain(&draft.manifest.cc)
+        .chain(&draft.manifest.bcc)
+        .collect::<Vec<_>>();
     serde_json::json!({
         "message_id":provider_id,"in_reply_to":draft.manifest.in_reply_to,
         "content_type":if draft.html.is_some() {"multipart/alternative"} else {"text/plain"},
+        "cc":&draft.manifest.cc,"bcc":&draft.manifest.bcc,
+        "envelope_recipients":envelope_recipients,
         "attachment_name":draft.assets.iter().filter_map(|(m,_)|m.filename.as_deref()).collect::<Vec<_>>().join(" "),
         "attachments":draft.assets.iter().map(|(m,_)|m).collect::<Vec<_>>()
     })
@@ -1701,6 +1990,60 @@ fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
 mod tests {
     use super::*;
 
+    /// Only structured provider refusals can be replayed as terminal; uncertain
+    /// transport outcomes must remain unknown rather than being sent twice.
+    /// 仅结构化提供商拒绝可作为终态重放；不确定的传输结果不能再次发送。
+    #[test]
+    fn provider_refusal_is_typed_and_terminal() {
+        let suppressed = worker::Error::EmailRecipientSuppressed("private".into());
+        let refusal = definitive_send_error(&suppressed).unwrap();
+        assert_eq!(
+            (refusal.status, refusal.code),
+            (403, "recipient_suppressed")
+        );
+        assert_eq!(stored_rejection(refusal.code).unwrap().status, 403);
+        assert!(definitive_send_error(&worker::Error::RustError("timeout".into())).is_none());
+    }
+
+    /// Equivalent-case recipients share one private quota key, unlike distinct recipients.
+    /// 大小写等价的收件人共用私密额度键，不同收件人则不同。
+    #[test]
+    fn recipient_quota_key_is_canonical_and_not_plaintext() {
+        let first = recipient_quota_kind("Person@Example.net");
+        assert_eq!(first, recipient_quota_kind("person@example.net"));
+        assert_ne!(first, recipient_quota_kind("other@example.net"));
+        assert!(!first.contains("example"));
+    }
+
+    /// A launch canary cannot fan out, switch recipient, or use a second key.
+    /// 上线金丝雀不能群发、替换收件人或使用第二个幂等键。
+    #[test]
+    fn canary_grant_is_single_recipient_and_key() {
+        let mut draft = Draft {
+            manifest: archive::SendManifest {
+                version: 1,
+                from: "a@mail.example.test".into(),
+                to: vec!["Owner@Example.net".into()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: "canary".into(),
+                reply_to: None,
+                in_reply_to: None,
+                references: Vec::new(),
+                assets: Vec::new(),
+            },
+            text: "test".into(),
+            html: None,
+            assets: Vec::new(),
+        };
+        let hash = format!("{:x}", Sha256::digest(b"owner@example.net"));
+        assert!(canary_matches(&draft, "key", &hash, None));
+        assert!(canary_matches(&draft, "key", &hash, Some("key")));
+        assert!(!canary_matches(&draft, "other", &hash, Some("key")));
+        draft.manifest.bcc.push("another@example.net".into());
+        assert!(!canary_matches(&draft, "key", &hash, None));
+    }
+
     /// User names are canonical and service names are never allocated. / 用户名规范化，服务名永不分配。
     #[test]
     fn address_policy() {
@@ -1872,6 +2215,60 @@ mod tests {
         .unwrap();
         assert_eq!(db.execute("UPDATE send_requests SET state='submitting' WHERE idem_key='k' AND state='preparing' AND quota_reserved=1",[]).unwrap(),1);
         assert_eq!(db.execute("UPDATE send_requests SET state='submitting' WHERE idem_key='k' AND state='preparing' AND quota_reserved=1",[]).unwrap(),0);
+    }
+
+    /// One send to To, Cc and Bcc reserves three credits and retains owner-only attribution fields. / 一封发给 To、Cc、Bcc 的邮件预留三份额度，并保留仅所有者可读的归因字段。
+    #[test]
+    fn outbound_recipients_count_and_metadata() {
+        let mut draft = Draft {
+            manifest: archive::SendManifest {
+                version: 1,
+                from: "alice@mail.moesegfault.dev".into(),
+                to: vec!["to@example.org".into()],
+                cc: vec!["cc@example.org".into()],
+                bcc: vec!["bcc@example.org".into()],
+                subject: "hello".into(),
+                reply_to: None,
+                in_reply_to: None,
+                references: Vec::new(),
+                assets: Vec::new(),
+            },
+            text: "hello".into(),
+            html: None,
+            assets: Vec::new(),
+        };
+        assert_eq!(outbound_recipient_count(&draft), 3);
+        let metadata = outbound_metadata(&draft, "provider-123");
+        assert_eq!(metadata["message_id"], "provider-123");
+        assert_eq!(metadata["cc"], serde_json::json!(["cc@example.org"]));
+        assert_eq!(metadata["bcc"], serde_json::json!(["bcc@example.org"]));
+        assert_eq!(
+            metadata["envelope_recipients"],
+            serde_json::json!(["to@example.org", "cc@example.org", "bcc@example.org"])
+        );
+        assert_eq!(
+            serde_json::json!(&draft.manifest.to),
+            serde_json::json!(["to@example.org"])
+        );
+        draft.manifest.cc.push("to@example.org".into());
+        assert_eq!(outbound_recipient_count(&draft), 4);
+    }
+
+    /// Daily D1 upsert limits recipient entries rather than the number of ZIP submissions. / D1 每日 upsert 限制收件人条目数，而非 ZIP 提交次数。
+    #[test]
+    fn outbound_recipient_daily_limit() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(include_str!("../migrations/0001_initial.sql"))
+            .unwrap();
+        let reserve = "INSERT INTO daily_usage(kind,owner_iss,owner_sub,day,used) VALUES('send','iss','sub',7,?1) ON CONFLICT(kind,owner_iss,owner_sub,day) DO UPDATE SET used=used+excluded.used WHERE used+excluded.used<=100";
+        for _ in 0..33 {
+            assert_eq!(db.execute(reserve, [3]).unwrap(), 1);
+        }
+        assert_eq!(db.execute(reserve, [2]).unwrap(), 0);
+        assert_eq!(db.execute(reserve, [1]).unwrap(), 1);
+        assert_eq!(db.execute(reserve, [1]).unwrap(), 0);
+        let used: i64 = db.query_row("SELECT used FROM daily_usage WHERE kind='send' AND owner_iss='iss' AND owner_sub='sub' AND day=7", [], |row| row.get(0)).unwrap();
+        assert_eq!(used, 100);
     }
 
     /// Lease cleanup follows claim time, not the age of the original request. / 租约清理依据认领时间，而非原请求年龄。

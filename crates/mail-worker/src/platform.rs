@@ -293,9 +293,6 @@ pub async fn send(env: &Env, draft: &Draft) -> Result<String> {
     if !attachments.is_empty() {
         builder.set_attachments(&attachments);
     }
-    let result = binding
-        .send_with_builder(&builder)
-        .await
-        .map_err(|_| worker::Error::RustError("send_provider_failed".into()))?;
+    let result = binding.send_with_builder(&builder).await?;
     Ok(result.message_id())
 }
