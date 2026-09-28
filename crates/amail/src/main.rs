@@ -15,6 +15,7 @@ use std::{
     fs::OpenOptions,
     io::{IsTerminal, Write},
     path::PathBuf,
+    time::{Duration, Instant},
 };
 
 /// Compact JSONL by default; `--human` opts into readable formatting.
@@ -138,6 +139,14 @@ enum AddressCommand {
 /// 检索谓词由服务端按 AND 组合。
 #[derive(Args)]
 struct SearchArgs {
+    /// Resume an accepted server search job without resubmitting private filters.
+    /// 续作已接受的任务，不重新提交私密检索条件。
+    #[arg(long)]
+    resume: Option<String>,
+    /// Maximum time to wait before returning a resumable job ID.
+    /// 本次调用等待的最长秒数，超时后可凭任务 ID 续作。
+    #[arg(long, default_value_t = 900)]
+    wait_seconds: u64,
     #[arg(long)]
     mailbox: Option<String>,
     #[arg(long)]
@@ -184,6 +193,8 @@ fn emit(value: &Value, human: bool) -> Result<()> {
     Ok(())
 }
 
+/// Escape untrusted control characters before terminal presentation.
+/// 在终端展示前转义不可信控制字符，避免邮件内容注入终端指令。
 fn safe_human(value: &str) -> String {
     let mut escaped = String::new();
     for ch in value.chars() {
@@ -196,6 +207,8 @@ fn safe_human(value: &str) -> String {
     escaped
 }
 
+/// Render familiar metadata first, then every remaining server field without omission.
+/// 先展示常用元数据，再完整保留服务端返回的其余字段。
 fn human_detail(value: &Value) -> String {
     let ordered = [
         ("ID", "id"),
@@ -465,6 +478,71 @@ fn search_request(args: &SearchArgs) -> Result<Value> {
     Ok(value)
 }
 
+/// Hide intermediate 202 responses from stdout and return only complete results.
+/// 不将中间 202 响应写入标准输出，只返回完整结果。
+fn run_search(api: &api::Api<'_>, args: &SearchArgs, human: bool) -> Result<()> {
+    ensure!(
+        (1..=86_400).contains(&args.wait_seconds),
+        "wait-seconds must be 1..86400"
+    );
+    let started = Instant::now();
+    let deadline = Duration::from_secs(args.wait_seconds);
+    let mut reply = if let Some(id) = &args.resume {
+        let has_filters = [
+            &args.mailbox,
+            &args.after,
+            &args.before,
+            &args.title,
+            &args.sender,
+            &args.to,
+            &args.body,
+            &args.semantic,
+            &args.cursor,
+        ]
+        .iter()
+        .any(|value| value.is_some())
+            || !args.metadata.is_empty()
+            || args.regex
+            || args.case_sensitive
+            || args.read
+            || args.unread
+            || args.limit != 20;
+        ensure!(
+            !has_filters,
+            "--resume cannot be combined with search filters"
+        );
+        api.poll_search_job(id)?
+    } else {
+        api.search(&search_request(args)?)?
+    };
+    let mut active_id: Option<String> = None;
+    loop {
+        match reply {
+            api::SearchReply::Complete(results) => {
+                return emit_items(&results, human, &["messages", "items"]);
+            }
+            api::SearchReply::Running {
+                job_id,
+                retry_after,
+            } => {
+                if let Some(existing) = &active_id {
+                    ensure!(existing == &job_id, "search job id changed during polling");
+                } else {
+                    eprintln!("amail: search job {job_id} running; polling (resume with `amail search --resume {job_id}`)");
+                    active_id = Some(job_id.clone());
+                }
+                if started.elapsed() >= deadline {
+                    bail!("search job {job_id} still running; resume with `amail search --resume {job_id}`");
+                }
+                std::thread::sleep(retry_after.min(deadline.saturating_sub(started.elapsed())));
+                reply = api
+                    .poll_search_job(&job_id)
+                    .map_err(|err| anyhow::anyhow!("search job {job_id}: {err}"))?;
+            }
+        }
+    }
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let cfg = config::Runtime::load()?;
@@ -552,11 +630,7 @@ fn run() -> Result<()> {
                     all,
                     out_dir,
                 } => sync(&api, limit, cursor, all, out_dir, cli.human)?,
-                Command::Search(args) => emit_items(
-                    &api.search(&search_request(&args)?)?,
-                    cli.human,
-                    &["messages", "items"],
-                )?,
+                Command::Search(args) => run_search(&api, &args, cli.human)?,
                 Command::Get { id } => emit(&api.message(&id)?, cli.human)?,
                 Command::Read { id, out, unpack } => {
                     let bytes = api.archive(&id)?;
@@ -595,6 +669,8 @@ mod tests {
     #[test]
     fn search_keeps_composed_predicates() {
         let args = SearchArgs {
+            resume: None,
+            wait_seconds: 900,
             mailbox: None,
             after: Some("2026-01-01T00:00:00Z".into()),
             before: None,
@@ -649,5 +725,20 @@ mod tests {
         }
         assert!(!output.contains('\u{001b}'));
         assert!(output.contains("\\u001b"));
+    }
+
+    #[test]
+    fn resumable_search_flags_parse_without_filters() {
+        let id = "123e4567-e89b-42d3-a456-426614174000";
+        let cli = Cli::try_parse_from(["amail", "search", "--resume", id, "--wait-seconds", "30"])
+            .unwrap();
+        match cli.command {
+            Command::Search(args) => {
+                assert_eq!(args.resume.as_deref(), Some(id));
+                assert_eq!(args.wait_seconds, 30);
+                assert!(args.semantic.is_none());
+            }
+            _ => panic!("expected search command"),
+        }
     }
 }

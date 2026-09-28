@@ -6,7 +6,7 @@ use rand::RngCore;
 use reqwest::{
     blocking::{Client, RequestBuilder},
     header::CONTENT_TYPE,
-    Method,
+    Method, StatusCode,
 };
 use serde_json::Value;
 use std::time::{Duration, Instant};
@@ -15,6 +15,55 @@ use std::time::{Duration, Instant};
 pub struct Api<'a> {
     cfg: &'a Runtime,
     http: Client,
+}
+
+/// A search either has complete results or an owner-scoped continuation job.
+/// 检索要么得到完整结果，要么得到限于本账户的续作任务。
+pub enum SearchReply {
+    /// Fully scored page / 已完整评分的结果页。
+    Complete(Value),
+    /// Incomplete work; no result is safe to display yet / 尚未完成，不得展示部分结果。
+    Running {
+        /// Opaque owner-scoped continuation identifier / 限于账户的不透明续作标识。
+        job_id: String,
+        /// Server-suggested bounded poll delay / 服务端建议的有界轮询间隔。
+        retry_after: Duration,
+    },
+}
+
+/// Parse HTTP 200 as final and HTTP 202 as continuation, never as a partial page.
+/// 将 HTTP 200 解释为最终结果、202 解释为续作，绝不误作部分结果页。
+fn parse_search_reply(status: StatusCode, bytes: &[u8]) -> Result<SearchReply> {
+    let body: Value = serde_json::from_slice(bytes).context("invalid search response JSON")?;
+    match status {
+        StatusCode::OK => {
+            if !body.get("messages").is_some_and(Value::is_array) {
+                bail!("completed search response missing messages");
+            }
+            Ok(SearchReply::Complete(body))
+        }
+        StatusCode::ACCEPTED => {
+            let id = body
+                .get("job_id")
+                .and_then(Value::as_str)
+                .context("accepted search response missing job_id")?;
+            if uuid::Uuid::parse_str(id).is_err()
+                || body.get("state").and_then(Value::as_str) != Some("running")
+            {
+                bail!("invalid running search job response");
+            }
+            let delay = body
+                .get("retry_after_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(500)
+                .clamp(100, 5000);
+            Ok(SearchReply::Running {
+                job_id: id.to_owned(),
+                retry_after: Duration::from_millis(delay),
+            })
+        }
+        _ => bail!("unexpected successful search HTTP status {status}"),
+    }
 }
 
 fn hex_random(size: usize) -> String {
@@ -46,7 +95,9 @@ impl<'a> Api<'a> {
         })
     }
 
-    fn execute(
+    /// Preserve status for asynchronous search while keeping shared telemetry/error handling.
+    /// 为异步检索保留状态码，同时复用遥测与错误处理。
+    fn execute_with_status(
         &self,
         method: Method,
         path: &str,
@@ -54,7 +105,7 @@ impl<'a> Api<'a> {
         json: Option<&Value>,
         zip: Option<&[u8]>,
         idempotency: Option<&str>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<(StatusCode, Vec<u8>)> {
         let token = auth::access_token(self.cfg)?;
         let trace_id = hex_random(16);
         let span_id = hex_random(8);
@@ -121,7 +172,22 @@ impl<'a> Api<'a> {
                 correlation.as_deref().unwrap_or("none")
             );
         }
-        Ok(body)
+        Ok((status, body))
+    }
+
+    /// Discard status only for endpoints without an asynchronous result contract.
+    /// 仅对没有异步结果协议的端点丢弃状态码。
+    fn execute(
+        &self,
+        method: Method,
+        path: &str,
+        operation: &str,
+        json: Option<&Value>,
+        zip: Option<&[u8]>,
+        idempotency: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        self.execute_with_status(method, path, operation, json, zip, idempotency)
+            .map(|(_, body)| body)
     }
 
     fn json(
@@ -180,14 +246,35 @@ impl<'a> Api<'a> {
         )
     }
 
-    /// Search with server-side AND semantics / 按服务端 AND 语义检索。
-    pub fn search(&self, request: &Value) -> Result<Value> {
-        self.json(
+    /// Search with server-side AND semantics; never expose partial results.
+    /// 按服务端 AND 语义检索；绝不暴露部分结果。
+    pub fn search(&self, request: &Value) -> Result<SearchReply> {
+        let (status, body) = self.execute_with_status(
             Method::POST,
             "/v1/messages/search",
             "messages.search",
             Some(request),
-        )
+            None,
+            None,
+        )?;
+        parse_search_reply(status, &body)
+    }
+
+    /// Advance an authenticated resumable search job by one bounded step.
+    /// 将已认证的可续作检索任务推进一个有界步骤。
+    pub fn poll_search_job(&self, id: &str) -> Result<SearchReply> {
+        if uuid::Uuid::parse_str(id).is_err() {
+            bail!("search job id must be a UUID");
+        }
+        let (status, body) = self.execute_with_status(
+            Method::GET,
+            &format!("/v1/messages/search/jobs/{}", segment(id)),
+            "messages.search.poll",
+            None,
+            None,
+            None,
+        )?;
+        parse_search_reply(status, &body)
     }
 
     /// Fetch metadata without changing read state / 获取元数据且不改变已读状态。
@@ -259,5 +346,33 @@ mod tests {
         assert_eq!(path, "/v1/addresses");
         assert!(!path.contains(address));
         assert_eq!(body["address"], address);
+    }
+
+    #[test]
+    fn accepted_search_is_not_mistaken_for_a_result_page() {
+        let id = "123e4567-e89b-42d3-a456-426614174000";
+        let body = serde_json::json!({"job_id":id,"state":"running","retry_after_ms":500});
+        let reply = parse_search_reply(StatusCode::ACCEPTED, body.to_string().as_bytes()).unwrap();
+        match reply {
+            SearchReply::Running {
+                job_id,
+                retry_after,
+            } => {
+                assert_eq!(job_id, id);
+                assert_eq!(retry_after, Duration::from_millis(500));
+            }
+            SearchReply::Complete(_) => panic!("202 cannot be final"),
+        }
+    }
+
+    #[test]
+    fn completed_search_requires_final_messages() {
+        let complete = br#"{"messages":[],"next_cursor":null}"#;
+        assert!(matches!(
+            parse_search_reply(StatusCode::OK, complete).unwrap(),
+            SearchReply::Complete(_)
+        ));
+        assert!(parse_search_reply(StatusCode::OK, br#"{"state":"running"}"#).is_err());
+        assert!(parse_search_reply(StatusCode::ACCEPTED, br#"{"messages":[]}"#).is_err());
     }
 }

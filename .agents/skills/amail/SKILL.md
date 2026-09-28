@@ -21,17 +21,24 @@ The command examples below match the v0.1 CLI source. Check the installed `amail
 
 | Intent | v0.1 command |
 | --- | --- |
-| Login / check session | `amail login` / `amail auth status` |
+| Login / check session / log out | `amail login` / `amail auth status` / `amail auth logout` |
 | Inspect / register / retire address | `amail address list` / `amail address add alice` / `amail address delete alice@mail.moesegfault.dev` |
-| List recent summaries | `amail sync --limit 20` (`--all` follows up to ten pages; `--out-dir DIR` also exports ZIPs) |
+| List recent summaries | `amail sync --limit 20` (`--all` follows cursors until exhausted; `--out-dir DIR` also exports ZIPs) |
 | Search unread, within time range | `amail search --unread --after 2026-01-01T00:00:00Z --before 2026-02-01T00:00:00Z` |
 | Search metadata or meaning | `amail search --meta message_id=VALUE --title incident` / `amail search --semantic 'rollout risks'` |
+| Resume a long search | `amail search --resume JOB_ID` (no filters; optional `--wait-seconds N`) |
 | Inspect / retrieve | `amail get ID` / `amail read ID -o message.zip` / `amail read ID -o new-dir --unpack` |
 | Change state / delete delivery | `amail mark ID --read` / `amail mark ID --unread` / `amail delete ID` |
 | Pack / send | `amail pack draft-dir -o draft.zip` / `amail send draft.zip` |
 | Safely unpack an existing ZIP | `amail unpack message.zip -o new-dir` |
 
 `amail search` combines supplied predicates by AND. It also accepts `--mailbox`, `--from`, `--to`, `--body`, `--regex`, `--case-sensitive`, `--read`, `--limit`, and `--cursor`. Time range is UTC with inclusive `--after`, exclusive `--before`. Use returned `next_cursor` to continue a result page. `amail read` refuses an existing output path; `--unpack` requires a new destination directory. The ordinary stdout format is JSON lines (one result per line, plus a cursor record when present).
+
+Large exact searches may become resumable server jobs. The CLI polls automatically and writes **only the complete result page** to stdout; a job ID and resume hint appear on stderr. If interrupted or timed out, use `amail search --resume JOB_ID` rather than submitting the same private query again. Do not combine `--resume` with filters; the server retains the authenticated job state for a limited time. A typed expiry/stale error is not a partial result.
+
+If a resumed job returns `search_job_stale` (409), mailbox state changed and the old ranking is invalid: start a new search. `search_job_expired` (410) likewise requires a new search. `search_job_quota` (429) means too many jobs are retained for the account; finish or let existing jobs expire rather than retrying aggressively. Never treat these errors as empty results.
+
+`amail auth logout` always removes the local credential when the platform store permits it and attempts remote refresh-token revocation; do not claim it logs the person out of the browser's Identity single sign-on session. The CLI's native login binds an ephemeral `127.0.0.1` callback port and requires the callback's `iss` to match its configured Identity issuer. The public production client ID convention does not prove that Identity has registered the client; treat login errors as deployment evidence, not a reason to bypass validation.
 
 For the draft and inbound archive contract, read [references/archive.md](references/archive.md) only when composing, sending, or extracting a ZIP. For command syntax, use installed CLI help rather than treating this skill as an exhaustive command reference.
 
