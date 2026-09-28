@@ -30,6 +30,6 @@ The site self-hosts unmodified, exact-version `v0.1.2` **public static distribut
 - Static rendering keeps the marketing site independent of the authenticated mail API.
 - The manual TOC is derived from Markdown headings, so edits cannot leave stale links.
 - Changelog entries are separate append-only files, avoiding a long manually maintained index.
-- The public guide discloses the 10-address/account and current 200-address service capacity, and the fact that semantic search sends text to the embedding provider.
+- The public guide discloses the 10-address/account and current 198-user-address service capacity (two of the provider's 200 literal routes are reserved for `postmaster` and `abuse`), and the fact that semantic search sends text to the embedding provider.
 
 Cloudflare deployment uses [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/routing/static-site-generation/) with a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/). Markdown heading behavior follows the [Astro Markdown guide](https://docs.astro.build/en/guides/markdown-content/).
