@@ -1,0 +1,48 @@
+# One-use test exception; raw recipient is never a GitHub workflow input.
+# 一次性测试豁免；原始收件地址绝不作为 GitHub 工作流输入。
+name: Grant one outbound canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Environment under a global send hold
+        required: true
+        type: choice
+        options: [staging, production]
+      owner_sub:
+        description: Test account Identity subject
+        required: true
+        type: string
+      recipient_sha256:
+        description: SHA-256 of lowercase owned external test address
+        required: true
+        type: string
+      case_ref:
+        description: Opaque test/evidence reference
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  grant:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.target }}
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      INPUT_TARGET: ${{ inputs.target }}
+      INPUT_OWNER_SUB: ${{ inputs.owner_sub }}
+      INPUT_RECIPIENT_SHA256: ${{ inputs.recipient_sha256 }}
+      INPUT_CASE_REF: ${{ inputs.case_ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Record 15-minute one-send D1 grant
+        run: python infra/operator/grant_canary.py

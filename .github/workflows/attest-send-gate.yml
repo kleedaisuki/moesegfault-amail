@@ -1,0 +1,50 @@
+# Evidence must be reviewed by an operator; this workflow records, not invents, proof.
+# 证据须经操作员审查；此工作流仅记录，不伪造证明。
+name: Attest outbound release gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Environment that was actually tested
+        required: true
+        type: choice
+        options: [staging, production]
+      gate:
+        description: Release condition to attest or revoke
+        required: true
+        type: choice
+        options: [feedback_verified, abuse_contact_verified, delivery_canary_verified, preview_reviewed]
+      verified:
+        description: Mark verified or revoke a prior attestation
+        required: true
+        type: choice
+        options: ['false', 'true']
+      case_ref:
+        description: Opaque evidence reference, no private text
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  attest:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.target }}
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      INPUT_TARGET: ${{ inputs.target }}
+      INPUT_GATE: ${{ inputs.gate }}
+      INPUT_VERIFIED: ${{ inputs.verified }}
+      INPUT_CASE_REF: ${{ inputs.case_ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Record one D1 release attestation
+        run: python infra/operator/attest_gate.py

@@ -1,0 +1,27 @@
+# Read-only credential capability probe; never provisions Queues or subscriptions.
+# 只读凭据能力探针；绝不创建队列或订阅。
+name: Probe Cloudflare Queues permission
+
+on:
+  push:
+    branches: [codex/amail-v0.1.0]
+    paths: [.github/workflows/probe-queues.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Probe Queues list without logging provider response
+        run: python infra/provider/probe_queues.py

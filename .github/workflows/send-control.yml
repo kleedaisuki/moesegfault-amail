@@ -1,0 +1,65 @@
+# Explicit operator-only send holds; the public CLI has no policy mutation endpoint.
+# 仅操作员可修改发信停用策略；公开 CLI 不提供策略修改端点。
+name: Operator send control
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Environment to change
+        required: true
+        type: choice
+        options: [staging, production]
+      scope:
+        description: Global switch or one Identity account
+        required: true
+        type: choice
+        options: [global, account]
+      state:
+        description: Hold or allow sending
+        required: true
+        type: choice
+        options: [held, allowed]
+      owner_sub:
+        description: Identity subject for account scope; blank for global
+        required: false
+        type: string
+      reason_code:
+        description: Lowercase reason code, no private text
+        required: true
+        type: string
+      case_ref:
+        description: Opaque incident/review reference, no private text
+        required: true
+        type: string
+      confirm:
+        description: For production global allow only, type ENABLE_PRODUCTION_SEND
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  control:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.target }}
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      INPUT_TARGET: ${{ inputs.target }}
+      INPUT_SCOPE: ${{ inputs.scope }}
+      INPUT_STATE: ${{ inputs.state }}
+      INPUT_OWNER_SUB: ${{ inputs.owner_sub }}
+      INPUT_REASON_CODE: ${{ inputs.reason_code }}
+      INPUT_CASE_REF: ${{ inputs.case_ref }}
+      INPUT_CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply one parameterized D1 policy mutation
+        run: python infra/operator/send_control.py
