@@ -79,6 +79,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "amail-events"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "worker",
+]
+
+[[package]]
 name = "amail-ingress"
 version = "0.1.0"
 dependencies = [
