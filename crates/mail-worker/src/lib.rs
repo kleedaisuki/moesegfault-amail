@@ -103,6 +103,40 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
     if let Err(_) = reindex(&env).await {
         console_warn!("amail semantic index retry failed");
     }
+    if let Err(_) = garbage_collect(&env).await {
+        console_warn!("amail deleted message cleanup failed");
+    }
+}
+
+/// Reclaim deleted per-delivery content after D1 tombstones hide it from readers. / D1 墓碑阻止读取后，回收已删除投递的内容。
+async fn garbage_collect(env: &Env) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Deleted {
+        id: String,
+        r2_key: String,
+    }
+    let database = env.d1("MAIL_DB")?;
+    let rows = database
+        .prepare("SELECT id,r2_key FROM messages WHERE deleted_at IS NOT NULL LIMIT 20")
+        .all()
+        .await?
+        .results::<Deleted>()?;
+    let bucket = env.bucket("MAIL_BODIES")?;
+    for row in rows {
+        bucket.delete(&row.r2_key).await?;
+        bucket.delete(format!("raw/{}.eml", row.id)).await?;
+        database
+            .prepare("DELETE FROM message_text_chunks WHERE message_id=?1")
+            .bind(&[bind_str(&row.id)])?
+            .run()
+            .await?;
+        database
+            .prepare("DELETE FROM messages WHERE id=?1 AND deleted_at IS NOT NULL")
+            .bind(&[bind_str(&row.id)])?
+            .run()
+            .await?;
+    }
+    Ok(())
 }
 
 /// Reconcile non-atomic D1/Email Routing transitions, including orphan provider rules. / 协调非原子的 D1/邮件路由状态，包括供应商孤儿规则。
@@ -168,7 +202,7 @@ async fn reconcile_outbound(env: &Env) -> Result<()> {
     let database = env.d1("MAIL_DB")?;
     database
         .prepare(
-            "UPDATE send_requests SET state='preparing' WHERE state='reserving' AND created_at<?1",
+            "UPDATE send_requests SET state='preparing',reservation_started_at=NULL WHERE state='reserving' AND reservation_started_at<?1",
         )
         .bind(&[bind_num(now() - 10 * 60_000)])?
         .run()
@@ -193,8 +227,8 @@ async fn reconcile_outbound(env: &Env) -> Result<()> {
         let first_text = store_text(&database, &row.message_id, &draft.text)
             .await
             .map_err(|_| worker::Error::RustError("reconcile_text_failed".into()))?;
-        database.prepare("INSERT OR IGNORE INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES(?1,?2,?3,?4,'outbound',?5,?6,?7,?8,?9,?10,1,?11,1,?12,?13,?14)")
-            .bind(&[bind_str(&row.message_id),bind_str(&m.from),bind_str(&row.owner_iss),bind_str(&row.owner_sub),bind_str(&m.from),bind_str(&recipients),bind_str(&m.subject),bind_str(&first_text),bind_str(&metadata),bind_num(row.created_at),bind_num(draft.html.is_some() as i64),bind_num(draft.assets.len() as i64),bind_str(&key),bind_num(bytes.len() as i64)])?.run().await?;
+        database.prepare("INSERT OR IGNORE INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,storage_bytes) VALUES(?1,?2,?3,?4,'outbound',?5,?6,?7,?8,?9,?10,1,?11,1,?12,?13,?14,?15)")
+            .bind(&[bind_str(&row.message_id),bind_str(&m.from),bind_str(&row.owner_iss),bind_str(&row.owner_sub),bind_str(&m.from),bind_str(&recipients),bind_str(&m.subject),bind_str(&first_text),bind_str(&metadata),bind_num(row.created_at),bind_num(draft.html.is_some() as i64),bind_num(draft.assets.len() as i64),bind_str(&key),bind_num(bytes.len() as i64),bind_num(bytes.len() as i64)])?.run().await?;
         database
             .prepare(
                 "UPDATE send_requests SET state='sent' WHERE message_id=?1 AND state='accepted'",
@@ -403,6 +437,23 @@ async fn reserve_quota(
         return Err(AppError {
             status: 429,
             code: "quota_exhausted",
+        });
+    }
+    Ok(())
+}
+
+/// Guard cumulative retained storage; deletion tombstones free the logical budget immediately. / 限制累计保留存储；删除墓碑立即释放逻辑额度。
+async fn ensure_storage(database: &D1Database, user: &Principal, additional: i64) -> AppResult<()> {
+    #[derive(Deserialize)]
+    struct Used {
+        used: i64,
+    }
+    let used = database.prepare("SELECT COALESCE(SUM(storage_bytes),0) AS used FROM messages WHERE owner_iss=?1 AND owner_sub=?2 AND deleted_at IS NULL")
+        .bind(&[bind_str(&user.iss),bind_str(&user.sub)])?.first::<Used>(None).await?.map_or(0,|r|r.used);
+    if additional < 0 || used.saturating_add(additional) > 1024 * 1024 * 1024 {
+        return Err(AppError {
+            status: 429,
+            code: "mailbox_full",
         });
     }
     Ok(())
@@ -1166,14 +1217,14 @@ async fn send_message(
         (id, false)
     };
     if !quota_reserved {
-        let claim = database.prepare("UPDATE send_requests SET state='reserving' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing' AND quota_reserved=0")
-            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
+        let claim = database.prepare("UPDATE send_requests SET state='reserving',reservation_started_at=?4 WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing' AND quota_reserved=0")
+            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem),bind_num(now())])?.run().await?;
         if claim.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
             return Err(AppError::conflict("send_in_progress"));
         }
         let account = reserve_quota(&database, "send", user, 1, 100).await;
         if account.is_err() {
-            let _ = database.prepare("UPDATE send_requests SET state='preparing' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
+            let _ = database.prepare("UPDATE send_requests SET state='preparing',reservation_started_at=NULL WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
                 .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await;
         }
         account?;
@@ -1183,14 +1234,15 @@ async fn send_message(
         };
         let global_result = reserve_quota(&database, "send_global", &global, 1, 10_000).await;
         if global_result.is_err() {
-            let _ = database.prepare("UPDATE send_requests SET state='preparing' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
+            let _ = database.prepare("UPDATE send_requests SET state='preparing',reservation_started_at=NULL WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
                 .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await;
         }
         global_result?;
-        database.prepare("UPDATE send_requests SET quota_reserved=1,state='preparing' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
+        database.prepare("UPDATE send_requests SET quota_reserved=1,state='preparing',reservation_started_at=NULL WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
             .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
     }
     let r2_key = format!("messages/{id}.zip");
+    ensure_storage(&database, user, bytes.len() as i64).await?;
     env.bucket("MAIL_BODIES")?
         .put(&r2_key, bytes.clone())
         .execute()
@@ -1217,8 +1269,8 @@ async fn send_message(
     let recipients = serde_json::to_string(&draft.manifest.to)
         .map_err(|_| AppError::bad("invalid_mail_fields"))?;
     let first_text = store_text(&database, &id, &draft.text).await?;
-    let inserted = database.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,embedding_json,embedding_model,embedding_dimensions) VALUES(?1,?2,?3,?4,'outbound',?5,?6,?7,?8,?9,?10,1,?11,1,?12,?13,?14,?15,?16,?17)")
-        .bind(&[bind_str(&id),bind_str(&draft.manifest.from),bind_str(&user.iss),bind_str(&user.sub),bind_str(&draft.manifest.from),bind_str(&recipients),bind_str(&draft.manifest.subject),bind_str(&first_text),bind_str(&metadata.to_string()),bind_num(now()),bind_num(draft.html.is_some() as i64),bind_num(draft.assets.len() as i64),bind_str(&r2_key),bind_num(bytes.len() as i64),JsValue::NULL,JsValue::NULL,JsValue::NULL])?.run().await;
+    let inserted = database.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,storage_bytes,embedding_json,embedding_model,embedding_dimensions) VALUES(?1,?2,?3,?4,'outbound',?5,?6,?7,?8,?9,?10,1,?11,1,?12,?13,?14,?15,?16,?17,?18)")
+        .bind(&[bind_str(&id),bind_str(&draft.manifest.from),bind_str(&user.iss),bind_str(&user.sub),bind_str(&draft.manifest.from),bind_str(&recipients),bind_str(&draft.manifest.subject),bind_str(&first_text),bind_str(&metadata.to_string()),bind_num(now()),bind_num(draft.html.is_some() as i64),bind_num(draft.assets.len() as i64),bind_str(&r2_key),bind_num(bytes.len() as i64),bind_num(bytes.len() as i64),JsValue::NULL,JsValue::NULL,JsValue::NULL])?.run().await;
     if inserted.is_err() {
         return Err(AppError {
             status: 503,
@@ -1303,6 +1355,8 @@ async fn inbound(req: &mut Request, env: &Env, request_id: &str) -> AppResult<Re
         iss: owner.owner_iss.clone(),
         sub: owner.owner_sub.clone(),
     };
+    let storage_bytes = (raw.len() + archive.len()) as i64;
+    ensure_storage(&database, &user, storage_bytes).await?;
     reserve_quota(
         &database,
         "inbound_bytes",
@@ -1327,8 +1381,8 @@ async fn inbound(req: &mut Request, env: &Env, request_id: &str) -> AppResult<Re
         .map_or(0, Vec::len);
     let metadata = metadata.to_string();
     let first_text = store_text(&database, &id, &text).await?;
-    database.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,embedding_json,embedding_model,embedding_dimensions) VALUES(?1,?2,?3,?4,'inbound',?5,?6,?7,?8,?9,?10,0,?11,?12,?13,?14,?15,?16,?17,?18)")
-        .bind(&[bind_str(&id),bind_str(&envelope_to),bind_str(&owner.owner_iss),bind_str(&owner.owner_sub),bind_str(&sender),bind_str(&serde_json::to_string(&to).unwrap_or_default()),bind_str(&subject),bind_str(&first_text),bind_str(&metadata),bind_num(received_at),bind_num(has_html as i64),bind_num(has_text as i64),bind_num(attachments as i64),bind_str(&r2_key),bind_num(archive.len() as i64),JsValue::NULL,JsValue::NULL,JsValue::NULL])?.run().await?;
+    database.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,storage_bytes,embedding_json,embedding_model,embedding_dimensions) VALUES(?1,?2,?3,?4,'inbound',?5,?6,?7,?8,?9,?10,0,?11,?12,?13,?14,?15,?16,?17,?18,?19)")
+        .bind(&[bind_str(&id),bind_str(&envelope_to),bind_str(&owner.owner_iss),bind_str(&owner.owner_sub),bind_str(&sender),bind_str(&serde_json::to_string(&to).unwrap_or_default()),bind_str(&subject),bind_str(&first_text),bind_str(&metadata),bind_num(received_at),bind_num(has_html as i64),bind_num(has_text as i64),bind_num(attachments as i64),bind_str(&r2_key),bind_num(archive.len() as i64),bind_num(storage_bytes),JsValue::NULL,JsValue::NULL,JsValue::NULL])?.run().await?;
     Ok(
         Response::from_json(&serde_json::json!({"id":id,"request_id":request_id}))?
             .with_status(201),
@@ -1502,6 +1556,8 @@ mod tests {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(include_str!("../migrations/0001_initial.sql"))
             .unwrap();
+        db.execute_batch(include_str!("../migrations/0002_reservation_lease.sql"))
+            .unwrap();
         db.execute("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,state,created_at) VALUES('i','s','k','h','m','preparing',0)",[]).unwrap();
         assert_eq!(db.execute("UPDATE send_requests SET state='submitting' WHERE idem_key='k' AND state='preparing' AND quota_reserved=1",[]).unwrap(),0);
         db.execute(
@@ -1511,5 +1567,18 @@ mod tests {
         .unwrap();
         assert_eq!(db.execute("UPDATE send_requests SET state='submitting' WHERE idem_key='k' AND state='preparing' AND quota_reserved=1",[]).unwrap(),1);
         assert_eq!(db.execute("UPDATE send_requests SET state='submitting' WHERE idem_key='k' AND state='preparing' AND quota_reserved=1",[]).unwrap(),0);
+    }
+
+    /// Lease cleanup follows claim time, not the age of the original request. / 租约清理依据认领时间，而非原请求年龄。
+    #[test]
+    fn quota_lease_uses_claim_time() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(include_str!("../migrations/0001_initial.sql"))
+            .unwrap();
+        db.execute_batch(include_str!("../migrations/0002_reservation_lease.sql"))
+            .unwrap();
+        db.execute("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,state,created_at,reservation_started_at) VALUES('i','s','k','h','m','reserving',0,1000)",[]).unwrap();
+        assert_eq!(db.execute("UPDATE send_requests SET state='preparing' WHERE state='reserving' AND reservation_started_at<500",[]).unwrap(),0);
+        assert_eq!(db.execute("UPDATE send_requests SET state='preparing' WHERE state='reserving' AND reservation_started_at<1500",[]).unwrap(),1);
     }
 }
