@@ -20,6 +20,11 @@ struct CfRule {
 struct CfRuleList {
     success: bool,
     result: Vec<CfListedRule>,
+    result_info: Option<CfResultInfo>,
+}
+#[derive(Deserialize)]
+struct CfResultInfo {
+    total_pages: Option<usize>,
 }
 #[derive(Deserialize)]
 struct CfListedRule {
@@ -46,8 +51,9 @@ pub async fn rules_for_address(env: &Env, address: &str) -> Result<Vec<String>> 
     let ingress = env.var("EMAIL_INGRESS_WORKER_NAME")?.to_string();
     let expected_name = format!("amail {address}");
     let mut ids = Vec::new();
-    for page in 1..=3 {
-        let url = format!("https://api.cloudflare.com/client/v4/zones/{zone}/email/routing/rules?per_page=100&page={page}");
+    // The API permits at most 50 per page. A zone can include several mail domains.
+    for page in 1..=200 {
+        let url = format!("https://api.cloudflare.com/client/v4/zones/{zone}/email/routing/rules?per_page=50&page={page}");
         let mut init = RequestInit::new();
         init.with_method(Method::Get).with_headers(cf_headers(env)?);
         let mut response = Fetch::Request(Request::new_with_init(&url, &init)?)
@@ -61,6 +67,10 @@ pub async fn rules_for_address(env: &Env, address: &str) -> Result<Vec<String>> 
             return Err(worker::Error::RustError("routing_list_failed".into()));
         }
         let count = data.result.len();
+        let total_pages = data.result_info.as_ref().and_then(|info| info.total_pages);
+        if total_pages.is_some_and(|total| total > 200) {
+            return Err(worker::Error::RustError("routing_list_limit".into()));
+        }
         for rule in data.result {
             if rule.name.as_deref() == Some(expected_name.as_str())
                 && rule.actions.iter().any(|a| {
@@ -78,8 +88,11 @@ pub async fn rules_for_address(env: &Env, address: &str) -> Result<Vec<String>> 
                 ids.push(rule.id);
             }
         }
-        if count < 100 {
+        if count < 50 || total_pages.is_some_and(|total| page >= total) {
             break;
+        }
+        if page == 200 {
+            return Err(worker::Error::RustError("routing_list_limit".into()));
         }
     }
     Ok(ids)
