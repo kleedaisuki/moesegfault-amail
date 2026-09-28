@@ -1,0 +1,93 @@
+# 中文：仅在 main 上人工触发；部署监控 Worker，但绝不改动四条已上线的精确转发规则。
+# English: Manual main-only Worker deployment; never mutate the four live exact-forward rules.
+name: Deploy production role monitor
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-role-monitor-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy unrouted private role monitor
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      ROLE_FORWARD_PHASE: audit
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check protected configuration without displaying values
+        shell: bash
+        run: |
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN CF_EMAIL_ROUTING_TOKEN ROLE_FORWARD_DESTINATION CF_ZONE_ID; do
+            if [ -z "${!key}" ]; then
+              echo "::error::Missing $key"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test role-monitor contracts on hosted runner
+        run: |
+          cargo test -p amail-role-monitor --locked --all-targets
+          cargo check -p amail-role-monitor --locked --target wasm32-unknown-unknown
+          python -m unittest discover -s workers/role-monitor -p 'test_*.py' -v
+          python -m unittest discover -s infra/tests -p 'test_role_monitor_*.py' -v
+      - name: Install pinned deployment tools
+        run: |
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Prove four direct-forward rules remain unchanged before deployment
+        shell: bash
+        run: |
+          status=$(python infra/provider/ensure_role_forwarding.py)
+          if [[ "$status" != *"4/4"* ]]; then
+            echo '::error::Role rules are no longer the four exact direct-forward actions; refuse Worker replacement'
+            exit 1
+          fi
+      - name: Audit isolated production D1 before migration
+        run: python workers/role-monitor/check_staging_db.py --env production
+      - name: Apply only role-monitor production migrations
+        working-directory: workers/role-monitor
+        run: wrangler d1 migrations apply ROLE_MONITOR --remote
+      - name: Bundle private Rust Email and Cron Worker
+        working-directory: workers/role-monitor
+        run: worker-build --release
+      - name: Deploy unrouted Worker with protected destination and audit secrets
+        working-directory: workers/role-monitor
+        shell: bash
+        run: |
+          umask 077
+          mkdir -p ../../.temp
+          trap 'rm -f ../../.temp/role-monitor-production-secrets.json' EXIT
+          node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/role-monitor-production-secrets.json", JSON.stringify({ROLE_FORWARD_DESTINATION:process.env.ROLE_FORWARD_DESTINATION,CF_EMAIL_ROUTING_TOKEN:process.env.CF_EMAIL_ROUTING_TOKEN,CF_ACCOUNT_ID:process.env.CLOUDFLARE_ACCOUNT_ID}));'
+          wrangler deploy --secrets-file ../../.temp/role-monitor-production-secrets.json
+      - name: Confirm four direct-forward rules remain unchanged after deployment
+        shell: bash
+        run: |
+          status=$(python infra/provider/ensure_role_forwarding.py)
+          if [[ "$status" != *"4/4"* ]]; then
+            echo '::error::Production role routing drift detected after Worker deployment'
+            exit 1
+          fi

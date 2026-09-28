@@ -1,0 +1,60 @@
+# 中文：生产 Worker 无 HTTP 路由；角色邮箱由 API 精确规则控制，不交给 Wrangler 批量协调。
+# English: No public HTTP; API-owned exact role rules are not reconciled by Wrangler.
+name = "amail-role-monitor"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-09-29"
+workers_dev = false
+preview_urls = false
+
+[vars]
+ROLE_REALM = "production"
+CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"
+
+[[d1_databases]]
+binding = "ROLE_MONITOR"
+database_name = "moesegfault-mail-ops-production"
+database_id = "06e84adb-fe29-4183-b131-5042a48bcdee"
+migrations_dir = "migrations"
+
+# 中文：目的地由受保护的部署配置注入，不能写在仓库；代码同时固定官方发件人。
+# English: The destination is an injected secret, never committed; code fixes the official sender.
+[[send_email]]
+name = "ROLE_ALERT"
+allowed_sender_addresses = ["mail@moesegfault.dev"]
+remote = true
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[observability.logs]
+enabled = true
+
+[observability.traces]
+enabled = true
+
+[env.staging]
+name = "amail-role-monitor-staging"
+workers_dev = false
+preview_urls = false
+
+[env.staging.vars]
+ROLE_REALM = "staging"
+CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"
+
+[[env.staging.d1_databases]]
+binding = "ROLE_MONITOR"
+database_name = "moesegfault-mail-ops-staging"
+database_id = "272e024c-453a-461b-bea0-c37a62c89d24"
+migrations_dir = "migrations"
+
+[[env.staging.send_email]]
+name = "ROLE_ALERT"
+allowed_sender_addresses = ["mail@moesegfault.dev"]
+remote = true
+
+[env.staging.triggers]
+crons = ["*/5 * * * *"]

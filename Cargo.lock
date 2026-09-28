@@ -110,6 +110,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "amail-role-monitor"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "serde",
+ "uuid",
+ "wasm-bindgen",
+ "worker",
+]
+
+[[package]]
 name = "amail-worker"
 version = "0.1.0"
 dependencies = [

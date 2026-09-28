@@ -70,6 +70,8 @@ jobs:
         run: cargo test -p amail-events --locked --all-targets
       - name: Run staging Identity test inbox contract tests
         run: cargo test -p amail-identity-test-inbox --locked --all-targets
+      - name: Run role monitor contract tests
+        run: cargo test -p amail-role-monitor --locked --all-targets
       - name: Compile Worker target
         run: cargo check -p amail-worker --locked --target wasm32-unknown-unknown
       - name: Compile Email ingress target
@@ -78,6 +80,8 @@ jobs:
         run: cargo check -p amail-events --locked --target wasm32-unknown-unknown
       - name: Compile staging Identity test inbox target
         run: cargo check -p amail-identity-test-inbox --locked --target wasm32-unknown-unknown
+      - name: Compile role monitor target
+        run: cargo check -p amail-role-monitor --locked --target wasm32-unknown-unknown
       - name: Install workers-rs bundler
         run: cargo install worker-build --version 0.8.5 --locked
       - name: Bundle Worker for Wrangler
@@ -91,6 +95,9 @@ jobs:
         run: worker-build --release
       - name: Bundle staging Identity test inbox for Wrangler
         working-directory: workers/identity-test-inbox
+        run: worker-build --release
+      - name: Bundle role monitor for Wrangler
+        working-directory: workers/role-monitor
         run: worker-build --release
 
   site:
@@ -134,6 +141,8 @@ jobs:
         run: python -m unittest discover -s infra/tests -v
       - name: Test staging Identity exact-route safeguards
         run: python -m unittest discover -s workers/identity-test-inbox -p 'test_*.py' -v
+      - name: Test staging role-monitor route safeguards
+        run: python -m unittest discover -s workers/role-monitor -p 'test_*.py' -v
       - name: Check private staging Identity inbox config
         run: python workers/identity-test-inbox/check_config.py
       - name: Check staging isolation contract
@@ -675,3 +684,78 @@ jobs:
             echo '::error::Inbox deployment unexpectedly changed Email Routing'
             exit 1
           fi
+
+  staging-role-monitor:
+    name: Deploy isolated staging role monitor
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    needs: [worker, dns]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: staging
+    concurrency:
+      group: deploy-role-monitor-staging
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check protected staging configuration without printing values
+        shell: bash
+        run: |
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN CF_EMAIL_ROUTING_TOKEN ROLE_FORWARD_DESTINATION CF_ZONE_ID; do
+            if [ -z "${!key}" ]; then
+              echo "::error::Missing $key"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned deployment tools
+        run: |
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Refuse Worker replacement while synthetic SMTP route is active
+        shell: bash
+        run: |
+          state=$(python workers/role-monitor/staging_route.py)
+          if [ "$state" != absent ]; then
+            echo '::error::Close the exact staging role route before replacing its Worker'
+            exit 1
+          fi
+      - name: Audit isolated staging D1 before migration
+        run: python workers/role-monitor/check_staging_db.py
+      - name: Apply only role-monitor migrations
+        working-directory: workers/role-monitor
+        run: wrangler d1 migrations apply ROLE_MONITOR --env staging --remote
+      - name: Bundle Rust Email and Cron Worker
+        working-directory: workers/role-monitor
+        run: worker-build --release
+      - name: Deploy staging Worker with private destination and provider audit secrets
+        working-directory: workers/role-monitor
+        shell: bash
+        run: |
+          umask 077
+          mkdir -p ../../.temp
+          trap 'rm -f ../../.temp/role-monitor-secrets.json' EXIT
+          node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/role-monitor-secrets.json", JSON.stringify({ROLE_FORWARD_DESTINATION:process.env.ROLE_FORWARD_DESTINATION,CF_EMAIL_ROUTING_TOKEN:process.env.CF_EMAIL_ROUTING_TOKEN,CF_ACCOUNT_ID:process.env.CLOUDFLARE_ACCOUNT_ID}));'
+          wrangler deploy --env staging --secrets-file ../../.temp/role-monitor-secrets.json
+      - name: Confirm deploy did not open the synthetic SMTP route
+        shell: bash
+        run: |
+          state=$(python workers/role-monitor/staging_route.py)
+          if [ "$state" != absent ]; then
+            echo '::error::Staging role route changed unexpectedly'
+            exit 1
