@@ -243,8 +243,11 @@ fn expiry_scrubs_sensitive_state_then_removes_tombstone() {
     assert_eq!(scrubbed, ("expired".into(), "{}".into(), "{}".into()));
 
     let remove = "DELETE FROM search_jobs WHERE state='expired' AND expires_at<?1";
-    assert_eq!(db.execute(remove, [expiry + 86_400_000]).unwrap(), 0);
-    assert_eq!(db.execute(remove, [expiry + 86_400_001]).unwrap(), 1);
+    // Worker binds `now - JOB_TTL_MS`, not `now`; these cutoffs correspond to
+    // clock times exactly 48 hours and 48 hours + 1 ms after creation.
+    // Worker 绑定 `now - JOB_TTL_MS`；这两个阈值对应创建后恰好 48 小时及再过 1 毫秒。
+    assert_eq!(db.execute(remove, [expiry]).unwrap(), 0);
+    assert_eq!(db.execute(remove, [expiry + 1]).unwrap(), 1);
 }
 
 /// Every mutation bumps the owner's generation, invalidating older search snapshots.
