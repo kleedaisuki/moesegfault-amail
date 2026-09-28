@@ -27,6 +27,16 @@ fn segment(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
+/// Keep mailbox addresses in the request body, never in automatic URL traces.
+/// 将邮箱地址放入请求体，绝不放入自动记录的 URL 追踪字段。
+fn address_delete_parts(address: &str) -> (Method, &'static str, Value) {
+    (
+        Method::DELETE,
+        "/v1/addresses",
+        serde_json::json!({"address":address}),
+    )
+}
+
 impl<'a> Api<'a> {
     /// Construct bounded-time client / 创建具有超时的客户端。
     pub fn new(cfg: &'a Runtime) -> Result<Self> {
@@ -146,12 +156,8 @@ impl<'a> Api<'a> {
 
     /// Retire an address / 退役地址。
     pub fn delete_address(&self, address: &str) -> Result<Value> {
-        self.json(
-            Method::DELETE,
-            &format!("/v1/addresses/{}", segment(address)),
-            "addresses.delete",
-            None,
-        )
+        let (method, path, body) = address_delete_parts(address);
+        self.json(method, path, "addresses.delete", Some(&body))
     }
 
     /// List recent mail summaries / 列出近期邮件摘要。
@@ -238,5 +244,20 @@ impl<'a> Api<'a> {
             Some(key),
         )?;
         serde_json::from_slice(&response).context("invalid send response")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn address_deletion_keeps_personal_address_out_of_url() {
+        let address = "alice@mail.moesegfault.dev";
+        let (method, path, body) = address_delete_parts(address);
+        assert_eq!(method, Method::DELETE);
+        assert_eq!(path, "/v1/addresses");
+        assert!(!path.contains(address));
+        assert_eq!(body["address"], address);
     }
 }

@@ -340,12 +340,7 @@ async fn dispatch(mut req: Request, env: Env, request_id: &str) -> AppResult<Res
     match (req.method(), segments.as_slice()) {
         (Method::Get, ["v1", "addresses"]) => list_addresses(&env, &user, request_id).await,
         (Method::Post, ["v1", "addresses"]) => add_address(&mut req, &env, &user, request_id).await,
-        (Method::Delete, ["v1", "addresses", address]) => {
-            let address = percent_encoding::percent_decode_str(address)
-                .decode_utf8()
-                .map_err(|_| AppError::bad("invalid_address"))?;
-            delete_address(&env, &user, &address, request_id).await
-        }
+        (Method::Delete, ["v1", "addresses"]) => delete_address(&mut req, &env, &user, request_id).await,
         (Method::Get, ["v1", "messages"]) => {
             let url = req.url()?;
             let limit = url
@@ -740,20 +735,19 @@ async fn add_address(
 }
 
 async fn delete_address(
+    req: &mut Request,
     env: &Env,
     user: &Principal,
-    name: &str,
     request_id: &str,
 ) -> AppResult<Response> {
-    let address = if name.contains('@') {
-        name.to_ascii_lowercase()
-    } else {
-        format!(
-            "{}@{}",
-            name.to_ascii_lowercase(),
-            env.var("MAIL_DOMAIN")?.to_string()
-        )
-    };
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct DeleteAddress { address:String }
+    let input:DeleteAddress=req.json().await.map_err(|_|AppError::bad("invalid_json"))?;
+    let address=input.address.to_ascii_lowercase();
+    if !address.ends_with(&format!("@{}",env.var("MAIL_DOMAIN")?.to_string())) || !valid_address(&address) {
+        return Err(AppError::bad("invalid_address"));
+    }
     let database = db(env)?;
     let row = database.prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3")
         .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.first::<AddressRow>(None).await?.ok_or_else(AppError::not_found)?;
