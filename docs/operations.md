@@ -59,6 +59,34 @@ Wrangler `vars` after review. `CF_ZONE_ID` also scopes the read-only DNS gate in
 Actions; the gate never changes apex or mail records. Do not deploy until the
 Identity client registration actually exists.
 
+### Routing token rotation and expiry
+
+One dedicated zone-scoped `CF_EMAIL_ROUTING_TOKEN` grants Email Routing Rules
+Read+Write to both environments. Set its expiration deliberately and rotate
+before expiry. A GitHub Secret update alone does **not** update already-deployed
+Worker secrets: after updating the GitHub Secret, dispatch
+`gh workflow run ci.yml --ref main -f target=staging`, verify staging, then
+dispatch `gh workflow run ci.yml --ref main -f target=production`. The latter
+is guarded to `main`, runs the normal CI/provider gates, redeploys only the
+production mail and ingress Workers, and leaves the public release site alone.
+Retire the old token only after both environments have passed Rules Read and a
+disposable staging/production address add-and-delete test. Send a real message
+to an already-active test address during the rotation to check the data plane.
+Keep the token out of chat, logs, test artifacts, and source. On a bad rotation,
+restore the prior still-valid token in the GitHub Secret and redeploy both
+environments; if it has expired/revoked, issue another scoped token instead.
+
+Cloudflare documents token TTL as an **API authorization** limit and routing
+rules as separately configured zone objects. From that separation, an expired
+token should not by itself delete existing enabled rules, so already-routed
+addresses are *expected* to continue receiving; Cloudflare does not explicitly
+guarantee this failure mode in those documents, and live delivery must be
+verified. Registration, deletion, and cron rule reconciliation **will fail or
+remain pending** while the token cannot authorize the Rules API; do not claim
+zero impact. See [token TTL](https://developers.cloudflare.com/fundamentals/api/how-to/restrict-tokens/),
+[routing-rule configuration](https://developers.cloudflare.com/email-service/configuration/email-routing-addresses/),
+and [Rules API permissions](https://developers.cloudflare.com/api/resources/email_routing/subresources/rules/methods/create/).
+
 The deployment workflow uses GitHub-hosted runners, builds Rust/Wasm, applies
 remote D1 migrations, deploys the mail Worker atomically with its secrets, then
 deploys the email-event ingress adapter and Astro site. It probes `/health`, `/`, `/manual/`, and
@@ -107,6 +135,10 @@ Staging assets use a host-scoped `X-Robots-Tag: noindex, nofollow` rule in
 `site/public/_headers`; the CI smoke checks that staging HTML has `noindex`
 while production HTML does not. This keeps the pre-release CTA out of search
 results without changing the production `robots.txt` or sitemap.
+The staging header assertion passed in
+[run 36422475913, job 108928465373](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36422475913/job/108928465373)
+after the `_headers` change; production header behavior remains untested until
+the public-site launch job runs.
 
 The production launch site intentionally does **not** deploy on the first
 `main` push while its `v0.1.0` download CTA would be dead. Main's
