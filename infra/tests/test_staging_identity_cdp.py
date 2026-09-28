@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -45,7 +46,9 @@ class HarnessSafetyTests(unittest.TestCase):
         }
         with patch.dict(os.environ, environment, clear=True):
             passed = probe.browser_environment()
-        self.assertEqual(set(passed), {"SystemRoot", "PATH"})
+        # Windows normalizes environment key casing, unlike Linux CI.
+        # Windows 会规范化环境变量键的大小写，Linux CI 则保留原样。
+        self.assertEqual({key.upper() for key in passed}, {"SYSTEMROOT", "PATH"})
 
     def test_route_closes_even_if_browser_close_raises(self) -> None:
         """A teardown exception cannot leave the OTP route open.
@@ -102,6 +105,71 @@ class HarnessSafetyTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertFalse(probe.valid_authorization_url(url(broken)))
         self.assertFalse(probe.valid_authorization_url(url({**fields, "redirect_uri": "https://foreign.example/callback"})))
+
+    def test_identity_responses_ignore_preflight_for_every_post_stage(self) -> None:
+        """OPTIONS 204 cannot masquerade as any successful Identity POST.
+
+        中文：三类验证端点都不能将 OPTIONS 204 误判为真实 POST 响应。
+        """
+
+        paths = (
+            probe.REGISTRATION,
+            "/v1/me/contacts/contact-1/verification-transactions",
+            "/v1/me/contacts/contact-1/verification-transactions/tx-1/completion",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                browser = object.__new__(probe.Browser)
+                browser.request_methods = {}
+                browser.responses = {}
+                browser.finished = set()
+                events = [
+                    {"method": "Network.requestWillBeSent", "params": {
+                        "requestId": "preflight", "request": {"method": "OPTIONS"}}},
+                    {"method": "Network.responseReceived", "params": {
+                        "requestId": "preflight", "response": {
+                            "url": probe.ISSUER + path, "status": 204}}},
+                    {"method": "Network.loadingFinished", "params": {"requestId": "preflight"}},
+                    {"method": "Network.requestWillBeSent", "params": {
+                        "requestId": "actual", "request": {"method": "POST"}}},
+                    {"method": "Network.responseReceived", "params": {
+                        "requestId": "actual", "response": {
+                            "url": probe.ISSUER + path, "status": 201}}},
+                ]
+                browser.ws = Mock()
+                browser.ws.recv.side_effect = [json.dumps(event) for event in events]
+                for _ in range(3):
+                    browser._receive(1)
+                self.assertEqual(browser.responses, {})
+                for _ in range(2):
+                    browser._receive(1)
+                self.assertEqual(browser.response(lambda observed: observed == path, timeout=0.01), (201, "actual"))
+
+    def test_redirect_reuses_request_id_without_inheriting_post_method(self) -> None:
+        """A redirected GET must not inherit the original POST method.
+
+        中文：重定向复用请求 ID 时，新 GET 不得继承旧 POST 的语义。
+        """
+
+        browser = object.__new__(probe.Browser)
+        browser.request_methods = {}
+        browser.responses = {}
+        browser.finished = set()
+        events = [
+            {"method": "Network.requestWillBeSent", "params": {
+                "requestId": "reused", "request": {"method": "POST"}}},
+            {"method": "Network.requestWillBeSent", "params": {
+                "requestId": "reused", "request": {"method": "GET"},
+                "redirectResponse": {"status": 303}}},
+            {"method": "Network.responseReceived", "params": {
+                "requestId": "reused", "response": {
+                    "url": probe.ISSUER + probe.REGISTRATION, "status": 200}}},
+        ]
+        browser.ws = Mock()
+        browser.ws.recv.side_effect = [json.dumps(event) for event in events]
+        for _ in events:
+            browser._receive(1)
+        self.assertEqual(browser.responses, {})
 
 
 if __name__ == "__main__":

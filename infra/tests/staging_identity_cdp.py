@@ -218,6 +218,7 @@ class Browser:
         try:
             self.ws = self._connect(origin)
             self.next_id = 0
+            self.request_methods: dict[str, str] = {}
             self.responses: dict[str, list[tuple[int, str]]] = {}
             self.finished: set[str] = set()
             self.call("Page.enable")
@@ -264,9 +265,9 @@ class Browser:
         raise ProbeError("chrome_cdp_unavailable")
 
     def _receive(self, timeout: float) -> dict:
-        """Consume protocol events in memory, retaining only response status/path IDs.
+        """Retain statuses only for actual POSTs, never CORS preflight responses.
 
-        中文：仅在内存保留允许路径的状态码和请求 ID。
+        中文：按请求 ID 关联方法；只保留真实 POST，不把 OPTIONS 预检当成注册结果。
         """
 
         self.ws.settimeout(timeout)
@@ -276,7 +277,14 @@ class Browser:
             raise ProbeError("chrome_cdp_timeout_or_disconnect") from error
         method = message.get("method")
         params = message.get("params") or {}
-        if method == "Network.responseReceived":
+        request_id = params.get("requestId", "")
+        if method == "Network.requestWillBeSent":
+            # CDP emits requestWillBeSent before responseReceived. Redirects may
+            # reuse an ID, so always replace the method with the new request's.
+            # CDP 先发送请求事件；重定向可能复用 ID，故须以最新请求方法为准。
+            if request_id:
+                self.request_methods[request_id] = params.get("request", {}).get("method", "")
+        elif method == "Network.responseReceived" and self.request_methods.get(request_id) == "POST":
             url = params.get("response", {}).get("url", "")
             parsed = urlsplit(url)
             path = parsed.path
@@ -284,10 +292,13 @@ class Browser:
                 path == REGISTRATION or VERIFICATION_START.fullmatch(path) or VERIFICATION_DONE.fullmatch(path)
             ):
                 self.responses.setdefault(path, []).append(
-                    (int(params.get("response", {}).get("status", 0)), params.get("requestId", ""))
+                    (int(params.get("response", {}).get("status", 0)), request_id)
                 )
         elif method == "Network.loadingFinished":
-            self.finished.add(params.get("requestId", ""))
+            self.request_methods.pop(request_id, None)
+            self.finished.add(request_id)
+        elif method == "Network.loadingFailed":
+            self.request_methods.pop(request_id, None)
         return message
 
     def call(self, method: str, params: dict | None = None, timeout: float = 20) -> dict:
@@ -380,9 +391,9 @@ class Browser:
             raise ProbeError("first_party_button_missing")
 
     def response(self, predicate, timeout: float = 45) -> tuple[int, str]:
-        """Wait for a matching Identity API status without printing URLs or bodies.
+        """Wait for a matching actual POST status without printing URLs or bodies.
 
-        中文：等待匹配的 Identity API 状态，不输出 URL 或正文。
+        中文：仅等待匹配的真实 POST 状态，不输出 URL 或正文。
         """
 
         deadline = time.monotonic() + timeout
