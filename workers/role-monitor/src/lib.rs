@@ -115,7 +115,9 @@ async fn handle_email(message: ForwardableEmailMessage, env: &Env) -> Result<()>
     // 唯一附加头为不透明的本地引用；不记录邮件派生字段。
     let headers = Headers::new();
     headers.set("X-Amail-Role-Ref", &id)?;
-    message.forward_with_headers(&destination, &headers).await?;
+    // The Email binding accepts web_sys::Headers, not the worker wrapper type.
+    // Email 绑定接受 web_sys::Headers，而不是 worker 的封装类型。
+    message.forward_with_headers(&destination, &headers.0).await?;
     staging_fault(env, "after_forward")?;
     db.prepare("UPDATE role_arrivals SET forward_state='accepted',forward_updated_at=?2 WHERE id=?1 AND forward_state='unknown'")
         .bind(&[JsValue::from_str(&id), JsValue::from_f64(now() as f64)])?
