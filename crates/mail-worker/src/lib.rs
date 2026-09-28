@@ -3,6 +3,7 @@
 mod archive;
 mod auth;
 mod platform;
+mod search_jobs;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
@@ -115,6 +116,9 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
     }
     if let Err(_) = clean_orphans(&env).await {
         console_warn!("amail orphan object cleanup failed");
+    }
+    if let Err(_) = search_jobs::cleanup(&env).await {
+        console_warn!("amail search job cleanup failed");
     }
 }
 
@@ -357,7 +361,7 @@ async fn dispatch(mut req: Request, env: Env, request_id: &str) -> AppResult<Res
                 .query_pairs()
                 .find(|(k, _)| k == "cursor")
                 .map(|(_, v)| v.to_string());
-            search(
+            search_jobs::search(
                 &env,
                 &user,
                 SearchRequest {
@@ -374,7 +378,10 @@ async fn dispatch(mut req: Request, env: Env, request_id: &str) -> AppResult<Res
                 .json()
                 .await
                 .map_err(|_| AppError::bad("invalid_json"))?;
-            search(&env, &user, query, request_id).await
+            search_jobs::search(&env, &user, query, request_id).await
+        }
+        (Method::Get, ["v1", "messages", "search", "jobs", id]) => {
+            search_jobs::poll(&env, &user, id, request_id).await
         }
         (Method::Post, ["v1", "messages", "send"]) => {
             send_message(&mut req, &env, &user, request_id).await
@@ -472,6 +479,14 @@ async fn full_text(
         body: String,
     }
     let mut body = row.body_text.clone();
+    // The first UTF-8-safe 60,000-byte slice cannot have a successor below 59,997 bytes.
+    // UTF-8 安全的首个 60,000 字节切片若短于 59,997 字节，不可能还有后续分块。
+    if body.len() < 59_997 {
+        if search_budget_exceeded(0, 0, prior_body_bytes.saturating_add(body.len())) {
+            return Err(search_resource_limit());
+        }
+        return Ok(body);
+    }
     let mut next_index = 1i64;
     loop {
         if search_budget_exceeded(*sql_calls, 0, prior_body_bytes.saturating_add(body.len())) {
@@ -843,6 +858,8 @@ struct MessageRow {
     sender: String,
     recipients_json: String,
     subject: String,
+    #[serde(default)]
+    subject_truncated: i64,
     body_text: String,
     metadata_json: String,
     received_at: i64,
@@ -859,7 +876,7 @@ fn summary(row: &MessageRow, score: Option<f64>) -> serde_json::Value {
     let to = serde_json::from_str::<Vec<String>>(&row.recipients_json).unwrap_or_default();
     let mut value = serde_json::json!({
         "id":row.id,"mailbox":row.address,"direction":row.direction,"from":row.sender,
-        "to":to,"subject":row.subject,"received_at":iso(row.received_at),"read":row.is_read != 0,
+        "to":to,"subject":row.subject,"subject_truncated":row.subject_truncated != 0,"received_at":iso(row.received_at),"read":row.is_read != 0,
         "size_bytes":row.size_bytes,"has_attachments":row.attachment_count > 0,
         "has_html":row.has_html != 0,"has_text":row.has_text != 0,"attachment_count":row.attachment_count
     });
@@ -970,9 +987,55 @@ struct SearchCursor {
     version: u8,
     hash: String,
     high_water: i64,
+    generation: i64,
     last_time: i64,
     last_id: String,
     last_score_bits: Option<u64>,
+}
+
+/// Only rank keys, not message bodies, survive a continuation boundary. / 续扫边界只持久化排序键，不持久化邮件正文。
+#[derive(Clone, Serialize, Deserialize)]
+struct SearchHit {
+    id: String,
+    time: i64,
+    score_bits: Option<u64>,
+}
+
+impl SearchHit {
+    fn rank(&self) -> (f64, i64, &str) {
+        (
+            self.score_bits.map(f64::from_bits).unwrap_or_default(),
+            self.time,
+            self.id.as_str(),
+        )
+    }
+}
+
+/// A checkpoint is committed only after its marker row is fully examined. / 仅在游标指向的记录被完整处理后提交检查点。
+#[derive(Serialize, Deserialize)]
+struct SearchState {
+    high_water: i64,
+    generation: i64,
+    marker: Option<(i64, String)>,
+    hits: Vec<SearchHit>,
+    query_vector: Option<Vec<f32>>,
+}
+
+#[derive(Deserialize)]
+struct SearchJobRow {
+    id: String,
+    request_json: String,
+    state_json: String,
+    state: String,
+    version: i64,
+    lease_started_at: Option<i64>,
+    expires_at: i64,
+    current_generation: i64,
+}
+
+#[derive(Deserialize)]
+struct SearchGeneration {
+    generation: i64,
 }
 
 /// Keep a bounded synchronous scan honest: a budget breach is an error, never a partial page. / 同步扫描有界；触及预算必须报错，不能返回不完整结果。
@@ -1029,6 +1092,21 @@ where
 
 /// Select only columns needed by the predicates or response. / 只读取谓词或响应需要的列。
 fn search_projection(input: &SearchRequest) -> String {
+    let subject = if input.title.is_some() {
+        "subject"
+    } else {
+        "'' AS subject"
+    };
+    let sender = if input.from.is_some() {
+        "sender"
+    } else {
+        "'' AS sender"
+    };
+    let recipients = if input.to.is_some() {
+        "recipients_json"
+    } else {
+        "'[]' AS recipients_json"
+    };
     let body = if input.body.is_some() {
         "body_text"
     } else {
@@ -1044,7 +1122,21 @@ fn search_projection(input: &SearchRequest) -> String {
     } else {
         "NULL AS embedding_json"
     };
-    format!("SELECT id,address,direction,sender,recipients_json,subject,{body},{metadata},received_at,is_read,has_html,has_text,attachment_count,'' AS r2_key,size_bytes,{vector} FROM messages WHERE owner_iss=?1 AND owner_sub=?2 AND deleted_at IS NULL")
+    format!("SELECT id,address,direction,{sender},{recipients},{subject},{body},{metadata},received_at,is_read,has_html,has_text,attachment_count,'' AS r2_key,size_bytes,{vector} FROM messages WHERE owner_iss=?1 AND owner_sub=?2 AND deleted_at IS NULL")
+}
+
+/// Large title/metadata values use smaller pages; ordinary summaries can scan 64 IDs at once. / 大型主题或元数据使用小页，普通摘要每次可扫描 64 个 ID。
+fn search_page_size(input: &SearchRequest) -> usize {
+    if input.title.is_some() || input.metadata.as_ref().is_some_and(|map| !map.is_empty()) {
+        16
+    } else {
+        SEARCH_PAGE_SIZE
+    }
+}
+
+/// Rehydrate compact summaries without loading unbounded subject headers. / 重建紧凑摘要时避免载入无界的主题头字段。
+fn search_summary_projection() -> &'static str {
+    "SELECT id,address,direction,sender,recipients_json,substr(subject,1,2048) AS subject,CASE WHEN length(subject)>2048 THEN 1 ELSE 0 END AS subject_truncated,'' AS body_text,'{}' AS metadata_json,received_at,is_read,has_html,has_text,attachment_count,'' AS r2_key,size_bytes,NULL AS embedding_json FROM messages WHERE owner_iss=?1 AND owner_sub=?2 AND deleted_at IS NULL"
 }
 
 /// Make the indexed structural predicates explicit; never use SQLite LIKE as an exact text oracle. / 显式构造可索引的结构谓词，不将 SQLite LIKE 当作精确文本判定。
@@ -1087,228 +1179,9 @@ fn search_page_query(
     }
     sql.push_str(&format!(
         " ORDER BY received_at DESC,id DESC LIMIT {}",
-        SEARCH_PAGE_SIZE
+        search_page_size(input)
     ));
     (sql, binds)
-}
-
-async fn search(
-    env: &Env,
-    user: &Principal,
-    input: SearchRequest,
-    request_id: &str,
-) -> AppResult<Response> {
-    let limit = input.limit.unwrap_or(20);
-    if !(1..=100).contains(&limit) {
-        return Err(AppError::bad("invalid_limit"));
-    }
-    let after = input
-        .after
-        .as_deref()
-        .map(parse_date)
-        .transpose_option()
-        .ok_or_else(|| AppError::bad("invalid_date"))?;
-    let before = input
-        .before
-        .as_deref()
-        .map(parse_date)
-        .transpose_option()
-        .ok_or_else(|| AppError::bad("invalid_date"))?;
-    if after.zip(before).is_some_and(|(a, b)| a >= b) {
-        return Err(AppError::bad("invalid_date_range"));
-    }
-    let mut canonical =
-        serde_json::to_value(&input).map_err(|_| AppError::bad("invalid_search"))?;
-    canonical["cursor"] = serde_json::Value::Null;
-    canonical["limit"] = serde_json::json!(limit);
-    canonical["regex"] = serde_json::json!(input.regex.unwrap_or(false));
-    canonical["case_sensitive"] = serde_json::json!(input.case_sensitive.unwrap_or(false));
-    let hash = format!(
-        "{:x}",
-        Sha256::digest(format!("{}:{}:{}", user.iss, user.sub, canonical).as_bytes())
-    );
-    let cursor = if let Some(cursor) = &input.cursor {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(cursor)
-            .map_err(|_| AppError::bad("invalid_cursor"))?;
-        let decoded: SearchCursor =
-            serde_json::from_slice(&bytes).map_err(|_| AppError::bad("invalid_cursor"))?;
-        if decoded.version != 2
-            || decoded.hash != hash
-            || decoded.high_water > now() + 60_000
-            || decoded.last_time >= decoded.high_water
-            || decoded.last_id.is_empty()
-            || decoded.last_score_bits.is_some() != input.semantic.is_some()
-            || decoded
-                .last_score_bits
-                .is_some_and(|bits| !f64::from_bits(bits).is_finite())
-        {
-            return Err(AppError::bad("invalid_cursor"));
-        }
-        Some(decoded)
-    } else {
-        None
-    };
-    let matcher = SearchMatcher::new(&input)?;
-    let database = db(env)?;
-    let semantic = input.semantic.is_some();
-    let query_vector = if let Some(term) = input.semantic.as_deref() {
-        Some(
-            platform::embed(env, term, "search_query")
-                .await
-                .map_err(|_| AppError {
-                    status: 503,
-                    code: "semantic_unavailable",
-                })?,
-        )
-    } else {
-        None
-    };
-    let high_water = cursor.as_ref().map_or_else(|| now() + 1, |c| c.high_water);
-    let mut marker = if semantic {
-        None
-    } else {
-        cursor.as_ref().map(|c| (c.last_time, c.last_id.clone()))
-    };
-    let mut selected: Vec<(MessageRow, Option<f64>)> = Vec::with_capacity(limit + 1);
-    let mut sql_calls = 0usize;
-    let mut transfer_bytes = 0usize;
-    let mut body_bytes = 0usize;
-    loop {
-        if search_budget_exceeded(sql_calls, 0, 0) {
-            return Err(search_resource_limit());
-        }
-        let (query, binds) =
-            search_page_query(&input, user, after, before, high_water, marker.as_ref());
-        let previous_marker = marker.clone();
-        let result = database.prepare(&query).bind(&binds)?.all().await?;
-        sql_calls += 1;
-        let page = result.results::<MessageRow>()?;
-        if previous_marker.as_ref().is_some_and(|(time, id)| {
-            page.iter()
-                .any(|row| !search_keyset_before((row.received_at, &row.id), (*time, id)))
-        }) {
-            return Err(AppError {
-                status: 503,
-                code: "search_index_corrupt",
-            });
-        }
-        let page_len = page.len();
-        marker = page.last().map(|row| (row.received_at, row.id.clone()));
-        for mut row in page {
-            transfer_bytes = transfer_bytes.saturating_add(
-                row.subject.len()
-                    + row.sender.len()
-                    + row.recipients_json.len()
-                    + row.metadata_json.len()
-                    + row.body_text.len()
-                    + row.embedding_json.as_ref().map_or(0, String::len),
-            );
-            if search_budget_exceeded(0, transfer_bytes, body_bytes) {
-                return Err(search_resource_limit());
-            }
-            if !matcher.matches_without_body(&row) {
-                continue;
-            }
-            if matcher.has_body() {
-                if search_budget_exceeded(
-                    0,
-                    transfer_bytes,
-                    body_bytes.saturating_add(row.body_text.len()),
-                ) {
-                    return Err(search_resource_limit());
-                }
-                row.body_text = full_text(&database, &row, &mut sql_calls, body_bytes).await?;
-                body_bytes = body_bytes.saturating_add(row.body_text.len());
-                if search_budget_exceeded(0, transfer_bytes, body_bytes)
-                    || !matcher.matches_body(&row.body_text)
-                {
-                    continue;
-                }
-            }
-            // The match is decided; never retain a 25 MiB body in top-K or a future checkpoint.
-            // 匹配结果已确定；最优 K 集合及未来检查点不得保留 25 MiB 正文。
-            row.body_text.clear();
-            let score = if let Some(query) = &query_vector {
-                let saved = row.embedding_json.as_deref().ok_or(AppError {
-                    status: 503,
-                    code: "semantic_index_incomplete",
-                })?;
-                let vector: Vec<f32> = serde_json::from_str(saved).map_err(|_| AppError {
-                    status: 503,
-                    code: "semantic_index_corrupt",
-                })?;
-                Some(cosine_exact(query, &vector).ok_or(AppError {
-                    status: 503,
-                    code: "semantic_index_corrupt",
-                })?)
-            } else {
-                None
-            };
-            row.embedding_json = None;
-            if let (Some(previous), Some(score)) = (cursor.as_ref(), score) {
-                let previous_score = f64::from_bits(previous.last_score_bits.unwrap_or_default());
-                if semantic_rank(
-                    (score, row.received_at, &row.id),
-                    (previous_score, previous.last_time, &previous.last_id),
-                ) != std::cmp::Ordering::Greater
-                {
-                    continue;
-                }
-            }
-            if !semantic {
-                selected.push((row, None));
-                if selected.len() > limit {
-                    break;
-                }
-                continue;
-            }
-            retain_semantic(&mut selected, (row, score), limit + 1, |hit| {
-                (
-                    hit.1.unwrap_or_default(),
-                    hit.0.received_at,
-                    hit.0.id.as_str(),
-                )
-            });
-        }
-        if page_len < SEARCH_PAGE_SIZE || (!semantic && selected.len() > limit) {
-            break;
-        }
-    }
-    if semantic {
-        selected.sort_by(|a, b| {
-            semantic_rank(
-                (a.1.unwrap_or_default(), a.0.received_at, &a.0.id),
-                (b.1.unwrap_or_default(), b.0.received_at, &b.0.id),
-            )
-        });
-    }
-    let has_more = selected.len() > limit;
-    selected.truncate(limit);
-    let next_cursor = if has_more {
-        let (last, score) = selected.last().expect("a full page has a final item");
-        let next = SearchCursor {
-            version: 2,
-            hash,
-            high_water,
-            last_time: last.received_at,
-            last_id: last.id.clone(),
-            last_score_bits: score.map(f64::to_bits),
-        };
-        Some(
-            URL_SAFE_NO_PAD
-                .encode(serde_json::to_vec(&next).map_err(|_| AppError::bad("invalid_cursor"))?),
-        )
-    } else {
-        None
-    };
-    let messages = selected
-        .into_iter()
-        .map(|(row, score)| summary(&row, score))
-        .collect::<Vec<_>>();
-    Ok(Response::from_json(
-        &serde_json::json!({"messages":messages,"next_cursor":next_cursor,"request_id":request_id}),
-    )?)
 }
 
 trait OptionTranspose<T> {
@@ -1889,6 +1762,7 @@ mod tests {
             sender: "From@Example.org".into(),
             recipients_json: "[]".into(),
             subject: "Release 42".into(),
+            subject_truncated: 0,
             body_text: "Rollback safely".into(),
             metadata_json: r#"{"message_id":"<abc@example.org>"}"#.into(),
             received_at: 0,
@@ -1950,9 +1824,10 @@ mod tests {
             Ordering::Less
         );
         let cursor = SearchCursor {
-            version: 2,
+            version: 3,
             hash: "h".into(),
             high_water: 100,
+            generation: 0,
             last_time: 10,
             last_id: "z".into(),
             last_score_bits: Some(best.0.to_bits()),
@@ -1975,8 +1850,9 @@ mod tests {
             metadata: Some([("message_id".into(), "id".into())].into()),
             ..Default::default()
         });
-        assert!(detailed.contains("subject,body_text,metadata_json"));
+        assert!(detailed.contains("body_text,metadata_json"));
         assert!(detailed.contains("embedding_json FROM messages"));
+        assert!(search_summary_projection().contains("substr(subject,1,2048)"));
     }
 
     /// A quota-denied preparing request cannot transition to provider submission on retry. / 额度拒绝后的预备请求重试不得进入供应商提交态。
@@ -2045,5 +1921,70 @@ mod tests {
             )
             .unwrap();
         assert_eq!(used, 1);
+    }
+
+    /// Search generation advances for inserts, read changes, and hard cleanup. / 插入、已读更新与最终清理均推进检索代际。
+    #[test]
+    fn search_generation_triggers_and_job_lease() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0002_reservation_lease.sql"),
+            include_str!("../migrations/0003_storage_budget.sql"),
+            include_str!("../migrations/0004_storage_ledger.sql"),
+            include_str!("../migrations/0005_search_jobs.sql"),
+        ] {
+            db.execute_batch(sql).unwrap();
+        }
+        db.execute("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES('a@mail.moesegfault.dev','a','iss','sub',0,'active',0)", []).unwrap();
+        db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES('m','a@mail.moesegfault.dev','iss','sub','inbound','sender','[]','subject','body','{}',1,0,1,0,'r2',4)",[]).unwrap();
+        let generation = |db: &rusqlite::Connection| -> i64 {
+            db.query_row("SELECT generation FROM search_generations WHERE owner_iss='iss' AND owner_sub='sub'",[],|row| row.get(0)).unwrap()
+        };
+        assert_eq!(generation(&db), 1);
+        db.execute("UPDATE messages SET is_read=1 WHERE id='m'", [])
+            .unwrap();
+        assert_eq!(generation(&db), 2);
+        db.execute("DELETE FROM messages WHERE id='m'", []).unwrap();
+        assert_eq!(generation(&db), 3);
+
+        db.execute("INSERT INTO search_jobs(id,owner_iss,owner_sub,request_json,state_json,state,created_at,expires_at) VALUES('j','iss','sub','{}','{}','running',0,100)",[]).unwrap();
+        assert_eq!(db.execute("UPDATE search_jobs SET state='advancing',version=version+1 WHERE id='j' AND state='running' AND version=0",[]).unwrap(),1);
+        let checkpoint = "UPDATE search_jobs SET state_json='checkpoint',state='running',version=version+1 WHERE id='j' AND state='advancing' AND version=?1 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss='iss' AND owner_sub='sub'),0)=?2";
+        assert_eq!(db.execute(checkpoint, [0, 3]).unwrap(), 0);
+        assert_eq!(db.execute(checkpoint, [1, 2]).unwrap(), 0);
+        assert_eq!(db.execute(checkpoint, [1, 3]).unwrap(), 1);
+    }
+
+    /// A long subject remains searchable but only a bounded preview enters replay summaries. / 长主题仍可检索，但重放摘要只载入有界预览。
+    #[test]
+    fn search_summary_subject_preview_bounds_response() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(include_str!("../migrations/0001_initial.sql"))
+            .unwrap();
+        db.execute("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES('a@mail.moesegfault.dev','a','iss','sub',0,'active',0)", []).unwrap();
+        let subject = "a".repeat(25_000);
+        for index in 0..100 {
+            db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES(?1,'a@mail.moesegfault.dev','iss','sub','inbound','sender','[]',?2,'','{}',1,0,1,0,'r2',1)",rusqlite::params![format!("m{index}"),&subject]).unwrap();
+        }
+        let mut query = search_summary_projection().to_owned();
+        query.push_str(" ORDER BY id");
+        let mut statement = db.prepare(&query).unwrap();
+        let previews: Vec<(String, i64)> = statement
+            .query_map(["iss", "sub"], |row| Ok((row.get(5)?, row.get(6)?)))
+            .unwrap()
+            .map(|item| item.unwrap())
+            .collect();
+        assert_eq!(previews.len(), 100);
+        assert!(previews
+            .iter()
+            .all(|(preview, truncated)| preview.len() == 2048 && *truncated == 1));
+        assert!(
+            previews
+                .iter()
+                .map(|(preview, _)| preview.len())
+                .sum::<usize>()
+                < 2 * 1024 * 1024
+        );
     }
 }
