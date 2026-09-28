@@ -12,5 +12,21 @@
     "directory": "./dist",
     "html_handling": "force-trailing-slash",
     "not_found_handling": "404-page"
+  },
+  "env": {
+    "staging": {
+      // 中文：显式隔离名称和路由，绝不继承正式站域名。
+      // English: Explicitly isolate name and route; never inherit the production hostname.
+      "name": "amail-release-site-staging",
+      "workers_dev": false,
+      "routes": [
+        { "pattern": "amail-staging.moesegfault.dev", "custom_domain": true }
+      ],
+      "assets": {
+        "directory": "./dist",
+        "html_handling": "force-trailing-slash",
+        "not_found_handling": "404-page"
+      }
+    }
   }
 }

@@ -73,6 +73,10 @@ incompatibility. It also checks the runtime Routing
 token can list rules for cron reconciliation without logging any address; this
 does **not** prove Write permission. These are provider/availability probes, not
 an end-to-end delivery test.
+The independent OpenRouter job passed in candidate
+[run 36418072370](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36418072370)
+on 2026-09-28; this establishes that the configured external model can return
+the requested vector shape, not that mailbox semantic indexing has run.
 
 The first candidate branch `codex/amail-v0.1.0` triggers a staging deployment
 on push after all CI gates because GitHub manual-dispatch workflows must first
@@ -88,8 +92,16 @@ only staging D1, deploys the mail and ingress Workers with `--env staging`, and
 checks staging `/health`. It does **not** deploy production or the public site.
 The staging CLI must explicitly use the staging issuer, client ID, and API base;
 staging OIDC registration and live delivery remain separate acceptance steps.
+The staging Astro launch page deploys independently to
+`amail-staging.moesegfault.dev` after its own site build; this deliberately does
+not depend on mail deployment or the routing token. Production site remains
+gated on production mail and ingress deployment. Use `pnpm run deploy:staging`
+and `pnpm run deploy`, not pnpm's built-in `pnpm deploy` command.
 The deployment token lacks Email Routing Rules Read (HTTP 403 in staging run
 36416776818), so neither Worker is deployed with it as a routing-token fallback.
+Missing dedicated routing secrets fail immediately before checkout or tool
+installation, while the separate OpenRouter job can still establish provider
+evidence.
 Staging and production routing tokens should be separate, although both mail
 domains share a Cloudflare zone and zone-scoped tokens still have
 cross-environment control-plane privilege. The first real staging `amail address add`
@@ -101,6 +113,21 @@ under the repository `.temp/` directory for browser-login and real mailbox
 acceptance; no local Rust build is required. This debug artifact is not a
 release binary and must not be redistributed as one.
 For example: `gh run download <RUN_ID> -n amail-windows-smoke-<COMMIT_SHA> -D .temp/smoke`.
+On Windows, set **all** staging overrides before browser authorization so a
+staging test cannot register a production address by accident:
+
+```powershell
+$env:AMAIL_HOME = Join-Path (Get-Location) '.temp/amail-staging'
+$env:AMAIL_API_BASE = 'https://mail-staging.moesegfault.dev'
+$env:AMAIL_ISSUER = 'https://identity-staging.moesegfault.dev'
+$env:AMAIL_CLIENT_ID = 'amail-cli-staging'
+& .\.temp\smoke\amail.exe config
+& .\.temp\smoke\amail.exe auth login
+```
+
+The staging native client must already be registered in Identity. Keep the
+staging home and draft ZIPs in `.temp/`; do not copy them into production CLI
+state or commit them.
 
 ## Live acceptance checklist
 

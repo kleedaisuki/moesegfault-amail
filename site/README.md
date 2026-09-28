@@ -10,10 +10,10 @@ Use Node >=22.12 and pnpm with the checked-in lockfile:
 pnpm install --frozen-lockfile
 pnpm check
 pnpm build
-pnpm deploy
+pnpm run deploy
 ```
 
-The build yields `dist/`; `wrangler.jsonc` deploys it as the `amail-release-site` Worker on the `amail.moesegfault.dev` custom domain. CI owns deploy and live smoke checks. The expected routes are `/`, `/manual/`, and `/changelog/`.
+The build yields `dist/`; `wrangler.jsonc` deploys it as the `amail-release-site` Worker on the `amail.moesegfault.dev` custom domain. An isolated `staging` environment deploys `amail-release-site-staging` to `amail-staging.moesegfault.dev` with explicit route/asset settings; use `pnpm run deploy:staging`. CI owns deploy and live smoke checks. The expected routes are `/`, `/manual/`, and `/changelog/`. For production, use `pnpm run deploy` explicitly: pnpm 12.4.1 also has a built-in `deploy` command.
 
 ## Appending a release
 

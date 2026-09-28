@@ -28,6 +28,7 @@ def check() -> None:
     vars_ = mail["vars"]
     require(vars_["IDENTITY_ISSUER"], "https://identity-staging.moesegfault.dev", "issuer")
     require(vars_["OIDC_CLIENT_ID"], "amail-cli-staging", "OIDC client")
+    require(vars_["CF_ZONE_ID"], "6edff81c6ed02f412e70868076411a5e", "Cloudflare zone")
     require(vars_["MAIL_DOMAIN"], "mail-staging.moesegfault.dev", "mail domain")
     require(vars_["EMAIL_INGRESS_WORKER_NAME"], "amail-inbound-staging", "ingress Worker")
     require(
