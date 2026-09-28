@@ -1,0 +1,14 @@
+[package]
+name = "amail-identity-test-inbox"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+futures-util = "0.3"
+worker = "0.8.7"
+uuid = { version = "1", features = ["v4", "js"] }

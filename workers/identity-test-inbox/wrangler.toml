@@ -1,0 +1,16 @@
+# 中文：此 Worker 仅用于预发布 Identity 邮件验证；无 HTTP 域名或 workers.dev 地址。
+# English: Staging Identity verification only; no HTTP route or workers.dev address.
+name = "amail-identity-test-inbox-staging"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-09-28"
+workers_dev = false
+preview_urls = false
+
+[[r2_buckets]]
+binding = "PRIVATE_INBOX"
+bucket_name = "amail-identity-test-inbox-staging"
+
+# 中文：验证邮件含短期秘密，禁止自动请求、邮件与 R2 追踪。
+# English: Verification mail carries a short-lived secret; disable automatic traces.
+[observability]
+enabled = false

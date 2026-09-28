@@ -70,6 +70,8 @@ jobs:
         run: cargo test -p amail-events --locked --all-targets
       - name: Run isolated operator intake contract tests
         run: cargo test -p amail-ops --locked --all-targets
+      - name: Run staging Identity test inbox contract tests
+        run: cargo test -p amail-identity-test-inbox --locked --all-targets
       - name: Compile Worker target
         run: cargo check -p amail-worker --locked --target wasm32-unknown-unknown
       - name: Compile Email ingress target
@@ -78,6 +80,8 @@ jobs:
         run: cargo check -p amail-events --locked --target wasm32-unknown-unknown
       - name: Compile operator intake target
         run: cargo check -p amail-ops --locked --target wasm32-unknown-unknown
+      - name: Compile staging Identity test inbox target
+        run: cargo check -p amail-identity-test-inbox --locked --target wasm32-unknown-unknown
       - name: Install workers-rs bundler
         run: cargo install worker-build --version 0.8.5 --locked
       - name: Bundle Worker for Wrangler
@@ -91,6 +95,9 @@ jobs:
         run: worker-build --release
       - name: Bundle isolated operator intake for Wrangler
         working-directory: workers/mail-ops
+        run: worker-build --release
+      - name: Bundle staging Identity test inbox for Wrangler
+        working-directory: workers/identity-test-inbox
         run: worker-build --release
 
   site:
@@ -134,6 +141,10 @@ jobs:
         run: python -m unittest discover -s infra/tests -v
       - name: Test operator config and role-route safeguards
         run: python -m unittest discover -s workers/mail-ops/tests -v
+      - name: Test staging Identity exact-route safeguards
+        run: python -m unittest discover -s workers/identity-test-inbox -p 'test_*.py' -v
+      - name: Check private staging Identity inbox config
+        run: python workers/identity-test-inbox/check_config.py
       - name: Check staging isolation contract
         run: python infra/deploy/check_staging.py
 
@@ -607,3 +618,69 @@ jobs:
       - name: Ensure staging Email Sending Event Subscription
         working-directory: .
         run: python infra/deploy/ensure_email_events.py --target staging --phase subscription
+
+  staging-identity-test-inbox:
+    name: Deploy private staging Identity verification inbox
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    needs: [worker, dns]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: staging
+    concurrency:
+      group: deploy-identity-test-inbox-staging
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Verify deploy credentials
+        shell: bash
+        run: |
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN CF_EMAIL_ROUTING_TOKEN; do
+            if [ -z "${!key}" ]; then
+              echo "::error::Missing $key"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Rust bundler and Wrangler
+        run: |
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Refuse deployment while the public test alias is routed
+        shell: bash
+        run: |
+          state=$(python workers/identity-test-inbox/ensure_route.py)
+          if [ "$state" != absent ]; then
+            echo '::error::Close the exact test route before replacing the inbox Worker'
+            exit 1
+          fi
+      - name: Check private staging binding and no HTTP surface
+        run: python workers/identity-test-inbox/check_config.py --live
+      - name: Build private Rust Email Worker
+        working-directory: workers/identity-test-inbox
+        run: worker-build --release
+      - name: Deploy staging Identity test inbox without routing rule
+        working-directory: workers/identity-test-inbox
+        run: wrangler deploy
+      - name: Verify deployment did not open the test alias
+        shell: bash
+        run: |
+          state=$(python workers/identity-test-inbox/ensure_route.py)
+          if [ "$state" != absent ]; then
+            echo '::error::Inbox deployment unexpectedly changed Email Routing'
+            exit 1
+          fi

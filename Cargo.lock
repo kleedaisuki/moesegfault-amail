@@ -91,6 +91,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "amail-identity-test-inbox"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "uuid",
+ "worker",
+]
+
+[[package]]
 name = "amail-ingress"
 version = "0.1.0"
 dependencies = [
