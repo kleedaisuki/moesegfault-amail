@@ -1455,17 +1455,26 @@ async fn telemetry(req: &mut Request, request_id: &str) -> AppResult<Response> {
     .with_status(202))
 }
 
-/// Score all 256 coordinates; vectors are normalized at ingestion. / 对全部 256 个坐标精确评分；向量在摄入时归一化。
+/// Compute exact cosine over all 256 persisted f32 coordinates, including their actual norms. / 基于持久化的全部 256 个 f32 坐标及其实际范数计算精确余弦。
 fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
     if left.len() != 256 || right.len() != 256 || left.iter().chain(right).any(|x| !x.is_finite()) {
         return None;
     }
-    Some(
-        left.iter()
-            .zip(right)
-            .map(|(a, b)| (*a as f64) * (*b as f64))
-            .sum(),
-    )
+    let mut dot = 0.0f64;
+    let mut left_norm = 0.0f64;
+    let mut right_norm = 0.0f64;
+    for (a, b) in left.iter().zip(right) {
+        let a = *a as f64;
+        let b = *b as f64;
+        dot += a * b;
+        left_norm += a * a;
+        right_norm += b * b;
+    }
+    let denominator = (left_norm * right_norm).sqrt();
+    if denominator <= 0.0 || !denominator.is_finite() {
+        return None;
+    }
+    Some((dot / denominator).clamp(-1.0, 1.0))
 }
 
 #[cfg(test)]
@@ -1512,6 +1521,15 @@ mod tests {
         assert_eq!(cosine_exact(&a[..255], &b), None);
         b[5] = f32::NAN;
         assert_eq!(cosine_exact(&a, &b), None);
+        assert_eq!(cosine_exact(&vec![0.0; 256], &a), None);
+        let mut scaled = a.clone();
+        scaled[0] = 2.0;
+        assert_eq!(cosine_exact(&a, &scaled), Some(1.0));
+        let mut query = a.clone();
+        query[1] = 0.02;
+        let mut near = a.clone();
+        near[1] = 0.019;
+        assert!(cosine_exact(&query, &near).unwrap() > cosine_exact(&query, &a).unwrap());
     }
 
     /// Server filters remain exact for regex, case and metadata. / 服务端正则、大小写及元数据筛选保持精确。
