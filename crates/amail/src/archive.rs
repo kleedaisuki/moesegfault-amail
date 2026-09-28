@@ -213,7 +213,7 @@ fn gather(dir: &Path, rel: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
         let item = item?;
         let name = item.file_name();
         let relative = rel.join(name);
-        let meta = item.symlink_metadata()?;
+        let meta = std::fs::symlink_metadata(item.path())?;
         ensure!(!meta.file_type().is_symlink(), "symlink in draft directory");
         if meta.is_dir() {
             gather(dir, &relative, files)?;
