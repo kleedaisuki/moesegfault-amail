@@ -59,6 +59,7 @@ def main() -> int:
             "Content-Type": "application/json",
             "HTTP-Referer": "https://amail.moesegfault.dev/",
             "X-Title": "amail deployment probe",
+            "X-OpenRouter-Cache": "false",
         },
         method="POST",
     )

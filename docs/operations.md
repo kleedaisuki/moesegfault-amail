@@ -47,7 +47,8 @@ GitHub Actions requires these repository secrets:
 | `CLOUDFLARE_ACCOUNT_ID` | Wrangler account selection |
 | `CLOUDFLARE_API_TOKEN` | Scoped Workers/D1/R2 deployment token |
 | `OPENROUTER_API_KEY` | Worker-side embedding generation |
-| `CF_EMAIL_ROUTING_TOKEN` | Narrowly scoped Email Routing Rules Write token for individual address rules; until provisioned, deployment falls back to `CLOUDFLARE_API_TOKEN` and therefore grants the running Worker excessive privileges |
+| `CF_EMAIL_ROUTING_TOKEN` | Zone-scoped Email Routing Rules Read+Write token for production address rules and reconciliation; required, with no fallback |
+| `CF_EMAIL_ROUTING_TOKEN_STAGING` | Separate zone-scoped Email Routing Rules Read+Write token for staging; required, with no fallback |
 | `INGRESS_SECRET` | One stable random secret shared by the Email-event adapter and Rust mail Worker; provision once, never regenerate per deployment |
 | `INGRESS_SECRET_STAGING` | Different stable random secret for the two staging Workers; never copy the production value |
 
@@ -66,7 +67,9 @@ deploys the email-event ingress adapter and Astro site. It probes `/health`, `/`
 SPF, DKIM, and DMARC records against authoritative DNS and calls OpenRouter
 with synthetic text to require one finite 256-dimensional
 `qwen/qwen3-embedding-8b` vector under the Worker's zero-data-retention and
-data-collection-denied routing preferences. It also checks the runtime Routing
+data-collection-denied routing preferences. The live embedding probe runs as an
+independent hosted CI job, so missing routing credentials cannot hide provider
+incompatibility. It also checks the runtime Routing
 token can list rules for cron reconciliation without logging any address; this
 does **not** prove Write permission. These are provider/availability probes, not
 an end-to-end delivery test.
@@ -85,10 +88,11 @@ only staging D1, deploys the mail and ingress Workers with `--env staging`, and
 checks staging `/health`. It does **not** deploy production or the public site.
 The staging CLI must explicitly use the staging issuer, client ID, and API base;
 staging OIDC registration and live delivery remain separate acceptance steps.
-The staging ingress token falls back to the general deployment token until a
-scoped staging token is provisioned; because both mail domains share a
-Cloudflare zone, this is a cross-environment control-plane privilege and must
-not be mistaken for full isolation. The first real staging `amail address add`
+The deployment token lacks Email Routing Rules Read (HTTP 403 in staging run
+36416776818), so neither Worker is deployed with it as a routing-token fallback.
+Staging and production routing tokens should be separate, although both mail
+domains share a Cloudflare zone and zone-scoped tokens still have
+cross-environment control-plane privilege. The first real staging `amail address add`
 is also the write-permission probe for Email Routing Rules; a read-only API
 check cannot prove that the token has the required Write permission.
 On the initial candidate branch only, the Windows CI matrix uploads the tested
