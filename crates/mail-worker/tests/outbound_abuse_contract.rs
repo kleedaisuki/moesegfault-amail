@@ -252,6 +252,15 @@ fn new_complaint_reholds_account() {
 #[test]
 fn deleted_message_late_complaint_still_holds_owner() {
     let db = database();
+    // Seed a historical send under an allowed policy; the admission trigger must
+    // not be weakened merely to construct a late-feedback fixture.
+    // 在已允许的策略下建立历史发件；不能为了延迟反馈夹具而削弱准入触发器。
+    db.execute("UPDATE send_release_gates SET feedback_verified=1,abuse_contact_verified=1,delivery_canary_verified=1,preview_reviewed=1 WHERE id=1", []).unwrap();
+    db.execute(
+        "UPDATE send_policy SET state='allowed' WHERE scope='global'",
+        [],
+    )
+    .unwrap();
     db.execute("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES('a@mail.example.test','a','issuer','owner',0,'active',0)", []).unwrap();
     db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES('local-1','a@mail.example.test','issuer','owner','outbound','a@mail.example.test','[]','subject','','{}',1,0,1,0,'key',1)", []).unwrap();
     db.execute("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,provider_id,request_id,state,created_at,sender,envelope_json) VALUES('issuer','owner','idem','hash','local-1','provider-1','opaque-request-1','sent',1,'a@mail.example.test','[\"user@example.net\"]')", []).unwrap();
