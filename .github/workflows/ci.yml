@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Deploy staging, or rotate production Workers from main
+        description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
         options: [staging, production]
@@ -66,10 +66,14 @@ jobs:
         run: cargo test -p amail-worker --locked --all-targets
       - name: Run Rust Email ingress contract tests
         run: cargo test -p amail-ingress --locked --all-targets
+      - name: Run Rust sending lifecycle contract tests
+        run: cargo test -p amail-events --locked --all-targets
       - name: Compile Worker target
         run: cargo check -p amail-worker --locked --target wasm32-unknown-unknown
       - name: Compile Email ingress target
         run: cargo check -p amail-ingress --locked --target wasm32-unknown-unknown
+      - name: Compile Email lifecycle target
+        run: cargo check -p amail-events --locked --target wasm32-unknown-unknown
       - name: Install workers-rs bundler
         run: cargo install worker-build --version 0.8.5 --locked
       - name: Bundle Worker for Wrangler
@@ -77,6 +81,9 @@ jobs:
         run: worker-build --release
       - name: Bundle Rust Email ingress for Wrangler
         working-directory: workers/mail-ingress
+        run: worker-build --release
+      - name: Bundle Rust Email lifecycle consumer for Wrangler
+        working-directory: workers/mail-events
         run: worker-build --release
 
   site:
@@ -138,7 +145,7 @@ jobs:
 
   deploy-worker:
     name: Deploy mail API
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
     needs: [cli, worker, site, dns, provider-live]
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -186,6 +193,9 @@ jobs:
       - name: Verify authoritative Email Sending DNS
         working-directory: .
         run: python infra/dns/verify_sending.py
+      - name: Disable and verify user-domain Email preview and partial suppression drops
+        working-directory: .
+        run: python infra/provider/configure_sending_privacy.py --target production
       - name: Verify runtime Email Routing Rules read access
         working-directory: .
         run: python infra/provider/probe_routing.py
@@ -208,7 +218,7 @@ jobs:
 
   deploy-ingress:
     name: Deploy Rust SMTP ingress
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
     needs: deploy-worker
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -248,9 +258,52 @@ jobs:
           node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/ingress-secrets.json", JSON.stringify({INGRESS_SECRET: process.env.INGRESS_SECRET}));'
           wrangler deploy --secrets-file ../../.temp/ingress-secrets.json
 
+  deploy-events:
+    name: Deploy Rust sending lifecycle consumer
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
+    needs: deploy-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: production
+    concurrency:
+      group: deploy-events-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: workers/mail-events
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Rust bundler and Wrangler
+        run: |
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Ensure production lifecycle Queue and DLQ
+        working-directory: .
+        run: python infra/deploy/ensure_email_events.py --target production --phase queues
+      - name: Build Rust lifecycle consumer
+        run: worker-build --release
+      - name: Deploy production lifecycle consumer
+        run: wrangler deploy
+      - name: Ensure production Email Sending Event Subscription
+        working-directory: .
+        run: python infra/deploy/ensure_email_events.py --target production --phase subscription
+
   release-ready:
     name: Gate public site on published download assets
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -291,8 +344,8 @@ jobs:
 
   deploy-site:
     name: Deploy release site
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.release-ready.outputs.ready == 'true'
-    needs: [deploy-ingress, site, release-ready]
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && needs.release-ready.outputs.ready == 'true'
+    needs: [deploy-ingress, deploy-events, site, release-ready]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
@@ -434,6 +487,9 @@ jobs:
       - name: Verify staging authoritative Email Sending DNS
         working-directory: .
         run: python infra/dns/verify_sending.py
+      - name: Disable and verify staging user-domain preview and partial suppression drops
+        working-directory: .
+        run: python infra/provider/configure_sending_privacy.py --target staging
       - name: Verify staging runtime Email Routing Rules read access
         working-directory: .
         run: python infra/provider/probe_routing.py
@@ -495,3 +551,46 @@ jobs:
           trap 'rm -f ../../.temp/ingress-staging-secrets.json' EXIT
           node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/ingress-staging-secrets.json", JSON.stringify({INGRESS_SECRET: process.env.INGRESS_SECRET}));'
           wrangler deploy --env staging --secrets-file ../../.temp/ingress-staging-secrets.json
+
+  staging-events:
+    name: Deploy isolated Rust staging lifecycle consumer
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    needs: staging-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: staging
+    concurrency:
+      group: deploy-events-staging
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: workers/mail-events
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Rust bundler and Wrangler
+        run: |
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Ensure staging lifecycle Queue and DLQ
+        working-directory: .
+        run: python infra/deploy/ensure_email_events.py --target staging --phase queues
+      - name: Build Rust lifecycle consumer
+        run: worker-build --release
+      - name: Deploy staging lifecycle consumer
+        run: wrangler deploy --env staging
+      - name: Ensure staging Email Sending Event Subscription
+        working-directory: .
+        run: python infra/deploy/ensure_email_events.py --target staging --phase subscription
