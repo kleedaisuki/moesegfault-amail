@@ -1,0 +1,354 @@
+# 中文：在 GitHub 托管的运行器上验证全部平台；本地开发机不执行重型构建。
+# English: Validate supported platforms on GitHub-hosted runners, not the developer workstation.
+name: CI and deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main, codex/amail-v0.1.0]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Deploy an isolated candidate environment
+        required: true
+        type: choice
+        options: [staging]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cli:
+    name: CLI (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update stable Rust toolchain
+        run: rustup update stable
+      - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all -- --check
+      - name: Test CLI
+        run: cargo test -p amail --locked --all-targets
+      - name: Check CLI help
+        run: cargo run -p amail --locked -- --help
+      - name: Upload tested Windows binary for staging live smoke
+        if: matrix.os == 'windows-latest' && github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: amail-windows-smoke-${{ github.sha }}
+          path: target/debug/amail.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  worker:
+    name: Rust Worker (Wasm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - name: Compile Worker target
+        run: cargo check -p amail-worker --locked --target wasm32-unknown-unknown
+      - name: Install workers-rs bundler
+        run: cargo install worker-build --version 0.8.3 --locked
+      - name: Bundle Worker for Wrangler
+        working-directory: crates/mail-worker
+        run: worker-build --release
+
+  site:
+    name: Astro release site
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check Astro and TypeScript
+        run: pnpm check
+      - name: Build static site
+        run: pnpm build
+
+  dns:
+    name: Infrastructure probe unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install DNS verifier dependency
+        run: python -m pip install -r infra/dns/requirements.txt
+      - name: Test DNS and provider probes
+        run: python -m unittest discover -s infra/tests -v
+      - name: Check staging isolation contract
+        run: python infra/deploy/check_staging.py
+
+  deploy-worker:
+    name: Deploy mail API
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [cli, worker, site, dns]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    concurrency:
+      group: deploy-mail-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: crates/mail-worker
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deploy tools
+        run: |
+          cargo install worker-build --version 0.8.3 --locked
+          npm install --global wrangler@4.142.0
+          python -m pip install -r ../../infra/dns/requirements.txt
+      - name: Verify deployment secrets
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$OPENROUTER_API_KEY"
+          test -n "$CF_EMAIL_ROUTING_TOKEN"
+          test -n "$CF_ZONE_ID"
+          test -n "$INGRESS_SECRET"
+      - name: Verify authoritative Email Sending DNS
+        working-directory: .
+        run: python infra/dns/verify_sending.py
+      - name: Probe OpenRouter Qwen 8B at 256 dimensions
+        working-directory: .
+        run: python infra/provider/probe_openrouter.py
+      - name: Apply remote D1 migrations
+        run: wrangler d1 migrations apply MAIL_DB --remote
+      - name: Build Rust Worker bundle
+        run: worker-build --release
+      - name: Deploy mail Worker with runtime secrets
+        shell: bash
+        run: |
+          umask 077
+          mkdir -p ../../.temp
+          trap 'rm -f ../../.temp/worker-secrets.json' EXIT
+          node -e 'const fs = require("fs"); const keys = ["OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "INGRESS_SECRET"]; fs.writeFileSync("../../.temp/worker-secrets.json", JSON.stringify(Object.fromEntries(keys.map(key => [key, process.env[key]]))));'
+          wrangler deploy --secrets-file ../../.temp/worker-secrets.json
+      - name: Smoke test deployed API
+        working-directory: .
+        shell: bash
+        run: curl --fail --silent --show-error --retry 6 --retry-delay 5 https://mail.moesegfault.dev/health
+
+  deploy-ingress:
+    name: Deploy SMTP ingress adapter
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: deploy-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    concurrency:
+      group: deploy-ingress-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: workers/mail-ingress
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Wrangler
+        run: npm install --global wrangler@4.142.0
+      - name: Deploy email-event Worker with shared secret
+        shell: bash
+        run: |
+          test -n "$INGRESS_SECRET"
+          umask 077
+          mkdir -p ../../.temp
+          trap 'rm -f ../../.temp/ingress-secrets.json' EXIT
+          node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/ingress-secrets.json", JSON.stringify({INGRESS_SECRET: process.env.INGRESS_SECRET}));'
+          wrangler deploy --secrets-file ../../.temp/ingress-secrets.json
+
+  deploy-site:
+    name: Deploy release site
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [deploy-ingress, site]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: deploy-site-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: site
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build site
+        run: pnpm build
+      - name: Deploy Astro assets to Workers
+        run: pnpm deploy
+      - name: Smoke test published pages
+        working-directory: .
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --retry 6 --retry-delay 5 https://amail.moesegfault.dev/ > /dev/null
+          curl --fail --silent --show-error https://amail.moesegfault.dev/manual/ > /dev/null
+          curl --fail --silent --show-error https://amail.moesegfault.dev/changelog/ > /dev/null
+
+  staging-worker:
+    name: Deploy isolated staging mail API
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    needs: [cli, worker, site, dns]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: staging
+    concurrency:
+      group: deploy-mail-staging
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: crates/mail-worker
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN_STAGING || secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
+      MAIL_SENDING_DOMAIN: mail-staging.moesegfault.dev
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deploy tools
+        run: |
+          cargo install worker-build --version 0.8.3 --locked
+          npm install --global wrangler@4.142.0
+          python -m pip install -r ../../infra/dns/requirements.txt
+      - name: Verify staging secrets and isolated config
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$OPENROUTER_API_KEY"
+          test -n "$CF_EMAIL_ROUTING_TOKEN"
+          test -n "$INGRESS_SECRET"
+          python ../../infra/deploy/check_staging.py
+      - name: Verify staging authoritative Email Sending DNS
+        working-directory: .
+        run: python infra/dns/verify_sending.py
+      - name: Probe OpenRouter Qwen 8B at 256 dimensions
+        working-directory: .
+        run: python infra/provider/probe_openrouter.py
+      - name: Apply staging D1 migrations only
+        run: wrangler d1 migrations apply MAIL_DB --remote --env staging
+      - name: Build Rust Worker bundle
+        run: worker-build --release
+      - name: Deploy staging Worker with isolated runtime secrets
+        shell: bash
+        run: |
+          umask 077
+          mkdir -p ../../.temp
+          trap 'rm -f ../../.temp/worker-staging-secrets.json' EXIT
+          node -e 'const fs = require("fs"); const keys = ["OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "INGRESS_SECRET"]; fs.writeFileSync("../../.temp/worker-staging-secrets.json", JSON.stringify(Object.fromEntries(keys.map(key => [key, process.env[key]]))));'
+          wrangler deploy --env staging --secrets-file ../../.temp/worker-staging-secrets.json
+      - name: Smoke test staging API
+        working-directory: .
+        shell: bash
+        run: curl --fail --silent --show-error --retry 6 --retry-delay 5 https://mail-staging.moesegfault.dev/health
+
+  staging-ingress:
+    name: Deploy isolated staging SMTP ingress
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    needs: staging-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+    concurrency:
+      group: deploy-ingress-staging
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: workers/mail-ingress
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Wrangler
+        run: npm install --global wrangler@4.142.0
+      - name: Deploy staging email-event Worker
+        shell: bash
+        run: |
+          test -n "$INGRESS_SECRET"
+          umask 077
+          mkdir -p ../../.temp
+          trap 'rm -f ../../.temp/ingress-staging-secrets.json' EXIT
+          node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/ingress-staging-secrets.json", JSON.stringify({INGRESS_SECRET: process.env.INGRESS_SECRET}));'
+          wrangler deploy --env staging --secrets-file ../../.temp/ingress-staging-secrets.json

@@ -1,0 +1,128 @@
+# 中文：仅从 vX.Y.Z 标签发布；每个平台原生编译并做构建来源证明。
+# English: Publish only version tags, with native platform builds and provenance attestations.
+name: Release amail CLI
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Verify release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require merged main commit and matching CLI version
+        shell: bash
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          version=$(sed -n '/^\[package\]/,/^\[/{s/^version *= *"\([^"]*\)"/\1/p;}' crates/amail/Cargo.toml | head -n 1)
+          test -n "$version"
+          test "v$version" = "$GITHUB_REF_NAME"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update stable Rust toolchain
+        run: rustup update stable
+      - name: Test CLI on release platform
+        run: cargo test -p amail --locked --all-targets
+      - name: Build release binary
+        run: cargo build -p amail --locked --release
+      - name: Archive Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p release-payload
+          cp target/release/amail README.md LICENSE release-payload/
+          tar -C release-payload -czf "amail-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" amail README.md LICENSE
+      - name: Archive Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-payload | Out-Null
+          Copy-Item target/release/amail.exe,README.md,LICENSE release-payload/
+          Compress-Archive -Path release-payload/* -DestinationPath "amail-$env:GITHUB_REF_NAME-${{ matrix.target }}.zip" -Force
+      - name: Attest release archive
+        uses: actions/attest@v4
+        with:
+          subject-path: amail-${{ github.ref_name }}-${{ matrix.target }}.*
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: amail-${{ matrix.target }}
+          path: amail-${{ github.ref_name }}-${{ matrix.target }}.*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: amail-*
+          path: dist
+          merge-multiple: true
+      - name: Package agent skill
+        shell: bash
+        run: |
+          test -f skills/amail/SKILL.md
+          cd skills
+          zip -q -r "../dist/amail-agent-skill-${GITHUB_REF_NAME}.zip" amail
+      - name: Attest agent skill bundle
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/amail-agent-skill-${{ github.ref_name }}.zip
+      - name: Generate and verify release checksums
+        shell: bash
+        run: |
+          cd dist
+          find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 6
+          sha256sum --check SHA256SUMS
+      - name: Create immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
