@@ -21,10 +21,12 @@ CREATE INDEX IF NOT EXISTS storage_reservations_pending ON storage_reservations(
 -- SQLite 串行化写者；此触发器在同一 INSERT 事务内检查账户额度。
 CREATE TRIGGER storage_reservations_guard BEFORE INSERT ON storage_reservations
 BEGIN
-    SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM storage_reservations WHERE id=NEW.id)
+    -- Cloudflare D1's remote splitter requires CASE to be parenthesized inside a trigger.
+    -- Cloudflare D1 远端语句拆分器要求触发器内的 CASE 加括号。
+    SELECT (CASE WHEN NOT EXISTS(SELECT 1 FROM storage_reservations WHERE id=NEW.id)
         AND COALESCE((SELECT used_bytes FROM storage_usage
         WHERE owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub),0) + NEW.bytes > 1073741824
-        THEN RAISE(ABORT,'mailbox_full') END;
+        THEN RAISE(ABORT,'mailbox_full') END);
 END;
 
 CREATE TRIGGER storage_reservations_add AFTER INSERT ON storage_reservations

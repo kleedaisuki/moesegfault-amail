@@ -149,7 +149,9 @@ CREATE TRIGGER send_request_policy_guard BEFORE INSERT ON send_requests BEGIN
           AND p.owner_iss='*' AND p.owner_sub='*' AND p.state='held')
       AND NOT EXISTS(SELECT 1 FROM send_policy p WHERE p.scope='account'
           AND p.owner_iss=NEW.owner_iss AND p.owner_sub=NEW.owner_sub AND p.state='held');
-    SELECT CASE WHEN NOT EXISTS(
+    -- Parenthesized CASE keeps the Cloudflare D1 remote trigger splitter intact.
+    -- CASE 加括号避免 Cloudflare D1 远端触发器语句被错误拆分。
+    SELECT (CASE WHEN NOT EXISTS(
         SELECT 1 FROM send_policy p JOIN send_release_gates g ON g.id=1
         WHERE p.scope='global' AND p.owner_iss='*' AND p.owner_sub='*'
           AND p.state='allowed' AND g.feedback_verified=1
@@ -163,7 +165,7 @@ CREATE TRIGGER send_request_policy_guard BEFORE INSERT ON send_requests BEGIN
         SELECT 1 FROM send_policy p WHERE p.scope='account'
           AND p.owner_iss=NEW.owner_iss AND p.owner_sub=NEW.owner_sub
           AND p.state='held'
-    ) THEN RAISE(ABORT,'send_held') END;
+    ) THEN RAISE(ABORT,'send_held') END);
 END;
 
 -- One provider event is one atomic risk transition; never retain subject or SMTP text.
@@ -200,8 +202,8 @@ CREATE INDEX recipient_outcomes_expiry ON recipient_outcomes(occurred_at);
 CREATE TRIGGER provider_event_outcome AFTER INSERT ON provider_events BEGIN
     INSERT INTO recipient_outcomes(local_message_id,recipient,owner_iss,owner_sub,kind,risk_rank,occurred_at,event_id)
     VALUES (NEW.local_message_id,NEW.recipient,NEW.owner_iss,NEW.owner_sub,NEW.kind,
-        CASE NEW.kind WHEN 'deferred' THEN 1 WHEN 'delivered' THEN 2
-            WHEN 'complained' THEN 4 ELSE 3 END, NEW.occurred_at,NEW.event_id)
+        (CASE NEW.kind WHEN 'deferred' THEN 1 WHEN 'delivered' THEN 2
+            WHEN 'complained' THEN 4 ELSE 3 END), NEW.occurred_at,NEW.event_id)
     ON CONFLICT(local_message_id,recipient) DO UPDATE SET
         kind=excluded.kind,
         risk_rank=excluded.risk_rank,
