@@ -18,7 +18,84 @@ amail 是一个面向 AI Agent 的命令行邮件客户端。你在浏览器里�
 
 ## 安装与首次登录
 
-从 [GitHub Releases 下载 v0.1.0](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0) 中适合你系统的 amail，放到 `PATH` 中。支持 Linux、macOS 和 Windows。若你使用 Agent，也可下载同一版本的 [Agent Skill](https://github.com/kleedaisuki/moesegfault-amail/releases/download/v0.1.0/amail-agent-skill-v0.1.0.zip)。让 Agent 在你的设备上启动登录：
+**发布状态：v0.1.0 尚未开放下载。**下面是正式发布后的安装步骤；在 [GitHub Releases](https://github.com/kleedaisuki/moesegfault-amail/releases) 出现该版本、六个 ZIP／tar.gz 文件及 `SHA256SUMS` 前，不要把候选构建当作正式版。下载 `SHA256SUMS` 和与你系统匹配的安装包，放在同一个文件夹，再执行校验与安装。无需安装 Rust。
+
+| 你的设备 | 选择的安装包 |
+| --- | --- |
+| Linux，Intel／AMD 64 位（x86-64） | `amail-v0.1.0-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux，ARM 64 位（AArch64） | `amail-v0.1.0-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows，Intel／AMD 64 位（x86-64） | `amail-v0.1.0-x86_64-pc-windows-msvc.zip` |
+| macOS，Apple 芯片（M 系列） | `amail-v0.1.0-aarch64-apple-darwin.tar.gz` |
+| macOS，Intel 芯片 | `amail-v0.1.0-x86_64-apple-darwin.tar.gz` |
+
+这些是**原生**安装包；目前没有 Windows ARM 原生包，也没有 Linux musl 包。Linux 包使用 GNU libc。若不确定 CPU 类型，Linux/macOS 可运行 `uname -m`（`x86_64` 或 `aarch64`／`arm64`）；Windows 在“设置 → 系统 → 系统信息”查看系统类型。安装包和校验文件必须来自**同一个** GitHub Release，不要从聊天消息复制别人提供的散列值。
+
+### Linux：校验并安装
+
+在下载目录的终端运行；若是 ARM 64 位，将第一行换成表中的 ARM 文件名：
+
+```sh
+archive=amail-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+awk -v file="$archive" '$2 == file { print }' SHA256SUMS | sha256sum --check -
+```
+
+只有出现 `OK` 才继续。没有匹配行、文件损坏或校验失败时停止，不要运行该安装包。然后：
+
+```sh
+mkdir -p "$HOME/.local/bin"
+tar -xzf "$archive" -C "$HOME/.local/bin" amail
+export PATH="$HOME/.local/bin:$PATH"
+amail --version
+```
+
+把 `export PATH="$HOME/.local/bin:$PATH"` 加入你的 shell 启动文件（例如 `~/.bashrc` 或 `~/.zshrc`），新开的终端才能直接使用 `amail`。
+
+### macOS：校验并安装
+
+Apple 芯片使用下列文件名；Intel Mac 将第一行换成表中的 Intel 文件名：
+
+```sh
+archive=amail-v0.1.0-aarch64-apple-darwin.tar.gz
+awk -v file="$archive" '$2 == file { print }' SHA256SUMS | shasum -a 256 --check -
+```
+
+只有出现 `OK` 才继续，再运行：
+
+```sh
+mkdir -p "$HOME/.local/bin"
+tar -xzf "$archive" -C "$HOME/.local/bin" amail
+export PATH="$HOME/.local/bin:$PATH"
+amail --version
+```
+
+把同一条 `export PATH=...` 加入 `~/.zshrc`。如果 macOS 阻止首次运行，不要关闭整个系统的安全检查；先确认来源和散列，再到“系统设置 → 隐私与安全性”按系统提示允许这一个程序。
+
+### Windows：校验并安装
+
+在安装包和 `SHA256SUMS` 所在目录打开 PowerShell，将下面整段命令一次粘贴运行：
+
+```powershell
+& {
+$archive = 'amail-v0.1.0-x86_64-pc-windows-msvc.zip'
+$checksumLines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith("  $archive", [StringComparison]::Ordinal) })
+if ($checksumLines.Count -ne 1) { throw 'SHA256SUMS 中没有唯一的安装包记录' }
+$expected = ($checksumLines[0] -split '\s+')[0]
+$actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+if ($actual -ne $expected) { throw 'SHA-256 校验失败；不要运行此安装包' }
+$bin = Join-Path $HOME '.local\bin'
+Expand-Archive -LiteralPath $archive -DestinationPath $bin -Force
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (($userPath -split ';') -notcontains $bin) {
+  [Environment]::SetEnvironmentVariable('Path', "$userPath;$bin".Trim(';'), 'User')
+}
+$env:Path = "$bin;$env:Path"
+amail --version
+}
+```
+
+上面的 SHA-256 校验不通过时，`throw` 会中止该段，不要继续解压。用户 `PATH` 修改会对新开的终端生效；当前终端也已临时加入路径。若 PowerShell 受设备策略限制，请让设备管理员协助，而不是关闭安全策略。
+
+正式发布时，同一 Release 还会提供 `amail-agent-skill-v0.1.0.zip`。Agent 若支持安装 Skill，可将它解压到其 Skill 目录；这不是 CLI 的运行依赖，也不要用它替代上述安装包校验。准备好之后，让 Agent **在你的设备上**启动登录：
 
 ```sh
 amail login
