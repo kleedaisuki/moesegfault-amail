@@ -2,6 +2,8 @@
 
 Snapshot: 2026-09-29 04:31 UTC. This is a decision aid, not fresh acceptance evidence. It summarizes only unresolved gates from `product-audit.md`, `validation.md`, `staging-e2e-plan.md`, `staging-role-monitor-acceptance.md`, and `operations.md`. Do not rerun already-passed unit, cross-platform, staging-site, or five-target packaging checks without a failure affecting them. Do not copy private destinations, tokens, raw MIME, or account identifiers into release records.
 
+Update 2026-09-29 04:35 UTC: the generic Identity fix deployed to staging and the **existing** verified synthetic account passed native PKCE plus authenticated Mail address-list. The first P0 authorization gate below is now closed; the hosted SMTP-to-ZIP and later gates remain open. See `validation.md` for precise evidence and limits. The original snapshot is retained to preserve the dependency history.
+
 ## Current state and critical path
 
 The public release is **not ready**. PR #1 is open on `codex/amail-v0.1.0` (observed HEAD `9feba94`), and its check set was still running at this snapshot; the staging role-monitor deploy check showed failure, while some staging jobs were pending. This is a transient check snapshot, not a final PR verdict. `gh release view v0.1.0` and the tag-ref lookup both returned not found. Direct workstation HTTPS probes did not reach either production HTTP host; the staging release-site root returned 200. Do not infer the exact production DNS or TLS fault from the HTTPS failure alone. The prior staging mail `/health` and staging site routes passed in documented Actions runs, but no authenticated SMTP-to-ZIP user journey has passed.
