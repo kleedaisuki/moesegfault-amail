@@ -1,0 +1,25 @@
+# Fourth hosted staging address-add incident (run 36567571204)
+
+Status: **registration failed; exact route and D1 state later clean; cause unresolved** (2026-09-29). This is the canonical run-specific evidence record. It does not authorize a retry or production sending. Do not record the private alias, rule ID, account, token, request URL, provider response, mail content, or raw logs in this document or Actions output.
+
+## Deployed and tested boundary
+
+| Boundary | Observation | What it establishes |
+| --- | --- | --- |
+| Source/deploy | Source `7638f70`; [hosted CI and staging deployment 36565603761](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36565603761) green | Candidate built and deployed through those hosted gates, not live mail acceptance. |
+| Serving | [Read-only pin 36567390299](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36567390299) matched sole staging Mail version `cc149e0e-fec0-4c5a-9925-e30bd7df5939` | Point-in-time serving version and checked bindings/settings, not a permanent freeze or retained-log privacy pass. |
+| Product attempt | [Hosted E2E 36567571204, attempt 1](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36567571204/attempts/1) passed native browser login and authenticated address-list, then reported `mail_address_register_failed_http_500_http_error` | The single address add returned HTTP 500 to the CLI; `http_error` is its generic non-recognized problem classification, not the failure source. |
+| Pre-cleanup snapshot | One exact enabled, owned literal rule existed; staging D1 row was `provisioning`, `cf_rule_id=NULL`, `needs_reconcile=0` | A route-create side effect occurred; activation ID was not durably recorded at that snapshot. It does **not** prove a successful provider response to the Worker or identify the failing instruction. |
+| Harness cleanup | `address_route_retired`; primary error unchanged; no separate cleanup failure reported | The harness attempted its safe retire path. This label alone is not a complete post-run route/D1 absence proof. |
+| First readback | [Exact run/attempt reconciliation 36568319524](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36568319524): route absent, D1 `not_clean` | Registration left no observed exact route then, but D1 had not yet met the clean contract. |
+| Delayed readback | [Exact run/attempt reconciliation 36568710012](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36568710012): route absent, D1 clean | This same alias was clean at the later observation. The clean category may be an absent row or a valid retired tombstone; it does not explain the failed add. |
+
+There was no new alias creation, manual route write, or manual D1 mutation between those two readbacks. The state change is consistent with the application's deferred reconciliation, but the read-only labels do not prove the actor, sequence, or original failure. The hosted test stopped before SMTP ingress, ZIP retrieval, text/metadata/semantic search, outbound delivery, or release acceptance. Public sending remains held.
+
+## Interpretation and next discriminating evidence
+
+The preceding [disabled-rule Write control-plane probe](staging-routing-valid-write-self-test.md) had already proved the existing GitHub Routing Rules token could create and clean one valid disabled staging rule. This fourth attempt additionally shows an **enabled rule creation effect** in the product path. Neither observation proves that the deployed Worker received a success response from Cloudflare for this request, nor does it explain the HTTP 500. The exact source-level interval and ordinary handled error responses are bounded in the [post-create code audit](staging-post-create-500-code-audit.md). In particular, a null D1 rule ID at a pre-cleanup snapshot does not isolate provider-response decoding, trace emission, D1 activation, response encoding, a runtime trap, or edge behavior.
+
+The first non-mutating discriminator is the separately reviewed [privacy-safe invocation-outcome plan](staging-fourth-address-500-observability.md): query only fixed Cloudflare Workers Metrics GraphQL status categories and small aggregate counts for the exact staging service and justified incident window. A mixed, absent, or non-attributable aggregate must remain `UNVERIFIED`; never export raw exceptions, error pages, event objects, aliases, or provider payloads to Actions. If that aggregate cannot isolate the invocation, use a synthetic hosted post-create integration test and a separately reviewed future one-use plan with request-local fixed markers, serving pin, exact-alias preflight, pre-cleanup snapshot, and delayed reconciliation. **Do not create a fifth user address merely to reproduce this failure.**
+
+The validation ledger records the [release-gate consequence](validation.md#fourth-hosted-address-add-enabled-route-created-http-500-eventual-cleanup). Address registration remains failed; quota, reserved-name, SMTP→ZIP→search, privacy canary, and production acceptance are not inferred from cleanup.
