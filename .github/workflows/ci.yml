@@ -12,7 +12,7 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-serving-pin, staging-routing-policy, staging-routing-diagnostic, staging-role-smtp, staging-trace-canary, production]
+        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-serving-pin, staging-routing-policy, staging-routing-diagnostic, staging-current-address-diagnostic, staging-role-smtp, staging-trace-canary, production]
       confirm:
         description: Staging E2E, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -294,6 +294,37 @@ jobs:
             throw 'Explicit read-only staging incident confirmation required'
           }
           python infra/tests/staging_address_failure_logs.py READ_STAGING_ADDRESS_INCIDENT_36533465672
+
+  staging-current-address-diagnostic:
+    name: Classify one current staging address-add incident without mutation
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-current-address-diagnostic' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-retained-routing-diagnostic
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Query only the current run's bounded retained event window
+        env:
+          DIAGNOSTIC_CONFIRM: ${{ inputs.confirm }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        shell: pwsh
+        run: |
+          if ($env:DIAGNOSTIC_CONFIRM -ne 'READ_STAGING_ADDRESS_INCIDENT_36553799873') {
+            throw 'Explicit read-only staging incident confirmation required'
+          }
+          python infra/tests/staging_current_address_failure_logs.py READ_STAGING_ADDRESS_INCIDENT_36553799873
 
   staging-role-smtp:
     name: One guarded staging role-monitor SMTP probe
