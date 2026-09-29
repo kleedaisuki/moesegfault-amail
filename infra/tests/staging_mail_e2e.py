@@ -29,6 +29,7 @@ import smtplib
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 import urllib.request
@@ -156,6 +157,9 @@ DIAG_PHASES = frozenset({
 })
 DIAG_KINDS = frozenset({"none", "request", "http", "provider", "decode", "d1", "state"})
 ROW_STATES = frozenset({"pending", "provisioning", "active", "deleting", "retired"})
+MAIL_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+SEARCH_CURSOR = re.compile(r"[A-Za-z0-9_.~:-]{1,4096}\Z")
+RUNNING_SEARCH = re.compile(rb"search job ([A-Za-z0-9_-]{1,128}) still running; resume with `amail search --resume \1`")
 
 
 def checked_diag(value: bytes) -> str | None:
@@ -248,7 +252,10 @@ def amail_not_found(binary: Path, env: dict[str, str], *args: str) -> None:
         )
     except (subprocess.TimeoutExpired, OSError):
         raise ProbeFailure("deleted_resource_check_failed") from None
-    check(proc.returncode != 0 and b"code=not_found" in proc.stderr, "deleted_resource_still_accessible")
+    check(proc.returncode != 0 and re.search(
+        rb"amail: mail API [a-z.]+ failed: HTTP 404(?: [A-Za-z ]{1,40})?, code=not_found(?:,|\r?\n|$)",
+        proc.stderr,
+    ) is not None, "deleted_resource_still_accessible")
 
 
 def cf_rules(zone: str, token: str) -> list[dict]:
@@ -728,8 +735,192 @@ def semantic_cases(
     print("semantic_two_message_search_verified")
 
 
+def cleanup_inventory(binary: Path, env: dict[str, str], address: str) -> dict[str, dict]:
+    """Enumerate one complete owner-scoped snapshot, discarding stale partial pages."""
+
+    for attempt in range(3):
+        cursor = None
+        seen: set[str] = set()
+        found: dict[str, dict] = {}
+        for _ in range(100):
+            args = ["search", "--mailbox", address, "--limit", "100", "--wait-seconds", "300"]
+            if cursor:
+                args += ["--cursor", cursor]
+            for _resume in range(3):
+                try:
+                    proc = subprocess.run([str(binary), *args], env=env, capture_output=True,
+                                          timeout=360, check=False)
+                except (OSError, subprocess.TimeoutExpired):
+                    raise ProbeFailure("cleanup_search_transport_unverified") from None
+                check(len(proc.stdout) <= 2_000_000 and len(proc.stderr) <= 65_536,
+                      "cleanup_search_output_unverified")
+                job = RUNNING_SEARCH.search(proc.stderr) if proc.returncode else None
+                if job:
+                    args = ["search", "--resume", job[1].decode("ascii"), "--wait-seconds", "300"]
+                    continue
+                break
+            else:
+                raise ProbeFailure("cleanup_search_job_unverified")
+            if proc.returncode:
+                code = cli_failure(proc.stderr, "cleanup_search_failed")
+                if code in ("cleanup_search_failed_http_409_search_job_stale",
+                            "cleanup_search_failed_http_409_search_cursor_stale") and attempt < 2:
+                    time.sleep((2, 5)[attempt])
+                    break
+                raise ProbeFailure("cleanup_search_unverified")
+            try:
+                lines = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+            except (ValueError, UnicodeDecodeError):
+                raise ProbeFailure("cleanup_search_output_unverified") from None
+            check(all(isinstance(row, dict) for row in lines), "cleanup_search_output_unverified")
+            markers = [row for row in lines if "next_cursor" in row]
+            check(len(markers) <= 1 and (not markers or lines[-1] is markers[0]),
+                  "cleanup_search_shape_unverified")
+            for row in lines[:len(lines) - len(markers)]:
+                msg_id = row.get("id")
+                check(isinstance(msg_id, str) and MAIL_ID.fullmatch(msg_id) is not None
+                      and msg_id not in found and row.get("mailbox") == address
+                      and row.get("direction") == "inbound", "cleanup_search_row_unverified")
+                found[msg_id] = row
+            if not markers:
+                return found
+            marker = markers[0]
+            cursor = marker.get("next_cursor")
+            check(set(marker) == {"next_cursor"} and isinstance(cursor, str)
+                  and SEARCH_CURSOR.fullmatch(cursor) is not None and cursor not in seen,
+                  "cleanup_search_cursor_unverified")
+            seen.add(cursor)
+        else:
+            raise ProbeFailure("cleanup_search_pages_unverified")
+    raise ProbeFailure("cleanup_search_unverified")
+
+
+def cleanup_verify(binary: Path, env: dict[str, str], address: str,
+                   found: dict[str, dict], oracles: dict[str, dict]) -> None:
+    """Corroborate every active fixture against its in-memory submitted MIME."""
+
+    check(len(found) <= len(oracles), "cleanup_unexpected_message")
+    subjects: set[str] = set()
+    for msg_id, listed in found.items():
+        subject = listed.get("subject")
+        check(isinstance(subject, str) and subject in oracles and subject not in subjects,
+              "cleanup_unexpected_message")
+        subjects.add(subject)
+        oracle = oracles[subject]
+        detail = amail(binary, env, "get", msg_id, failure="cleanup_get_failed")
+        check(len(detail) == 1 and isinstance(detail[0].get("metadata"), dict),
+              "cleanup_get_unverified")
+        row = detail[0]
+        rich = subject.endswith("-Signal")
+        check(row.get("id") == msg_id and row.get("mailbox") == address
+              and row.get("direction") == "inbound" and row.get("subject") == subject
+              and row.get("from") == SENDER and row.get("to") == [address]
+              and row["metadata"].get("message_id") == oracle["submitted_message_id"]
+              and row.get("has_text") is True and row.get("has_html") is rich
+              and row.get("has_attachments") is rich
+              and row.get("attachment_count") == (2 if rich else 0),
+              "cleanup_get_mismatch")
+        with tempfile.TemporaryDirectory(prefix="mail-cleanup-", dir=TEMP) as directory:
+            archive = Path(directory) / "message.zip"
+            unpacked = Path(directory) / "unpacked"
+            safe_zip(binary, env, msg_id, archive, unpacked)
+            try:
+                body = (unpacked / "body.txt").read_text(encoding="utf-8")
+                manifest = tomllib.loads((unpacked / "manifest.toml").read_text(encoding="utf-8"))
+            except (OSError, ValueError, UnicodeDecodeError):
+                raise ProbeFailure("cleanup_archive_unverified") from None
+            check(oracle["phrase"] in body and manifest.get("subject") == subject
+                  and manifest.get("message_id") == oracle["submitted_message_id"]
+                  and manifest.get("direction") == "inbound", "cleanup_archive_mismatch")
+            if rich:
+                oracle["delivered_message_id"] = oracle["submitted_message_id"]
+                verify_archive(unpacked, oracle, address, msg_id)
+            else:
+                check(not (unpacked / "body.html").exists()
+                      and manifest.get("assets") == [], "cleanup_archive_mismatch")
+
+
+def cleanup_delete_once(binary: Path, env: dict[str, str], msg_id: str) -> bool:
+    """Issue one ID-scoped delete; callers must read back even on uncertainty."""
+
+    try:
+        proc = subprocess.run([str(binary), "delete", msg_id], env=env, capture_output=True,
+                              timeout=90, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == b'{"ok":true}' and not proc.stderr
+
+
+def cleanup_messages(binary: Path, env: dict[str, str], address: str,
+                     oracles: dict[str, dict] | None, smtp_attempted: bool) -> None:
+    """Delete only current-run verified fixtures; never retry an ambiguous mutation."""
+
+    if not smtp_attempted:
+        check(not cleanup_inventory(binary, env, address), "message_cleanup_unverified")
+        return
+    check(oracles is not None and len(oracles) == 2, "message_cleanup_unverified")
+    found = cleanup_inventory(binary, env, address)
+    cleanup_verify(binary, env, address, found, oracles)
+    check(cleanup_inventory(binary, env, address) == found, "cleanup_inventory_changed")
+    for msg_id in list(found):
+        succeeded = cleanup_delete_once(binary, env, msg_id)
+        # An uncertain result is not permission to repeat the mutation.
+        amail_not_found(binary, env, "get", msg_id)
+        check(succeeded, "cleanup_delete_status_unverified")
+        remaining = cleanup_inventory(binary, env, address)
+        expected = {key: value for key, value in found.items() if key != msg_id}
+        check(remaining == expected, "cleanup_delete_readback_unverified")
+        found = remaining
+    check(not cleanup_inventory(binary, env, address), "message_cleanup_unverified")
+
+
+def cleanup_d1_counts(account: str, token: str, address: str,
+                      oracles: dict[str, dict]) -> tuple[int, int]:
+    """Read only aggregate active/deleted counts for the exact run alias."""
+
+    sql = ("SELECT COUNT(*) AS total, "
+           "COALESCE(SUM(CASE WHEN deleted_at IS NULL THEN 1 ELSE 0 END),0) AS active, "
+           "COALESCE(SUM(CASE WHEN COALESCE(direction,'')!='inbound' "
+           "OR COALESCE(subject,'') NOT IN (?2,?3) "
+           "THEN 1 ELSE 0 END),0) AS unexpected, "
+           "COALESCE(SUM(CASE WHEN subject=?2 THEN 1 ELSE 0 END),0) AS signal, "
+           "COALESCE(SUM(CASE WHEN subject=?3 THEN 1 ELSE 0 END),0) AS distractor "
+           "FROM messages WHERE address=?1")
+    subjects = tuple(oracles)
+    req = urllib.request.Request(
+        f"{API}/accounts/{account}/d1/database/{ACCOUNT_DB}/query",
+        data=json.dumps({"sql": sql, "params": [address, *subjects]}).encode(),
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with control_open(req, timeout=25) as response:
+            check(response.status == 200, "cleanup_d1_unverified")
+            raw = response.read(65_537)
+        check(len(raw) <= 65_536, "cleanup_d1_unverified")
+        data = json.loads(raw)
+        batches = data.get("result") if isinstance(data, dict) and data.get("success") is True else None
+        check(isinstance(batches, list) and len(batches) == 1, "cleanup_d1_unverified")
+        batch = batches[0]
+        records = batch.get("results") if isinstance(batch, dict) and batch.get("success") is True else None
+        check(isinstance(records, list) and len(records) == 1, "cleanup_d1_unverified")
+        row = records[0]
+        check(isinstance(row, dict) and set(row) == {"total", "active", "unexpected", "signal", "distractor"}
+              and all(type(row[key]) is int for key in row)
+              and row["unexpected"] == 0 and row["signal"] <= 1 and row["distractor"] <= 1
+              and 0 <= row["active"] <= row["total"] <= 2
+              and row["signal"] + row["distractor"] == row["total"], "cleanup_d1_unverified")
+        return row["total"], row["active"]
+    except ProbeFailure:
+        raise
+    except Exception:
+        raise ProbeFailure("cleanup_d1_unverified") from None
+
+
 def cleanup_run(
-    binary: Path, env: dict[str, str], zone: str, token: str, address: str, nonce: str
+    binary: Path, env: dict[str, str], zone: str, token: str, address: str, nonce: str,
+    oracles: dict[str, dict] | None = None, smtp_attempted: bool = False,
+    delivery_confirmed: bool = False, account: str = "", api_token: str = "",
 ) -> None:
     """Try message and address cleanup independently; require route absence.
 
@@ -738,11 +929,7 @@ def cleanup_run(
 
     message_error = False
     try:
-        listed = rows(amail(binary, env, "sync", "--limit", "100", failure="cleanup_sync_failed"))
-        subjects = {f"AMAIL-E2E-{nonce}-Signal", f"AMAIL-E2E-{nonce}-Distractor"}
-        for item in listed:
-            if item.get("subject") in subjects:
-                amail(binary, env, "delete", item["id"], failure="cleanup_message_delete_failed")
+        cleanup_messages(binary, env, address, oracles, smtp_attempted)
     except Exception:
         message_error = True
 
@@ -774,6 +961,14 @@ def cleanup_run(
             break
         time.sleep(3)
     check(route_absent and address_absent, "address_or_route_cleanup_failed")
+    if smtp_attempted:
+        # SMTP submission can race the first search. Retirement closes the
+        # ingress route; require a settled independent D1 read, not an empty page.
+        time.sleep(30)
+        check(oracles is not None, "message_cleanup_unverified")
+        total, active = cleanup_d1_counts(account, api_token, address, oracles)
+        check(active == 0 and (delivery_confirmed or total == 2),
+              "message_cleanup_unverified")
     check(not message_error, "message_cleanup_failed")
     # A failed delete might mean no address was created; absence is decisive.
     # 删除请求失败可能意味着地址从未创建；最终不存在才是决定性条件。
@@ -820,6 +1015,9 @@ def main() -> int:
     primary_error: ProbeFailure | None = None
     cleanup_error: ProbeFailure | None = None
     snapshot_taken = False
+    mail_oracles: dict[str, dict] | None = None
+    smtp_attempted = False
+    delivery_confirmed = False
     try:
         creation_attempted = True
         result = amail(binary, env, "address", "add", part, failure="address_register_failed")
@@ -847,9 +1045,13 @@ def main() -> int:
         assert_route(zone, routing_token, address, True)
         rich, rich_oracle = make_mail(address, nonce, True)
         distractor, distractor_oracle = make_mail(address, nonce, False)
+        mail_oracles = {rich_oracle["subject"]: rich_oracle,
+                        distractor_oracle["subject"]: distractor_oracle}
+        smtp_attempted = True
         smtp_send(smtp_token, address, [rich, distractor])
         print("smtp_submitted")
         messages = await_messages(binary, env, {rich_oracle["subject"], distractor_oracle["subject"]})
+        delivery_confirmed = True
         rich_row = messages[rich_oracle["subject"]]
         target = rich_row.get("id")
         check(isinstance(target, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]+", target)), "message_id_shape")
@@ -899,7 +1101,8 @@ def main() -> int:
             if not snapshot_taken:
                 capture_snapshot(zone, routing_token, account, api_token, address)
             try:
-                cleanup_run(binary, env, zone, routing_token, address, nonce)
+                cleanup_run(binary, env, zone, routing_token, address, nonce,
+                            mail_oracles, smtp_attempted, delivery_confirmed, account, api_token)
             except ProbeFailure as error:
                 cleanup_error = error
             except Exception:

@@ -491,24 +491,123 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "sync_failed_subprocess_timeout")
 
     def test_message_timeout_still_retires_address(self) -> None:
-        """Retire even when cleanup sync times out. / 清理同步超时仍需注销地址。"""
+        """Retire even when the complete mailbox inventory fails."""
 
         calls = []
 
         def fake_amail(_binary, _env, *args, failure):
             calls.append(args)
-            if args[:1] == ("sync",):
-                raise HARNESS.ProbeFailure("cleanup_sync_failed")
             return []
 
         with patch.object(HARNESS, "amail", side_effect=fake_amail), patch.object(
             HARNESS, "cf_rules", return_value=[]
-        ):
+        ), patch.object(HARNESS, "cleanup_messages", side_effect=HARNESS.ProbeFailure("cleanup_search_unverified")):
             with self.assertRaises(HARNESS.ProbeFailure) as caught:
                 HARNESS.cleanup_run(Path("amail.exe"), {}, "zone", "token", "test@example.test", "nonce")
         self.assertEqual(str(caught.exception), "message_cleanup_failed")
         self.assertIn(("address", "delete", "test@example.test"), calls)
         self.assertIn(("address", "list"), calls)
+
+    def test_cleanup_inventory_restarts_after_mid_page_stale(self) -> None:
+        """Never combine pages across a generation change."""
+
+        def reply(args):
+            if "--cursor" in args and reply.calls == 2:
+                return subprocess.CompletedProcess(args, 1, b"", (
+                    b"amail: mail API messages.search failed: HTTP 409 Conflict, "
+                    b"code=search_cursor_stale\n"))
+            if reply.calls == 1:
+                return subprocess.CompletedProcess(args, 0,
+                    b'{"id":"old","mailbox":"box@example.test","direction":"inbound"}\n'
+                    b'{"next_cursor":"first"}\n', b"")
+            return subprocess.CompletedProcess(args, 0,
+                b'{"id":"new","mailbox":"box@example.test","direction":"inbound"}\n', b"")
+        reply.calls = 0
+
+        def run(args, **_kwargs):
+            reply.calls += 1
+            return reply(args)
+
+        with patch.object(HARNESS.subprocess, "run", side_effect=run), patch.object(
+            HARNESS.time, "sleep", return_value=None
+        ):
+            found = HARNESS.cleanup_inventory(Path("amail"), {}, "box@example.test")
+        self.assertEqual(set(found), {"new"})
+
+    def test_cleanup_inventory_rejects_repeated_cursor(self) -> None:
+        """A looping cursor is an incomplete inventory, not a deletion target."""
+
+        pages = iter((b'{"id":"one","mailbox":"box@example.test","direction":"inbound"}\n'
+                      b'{"next_cursor":"same"}\n',
+                      b'{"id":"two","mailbox":"box@example.test","direction":"inbound"}\n'
+                      b'{"next_cursor":"same"}\n'))
+        with patch.object(HARNESS.subprocess, "run", side_effect=lambda *_args, **_kw:
+                          subprocess.CompletedProcess([], 0, next(pages), b"")):
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.cleanup_inventory(Path("amail"), {}, "box@example.test")
+        self.assertEqual(str(caught.exception), "cleanup_search_cursor_unverified")
+
+    def test_cleanup_verify_rejects_wrong_mailbox_and_message_id(self) -> None:
+        """A matching title alone never authorizes deletion."""
+
+        address = "box@example.test"
+        subject = "AMAIL-E2E-nonce-Signal"
+        oracle = {"subject": subject, "submitted_message_id": "<right@example.test>",
+                  "phrase": "private"}
+        listed = {"id_1": {"id": "id_1", "subject": subject}}
+        detail = {"id": "id_1", "mailbox": address, "direction": "inbound",
+                  "subject": subject, "from": HARNESS.SENDER, "to": [address],
+                  "metadata": {"message_id": "<wrong@example.test>"}, "has_text": True,
+                  "has_html": True, "has_attachments": True, "attachment_count": 2}
+        with patch.object(HARNESS, "amail", return_value=[detail]):
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.cleanup_verify(Path("amail"), {}, address, listed, {subject: oracle})
+        self.assertEqual(str(caught.exception), "cleanup_get_mismatch")
+        detail["metadata"]["message_id"] = oracle["submitted_message_id"]
+        detail["mailbox"] = "other@example.test"
+        with patch.object(HARNESS, "amail", return_value=[detail]):
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.cleanup_verify(Path("amail"), {}, address, listed, {subject: oracle})
+        self.assertEqual(str(caught.exception), "cleanup_get_mismatch")
+
+    def test_ambiguous_delete_is_not_repeated(self) -> None:
+        """Read back an ambiguous single-ID mutation; never submit it again."""
+
+        subject = "AMAIL-E2E-nonce-Signal"
+        oracle = {subject: {"submitted_message_id": "<id>", "phrase": "secret"},
+                  "AMAIL-E2E-nonce-Distractor": {"submitted_message_id": "<id2>", "phrase": "secret2"}}
+        found = {"id_1": {"id": "id_1", "subject": subject}}
+        with patch.object(HARNESS, "cleanup_inventory", return_value=found), patch.object(
+            HARNESS, "cleanup_verify"
+        ), patch.object(HARNESS, "cleanup_delete_once", return_value=False) as delete, patch.object(
+            HARNESS, "amail_not_found"
+        ) as readback:
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.cleanup_messages(Path("amail"), {}, "box@example.test", oracle, True)
+        self.assertEqual(str(caught.exception), "cleanup_delete_status_unverified")
+        delete.assert_called_once()
+        readback.assert_called_once()
+
+    def test_partial_smtp_submission_requires_independent_settled_count(self) -> None:
+        """One delivered fixture cannot turn a partial SMTP attempt green."""
+
+        address = "box@example.test"
+        oracles = {"Signal": {}, "Distractor": {}}
+
+        def fake_amail(_binary, _env, *args, failure):
+            if args == ("address", "list"):
+                return []
+            return [{"ok": True}]
+
+        with patch.object(HARNESS, "amail", side_effect=fake_amail), patch.object(
+            HARNESS, "cf_rules", return_value=[]
+        ), patch.object(HARNESS, "cleanup_messages"), patch.object(
+            HARNESS, "cleanup_d1_counts", return_value=(1, 0)
+        ), patch.object(HARNESS.time, "sleep", return_value=None):
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.cleanup_run(Path("amail"), {}, "zone", "token", address, "nonce",
+                                    oracles, True, False, "account", "d1-token")
+        self.assertEqual(str(caught.exception), "message_cleanup_unverified")
 
     def test_address_list_failure_does_not_hide_route(self) -> None:
         """Report uncertain cleanup rather than a false pass. / 地址查询失败不得冒充清理成功。"""
