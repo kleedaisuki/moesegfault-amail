@@ -129,10 +129,14 @@ class TailSession:
                 from websockets.asyncio.client import connect
             else:
                 connect = self._connect_socket
-            created = await asyncio.to_thread(
-                _json_request, self._endpoint, self._token, "POST", FILTER,
-            )
-            self._tail_id, url, self._expiry = _tail_record(created)
+            # The synchronous, ten-second control-plane call cannot be cancelled
+            # between creation and recording its ID, which would orphan a Tail.
+            created = _json_request(self._endpoint, self._token, "POST", FILTER)
+            record = created.get("result")
+            candidate = record.get("id") if isinstance(record, dict) else None
+            if isinstance(candidate, str) and TAIL_ID.fullmatch(candidate):
+                self._tail_id = candidate
+            _, url, self._expiry = _tail_record(created)
             self._socket = await connect(
                 url, subprotocols=["trace-v1"], compression=None, proxy=False,
                 open_timeout=10, close_timeout=3, ping_interval=10, ping_timeout=10,
@@ -214,9 +218,8 @@ class TailSession:
         if self._tail_id is None:
             return True
         try:
-            await asyncio.to_thread(
-                _json_request, f"{self._endpoint}/{self._tail_id}", self._token, "DELETE",
-            )
+            # Keep deletion non-cancellable for the same orphan-prevention reason.
+            _json_request(f"{self._endpoint}/{self._tail_id}", self._token, "DELETE")
             self._tail_id = None
             return True
         except Exception:
