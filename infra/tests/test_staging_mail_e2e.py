@@ -245,6 +245,31 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(HARNESS.cli_failure(b"Error: private@example.test", "address_register_failed"),
                          "address_register_failed")
 
+    def test_address_failure_cloudflare_header_category_is_fixed(self) -> None:
+        """The actual CLI response category survives, but no header bytes do."""
+
+        base = (b"amail: mail API addresses.add failed: HTTP 500 Internal Server Error, "
+                b"code=http_error, correlation_id=none")
+        for category in (b"1101", b"1102", b"other", b"absent"):
+            stderr = base + b", cf_error=" + category + b"\n"
+            self.assertEqual(
+                HARNESS.cli_failure(stderr, "address_register_failed"),
+                "address_register_failed_http_500_http_error_cf_" + category.decode("ascii"),
+            )
+        with_diag = base + b", diag=v1:routing_create:provider:503:0, cf_error=1101\n"
+        self.assertEqual(
+            HARNESS.cli_failure(with_diag, "address_register_failed"),
+            "address_register_failed_http_500_http_error_diag_v1_routing_create_provider_503_0_cf_1101",
+        )
+        for category in (b"1101private", b"private@example.test"):
+            stderr = base + b", cf_error=" + category + b"\n"
+            self.assertEqual(HARNESS.cli_failure(stderr, "address_register_failed"),
+                             "address_register_failed_http_500_http_error")
+        self.assertEqual(
+            HARNESS.cli_failure(base + b", cf_error=1101\rleak\n", "address_register_failed"),
+            "address_register_failed",
+        )
+
     def test_precleanup_snapshot_is_fixed_and_read_only(self) -> None:
         """Exact route and parameterized row reduce to labels without payload exposure."""
 

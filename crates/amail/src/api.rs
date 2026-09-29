@@ -162,6 +162,23 @@ fn address_response_diag(headers: &HeaderMap) -> Option<&str> {
     address_diag(headers)
 }
 
+/// Classify Cloudflare-generated error pages without trusting header bytes as output.
+/// Missing is distinct from any present, unrecognized or duplicated value.
+fn cf_error_type(headers: &HeaderMap) -> &'static str {
+    let mut values = headers.get_all("cf-error-type").iter();
+    let Some(first) = values.next() else {
+        return "absent";
+    };
+    if values.next().is_some() {
+        return "other";
+    }
+    match first.as_bytes() {
+        b"1101" => "1101",
+        b"1102" => "1102",
+        _ => "other",
+    }
+}
+
 /// Zero denotes an unobserved provider result; all other numbers are canonical decimal.
 fn canonical_number(value: &str, min: u32, max: u32) -> bool {
     value == "0"
@@ -273,6 +290,8 @@ impl<'a> Api<'a> {
             .then(|| address_response_diag(response.headers()))
             .flatten()
             .map(str::to_owned);
+        let cf_error = (operation == "addresses.add" && status.is_server_error())
+            .then(|| cf_error_type(response.headers()));
         let body = response
             .bytes()
             .map_err(|err| {
@@ -304,12 +323,15 @@ impl<'a> Api<'a> {
             } else {
                 raw_code
             };
-            let prefix = format!(
+            let mut prefix = format!(
                 "mail API {operation} failed: HTTP {status}, code={code}, correlation_id={}",
                 correlation.as_deref().unwrap_or("none")
             );
             if let Some(diagnostic) = diagnostic {
-                bail!("{prefix}, diag={diagnostic}");
+                prefix.push_str(&format!(", diag={diagnostic}"));
+            }
+            if let Some(cf_error) = cf_error {
+                prefix.push_str(&format!(", cf_error={cf_error}"));
             }
             bail!("{prefix}");
         }
@@ -581,6 +603,23 @@ mod tests {
 
         headers.append("x-amail-request-id", id);
         assert_eq!(address_response_diag(&headers), None);
+    }
+
+    #[test]
+    fn cloudflare_error_type_is_a_closed_response_category() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(cf_error_type(&headers), "absent");
+        headers.insert("cf-error-type", HeaderValue::from_static("1101"));
+        assert_eq!(cf_error_type(&headers), "1101");
+        headers.insert("cf-error-type", HeaderValue::from_static("1102"));
+        assert_eq!(cf_error_type(&headers), "1102");
+        headers.insert(
+            "cf-error-type",
+            HeaderValue::from_static("private@example.test"),
+        );
+        assert_eq!(cf_error_type(&headers), "other");
+        headers.append("cf-error-type", HeaderValue::from_static("1101"));
+        assert_eq!(cf_error_type(&headers), "other");
     }
 
     #[test]

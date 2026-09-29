@@ -198,7 +198,8 @@ def cli_failure(stderr: bytes, fallback: str) -> str:
     found = re.search(
         rb"(?:^|\n)amail: mail API ([a-z.]+) failed: HTTP ([45][0-9]{2})(?: [A-Za-z ]{1,40})?, "
         rb"code=([a-z][a-z0-9_]{0,48})(?:, correlation_id=[^,\r\n]{1,128})?"
-        rb"(?:, diag=([^,\r\n]{1,100}))?\r?(?:\n|$)",
+        rb"(?:, diag=([^,\r\n]{1,100}))?"
+        rb"(?:, cf_error=([^,\r\n]{1,40}))?\r?(?:\n|$)",
         stderr,
     )
     if not found:
@@ -208,7 +209,11 @@ def cli_failure(stderr: bytes, fallback: str) -> str:
         return f"{fallback}_http_{found.group(2).decode('ascii')}_unknown_code"
     label = f"{fallback}_http_{found.group(2).decode('ascii')}_{code}"
     diag = checked_diag(found.group(4)) if found.group(4) and found.group(1) == b"addresses.add" else None
-    return f"{label}_diag_{diag.replace(':', '_')}" if diag else label
+    if diag:
+        label += f"_diag_{diag.replace(':', '_')}"
+    if found.group(5) in (b"1101", b"1102", b"other", b"absent") and found.group(1) == b"addresses.add":
+        label += f"_cf_{found.group(5).decode('ascii')}"
+    return label
 
 
 def amail(binary: Path, env: dict[str, str], *args: str, failure: str) -> list[dict]:
