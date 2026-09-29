@@ -156,7 +156,13 @@ def journal_new(home: Path, watermark: int) -> tuple[str, str, str]:
 def run_probes(cli: Path, home: Path) -> tuple[int, int, tuple[str, str, str], str, tuple[str, str]]:
     """Exercise an ordinary CLI read and one anonymous rejected synthetic URL."""
 
-    environment = dict(os.environ)
+    # Do not inherit Cloudflare API capabilities into the native mail process.
+    inherited = (
+        "PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SYSTEMROOT",
+        "WINDIR", "TEMP", "TMP", "LANG", "LC_ALL", "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+    )
+    environment = {key: os.environ[key] for key in inherited if key in os.environ}
     environment.update({
         "AMAIL_HOME": str(home),
         "AMAIL_API_BASE": API,
