@@ -55,6 +55,8 @@ def validate_environment() -> tuple[str, str]:
         raise HostedProbeError("staging_credential_invalid")
     if not re.fullmatch(r"[a-f0-9]{32}", os.environ.get("CLOUDFLARE_ZONE_ID", "")):
         raise HostedProbeError("staging_zone_missing")
+    if not re.fullmatch(r"[a-f0-9]{32}", os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")):
+        raise HostedProbeError("staging_account_missing")
     if not os.environ.get("CF_EMAIL_ROUTING_TOKEN"):
         raise HostedProbeError("staging_routing_token_missing")
     if not os.environ.get("CLOUDFLARE_API_TOKEN"):

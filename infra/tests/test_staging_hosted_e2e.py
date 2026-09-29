@@ -54,6 +54,19 @@ class HostedHarnessSafetyTests(unittest.TestCase):
         )
         self.assertEqual(workflow.count("AMAIL_STAGING_SEMANTIC_E2E:"), 1)
 
+    def test_staging_snapshot_receives_account_id_only_in_execution_step(self) -> None:
+        """Fail before login if the bounded D1 readback cannot be authenticated."""
+
+        workflow = (HARNESS.ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        job = workflow.split("  staging-e2e:\n", 1)[1].split(
+            "\n  staging-prior-alias-reconcile:", 1
+        )[0]
+        execution = "      - name: Execute staging native and inbound-mail acceptance\n"
+        before, step = job.split(execution, 1)
+        self.assertIn("CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}", step)
+        self.assertIn("CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}", step)
+        self.assertNotIn("CLOUDFLARE_ACCOUNT_ID:", before)
+
     def test_success_marker_distinguishes_basic_and_semantic_scope(self) -> None:
         """A basic pass must never look like a semantic-search pass."""
 
