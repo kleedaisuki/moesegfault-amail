@@ -35,3 +35,20 @@ The manually dispatched [audit run 36594138488](https://github.com/kleedaisuki/m
 The two exact-subject fixture matches establish that both synthetic messages were present as **active D1 records at the audit read time**, despite the harness's earlier list 409 and failed message cleanup. Their embedding work had completed by this later read. The retired address and absent exact literal route describe current routing/address state; they do not delete those active messages. These observations do not establish when ingress occurred, whether ZIP retrieval or search succeeded, what exact 409 code was returned, or whether a search-generation change caused it. `generation:present` is not a historical generation value. The original E2E acceptance remains failed, and the two remaining active fixture records require separately reviewed exact-run cleanup rather than a broad delete or SMTP replay.
 
 The diagnostic was independently reviewed before dispatch. No local test was run during preparation; the pre-dispatch checks were syntax and diff inspection. The synthetic test module covers query shape, privacy, aggregation invariants, and workflow guard for later CI validation. No further live query is implied by this readback.
+
+## Post-second-cleanup readback
+
+The [second guarded cleanup run 36601847525](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36601847525) stopped at `fifth_cleanup_failed:fixture_get_mismatch` before its first per-ID delete. The separate read-only [audit run 36602396858](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36602396858) then reported the following fixed-label state for the same exact run and attempt:
+
+| Dimension | Observed bucket/status |
+| --- | --- |
+| Exact literal route | absent |
+| Exact address / owner / reconciliation | retired / expected / `0` |
+| Inbound active / deleted | `2` / `0` |
+| Signal active / deleted | `1` / `0` |
+| Distractor active / deleted | `1` / `0` |
+| Other inbound active / deleted | `0` / `0` |
+| Outbound active / deleted | `0` / `0` |
+| Embedding succeeded / pending / quarantined / no-work | `2` / `0` / `0` / `0` |
+
+This independent current-state readback corroborates that neither fixture had been soft-deleted by audit time. It does not diagnose which `get` predicate failed, prove a historical lack of transient mutations, or turn the original E2E into a pass. Cleanup remains incomplete; any further live mutation needs its own reviewed, fail-closed gate.
