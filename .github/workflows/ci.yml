@@ -12,13 +12,17 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-trace-canary, production]
+        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-trace-canary, production]
       confirm:
         description: Staging E2E, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
         type: string
       role_deploy_run:
         description: Successful staging CI run ID that deployed the current role Worker; role SMTP only
+        required: false
+        type: string
+      role_probe_run_id:
+        description: Historical failed role SMTP run ID; role timeout read-only audit only
         required: false
         type: string
       role_version:
@@ -580,6 +584,43 @@ jobs:
           # Existing staging token for guarded SMTP; sender read is not SMTP AUTH proof.
           AMAIL_TEST_SMTP_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: python workers/role-monitor/hosted_acceptance.py
+
+  staging-role-timeout-audit:
+    name: Read-only aggregate audit of first role SMTP timeout
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-role-timeout-audit' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-role-timeout-audit
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require exact historical run and read-only confirmation
+        shell: pwsh
+        env:
+          AUDIT_CONFIRM: ${{ inputs.confirm }}
+          ROLE_RUN_ID: ${{ inputs.role_probe_run_id }}
+        run: |
+          if ($env:AUDIT_CONFIRM -ne 'READ_FIRST_ROLE_SMTP_AGGREGATES' -or
+              $env:ROLE_RUN_ID -ne '36603362864') {
+            throw 'Exact first role SMTP read-only confirmation required'
+          }
+      - name: Read bounded role D1 aggregates and current provider state only
+        env:
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          AMAIL_STAGING_ROLE_VERSION: ${{ inputs.role_version }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_role_timeout_audit.py READ_FIRST_ROLE_SMTP_AGGREGATES 36603362864
 
   staging-trace-canary:
     name: Reuse branch-local staging retained-log trace canary

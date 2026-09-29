@@ -8,6 +8,34 @@ The `finally` path reported `route=absent`, and the hosted wrapper subsequently 
 
 ### Failure localization and next read-only discriminator
 
+The first discriminator is now a **manual, read-only hosted target**, not a
+repeat of SMTP. Dispatch `ci.yml` from the reviewed candidate branch with
+`target=staging-role-timeout-audit`,
+`confirm=READ_FIRST_ROLE_SMTP_AGGREGATES`,
+`role_probe_run_id=36603362864`, and `role_version=<the version UUID pinned by
+that failed run>`. No credential, destination, route ID, nonce, or message
+content belongs in those inputs. The workflow requires the exact run and
+confirmation before its final secret-bearing step. The script queries only
+staging role D1 with one bound aggregate `SELECT` over the observed job window
+17:13:08–17:30:41 UTC and a **separately labelled** late window ending 17:45
+UTC. It also reads the current 100%-serving role Worker version, confirms the
+disposable route remains absent, and verifies all four standard routes remain
+direct forwards. It does not mutate D1, change routes, resend mail, or query
+raw arrival rows. The current-version comparison is a drift check, **not**
+proof that this version served throughout the historical run.
+
+Only fixed labels and `zero|one|multiple` cardinality buckets enter the public
+job log. The single-row health table can be overwritten by later Cron runs;
+`overwritten` deliberately means the historical checked/lease state cannot be
+reconstructed from that table, not that Cron failed. A valid aggregate query
+with multiple arrivals is a diagnostic result but stops per-message
+attribution. Any route/version/standard-rule drift or unreadable provider
+response makes the job fail closed, though independently obtained D1 aggregate
+labels remain useful for restricted diagnosis. This target has **not yet been
+dispatched**; its offline synthetic tests are not live evidence. Only after
+this snapshot should the restricted Sending, Routing, and Cron provider oracles
+below be queried. The original failed-run record remains unchanged.
+
 This section is a diagnostic design, **not** a subsequent provider observation. The historical readiness text below says the SMTP job was unexecuted at that earlier checkpoint; the first execution is the failed run above. The one-message driver calls Python `smtplib.sendmail`; its `smtp=submitted` label means the authenticated submission endpoint did not reject this recipient. It does not mean the recipient MX accepted the message, the Email Routing rule matched, the Email Worker ran, or a human inbox received it. Cloudflare distinguishes SMTP submission from subsequent Sending and Routing events, and even documents a suppressed-recipient setting under which SMTP can answer `250` without delivering anything ([SMTP contract](https://developers.cloudflare.com/email-service/api/send-emails/smtp/), [Email logs](https://developers.cloudflare.com/email-service/observability/logs/)). We have no evidence that suppression caused this particular failure.
 
 The smallest useful discriminator is **one restricted, read-only snapshot of the isolated role D1**, before any further test or repair. Query only aggregate state for `role='staging_probe'` with `received_at` in a bounded UTC window around this run (for example 17:13–17:45 UTC on 2026-09-29, allowing delayed ingress), plus the singleton health `checked_at`/`lease_until` as *time-relative booleans*. Emit only fixed labels and bucketed counts: `arrival=zero|one|multiple`, `forward=none|unknown|accepted|mixed`, `alert=none|pending|marked|mixed`, `health_checked_during_probe=yes|no`, and `lease_renewed_during_probe=yes|no`. Do not select or print `id`, recipient, destination, MIME, provider error text, exact timestamps, or the probe nonce. A second query for `received_at` after the bound may detect delayed arrival; it must be reported separately, not silently folded into on-time success. Baseline history includes an earlier resolved REST probe, so a lifetime `COUNT(*)` without a time predicate is misleading. If `multiple`, stop attribution rather than picking a convenient row. A row in this window would prove that the role Worker's Email handler reached D1 insert; `accepted` would additionally prove its `forward()` promise resolved and the update persisted, **not** downstream inbox placement. No row does not by itself identify whether the failure was in Sending, Email Routing, Worker invocation, or D1 insertion. The poll's lack of `role_arrival_unexpected` rules out an observed duplicate/malformed row; a persistently observed `unknown` for two minutes would instead have produced `role_forward_persistently_unknown`, but a late or unobserved unknown is not excluded.
