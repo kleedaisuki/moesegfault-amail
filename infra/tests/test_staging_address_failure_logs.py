@@ -85,8 +85,41 @@ class AddressFailureLogTests(unittest.TestCase):
 
         rows = [record(event("request_exit", "server_error")),
                 {"$metadata": {"service": diagnostic.WORKER}, "source": "provider private text"}]
-        with self.assertRaisesRegex(diagnostic.CanaryError, "unreviewed_log_payload"):
+        with self.assertRaisesRegex(diagnostic.CanaryError, "unreviewed_source_string"):
             diagnostic.classify(rows)
+
+    def test_revision_pinned_static_warning_does_not_hide_causal_trace(self) -> None:
+        """An exact deployment warning is neither a trace nor a privacy-canary pass."""
+
+        warning = "amail storage ledger state deferred"
+        rows = [{"$metadata": {"service": diagnostic.WORKER, "message": warning},
+                 "source": {"message": warning}},
+                record(event("request_exit", "server_error")),
+                record(event("routing_list", "phase_failure"))]
+        self.assertEqual(diagnostic.classify(rows), "routing_list_failed_outer_class_5")
+        self.assertIsNone(diagnostic.incident_static_warning(warning + " for private user"))
+
+    def test_static_warning_may_not_mask_unknown_or_conflicting_payload(self) -> None:
+        """Only exact literal copies may be ignored, never arbitrary text or events."""
+
+        warning = "amail routing reconciliation failed"
+        with self.assertRaisesRegex(diagnostic.CanaryError, "unreviewed_message_string"):
+            diagnostic.classify([{
+                "$metadata": {"service": diagnostic.WORKER,
+                              "message": warning + " private provider text"},
+                "source": {"message": warning},
+            }])
+        with self.assertRaisesRegex(diagnostic.CanaryError, "mixed_static_and_trace_payload"):
+            diagnostic.classify([{
+                "$metadata": {"service": diagnostic.WORKER, "message": warning},
+                "source": json.dumps(event("request_exit", "server_error")),
+            }])
+        with self.assertRaisesRegex(diagnostic.CanaryError, "static_payload_echo_disagrees"):
+            diagnostic.classify([{
+                "$metadata": {"service": diagnostic.WORKER,
+                              "message": "amail outbound reconciliation failed"},
+                "source": {"message": warning},
+            }])
 
     def test_disagreeing_indexed_echo_fails_closed(self) -> None:
         """A second valid but different event view must not mask ambiguity."""

@@ -36,6 +36,9 @@ SAFE_FAILURES = frozenset({
     "observability_count_malformed", "observability_page_incomplete",
     "observability_cursor_missing", "observability_cursor_stalled",
     "service_filter_unverified", "unreviewed_log_payload", "unreviewed_event_schema",
+    "unreviewed_source_string", "unreviewed_source_object", "unreviewed_source_other",
+    "unreviewed_message_string", "unreviewed_message_object", "unreviewed_message_other",
+    "mixed_static_and_trace_payload", "static_payload_echo_disagrees",
     "retained_event_echo_disagrees",
     "address_add_root_missing_or_ambiguous", "address_add_root_correlation_unverified",
     "address_add_root_outcome_inconsistent", "address_add_root_status_unverified",
@@ -45,6 +48,22 @@ SAFE_FAILURES = frozenset({
     "service_value_absent", "service_value_present_with_others",
     "service_value_explicit_empty",
     "service_value_unverified",
+})
+
+# Exact, content-free warnings emitted by the deployed incident revision
+# 565fa299. This is intentionally local to historical diagnosis: the full
+# retained-log privacy canary must still reject every non-trace payload.
+INCIDENT_STATIC_WARNINGS = frozenset({
+    "amail routing reconciliation failed",
+    "amail outbound reconciliation failed",
+    "amail storage ledger reconciliation failed",
+    "amail deleted message cleanup failed",
+    "amail orphan object cleanup failed",
+    "amail search job cleanup failed",
+    "amail abuse data cleanup failed",
+    "amail storage ledger state deferred",
+    "amail trace event serialization failed",
+    "amail client trace serialization failed",
 })
 
 
@@ -90,6 +109,27 @@ def print_query_shape(reports: list[dict[str, str]]) -> None:
         print(f"staging_address_query_{field}: {state}")
 
 
+def incident_static_warning(value: object, depth: int = 0) -> str | None:
+    """Recognize only a revision-pinned literal through documented log wrappers."""
+
+    if depth > 5:
+        return None
+    if isinstance(value, str):
+        return value if value in INCIDENT_STATIC_WARNINGS else None
+    if isinstance(value, dict) and set(value) == {"message"}:
+        return incident_static_warning(value["message"], depth + 1)
+    if isinstance(value, list) and len(value) == 1:
+        return incident_static_warning(value[0], depth + 1)
+    return None
+
+
+def payload_kind(value: object, name: str) -> str:
+    """Reduce an unreviewed field to a closed type label, never its contents."""
+
+    kind = "string" if isinstance(value, str) else "object" if isinstance(value, dict) else "other"
+    return f"unreviewed_{name}_{kind}"
+
+
 def reviewed_events(records: list[dict]) -> list[dict]:
     """Extract only reviewed application events from a complete service window."""
 
@@ -102,8 +142,16 @@ def reviewed_events(records: list[dict]) -> list[dict]:
         message = metadata.get("message")
         from_source = embedded_events(source)
         from_message = embedded_events(message)
-        need(empty_log_payload(source) or bool(from_source), "unreviewed_log_payload")
-        need(empty_log_payload(message) or bool(from_message), "unreviewed_log_payload")
+        static_source = incident_static_warning(source)
+        static_message = incident_static_warning(message)
+        need(empty_log_payload(source) or bool(from_source) or static_source is not None,
+             payload_kind(source, "source"))
+        need(empty_log_payload(message) or bool(from_message) or static_message is not None,
+             payload_kind(message, "message"))
+        need(not ((static_source is not None or static_message is not None)
+                  and (from_source or from_message)), "mixed_static_and_trace_payload")
+        need(not (static_source is not None and static_message is not None)
+             or static_source == static_message, "static_payload_echo_disagrees")
         need(all(allowlisted_event(event) for event in from_source + from_message),
              "unreviewed_event_schema")
         need(not (from_source and from_message) or from_source == from_message,
