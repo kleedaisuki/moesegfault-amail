@@ -84,6 +84,12 @@ class HostedTraceSafetyTests(unittest.TestCase):
                 "deployed_privacy_settings_unverified",
                 "cli_list_not_correlatable",
                 "rejected_url_contract_failed",
+                "rejected_url_status_forbidden",
+                "rejected_url_status_not_found",
+                "rejected_url_status_server_error",
+                "rejected_url_status_other",
+                "rejected_url_header_absent",
+                "rejected_url_header_malformed",
                 "observability_events_view_absent",
                 "unreviewed_retained_payload",
                 "application_event_schema_unallowlisted",
@@ -95,6 +101,9 @@ class HostedTraceSafetyTests(unittest.TestCase):
                 self.assertEqual(HOSTED.child_failure_code(output), code)
         for output in (b"secret=private\nstaging_trace_canary: UNVERIFIED (observability_events_view_absent)",
                        b"staging_trace_canary: UNVERIFIED (private_provider_text)",
+                       b"staging_trace_canary: UNVERIFIED (rejected_url_status_403)",
+                       b"staging_trace_canary: UNVERIFIED (rejected_url_header_private)",
+                       b"staging_trace_canary: UNVERIFIED (rejected_url_header_malformed) https://private.invalid header=private",
                        b"staging_trace_canary: retained_marker_absence_and_cli_api_parentage_verified"):
             with self.subTest(output=output):
                 self.assertEqual(HOSTED.child_failure_code(output), "retained_canary_unverified")

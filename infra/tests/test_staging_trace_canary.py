@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import unittest
+from urllib.error import HTTPError
 from unittest.mock import patch
 
 
@@ -65,6 +69,62 @@ def events() -> list[dict]:
 
 class StagingTraceCanaryTests(unittest.TestCase):
     """Require complete coverage, no marker, and exact causal parentage."""
+
+    def test_rejected_url_failure_reports_only_fixed_status_header_facts(self) -> None:
+        """Distinguish a Worker denial from intermediary or header failures."""
+
+        cases = (
+            (401, D, None),
+            (403, D, "rejected_url_status_forbidden"),
+            (404, D, "rejected_url_status_not_found"),
+            (503, D, "rejected_url_status_server_error"),
+            (200, D, "rejected_url_status_other"),
+            (429, D, "rejected_url_status_other"),
+            (401, None, "rejected_url_header_absent"),
+            (401, "", "rejected_url_header_malformed"),
+            (401, "private-header-value", "rejected_url_header_malformed"),
+        )
+        for status, header, expected in cases:
+            with self.subTest(status=status, expected=expected):
+                actual = canary.rejected_url_failure(status, header)
+                self.assertEqual(actual, expected)
+                self.assertNotIn("private-header-value", str(actual))
+
+    def test_rejected_url_failure_has_fixed_code(self) -> None:
+        """An HTTP contract failure exposes no raw response or header."""
+
+        denied = HTTPError("https://private.invalid", 403, "private-message",
+                           {"x-amail-request-id": "private-header-value"}, None)
+        with patch.object(canary, "journal_max", return_value=0), \
+                patch.object(canary, "journal_new", return_value=(T, C, R)), \
+                patch.object(canary.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
+                patch.object(canary, "urlopen", side_effect=denied):
+            with self.assertRaisesRegex(canary.CanaryError,
+                                        "^rejected_url_status_forbidden$"):
+                canary.run_probes(Path("private-cli"), Path("private-home"))
+
+    def test_main_does_not_query_after_rejected_url_failure(self) -> None:
+        """Only a fixed child code escapes, and the query stage is skipped."""
+
+        output = StringIO()
+        with patch.dict(canary.os.environ, {
+                "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+                "CF_OBSERVABILITY_TOKEN": "private-observability-token",
+                "CLOUDFLARE_API_TOKEN": "private-deploy-token",
+        }), patch.object(canary.sys, "argv", [
+                "canary", "--confirm", "RUN_STAGING_TRACE_CANARY",
+                "--amail", "private-cli", "--home", "private-home",
+        ]), patch.object(canary, "under_temp", side_effect=[
+                Path(__file__), Path(__file__).parent,
+        ]), patch.object(canary, "preflight"), patch.object(
+                canary, "run_probes", side_effect=canary.CanaryError(
+                    "rejected_url_header_malformed")), patch.object(
+                canary, "retained_events") as retained:
+            with redirect_stdout(output):
+                self.assertEqual(canary.main(), 1)
+        retained.assert_not_called()
+        self.assertEqual(output.getvalue().strip(),
+                         "staging_trace_canary: UNVERIFIED (rejected_url_header_malformed)")
 
     def test_valid_records_pass(self) -> None:
         """A safe root is linked to the CLI span and denial is independent."""

@@ -157,6 +157,24 @@ def journal_new(home: Path, watermark: int) -> tuple[str, str, str]:
     return trace_id, span_id, request_id
 
 
+def rejected_url_failure(status: int, request_id: object) -> str | None:
+    """Classify only reviewed status/header facts; never expose response data."""
+
+    if status == 403:
+        return "rejected_url_status_forbidden"
+    if status == 404:
+        return "rejected_url_status_not_found"
+    if 500 <= status <= 599:
+        return "rejected_url_status_server_error"
+    if status != 401:
+        return "rejected_url_status_other"
+    if request_id is None:
+        return "rejected_url_header_absent"
+    if not isinstance(request_id, str) or UUID.fullmatch(request_id) is None:
+        return "rejected_url_header_malformed"
+    return None
+
+
 def run_probes(cli: Path, home: Path) -> tuple[int, int, tuple[str, str, str], str, tuple[str, str]]:
     """Exercise an ordinary CLI read and one anonymous rejected synthetic URL."""
 
@@ -196,8 +214,9 @@ def run_probes(cli: Path, home: Path) -> tuple[int, int, tuple[str, str, str], s
         denied_id = error.headers.get("x-amail-request-id")
     except (URLError, TimeoutError):
         raise CanaryError("rejected_url_network_unavailable") from None
-    need(status == 401 and isinstance(denied_id, str)
-         and UUID.fullmatch(denied_id) is not None, "rejected_url_contract_failed")
+    failure = rejected_url_failure(status, denied_id)
+    if failure is not None:
+        raise CanaryError(failure)
     end = int(time.time() * 1000) + 2_000
     return start, end, ids, denied_id, (path_marker, query_marker)
 
