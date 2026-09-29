@@ -1,0 +1,36 @@
+# Review: current-run staging E2E cleanup hardening (`765e040`)
+
+Status: independent source review of `infra/tests/staging_mail_e2e.py` and its synthetic tests, 2026-09-30, updated after corrective commit `ea6c6b2`. This is not a live staging acceptance or deployment authorization. No CLI, Cloudflare, SMTP, or local test was run by this reviewer.
+
+## Findings
+
+### P1 — Retire the route before potentially long mailbox work
+
+`cleanup_run` calls `cleanup_messages` before `amail address delete` (`infra/tests/staging_mail_e2e.py:929-944`). `cleanup_inventory` can run three whole-snapshot attempts, each with up to 100 pages and three 360-second child invocations per page (`:738-795`), and `cleanup_messages` calls that inventory before and after each single-ID delete (`:854-874`). The hosted workflow has a **40-minute** wall-clock limit (`.github/workflows/ci.yml:105-113`). A backend search that repeatedly reports a running job, stalls or paginates can therefore consume the job's remaining time *before* address deletion executes. GitHub cancellation/timeouts do not execute Python `finally`, so the exact provider route may remain enabled and later synthetic mail can arrive at an abandoned alias. This is a regression in failure recovery introduced by placing slow, new cleanup work ahead of the existing retirement operation.
+
+**Correction:** first issue run-owned address retirement, then require exact route absence and a clean D1 row; only then enumerate, verify and delete owner-scoped fixtures. Give the remaining message-cleanup phase a **single outer deadline** within the hosted job's remaining budget, not a fresh long allowance per inventory. Keep every timeout fail-closed and preserve the independent final aggregate check. A failure-path test should make the first inventory stall/fail and prove retirement and route/D1 readback already happened.
+
+### P1 — Route/list absence is not the complete D1 retirement contract
+
+The final address gate currently checks only that `cf_rules` contains no literal route and `amail address list` omits the alias (`infra/tests/staging_mail_e2e.py:947-963`). The existing `row_snapshot` helper (`:417-458`) is called only before cleanup, not at final readback. `address list` queries `state!='retired'` (`crates/mail-worker/src/lib.rs:1288-1291`); omission thus proves `retired` for an owner-visible row, but neither `cf_rule_id=NULL` nor `needs_reconcile=0`. The deletion path can set `state='retired', cf_rule_id=NULL, needs_reconcile=1` (`lib.rs:1577-1578`) pending later reconciliation. A prior live fifth-run cleanup actually needed delayed readback before the row became clean, so this is not merely theoretical. Current success can report the alias settled while the D1 control-plane state is still dirty.
+
+**Correction:** after retirement, require exact D1 row `state=retired`, `cf_rule_id=NULL`, `needs_reconcile=0`, along with route absence and CLI-list absence, within the bounded reconciliation window. A test should simulate route absent and list absent with `needs_reconcile=1`, requiring continued wait or a fixed-label failure.
+
+## Follow-up review: `ea6c6b2`
+
+Both P1 findings above are **resolved at source level**. `cleanup_run` now starts with the single run-owned `address delete`, then waits up to seven minutes for exact route absence, authenticated address-list absence, and `row_snapshot` reporting either `retired/null/reconcile_0` or a genuinely absent row. It does not start message inventory if that gate fails. This removes the demonstrated path where an arbitrarily long search consumes the hosted timeout before the alias is retired. The new tests exercise a message-search failure after retirement and a dirty D1 row despite route/list absence.
+
+`cleanup_inventory` now has a 120-second per-inventory ceiling and takes a shared 12-minute message-phase deadline; child search calls use 30-second waits and at most 45 seconds of process time. Stale retries and subsequent inventory calls cannot reset the outer message-search budget. The tests exercise an expired outer deadline after page one. A late process/job timeout can still leave synthetic message cleanup incomplete, but the alias has already passed the route and D1 retirement gate; this is a fail-closed cleanup debt rather than the previous public-route hazard.
+
+**Remaining boundedness limitation, not a reopening of P1:** the 12-minute deadline is enforced at inventory boundaries, but ZIP downloads/unpacks, `get`, delete and 404 readbacks use their own process timeouts; together they can extend message cleanup beyond 12 minutes. The 40-minute hosted job also includes binary build, native login, SMTP and possible semantic checks. In a slow service incident, GitHub can therefore still cancel after alias retirement and before final message aggregate/readback. If operational experience shows such cancellations, add one total hosted-phase budget (or a delayed exact-alias recovery workflow) rather than assuming `cleanup_messages` itself guarantees completion. This does not create a wrong-delete or live-route path in the revised order.
+
+## Other assessed paths
+
+- **Wrong-ID deletion:** no concrete wrong-delete path was found. The full owner-scoped mailbox inventory rejects mixed/stale pages and duplicate IDs; every listed row is corroborated with owner-scoped `get`, exact recipient/sender/subject/submitted Message-ID, MIME-shape fields, and native ZIP content/asset checks before a single-ID delete. An uncertain delete is never retried, and a 404 plus full inventory is required for readback. These checks assume the Worker and authenticated CLI enforce owner scope; they are not cryptographic proof against an adaptive same-header sender.
+- **Partial SMTP and late ingress:** the new D1 aggregate rejects one-message partial submission when delivery was not confirmed, and checks active count after route retirement. The fixed 30-second post-retirement wait (`staging_mail_e2e.py:965-971`) is a bounded observation, **not** a proof that every in-flight inbound Worker has completed: `inbound` reads `state='active'` before its R2/D1 writes (`crates/mail-worker/src/lib.rs:2435` onward). A request that passed that read before retirement could write later. Do not present the final count as a mathematical settlement guarantee; a delayed exact-alias audit is appropriate after an ambiguous send or timeout.
+- **Privacy:** the new code captures CLI stdout/stderr in memory, publishes fixed failure labels, keeps ZIPs under repository `.temp`, and does not print an address, token, raw body or archive content. No new concrete log-exposure path was found in the reviewed change.
+- **Test limit:** new synthetic tests cover stale-page restart, looping cursor, wrong mailbox/Message-ID, ambiguous delete and partial SMTP count. They do not cover the 40-minute cancellation ordering or the clean D1 row invariant above.
+
+## Review limit
+
+This review does not prove the submitted MIME's actual provider transformation, Cloudflare propagation timing, SMTP delivery, Worker deployment parity, or the job's real runtime. The findings concern the source-level cleanup contract and failure paths of commit `765e040`; a subsequent fix should be reviewed against this baseline and validated in hosted CI before another live staging E2E run.
