@@ -1,6 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import '../styles/home.css';
+import { releaseState } from '../releaseState';
 ---
 <BaseLayout title="amail — 让 Agent 真正拥有邮件工作流" description="amail 是面向 AI Agent 的 CLI 邮件软件。用一个可组合的命令行管理地址、检索邮件，并通过 ZIP 交换消息。" current="home">
   <section class="hero">
@@ -14,7 +15,7 @@ import '../styles/home.css';
           <a class="moe-button button button-primary" href="/manual/">开始使用 <span aria-hidden="true">↗</span></a>
           <a class="moe-button button button-secondary" data-variant="secondary" href="/manual/#安装与首次登录">选择安装包 <span aria-hidden="true">↗</span></a>
         </div>
-        <p class="hero-note">为 <code>mail.moesegfault.dev</code> 而生 · Linux / macOS / Windows<br />v0.1.0 尚未发布；安装包与 Agent Skill 将在验收后开放。</p>
+        <p class="hero-note">为 <code>mail.moesegfault.dev</code> 而生 · Linux / macOS / Windows<br />{releaseState === 'published' ? <>v0.1.0 已发布；<a href="https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0">下载安装包与 Agent Skill ↗</a></> : 'v0.1.0 尚未发布；安装包与 Agent Skill 将在验收后开放。'}</p>
       </div>
       <div class="hero-art" aria-label="amail 工作流示意：检索邮件、交给 Agent 处理并以 ZIP 发送">
         <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>

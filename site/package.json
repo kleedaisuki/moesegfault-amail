@@ -7,6 +7,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "check": "astro check",
+    "check:release-state": "node scripts/check-release-state.mjs",
     "preview": "astro preview",
     "deploy": "wrangler deploy",
     "deploy:staging": "wrangler deploy --env staging"

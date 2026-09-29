@@ -13,6 +13,12 @@ pnpm build
 pnpm run deploy
 ```
 
+The build-time `AMAIL_RELEASE_STATE` is typed and fail-closed: unset or `candidate`
+renders honest pre-release copy; `published` renders the published links and status.
+Only the release-gated production deploy jobs set `published`, after a non-draft
+GitHub Release and expected assets exist. CI builds and checks both variants;
+staging always uses the default candidate variant. Unknown values fail the build.
+
 The build yields `dist/`; `wrangler.jsonc` deploys it as the `amail-release-site` Worker on the `amail.moesegfault.dev` custom domain. An isolated `staging` environment deploys `amail-release-site-staging` to `amail-staging.moesegfault.dev` with explicit route/asset settings; use `pnpm run deploy:staging`. CI owns deploy and live smoke checks. The expected routes are `/`, `/manual/`, and `/changelog/`. For production, use `pnpm run deploy` explicitly: pnpm 12.4.1 also has a built-in `deploy` command.
 
 The static asset `_headers` rule matches **only** the staging hostname and sends `X-Robots-Tag: noindex, nofollow`. The shared `robots.txt` remains crawlable so search engines can actually see the noindex header; production gets no such header. CI should smoke-check the staging response header after deploy. See [Cloudflare Workers Static Assets headers](https://developers.cloudflare.com/workers/static-assets/headers/).
@@ -21,7 +27,12 @@ The static asset `_headers` rule matches **only** the staging hostname and sends
 
 Add **one** Markdown file named `src/content/releases/vX.Y.Z.md` with `version`, UTC `date`, and `summary` frontmatter. Keep the body reader-focused. The content collection validates versions and automatically sorts entries newest-first; its table of contents uses stable version anchors. Update the main-page download link and manual installation link when the latest public version changes. Do not publish a changelog claim ahead of release/smoke gates.
 
-The v0.1.0 onboarding copy is deliberately pre-release: it links to the manual and the generic Releases index, not a nonexistent tag or direct asset. At cutover, update the homepage, header, manual status, changelog status, and Skill link together only after the release assets exist and downloaded bytes pass `SHA256SUMS`. The manual's five platform filenames must match the `release.yml` target matrix; its checksum instructions use OS-native tools and fail before extraction. Keep those commands synchronized with packaging changes.
+The v0.1.0 candidate copy does not claim a release exists. The production workflow
+sets the published build state only after its release gate; verify real asset
+downloads against `SHA256SUMS` during cutover. For later releases, update the
+tagged links and versioned installation instructions together with the new
+entry. The manual's five platform filenames must match the `release.yml` target
+matrix; its checksum instructions use OS-native tools and fail before extraction.
 
 ## MoeSegfault Style integration
 

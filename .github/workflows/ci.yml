@@ -587,6 +587,14 @@ jobs:
         run: pnpm check
       - name: Build static site
         run: pnpm build
+      - name: Check default candidate copy and navigation
+        run: pnpm check:release-state candidate
+      - name: Build published-state site without deploying
+        env:
+          AMAIL_RELEASE_STATE: published
+        run: pnpm build
+      - name: Check published copy and navigation
+        run: pnpm check:release-state published
 
   dns:
     name: Infrastructure probe unit tests
@@ -865,7 +873,11 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
       - name: Build site
+        env:
+          AMAIL_RELEASE_STATE: published
         run: pnpm build
+      - name: Verify published site copy before production deploy
+        run: pnpm check:release-state published
       - name: Deploy Astro assets to Workers
         run: pnpm run deploy
       - name: Smoke test published pages
@@ -875,6 +887,12 @@ jobs:
           curl --fail --silent --show-error --retry 6 --retry-delay 5 https://amail.moesegfault.dev/ > /dev/null
           curl --fail --silent --show-error https://amail.moesegfault.dev/manual/ > /dev/null
           curl --fail --silent --show-error https://amail.moesegfault.dev/changelog/ > /dev/null
+          home=$(curl --fail --silent --show-error https://amail.moesegfault.dev/)
+          grep -Fq 'v0.1.0 已发布' <<< "$home"
+          if grep -Fq 'v0.1.0 尚未发布' <<< "$home"; then
+            echo '::error::Production site still claims the release is unpublished'
+            exit 1
+          fi
           headers=$(curl --fail --silent --show-error --head https://amail.moesegfault.dev/)
           if grep -iq '^x-robots-tag:.*noindex' <<< "$headers"; then
             echo '::error::Production launch page must be indexable'
@@ -915,6 +933,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build launch site
         run: pnpm build
+      - name: Verify staging candidate copy before deploy
+        run: pnpm check:release-state candidate
       - name: Deploy isolated staging Worker
         run: pnpm run deploy:staging
       - name: Smoke test staging launch pages

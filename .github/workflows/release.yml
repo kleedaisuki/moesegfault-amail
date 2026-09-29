@@ -224,7 +224,11 @@ jobs:
       - name: Install locked site dependencies
         run: pnpm install --frozen-lockfile
       - name: Build launch site
+        env:
+          AMAIL_RELEASE_STATE: published
         run: pnpm build
+      - name: Verify published site copy before launch
+        run: pnpm check:release-state published
       - name: Deploy public launch site
         run: pnpm run deploy
       - name: Smoke test public launch pages
@@ -234,6 +238,12 @@ jobs:
           curl --fail --silent --show-error --retry 6 --retry-delay 5 https://amail.moesegfault.dev/ > /dev/null
           curl --fail --silent --show-error https://amail.moesegfault.dev/manual/ > /dev/null
           curl --fail --silent --show-error https://amail.moesegfault.dev/changelog/ > /dev/null
+          home=$(curl --fail --silent --show-error https://amail.moesegfault.dev/)
+          grep -Fq 'v0.1.0 已发布' <<< "$home"
+          if grep -Fq 'v0.1.0 尚未发布' <<< "$home"; then
+            echo '::error::Production site still claims the release is unpublished'
+            exit 1
+          fi
           headers=$(curl --fail --silent --show-error --head https://amail.moesegfault.dev/)
           if grep -iq '^x-robots-tag:.*noindex' <<< "$headers"; then
             echo '::error::Production launch page must be indexable'
