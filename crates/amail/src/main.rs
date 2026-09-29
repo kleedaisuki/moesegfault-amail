@@ -161,7 +161,7 @@ struct SearchArgs {
     to: Option<String>,
     #[arg(long)]
     body: Option<String>,
-    /// KEY=VALUE metadata predicate, repeatable.
+    /// KEY=VALUE filter (message_id, in_reply_to, content_type, attachment_name); distinct keys may repeat this flag.
     #[arg(long = "meta")]
     metadata: Vec<String>,
     #[arg(long)]
@@ -342,6 +342,13 @@ fn metadata(args: &SearchArgs) -> Result<BTreeMap<String, String>> {
     for item in &args.metadata {
         let (key, value) = item.split_once('=').context("--meta requires KEY=VALUE")?;
         ensure!(!key.is_empty(), "metadata key cannot be empty");
+        // The API represents metadata as a map, so another value for this key
+        // cannot express conjunction and must never silently replace a filter.
+        ensure!(
+            !map.contains_key(key),
+            "duplicate --meta key: {}",
+            key.escape_debug()
+        );
         map.insert(key.to_owned(), value.to_owned());
     }
     Ok(map)
@@ -694,6 +701,44 @@ mod tests {
         assert_eq!(query["read"], false);
         assert_eq!(query["regex"], true);
         assert_eq!(query["limit"], 7);
+    }
+
+    #[test]
+    fn search_rejects_repeated_metadata_key_before_request() {
+        let cli = Cli::try_parse_from([
+            "amail",
+            "search",
+            "--meta",
+            "attachment_name=report.pdf",
+            "--meta",
+            "attachment_name=chart.png",
+        ])
+        .unwrap();
+        let Command::Search(args) = cli.command else {
+            panic!("expected search command");
+        };
+        let error = search_request(&args).unwrap_err().to_string();
+        assert_eq!(error, "duplicate --meta key: attachment_name");
+    }
+
+    #[test]
+    fn search_preserves_distinct_metadata_keys() {
+        let cli = Cli::try_parse_from([
+            "amail",
+            "search",
+            "--meta",
+            "message_id=x",
+            "--meta",
+            "content_type=text/plain",
+        ])
+        .unwrap();
+        let Command::Search(args) = cli.command else {
+            panic!("expected search command");
+        };
+        let query = search_request(&args).unwrap();
+        assert_eq!(query["metadata"]["message_id"], "x");
+        assert_eq!(query["metadata"]["content_type"], "text/plain");
+        assert_eq!(query["metadata"].as_object().unwrap().len(), 2);
     }
 
     #[test]
