@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +38,8 @@ PREFLIGHT_CODES = frozenset({
     "observability_keys_malformed",
     "service_filter_key_unverified",
 })
+CLEANUP_RETRY_DELAYS = (0.2, 0.4, 0.8, 1.6)
+WINDOWS_LOCK_ERRORS = frozenset({5, 32, 33, 145})
 
 
 class HostedTraceError(Exception):
@@ -102,15 +105,25 @@ def canary_environment(account: str, deploy_token: str, obs_token: str) -> dict[
 
 
 def remove_run_dir(run_dir: Path) -> None:
-    """Delete only this run's directory after verifying its absolute boundary."""
+    """Delete only this run's directory, retrying bounded Windows lock races."""
 
     try:
         resolved = run_dir.resolve(strict=True)
         if (TEMP != ROOT / ".temp" or resolved.parent != TEMP
                 or not resolved.name.startswith("staging-hosted-trace-")
-                or resolved.is_symlink()):
+                or run_dir.is_symlink()):
             raise HostedTraceError("run_cleanup_path_invalid")
-        shutil.rmtree(resolved)
+        for delay in (*CLEANUP_RETRY_DELAYS, None):
+            try:
+                shutil.rmtree(resolved)
+                return
+            except OSError as error:
+                # Windows may briefly hold files after the browser/CLI exits.
+                # Retry only known lock-related errors; never report success
+                # without a completed recursive removal.
+                if delay is None or getattr(error, "winerror", None) not in WINDOWS_LOCK_ERRORS:
+                    raise
+                time.sleep(delay)
     except HostedTraceError:
         raise
     except OSError:
@@ -163,8 +176,16 @@ def execute(mode: str, confirmation: str) -> None:
     except subprocess.TimeoutExpired:
         raise HostedTraceError("retained_canary_timed_out") from None
     finally:
-        # No raw contents may survive the ephemeral runner or become an artifact.
-        remove_run_dir(run_dir)
+        # Keep the primary failure visible if cleanup independently fails.
+        # Both diagnostic labels are fixed; no private exception text escapes.
+        primary = sys.exception()
+        try:
+            remove_run_dir(run_dir)
+        except HostedTraceError as cleanup_error:
+            if primary is not None:
+                code = str(primary) if isinstance(primary, HostedTraceError) else "unexpected_failure"
+                raise HostedTraceError(f"{code}; {cleanup_error}") from None
+            raise
     print("staging_trace_hosted: retained_canary_verified")
 
 

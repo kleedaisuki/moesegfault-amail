@@ -7,7 +7,10 @@ import importlib.util
 from io import StringIO
 import os
 from pathlib import Path
+import shutil
 import sys
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -73,6 +76,67 @@ class HostedTraceSafetyTests(unittest.TestCase):
                 with redirect_stderr(output):
                     self.assertEqual(HOSTED.main(), 1)
         self.assertEqual(output.getvalue().strip(), "staging_trace_hosted: UNVERIFIED (unexpected_failure)")
+
+    def test_primary_and_cleanup_failures_remain_visible(self) -> None:
+        """A failed retained query must not be hidden by a cleanup lock."""
+
+        run_dir = HOSTED.TEMP / "staging-hosted-trace-unit"
+        identity = SimpleNamespace(
+            ProbeError=type("ProbeError", (Exception,), {}),
+            store_credential=lambda *_: None,
+            native_login=lambda *_: None,
+        )
+        with patch.object(HOSTED, "preflight_live", return_value=("a" * 32, "deploy", "observe")), \
+                patch.object(HOSTED, "validated_credential", return_value=("synthetic_user", "private_password")), \
+                patch.object(HOSTED, "BUILT_BINARY", SimpleNamespace(is_file=lambda: True)), \
+                patch.object(HOSTED, "os", SimpleNamespace(name="nt")), \
+                patch.object(HOSTED.tempfile, "mkdtemp", return_value=str(run_dir)), \
+                patch.object(HOSTED.shutil, "copy2"), \
+                patch.object(HOSTED, "unique_auth_home", return_value=run_dir / "home"), \
+                patch.object(HOSTED, "canary_environment", return_value={}), \
+                patch.object(HOSTED.subprocess, "run", return_value=SimpleNamespace(returncode=1)) as probe, \
+                patch.object(HOSTED, "remove_run_dir", side_effect=HOSTED.HostedTraceError("run_cleanup_failed")) as cleanup, \
+                patch.dict(sys.modules, {"staging_identity_cdp": identity}):
+            for run_error, primary in (
+                (None, "retained_canary_unverified"),
+                (HOSTED.subprocess.TimeoutExpired("synthetic", 240), "retained_canary_timed_out"),
+            ):
+                with self.subTest(primary=primary):
+                    probe.side_effect = run_error
+                    with self.assertRaises(HOSTED.HostedTraceError) as caught:
+                        HOSTED.execute("canary", HOSTED.CONFIRMATION)
+                    self.assertEqual(str(caught.exception), f"{primary}; run_cleanup_failed")
+        self.assertEqual(cleanup.call_count, 2)
+        cleanup.assert_any_call(run_dir)
+
+    def test_transient_windows_lock_is_retried_and_removed(self) -> None:
+        """Retry a transient Windows lock without accepting an undeleted tree."""
+
+        HOSTED.TEMP.mkdir(exist_ok=True)
+        run_dir = Path(tempfile.mkdtemp(prefix="staging-hosted-trace-unit-", dir=HOSTED.TEMP))
+        (run_dir / "fixture.txt").write_text("synthetic", encoding="utf-8")
+        real_rmtree = shutil.rmtree
+        calls = 0
+
+        def locked_once(path: Path) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                error = PermissionError("private path must not be printed")
+                error.winerror = 32
+                raise error
+            real_rmtree(path)
+
+        try:
+            with patch.object(HOSTED.shutil, "rmtree", side_effect=locked_once), \
+                    patch.object(HOSTED.time, "sleep") as sleep:
+                HOSTED.remove_run_dir(run_dir)
+            self.assertEqual(calls, 2)
+            sleep.assert_called_once_with(HOSTED.CLEANUP_RETRY_DELAYS[0])
+            self.assertFalse(run_dir.exists())
+        finally:
+            if run_dir.exists():
+                real_rmtree(run_dir)
 
 
 if __name__ == "__main__":
