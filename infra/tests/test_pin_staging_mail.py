@@ -103,6 +103,20 @@ class PinTests(unittest.TestCase):
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "version_mismatch")
 
     @patch.object(pin, "fetch")
+    def test_inprocess_run_loads_sibling_privacy_check(self, fetch) -> None:
+        """A guarded job may call run without this script's __main__ path setup."""
+
+        safe = settings()
+        version = {"id": VERSION, "resources": {"bindings": bindings()}}
+        fetch.side_effect = [deployment(), version, safe, safe, deployment()]
+        module_dir = pin.CONFIG.parent.resolve()
+        without_sibling = [path for path in sys.path if Path(path).resolve() != module_dir]
+        with patch.object(sys, "path", without_sibling), patch.dict(sys.modules):
+            sys.modules.pop("check_observability", None)
+            self.assertEqual(pin.run("a" * 32, "private", VERSION), "match")
+        self.assertEqual(fetch.call_count, 5)
+
+    @patch.object(pin, "fetch")
     def test_privacy_precedes_binding_claim(self, fetch) -> None:
         """Unsafe tracing blocks a passing configuration pin."""
 

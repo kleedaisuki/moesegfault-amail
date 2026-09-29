@@ -129,7 +129,12 @@ def bindings_match(version: dict, expected_version: str) -> bool:
 def run(account: str, token: str, expected: str) -> str:
     """Check serving version twice around settings to detect concurrent rollout."""
 
-    from check_observability import safe_settings  # Imported after test path setup.
+    # This function is also called in-process by guarded staging jobs, not only
+    # by this file's __main__. The sibling module must be importable in both cases.
+    module_dir = str(CONFIG.parent)
+    if module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
+    from check_observability import safe_settings
 
     first = serving_deployment(fetch(account, token, "deployments?per_page=1&page=1"))
     if first is None:
@@ -165,5 +170,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.path.insert(0, str(CONFIG.parent))
     raise SystemExit(main())
