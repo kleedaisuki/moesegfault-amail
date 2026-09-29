@@ -111,6 +111,34 @@ def cli_env(home: Path) -> dict[str, str]:
     return env
 
 
+SAFE_API_CODES = frozenset({
+    "routing_unavailable", "capacity_exhausted", "address_unavailable",
+    "address_limit", "address_provision_unknown", "address_state_changed",
+    "address_deleting", "address_retired", "not_found", "send_held",
+})
+
+
+def cli_failure(stderr: bytes, fallback: str) -> str:
+    """Extract only a known public API status/code, never raw CLI stderr.
+
+    The Worker emits fixed error codes, but the CLI also prints an opaque
+    correlation ID. Keep that ID and all unrecognized text out of Actions logs.
+    """
+
+    if len(stderr) > 65_536:
+        return fallback
+    found = re.search(
+        rb"mail API [a-z_.]+ failed: HTTP ([45][0-9]{2})[^\r\n]{0,40}, code=([a-z][a-z0-9_]{0,48})(?:,|\r|\n|$)",
+        stderr,
+    )
+    if not found:
+        return fallback
+    code = found.group(2).decode("ascii")
+    if code not in SAFE_API_CODES:
+        return fallback
+    return f"{fallback}_http_{found.group(1).decode('ascii')}_{code}"
+
+
 def amail(binary: Path, env: dict[str, str], *args: str, failure: str) -> list[dict]:
     """Capture JSONL in memory; suppress sensitive stdout/stderr. / 仅在内存解析 JSONL。"""
 
@@ -120,7 +148,7 @@ def amail(binary: Path, env: dict[str, str], *args: str, failure: str) -> list[d
         )
     except (subprocess.TimeoutExpired, OSError):
         raise ProbeFailure(failure) from None
-    check(proc.returncode == 0, failure)
+    check(proc.returncode == 0, cli_failure(proc.stderr, failure))
     check(len(proc.stdout) <= 2_000_000, "cli_output_oversized")
     try:
         values = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
@@ -420,7 +448,10 @@ def cleanup_run(
     except Exception:
         retire_error = True
 
-    deadline = time.monotonic() + 90
+    # Deletion can remain `deleting` until the five-minute Worker Cron
+    # reconciles a provisioning failure. Never call a live alias retired
+    # merely because its provider route is already absent.
+    deadline = time.monotonic() + 7 * 60
     route_absent = False
     address_absent = False
     while time.monotonic() < deadline:

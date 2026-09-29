@@ -24,6 +24,24 @@ SPEC.loader.exec_module(HARNESS)
 class CleanupTests(unittest.TestCase):
     """Guarantee timeout does not skip alias retirement. / 保证超时不跳过别名退役。"""
 
+    def test_cli_failure_keeps_only_allowlisted_public_code(self) -> None:
+        """Preserve a useful status while dropping correlation and private text."""
+
+        stderr = (
+            b"Error: mail API addresses.add failed: HTTP 503 Service Unavailable, "
+            b"code=routing_unavailable, correlation_id=private-identifier\n"
+        )
+        self.assertEqual(
+            HARNESS.cli_failure(stderr, "address_register_failed"),
+            "address_register_failed_http_503_routing_unavailable",
+        )
+        unsafe = stderr.replace(b"routing_unavailable", b"private_mailbox_body")
+        self.assertEqual(HARNESS.cli_failure(unsafe, "address_register_failed"), "address_register_failed")
+        self.assertEqual(
+            HARNESS.cli_failure(b"provider says private_mailbox_body", "address_register_failed"),
+            "address_register_failed",
+        )
+
     def test_hosted_nonce_is_validated_without_changing_local_default(self) -> None:
         """Reject malformed recovery suffixes; retain random local behavior."""
 
@@ -90,7 +108,7 @@ class CleanupTests(unittest.TestCase):
                 raise HARNESS.ProbeFailure("retire_readback_failed")
             return []
 
-        clock = iter((0, 1, 91))
+        clock = iter((0, 1, 421))
         with patch.object(HARNESS, "amail", side_effect=fake_amail), patch.object(
             HARNESS, "cf_rules", return_value=[]
         ), patch.object(HARNESS.time, "monotonic", side_effect=lambda: next(clock)), patch.object(
