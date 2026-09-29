@@ -117,6 +117,18 @@ fn stored_rejection(code: &str) -> Option<AppError> {
     Some(AppError { status, code })
 }
 
+/// Preserve established client codes while keeping provider failure details private.
+fn rule_create_app_error(error: &platform::RuleCreateFailure) -> AppError {
+    if error.is_capacity() {
+        AppError::conflict("capacity_exhausted")
+    } else {
+        AppError {
+            status: 503,
+            code: "routing_unavailable",
+        }
+    }
+}
+
 /// Main API entry point; authentication precedes mailbox access. / 主 API 入口；邮箱访问始终在身份认证之后。
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -425,7 +437,9 @@ async fn dispatch(
     trace.operation(operation_for(req.method(), &segments));
     match (req.method(), segments.as_slice()) {
         (Method::Get, ["v1", "addresses"]) => list_addresses(&env, &user, request_id).await,
-        (Method::Post, ["v1", "addresses"]) => add_address(&mut req, &env, &user, request_id).await,
+        (Method::Post, ["v1", "addresses"]) => {
+            add_address(&mut req, &env, &user, request_id, trace).await
+        }
         (Method::Delete, ["v1", "addresses"]) => {
             delete_address(&mut req, &env, &user, request_id).await
         }
@@ -909,6 +923,7 @@ async fn add_address(
     env: &Env,
     user: &Principal,
     request_id: &str,
+    trace: &Trace,
 ) -> AppResult<Response> {
     let input: AddAddress = req
         .json()
@@ -986,20 +1001,34 @@ async fn add_address(
         )?
         .with_status(202));
     }
-    let mut existing_rules = platform::rules_for_address(env, &address).await?;
+    let list_start = js_sys::Date::now();
+    let existing_rules = platform::rules_for_address(env, &address).await;
+    trace.phase(
+        request_id,
+        Phase::RoutingList,
+        existing_rules.is_ok(),
+        trace::elapsed_ms(list_start),
+    );
+    let mut existing_rules = existing_rules?;
     let rule_id = if let Some(id) = existing_rules.first() {
         id.clone()
     } else {
-        platform::create_rule(env, &address).await.map_err(|e| {
-            if e.to_string().contains("routing_capacity_exhausted") {
-                AppError::conflict("capacity_exhausted")
-            } else {
-                AppError {
-                    status: 503,
-                    code: "routing_unavailable",
-                }
-            }
-        })?
+        let create_start = js_sys::Date::now();
+        let created = platform::create_rule(env, &address).await;
+        trace.routing_create(
+            request_id,
+            created.is_ok(),
+            created
+                .as_ref()
+                .err()
+                .and_then(|error| error.provider_status()),
+            created
+                .as_ref()
+                .err()
+                .and_then(|error| error.provider_code()),
+            trace::elapsed_ms(create_start),
+        );
+        created.map_err(|error| rule_create_app_error(&error))?
     };
     for extra in existing_rules.drain(1..) {
         let _ = platform::delete_rule(env, &extra).await;
@@ -2107,6 +2136,46 @@ fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Provider internals never become public codes, including uncertain responses.
+    #[test]
+    fn rule_create_public_error_contract() {
+        let cases = [
+            (
+                platform::RuleCreateFailure::Provider {
+                    status: 403,
+                    code: Some(10000),
+                    capacity: false,
+                },
+                503,
+                "routing_unavailable",
+            ),
+            (
+                platform::RuleCreateFailure::Provider {
+                    status: 400,
+                    code: Some(1000),
+                    capacity: true,
+                },
+                409,
+                "capacity_exhausted",
+            ),
+            (
+                platform::RuleCreateFailure::UnexpectedResponse { status: 200 },
+                503,
+                "routing_unavailable",
+            ),
+            (
+                platform::RuleCreateFailure::Request,
+                503,
+                "routing_unavailable",
+            ),
+        ];
+        for (provider, status, code) in cases {
+            let public = rule_create_app_error(&provider);
+            assert_eq!(public.status, status);
+            assert_eq!(public.code, code);
+        }
+    }
 
     /// Legacy uploads remain valid while new uploads carry the client span ID.
     #[test]

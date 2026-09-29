@@ -78,6 +78,8 @@ pub(crate) enum Phase {
     D1Write,
     R2Write,
     ProviderSend,
+    RoutingList,
+    RoutingCreate,
 }
 
 /// Coarse failure reason; exception text and provider details are never retained.
@@ -141,6 +143,10 @@ struct Event<'a> {
     duration_ms_bucket: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     request_bytes_bucket: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_http_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_error_code: Option<u32>,
 }
 
 /// Client telemetry is a separate fixed schema; older rows may lack a span ID.
@@ -214,6 +220,8 @@ impl Trace {
             http_status_class: Some(status / 100),
             duration_ms_bucket: bucket(duration_ms.min(3_600_000)),
             request_bytes_bucket: self.request_bytes,
+            provider_http_status: None,
+            provider_error_code: None,
         };
         emit(&event);
     }
@@ -222,6 +230,47 @@ impl Trace {
     pub(crate) fn phase(&self, request_id: &str, phase: Phase, success: bool, duration_ms: u64) {
         let span_id = random_span_id();
         emit(&self.phase_record(&span_id, request_id, phase, success, duration_ms));
+    }
+
+    /// Report only numeric Cloudflare Routing Rules POST facts, never its body.
+    pub(crate) fn routing_create(
+        &self,
+        request_id: &str,
+        success: bool,
+        provider_http_status: Option<u16>,
+        provider_error_code: Option<u32>,
+        duration_ms: u64,
+    ) {
+        let span_id = random_span_id();
+        emit(&self.routing_create_record(
+            &span_id,
+            request_id,
+            success,
+            provider_http_status,
+            provider_error_code,
+            duration_ms,
+        ));
+    }
+
+    fn routing_create_record<'a>(
+        &'a self,
+        span_id: &'a str,
+        request_id: &'a str,
+        success: bool,
+        provider_http_status: Option<u16>,
+        provider_error_code: Option<u32>,
+        duration_ms: u64,
+    ) -> Event<'a> {
+        let mut event = self.phase_record(
+            span_id,
+            request_id,
+            Phase::RoutingCreate,
+            success,
+            duration_ms,
+        );
+        event.provider_http_status = provider_http_status;
+        event.provider_error_code = provider_error_code;
+        event
     }
 
     fn phase_record<'a>(
@@ -254,6 +303,8 @@ impl Trace {
             http_status_class: None,
             duration_ms_bucket: bucket(duration_ms.min(3_600_000)),
             request_bytes_bucket: None,
+            provider_http_status: None,
+            provider_error_code: None,
         }
     }
 }
@@ -395,6 +446,8 @@ mod tests {
             http_status_class: Some(2),
             duration_ms_bucket: 8,
             request_bytes_bucket: None,
+            provider_http_status: None,
+            provider_error_code: None,
         };
         let value = serde_json::to_value(event).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 11);
@@ -426,5 +479,28 @@ mod tests {
         assert_eq!(value["phase"], "r2_write");
         assert_eq!(value["error_code"], "dependency_failure");
         assert!(value.get("http_status_class").is_none());
+    }
+
+    /// Routing diagnostics expose numeric provider facts under the normal trace IDs only.
+    #[test]
+    fn routing_create_event_has_no_provider_text_slot() {
+        let mut trace = Trace::new();
+        trace.operation(Operation::AddressesAdd);
+        let event = trace.routing_create_record(
+            "abcdef0123456789",
+            "00000000-0000-4000-8000-000000000001",
+            false,
+            Some(403),
+            Some(10000),
+            3,
+        );
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["phase"], "routing_create");
+        assert_eq!(value["provider_http_status"], 403);
+        assert_eq!(value["provider_error_code"], 10000);
+        assert_eq!(value["parent_span_id"], trace.span_id);
+        assert!(value.get("body").is_none());
+        assert!(value.get("address").is_none());
+        assert!(value.get("provider_message").is_none());
     }
 }

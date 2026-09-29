@@ -11,6 +11,56 @@ struct CfRuleResult {
     success: bool,
     result: Option<CfRule>,
 }
+
+/// A provider failure contains only fields safe to retain in a diagnostic event.
+/// The response body and error message are deliberately never part of this type.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum RuleCreateFailure {
+    /// The provider explicitly rejected the request; capacity is a compatibility hint.
+    Provider {
+        status: u16,
+        code: Option<u32>,
+        capacity: bool,
+    },
+    /// A success response could not confirm which rule was created.
+    UnexpectedResponse { status: u16 },
+    /// The request could not be constructed, sent, or read; it may still have arrived.
+    Request,
+}
+
+impl RuleCreateFailure {
+    /// Preserve the existing public capacity mapping without exposing provider text.
+    pub(crate) fn is_capacity(&self) -> bool {
+        matches!(self, Self::Provider { capacity: true, .. })
+    }
+
+    /// Return only numeric provider facts for private structured diagnostics.
+    pub(crate) fn provider_status(&self) -> Option<u16> {
+        match self {
+            Self::Provider { status, .. } | Self::UnexpectedResponse { status } => Some(*status),
+            Self::Request => None,
+        }
+    }
+
+    /// The Cloudflare response code is not an HTTP status or human-readable error.
+    pub(crate) fn provider_code(&self) -> Option<u32> {
+        match self {
+            Self::Provider { code, .. } => *code,
+            _ => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CfRuleFailureResponse {
+    #[serde(default)]
+    errors: Vec<CfRuleError>,
+}
+
+#[derive(Deserialize)]
+struct CfRuleError {
+    code: Option<u32>,
+}
 #[derive(Deserialize)]
 struct CfRule {
     id: String,
@@ -98,38 +148,71 @@ pub async fn rules_for_address(env: &Env, address: &str) -> Result<Vec<String>> 
     Ok(ids)
 }
 
-/// Provision one literal subdomain routing rule; no catch-all exists. / 创建单个子域名精确路由规则；不存在全收规则。
-pub async fn create_rule(env: &Env, address: &str) -> Result<String> {
-    let zone = env.var("CF_ZONE_ID")?.to_string();
-    let worker_name = env.var("EMAIL_INGRESS_WORKER_NAME")?.to_string();
+/// Provision one literal subdomain routing rule; no catch-all exists.
+/// An uncertain response remains in provisioning state for reconciliation.
+pub async fn create_rule(
+    env: &Env,
+    address: &str,
+) -> std::result::Result<String, RuleCreateFailure> {
+    let zone = env
+        .var("CF_ZONE_ID")
+        .map_err(|_| RuleCreateFailure::Request)?
+        .to_string();
+    let worker_name = env
+        .var("EMAIL_INGRESS_WORKER_NAME")
+        .map_err(|_| RuleCreateFailure::Request)?
+        .to_string();
     let url = format!("https://api.cloudflare.com/client/v4/zones/{zone}/email/routing/rules");
     let body = serde_json::json!({
         "name": format!("amail {address}"), "enabled": true, "source": "api",
         "actions": [{"type":"worker","value":[worker_name]}],
         "matchers": [{"type":"literal","field":"to","value":address}]
     });
-    let mut response = fetch_json(env, &url, Method::Post, &body).await?;
-    if response.status_code() != 200 && response.status_code() != 201 {
-        let body = response
-            .text()
-            .await
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if body.contains("limit") || body.contains("maximum") || body.contains("quota") {
-            return Err(worker::Error::RustError(
-                "routing_capacity_exhausted".into(),
-            ));
+    let mut response = fetch_json(env, &url, Method::Post, &body)
+        .await
+        .map_err(|_| RuleCreateFailure::Request)?;
+    let status = response.status_code();
+    let body = response
+        .text()
+        .await
+        .map_err(|_| RuleCreateFailure::UnexpectedResponse { status })?;
+    classify_create_response(status, &body)
+}
+
+/// Decode the provider response without returning or recording arbitrary text.
+/// The old capacity-text check is retained solely for public error compatibility.
+fn classify_create_response(
+    status: u16,
+    body: &str,
+) -> std::result::Result<String, RuleCreateFailure> {
+    if matches!(status, 200 | 201) {
+        let data: CfRuleResult = serde_json::from_str(body)
+            .map_err(|_| RuleCreateFailure::UnexpectedResponse { status })?;
+        if data.success {
+            return data
+                .result
+                .map(|rule| rule.id)
+                .ok_or(RuleCreateFailure::UnexpectedResponse { status });
         }
-        return Err(worker::Error::RustError("routing_create_failed".into()));
     }
-    let result: CfRuleResult = response.json().await?;
-    if !result.success {
-        return Err(worker::Error::RustError("routing_create_failed".into()));
-    }
-    result
-        .result
-        .map(|rule| rule.id)
-        .ok_or_else(|| worker::Error::RustError("routing_create_failed".into()))
+    let code = serde_json::from_str::<CfRuleFailureResponse>(body)
+        .ok()
+        .and_then(|data| {
+            data.errors
+                .into_iter()
+                .filter_map(|error| error.code)
+                .find(|code| *code >= 1000)
+        });
+    let lower = body.to_ascii_lowercase();
+    let capacity = !matches!(status, 200 | 201)
+        && ["limit", "maximum", "quota"]
+            .iter()
+            .any(|word| lower.contains(word));
+    Err(RuleCreateFailure::Provider {
+        status,
+        code,
+        capacity,
+    })
 }
 
 /// Disable a literal routing rule before retiring an address. / 注销地址之前先禁用精确路由规则。
@@ -295,4 +378,71 @@ pub async fn send(env: &Env, draft: &Draft) -> Result<String> {
     }
     let result = binding.send_with_builder(&builder).await?;
     Ok(result.message_id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A successful provider response returns only the rule identifier.
+    #[test]
+    fn create_rule_success() {
+        let body = r#"{"success":true,"result":{"id":"rule-id"}}"#;
+        assert_eq!(classify_create_response(200, body), Ok("rule-id".into()));
+        assert_eq!(classify_create_response(201, body), Ok("rule-id".into()));
+    }
+
+    /// HTTP and Cloudflare numeric codes survive, but body text never enters the error.
+    #[test]
+    fn create_rule_provider_rejection_is_typed_and_private() {
+        let body = r#"{"success":false,"errors":[{"code":10000,"message":"private-alias@example.com private-token"}]}"#;
+        let error = classify_create_response(403, body).unwrap_err();
+        assert_eq!(
+            error,
+            RuleCreateFailure::Provider {
+                status: 403,
+                code: Some(10000),
+                capacity: false,
+            }
+        );
+        assert!(!format!("{error:?}").contains("private-alias"));
+        assert!(!format!("{error:?}").contains("private-token"));
+    }
+
+    /// Preserve the existing public capacity mapping for provider quota text.
+    #[test]
+    fn create_rule_capacity_and_malformed_responses() {
+        let capacity = classify_create_response(
+            400,
+            r#"{"success":false,"errors":[{"code":1000,"message":"Maximum routing rule limit reached"}]}"#,
+        )
+        .unwrap_err();
+        assert!(capacity.is_capacity());
+        assert_eq!(capacity.provider_status(), Some(400));
+        assert_eq!(capacity.provider_code(), Some(1000));
+        assert_eq!(
+            classify_create_response(503, "upstream failed"),
+            Err(RuleCreateFailure::Provider {
+                status: 503,
+                code: None,
+                capacity: false,
+            })
+        );
+        assert_eq!(
+            classify_create_response(200, "not json"),
+            Err(RuleCreateFailure::UnexpectedResponse { status: 200 })
+        );
+        assert_eq!(
+            classify_create_response(200, r#"{"success":true}"#),
+            Err(RuleCreateFailure::UnexpectedResponse { status: 200 })
+        );
+        assert_eq!(
+            classify_create_response(200, r#"{"success":false,"errors":[{"code":1000}]}"#),
+            Err(RuleCreateFailure::Provider {
+                status: 200,
+                code: Some(1000),
+                capacity: false,
+            })
+        );
+    }
 }
