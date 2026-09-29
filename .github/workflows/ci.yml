@@ -543,6 +543,12 @@ jobs:
       - name: Bundle Worker for Wrangler
         working-directory: crates/mail-worker
         run: worker-build --release
+      - name: Run built Rust Worker address-add boundary tests in workerd
+        working-directory: infra/tests/worker-boundary
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm test
       - name: Bundle Rust Email ingress for Wrangler
         working-directory: workers/mail-ingress
         run: worker-build --release
