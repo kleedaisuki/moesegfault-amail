@@ -1,0 +1,30 @@
+# Disabled Email Routing rules are not active mailboxes
+
+Status: internal architecture decision, 2026-09-29. This is a source/API-contract finding, not a diagnosis of the historical staging HTTP 500 and not live-provider evidence. No production code or live state was changed for this note.
+
+## Boundary and invariant
+
+An `addresses.state='active'` row promises an enabled exact Cloudflare Email Routing rule to the ingress Worker. The current `platform::CfListedRule` has no `enabled` field, so `rules_for_address_typed` reduces any exact-owned rule to an ID. `add_address` and Cron may therefore activate D1 from a **disabled** exact rule; active reconciliation may clear its marker merely because the saved ID exists. Cloudflare's [list response](https://developers.cloudflare.com/api/resources/email_routing/subresources/account_rules/methods/list/) and [create response](https://developers.cloudflare.com/api/resources/email_routing/subresources/rules/methods/create/) expose an optional `enabled` status. Cloudflare explicitly says a [disabled routing rule does not forward mail to its destination or Worker](https://developers.cloudflare.com/email-service/configuration/email-routing-addresses/). Thus identity and ownership are necessary, but not sufficient, for routability.
+
+Represent one exact-owned provider rule as `{ id, enabled: Option<bool> }` (or a small `Enabled | Disabled | Unknown` enum), retaining the existing exact name, literal `to` matcher, and ingress Worker-action checks. `Some(true)` is the **only** evidence for activation. `false` and omitted are distinct observations for diagnostics but neither can prove routability. Keep the collection of *all* exact-owned rules intact for delete/retire; do not globally filter the provider list to enabled rules or use an `enabled=true` query parameter, because that would hide disabled orphans and leak route capacity. The API's optional field means a missing value must not deserialize as true. This is an internal type change; the CLI/HTTP address contracts and D1 schema need not change.
+
+## State transitions
+
+| Current state / observation | Safe action |
+| --- | --- |
+| Add finds one or more enabled exact-owned rules | Choose an enabled ID for D1 activation. Include **all** other exact-owned rules in duplicate evidence so Cron can prune them only after the saved enabled ID is confirmed. Never pre-delete a candidate in the request; Cron may race. |
+| Add finds only disabled/unknown exact-owned rules | Do **not** adopt one, automatically enable one, or POST another rule to bypass a possible operator pause. Keep `provisioning`, return the existing handled uncertainty/unavailability response; a retry should not issue a duplicate POST. |
+| Provider POST returns 200/201 with an ID and `enabled=true` | Existing activation/readback path may proceed. |
+| Provider POST returns 200/201 with `enabled=false` or missing `enabled` | Treat as an uncertain/incomplete success response. Do not activate D1, delete the possible side effect, or immediately POST again. Leave `provisioning` for exact-rule reconciliation. A subsequent list that positively reports `enabled=true` may adopt it. |
+| Cron sees `provisioning` and only disabled/unknown rules | Do not mark active. Nor should the existing ten-minute timeout reset the row to `pending` while exact-owned rules still exist: that would authorize a later duplicate POST. Preserve the repair journal/flag and surface a bounded health anomaly; deliberate operational resolution may disable/retire the address or correct the provider route. |
+| Cron sees flagged `active` with saved ID listed and enabled | Retain saved rule, prune only other exact-owned IDs, clear the flag after successful cleanup. |
+| Cron sees flagged `active` but saved ID disabled, unknown, or absent | Do not clear the flag, claim health, or delete an alternative enabled exact rule. This is drift requiring an explicit repair decision, not ordinary duplicate pruning. |
+| Delete or retire sees any exact-owned rule, enabled or not | Delete every exact-owned ID and retain the existing state-aware D1 retirement sequence. Disabled rules still consume provider capacity and can become active later, so they cannot be ignored. |
+
+An ordinary `add` of a previously `active` D1 row currently returns idempotent success without provider inspection. This decision does **not** silently add a provider call to that hot path. It fixes observed-rule interpretation; out-of-band disablement of unflagged active rows still needs a bounded periodic inventory or provider-side alert to set reconciliation evidence. Do not claim the change alone guarantees continuous reachability. If a disabled-only `provisioning` row remains, a future explicit operator/agent repair path must decide whether to delete a stray rule, retire the address, or re-enable it; automatic replacement can circumvent an intentional safety pause.
+
+## Verification and compatibility
+
+Hosted synthetic Worker/D1 fixtures should cover: list with only `enabled=false`; list with omitted `enabled`; mixed enabled/disabled exact rules; POST 2xx with `enabled=false` or omitted; flagged active whose saved rule becomes disabled; delete of a disabled exact rule. Assert no false `active`, no duplicate POST on uncertain outcomes, no loss of the saved enabled route, and all exact-owned IDs remain eligible for eventual cleanup. Cloudflare's field is optional in the published schema, so strict positive confirmation may temporarily leave a mailbox `provisioning` if the provider omits it; that is preferable to telling the user a non-routable address is active. Preserve existing public status/code vocabulary unless a separate product decision changes the contract.
+
+This rule is orthogonal to the [uncertain D1 activation outcome](address-activation-uncertain-outcome.md): a confirmed enabled provider rule may still have an uncertain D1 write, and an acknowledged D1 write cannot turn a disabled provider rule into a working mailbox. In both cases, preserve recoverable side effects and state-aware reconciliation rather than infer success from a partial observation.
