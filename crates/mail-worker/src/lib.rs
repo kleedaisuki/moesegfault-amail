@@ -285,6 +285,10 @@ async fn clean_orphans(env: &Env) -> Result<()> {
     Ok(())
 }
 
+/// A single due-time order rotates every repair state; negative due times
+/// prioritize fresh user deletions without permanently starving other states.
+const ADDRESS_RECONCILE_SQL: &str = "SELECT address,state,cf_rule_id,created_at FROM addresses WHERE (state IN ('provisioning','deleting') OR needs_reconcile=1) AND next_reconcile_at<=?1 ORDER BY next_reconcile_at ASC,created_at ASC,address ASC LIMIT 30";
+
 /// Reconcile non-atomic D1/Email Routing transitions, including orphan provider rules. / 协调非原子的 D1/邮件路由状态，包括供应商孤儿规则。
 async fn reconcile_addresses(env: &Env) -> Result<()> {
     #[derive(Deserialize)]
@@ -295,17 +299,45 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
         created_at: i64,
     }
     let database = env.d1("MAIL_DB")?;
-    let rows = database.prepare("SELECT address,state,cf_rule_id,created_at FROM addresses WHERE state IN ('provisioning','deleting') OR needs_reconcile=1 ORDER BY CASE state WHEN 'provisioning' THEN 0 WHEN 'deleting' THEN 1 WHEN 'active' THEN 2 ELSE 3 END,created_at ASC LIMIT 30")
-        .all().await?.results::<Row>()?;
+    let scan_at = now();
+    let rows = database
+        .prepare(ADDRESS_RECONCILE_SQL)
+        .bind(&[bind_num(scan_at)])?
+        .all()
+        .await?
+        .results::<Row>()?;
+    if rows.len() == 30 {
+        console_warn!("amail address reconciliation batch full");
+    }
+    let mut reported_non_enabled = false;
     for row in rows {
-        let mut ids = platform::rules_for_address(env, &row.address).await?;
+        // Claim the next scan slot before provider I/O. Even a failed provider
+        // call must not pin the oldest row at the head of every bounded batch.
+        let scheduled = database.prepare("UPDATE addresses SET next_reconcile_at=?1 WHERE address=?2 AND state=?3 AND next_reconcile_at<=?4 AND (state IN ('provisioning','deleting') OR needs_reconcile=1)")
+            .bind(&[bind_num(scan_at + 5 * 60_000),bind_str(&row.address),bind_str(&row.state),bind_num(scan_at)])?.run().await?;
+        if scheduled.meta()?.and_then(|meta| meta.changes) != Some(1) {
+            continue;
+        }
+        let rules = platform::rules_for_address_typed(env, &row.address)
+            .await
+            .map_err(|_| worker::Error::RustError("routing_list_failed".into()))?;
+        let enabled_id = rules.first_enabled().map(str::to_owned);
+        let saved_enabled = row
+            .cf_rule_id
+            .as_deref()
+            .is_some_and(|id| rules.has_enabled(id));
+        let mut ids = rules.into_ids();
         if row.state == "active" {
-            // Only prune duplicates after the committed active rule is known
-            // to exist at the provider. Never treat active as a delete state.
+            // A listed but disabled committed rule is not deliverable. Keep
+            // the repair marker and every route for explicit state-aware repair.
             let Some(saved) = row.cf_rule_id.as_deref() else {
                 continue;
             };
-            if !ids.iter().any(|id| id == saved) {
+            if !saved_enabled {
+                if !reported_non_enabled && ids.iter().any(|id| id == saved) {
+                    console_warn!("amail non-enabled committed routing rule");
+                    reported_non_enabled = true;
+                }
                 continue;
             }
             for extra in ids.iter().filter(|id| id.as_str() != saved) {
@@ -321,7 +353,7 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
             }
         }
         if row.state == "provisioning" {
-            if let Some(first) = ids.first() {
+            if let Some(first) = enabled_id.as_deref() {
                 if ids.len() > 1 {
                     // Record duplicate evidence before a racing add can choose
                     // a different rule from a later, narrower provider view.
@@ -336,9 +368,14 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
                     database.prepare("UPDATE addresses SET needs_reconcile=1 WHERE address=?1 AND state='active'")
                         .bind(&[bind_str(&row.address)])?.run().await?;
                 }
-            } else if row.created_at < now() - 10 * 60_000 {
+            } else if ids.is_empty() && row.created_at < now() - 10 * 60_000 {
+                // A disabled or status-unknown exact rule blocks retrying POST:
+                // the provider may still count it and first-match it.
                 database.prepare("UPDATE addresses SET state='pending',needs_reconcile=0 WHERE address=?1 AND state='provisioning'")
                     .bind(&[bind_str(&row.address)])?.run().await?;
+            } else if !ids.is_empty() && !reported_non_enabled {
+                console_warn!("amail non-enabled provisioning routing rule");
+                reported_non_enabled = true;
             }
             continue;
         }
@@ -348,7 +385,7 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
             let query = if ids.is_empty() {
                 "UPDATE addresses SET needs_reconcile=0 WHERE address=?1 AND state='pending'"
             } else {
-                "UPDATE addresses SET state='provisioning' WHERE address=?1 AND state='pending'"
+                "UPDATE addresses SET state='provisioning',next_reconcile_at=0 WHERE address=?1 AND state='pending'"
             };
             database
                 .prepare(query)
@@ -364,7 +401,7 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
             platform::delete_rule(env, &id).await?;
         }
         if row.state == "deleting" {
-            database.prepare("UPDATE addresses SET state='retired',cf_rule_id=NULL,needs_reconcile=1 WHERE address=?1 AND state='deleting'")
+            database.prepare("UPDATE addresses SET state='retired',cf_rule_id=NULL,needs_reconcile=1,next_reconcile_at=-1 WHERE address=?1 AND state='deleting'")
                 .bind(&[bind_str(&row.address)])?.run().await?;
         } else {
             database
@@ -1243,7 +1280,7 @@ struct AddressRow {
 /// raced with activation. The caller must not treat a failed mark as a license
 /// to delete any provider rule.
 async fn flag_active_address(database: &D1Database, address: &str, user: &Principal) -> Result<()> {
-    database.prepare("UPDATE addresses SET needs_reconcile=1 WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='active'")
+    database.prepare("UPDATE addresses SET needs_reconcile=1,next_reconcile_at=0 WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='active'")
         .bind(&[bind_str(address), bind_str(&user.iss), bind_str(&user.sub)])?.run().await?;
     Ok(())
 }
@@ -1361,7 +1398,7 @@ async fn add_address(
         }
     }
     diagnostic.enter(AddressDiagStage::D1Claim);
-    let claim = database.prepare("UPDATE addresses SET state='provisioning' WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='pending'")
+    let claim = database.prepare("UPDATE addresses SET state='provisioning',next_reconcile_at=0 WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='pending'")
         .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.run().await?;
     if claim.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
         diagnostic.enter(AddressDiagStage::ResponseEncode);
@@ -1391,8 +1428,16 @@ async fn add_address(
         diagnostic.fail(kind, error.provider_status(), None);
         AppError::from(worker::Error::RustError("routing_list_failed".into()))
     })?;
-    let rule_id = if let Some(id) = existing_rules.first() {
-        id.clone()
+    let rule_id = if let Some(id) = existing_rules.first_enabled() {
+        id.to_owned()
+    } else if !existing_rules.is_empty() {
+        // Do not activate a disabled route or create a second exact route.
+        // The owned inventory remains visible to Cron and delete reconciliation.
+        diagnostic.fail(AddressDiagKind::State, None, None);
+        return Err(AppError {
+            status: 503,
+            code: "routing_unavailable",
+        });
     } else {
         diagnostic.enter(AddressDiagStage::RoutingCreate);
         let create_start = js_sys::Date::now();
@@ -1513,7 +1558,7 @@ async fn delete_address(
         )?
         .with_status(202));
     }
-    database.prepare("UPDATE addresses SET state='deleting' WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state!='retired'")
+    database.prepare("UPDATE addresses SET state='deleting',next_reconcile_at=-1 WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state!='retired'")
         .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.run().await?;
     // Re-read after transition: creation may have installed a rule between first read and UPDATE.
     let current = database.prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3")
@@ -1529,7 +1574,7 @@ async fn delete_address(
         for rule_id in rules {
             platform::delete_rule(env, &rule_id).await?;
         }
-        database.prepare("UPDATE addresses SET state='retired',cf_rule_id=NULL,needs_reconcile=1 WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='deleting'")
+        database.prepare("UPDATE addresses SET state='retired',cf_rule_id=NULL,needs_reconcile=1,next_reconcile_at=-1 WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='deleting'")
             .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.run().await?;
     }
     Ok(
@@ -2561,6 +2606,45 @@ fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A full batch of failing deletes moves behind untouched due work.
+    #[test]
+    fn address_reconcile_due_order_does_not_starve_other_states() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(include_str!("../migrations/0001_initial.sql"))
+            .unwrap();
+        db.execute_batch(include_str!(
+            "../migrations/0008_address_reconcile_schedule.sql"
+        ))
+        .unwrap();
+        for n in 0..31 {
+            let id = format!("d{n:02}");
+            db.execute("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES(?1,?1,'issuer',?1,0,'deleting',0)", [id.as_str()]).unwrap();
+        }
+        db.execute("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES('p','p','issuer','p',0,'provisioning',1)", []).unwrap();
+        let select = |db: &rusqlite::Connection| {
+            let mut statement = db.prepare(ADDRESS_RECONCILE_SQL).unwrap();
+            statement
+                .query_map([100_i64], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(|value| value.unwrap())
+                .collect::<Vec<_>>()
+        };
+        let first = select(&db);
+        assert_eq!(first.len(), 30);
+        assert!(first.iter().all(|id| id.starts_with('d')));
+        for id in first {
+            // Model claim-before-I/O followed by a failing provider request.
+            db.execute(
+                "UPDATE addresses SET next_reconcile_at=300100 WHERE address=?1",
+                [id],
+            )
+            .unwrap();
+        }
+        let second = select(&db);
+        assert_eq!(second.len(), 2);
+        assert!(second.contains(&"p".to_owned()));
+    }
 
     /// Multibyte content crossing the byte ceiling is clipped to a valid prefix.
     #[test]

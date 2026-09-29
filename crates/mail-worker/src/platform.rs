@@ -64,6 +64,7 @@ struct CfRuleError {
 #[derive(Deserialize)]
 struct CfRule {
     id: String,
+    enabled: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +80,7 @@ struct CfResultInfo {
 #[derive(Deserialize)]
 struct CfListedRule {
     id: String,
+    enabled: Option<bool>,
     name: Option<String>,
     actions: Vec<CfAction>,
     matchers: Vec<CfMatcher>,
@@ -93,6 +95,50 @@ struct CfMatcher {
     r#type: String,
     field: Option<String>,
     value: Option<String>,
+}
+
+/// Exact rules remain owned even when disabled or their status is unknown.
+/// Only `enabled == Some(true)` proves that a route may deliver mail.
+#[derive(Debug, Eq, PartialEq)]
+struct OwnedRule {
+    id: String,
+    enabled: Option<bool>,
+}
+
+/// One address's provider inventory; deleting and duplicate cleanup use all IDs.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct OwnedRules(Vec<OwnedRule>);
+
+impl OwnedRules {
+    /// Whether an exact rule exists, regardless of current delivery status.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Number of exact owned rules for duplicate accounting.
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// The first deliverable exact rule, preserving the provider's ordering.
+    pub(crate) fn first_enabled(&self) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|rule| rule.enabled == Some(true))
+            .map(|rule| rule.id.as_str())
+    }
+
+    /// Whether the committed rule remains enabled at the provider.
+    pub(crate) fn has_enabled(&self, id: &str) -> bool {
+        self.0
+            .iter()
+            .any(|rule| rule.id == id && rule.enabled == Some(true))
+    }
+
+    /// All exact owned IDs, including disabled rules requiring state-aware cleanup.
+    pub(crate) fn into_ids(self) -> Vec<String> {
+        self.0.into_iter().map(|rule| rule.id).collect()
+    }
 }
 
 /// Reject negative or incomplete list envelopes without retaining provider text.
@@ -115,6 +161,7 @@ fn checked_rule_list(
 pub async fn rules_for_address(env: &Env, address: &str) -> Result<Vec<String>> {
     rules_for_address_typed(env, address)
         .await
+        .map(OwnedRules::into_ids)
         .map_err(|_| worker::Error::RustError("routing_list_failed".into()))
 }
 
@@ -147,7 +194,7 @@ impl RuleListFailure {
 pub(crate) async fn rules_for_address_typed(
     env: &Env,
     address: &str,
-) -> std::result::Result<Vec<String>, RuleListFailure> {
+) -> std::result::Result<OwnedRules, RuleListFailure> {
     let zone = env
         .var("CF_ZONE_ID")
         .map_err(|_| RuleListFailure::Request)?
@@ -157,7 +204,7 @@ pub(crate) async fn rules_for_address_typed(
         .map_err(|_| RuleListFailure::Request)?
         .to_string();
     let expected_name = format!("amail {address}");
-    let mut ids = Vec::new();
+    let mut rules = Vec::new();
     // The API permits at most 50 per page. A zone can include several mail domains.
     for page in 1..=200 {
         let url = format!("https://api.cloudflare.com/client/v4/zones/{zone}/email/routing/rules?per_page=50&page={page}");
@@ -193,7 +240,10 @@ pub(crate) async fn rules_for_address_typed(
                         && m.value.as_deref() == Some(address)
                 })
             {
-                ids.push(rule.id);
+                rules.push(OwnedRule {
+                    id: rule.id,
+                    enabled: rule.enabled,
+                });
             }
         }
         if count < 50 || total_pages.is_some_and(|total| page >= total) {
@@ -203,7 +253,7 @@ pub(crate) async fn rules_for_address_typed(
             return Err(RuleListFailure::Decode { status });
         }
     }
-    Ok(ids)
+    Ok(OwnedRules(rules))
 }
 
 /// Provision one literal subdomain routing rule; no catch-all exists.
@@ -249,6 +299,7 @@ fn classify_create_response(
         if data.success {
             return data
                 .result
+                .filter(|rule| rule.enabled == Some(true))
                 .map(|rule| rule.id)
                 .ok_or(RuleCreateFailure::UnexpectedResponse { status });
         }
@@ -544,9 +595,44 @@ mod tests {
     /// A successful provider response returns only the rule identifier.
     #[test]
     fn create_rule_success() {
-        let body = r#"{"success":true,"result":{"id":"rule-id"}}"#;
+        let body = r#"{"success":true,"result":{"id":"rule-id","enabled":true}}"#;
         assert_eq!(classify_create_response(200, body), Ok("rule-id".into()));
         assert_eq!(classify_create_response(201, body), Ok("rule-id".into()));
+    }
+
+    /// A disabled or status-unknown route is owned but cannot establish delivery.
+    #[test]
+    fn listed_rule_enabled_selection_preserves_cleanup_inventory() {
+        let rules: CfRuleList = serde_json::from_str(r#"{"success":true,"result":[{"id":"disabled","enabled":false,"actions":[],"matchers":[]},{"id":"unknown","actions":[],"matchers":[]},{"id":"enabled","enabled":true,"actions":[],"matchers":[]}]}"#).unwrap();
+        let (listed, _) = checked_rule_list(rules, 200).unwrap();
+        let owned = OwnedRules(
+            listed
+                .into_iter()
+                .map(|rule| OwnedRule {
+                    id: rule.id,
+                    enabled: rule.enabled,
+                })
+                .collect(),
+        );
+        assert_eq!(owned.first_enabled(), Some("enabled"));
+        assert!(!owned.has_enabled("disabled"));
+        assert!(!owned.has_enabled("unknown"));
+        assert!(owned.has_enabled("enabled"));
+        assert_eq!(owned.into_ids(), vec!["disabled", "unknown", "enabled"]);
+    }
+
+    /// An unconfirmed create response may have created a route but cannot activate D1.
+    #[test]
+    fn create_rule_requires_confirmed_enabled_state() {
+        for body in [
+            r#"{"success":true,"result":{"id":"rule-id","enabled":false}}"#,
+            r#"{"success":true,"result":{"id":"rule-id"}}"#,
+        ] {
+            assert_eq!(
+                classify_create_response(200, body),
+                Err(RuleCreateFailure::UnexpectedResponse { status: 200 })
+            );
+        }
     }
 
     /// HTTP and Cloudflare numeric codes survive, but body text never enters the error.
