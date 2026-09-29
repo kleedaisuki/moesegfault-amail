@@ -114,7 +114,7 @@ def cli_env(home: Path) -> dict[str, str]:
 SAFE_API_CODES = frozenset({
     "routing_unavailable", "capacity_exhausted", "address_unavailable",
     "address_limit", "address_provision_unknown", "address_state_changed",
-    "address_deleting", "address_retired", "not_found", "send_held",
+    "address_deleting", "address_retired", "not_found", "service_unavailable", "send_held",
     "semantic_index_incomplete",
 })
 

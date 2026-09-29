@@ -37,6 +37,13 @@ class CleanupTests(unittest.TestCase):
             HARNESS.cli_failure(stderr, "address_register_failed"),
             "address_register_failed_http_503_routing_unavailable",
         )
+        self.assertEqual(
+            HARNESS.cli_failure(
+                stderr.replace(b"routing_unavailable", b"service_unavailable"),
+                "address_register_failed",
+            ),
+            "address_register_failed_http_503_service_unavailable",
+        )
         unsafe = stderr.replace(b"routing_unavailable", b"private_mailbox_body")
         self.assertEqual(HARNESS.cli_failure(unsafe, "address_register_failed"), "address_register_failed")
         self.assertEqual(
