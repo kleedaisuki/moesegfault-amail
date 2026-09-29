@@ -119,16 +119,22 @@ class AddressFailureLogTests(unittest.TestCase):
         self.assertEqual(body["timeframe"], {"from": diagnostic.START_MS,
                                              "to": diagnostic.END_MS})
         self.assertEqual(body["filters"][0]["value"], diagnostic.WORKER)
-        for rows, expected in (([], "absent"),
+        for rows, expected in (([], "explicit_empty"),
                                ([{"dataset": "workers", "key": "$metadata.service",
-                                  "type": "string", "value": "other-service"}], "unverified"),
-                               ({"unexpected": "shape"}, "unverified")):
+                                  "type": "string", "value": "other-service"}], "unexpected_service"),
+                               ({"unexpected": "shape"}, "row_schema_invalid"),
+                               ([{"dataset": "workers", "key": "$metadata.service",
+                                  "type": "string", "value": 42}], "row_schema_invalid"),
+                               ([row, {**row, "value": "other-service"}], "unexpected_service")):
             with self.subTest(expected=expected):
                 with patch.object(diagnostic, "request_json", return_value={"result": rows}):
                     self.assertEqual(diagnostic.service_value_status("a" * 32, "fake"), expected)
+        with patch.object(diagnostic, "request_json", return_value={}):
+            self.assertEqual(diagnostic.service_value_status("a" * 32, "fake"),
+                             "result_list_missing")
 
-    def test_absent_service_stops_before_event_query(self) -> None:
-        """No service value means UNVERIFIED, not an empty-window inference."""
+    def test_ambiguous_service_still_probes_exact_event_window(self) -> None:
+        """A bad values shape must not hide a completed event view again."""
 
         output = StringIO()
         with patch.object(sys, "argv", ["script", diagnostic.CONFIRMATION]), \
@@ -137,13 +143,15 @@ class AddressFailureLogTests(unittest.TestCase):
                     "CF_OBSERVABILITY_TOKEN": "fake",
                     "CLOUDFLARE_API_TOKEN": "fake",
                 }), patch.object(diagnostic, "preflight"), \
-                patch.object(diagnostic, "service_value_status", return_value="absent"), \
-                patch.object(diagnostic, "retained_events") as query, redirect_stdout(output):
+                patch.object(diagnostic, "service_value_status", return_value="row_schema_invalid"), \
+                patch.object(diagnostic, "retained_events", return_value=[]) as query, \
+                redirect_stdout(output):
             self.assertEqual(diagnostic.main(), 1)
-        query.assert_not_called()
+        query.assert_called_once_with("a" * 32, "fake", diagnostic.START_MS, diagnostic.END_MS)
         self.assertEqual(output.getvalue().strip().splitlines(), [
-            "staging_address_service: service_value_absent",
-            "staging_address_incident: UNVERIFIED (service_value_absent)",
+            "staging_address_service: service_value_row_schema_invalid",
+            "staging_address_events: explicit_empty",
+            "staging_address_incident: UNVERIFIED (service_value_row_schema_invalid)",
         ])
 
     def test_values_permission_error_keeps_fixed_cause(self) -> None:
@@ -158,12 +166,38 @@ class AddressFailureLogTests(unittest.TestCase):
                 }), patch.object(diagnostic, "preflight"), \
                 patch.object(diagnostic, "service_value_status",
                              side_effect=diagnostic.CanaryError("observability_permission_denied")), \
-                patch.object(diagnostic, "retained_events") as query, redirect_stdout(output):
+                patch.object(diagnostic, "retained_events",
+                             side_effect=diagnostic.CanaryError("observability_events_view_absent")) as query, \
+                redirect_stdout(output):
             self.assertEqual(diagnostic.main(), 1)
-        query.assert_not_called()
+        query.assert_called_once_with("a" * 32, "fake", diagnostic.START_MS, diagnostic.END_MS)
         self.assertEqual(output.getvalue().strip().splitlines(), [
             "staging_address_service: service_value_unverified",
-            "staging_address_incident: UNVERIFIED (observability_permission_denied)",
+            "staging_address_service_cause: observability_permission_denied",
+            "staging_address_events: UNVERIFIED (observability_events_view_absent)",
+            "staging_address_incident: UNVERIFIED (observability_events_view_absent)",
+        ])
+
+    def test_unverified_values_never_classify_present_event_view(self) -> None:
+        """An event-view shape alone is not enough to name an incident cause."""
+
+        output = StringIO()
+        with patch.object(sys, "argv", ["script", diagnostic.CONFIRMATION]), \
+                patch.dict(diagnostic.os.environ, {
+                    "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+                    "CF_OBSERVABILITY_TOKEN": "fake",
+                    "CLOUDFLARE_API_TOKEN": "fake",
+                }), patch.object(diagnostic, "preflight"), \
+                patch.object(diagnostic, "service_value_status", return_value="unexpected_service"), \
+                patch.object(diagnostic, "retained_events", return_value=[record(
+                    event("request_exit", "server_error"))]), \
+                patch.object(diagnostic, "classify") as classify, redirect_stdout(output):
+            self.assertEqual(diagnostic.main(), 1)
+        classify.assert_not_called()
+        self.assertEqual(output.getvalue().strip().splitlines(), [
+            "staging_address_service: service_value_unexpected_service",
+            "staging_address_events: view_present",
+            "staging_address_incident: UNVERIFIED (service_value_unexpected_service)",
         ])
 
 

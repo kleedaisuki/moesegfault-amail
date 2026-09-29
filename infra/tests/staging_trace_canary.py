@@ -270,16 +270,33 @@ def retained_events(account: str, token: str, start: int, end: int) -> list[dict
 
     records: list[dict] = []
     cursor: str | None = None
+    total_count: int | None = None
+    seen_ids: set[str] = set()
     while True:
         page = query_page(account, token, start, end, cursor)
         batch = page["events"]
         need(len(batch) <= MAX_PAGE, "observability_events_malformed")
         need(all(isinstance(item, dict) for item in batch), "observability_events_malformed")
+        count = page.get("count")
+        need(type(count) is int and count >= len(records) + len(batch),
+             "observability_count_malformed")
+        if total_count is None:
+            total_count = count
+        need(count == total_count, "observability_count_malformed")
+        # A paginated result cannot prove completeness when rows repeat or
+        # lack stable cursor IDs, even if its reported total eventually matches.
+        if cursor is not None or count > len(batch):
+            ids = [item.get("$metadata", {}).get("id")
+                   if isinstance(item.get("$metadata"), dict) else None
+                   for item in batch]
+            need(all(isinstance(item_id, str) and item_id for item_id in ids),
+                 "observability_cursor_missing")
+            need(not any(item_id in seen_ids for item_id in ids)
+                 and len(set(ids)) == len(ids), "observability_cursor_stalled")
+            seen_ids.update(ids)
         records.extend(batch)
         need(len(records) <= MAX_EVENTS, "observability_window_too_busy")
-        count = page.get("count")
-        need(type(count) is int and count >= len(records), "observability_count_malformed")
-        if len(records) == count:
+        if len(records) == total_count:
             return records
         need(len(batch) == MAX_PAGE, "observability_page_incomplete")
         metadata = batch[-1].get("$metadata")

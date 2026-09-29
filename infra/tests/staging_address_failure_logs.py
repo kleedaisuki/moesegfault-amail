@@ -41,12 +41,14 @@ SAFE_FAILURES = frozenset({
     "address_add_root_outcome_inconsistent", "address_add_root_status_unverified",
     "routing_phase_missing_or_ambiguous", "routing_phase_order_inconsistent",
     "routing_list_outcome_unverified", "routing_create_outcome_unverified",
-    "service_value_absent", "service_value_unverified",
+    "service_value_result_list_missing", "service_value_row_schema_invalid",
+    "service_value_unexpected_service", "service_value_explicit_empty",
+    "service_value_unverified",
 })
 
 
 def service_value_status(account: str, token: str) -> str:
-    """Check only exact-window service membership; retain no other values."""
+    """Classify only the exact-window values response, never echoing its rows."""
 
     body = {
         "datasets": [], "key": "$metadata.service", "type": "string",
@@ -54,15 +56,22 @@ def service_value_status(account: str, token: str) -> str:
         "filters": [{"key": "$metadata.service", "operation": "eq",
                      "type": "string", "value": WORKER}],
     }
-    rows = request_json(account, token, "values", body).get("result")
+    payload = request_json(account, token, "values", body)
+    if "result" not in payload:
+        return "result_list_missing"
+    rows = payload["result"]
     if not isinstance(rows, list) or not all(
         isinstance(row, dict) and isinstance(row.get("dataset"), str)
         and row.get("key") == "$metadata.service"
-        and row.get("type") == "string" and row.get("value") == WORKER
+        and row.get("type") == "string" and isinstance(row.get("value"), str)
         for row in rows
     ):
-        return "unverified"
-    return "present" if rows else "absent"
+        return "row_schema_invalid"
+    if not rows:
+        return "explicit_empty"
+    if any(row["value"] != WORKER for row in rows):
+        return "unexpected_service"
+    return "present"
 
 
 def reviewed_events(records: list[dict]) -> list[dict]:
@@ -130,7 +139,7 @@ def classify(records: list[dict]) -> str:
 
 
 def main() -> int:
-    """Preflight privacy and scope, then query without saving any provider row."""
+    """Probe values and events independently after privacy and key preflight."""
 
     try:
         need(sys.argv[1:] == [CONFIRMATION], "explicit_incident_confirmation_required")
@@ -140,16 +149,31 @@ def main() -> int:
         need(HEX32.fullmatch(account) is not None, "account_id_missing_or_invalid")
         need(bool(obs_token and deploy_token), "observability_or_deploy_token_missing")
         preflight(account, obs_token, deploy_token)
+        service_error = None
         try:
             service_status = service_value_status(account, obs_token)
-        except CanaryError:
-            print("staging_address_service: service_value_unverified")
-            raise
-        need(service_status in ("present", "absent", "unverified"),
-             "service_value_unverified")
+        except CanaryError as error:
+            service_status = "unverified"
+            service_error = str(error)
+        except Exception:
+            service_status = "unverified"
+            service_error = "unexpected_failure"
         print(f"staging_address_service: service_value_{service_status}")
-        need(service_status == "present", f"service_value_{service_status}")
-        records = retained_events(account, obs_token, START_MS, END_MS)
+        if service_error is not None:
+            cause = service_error if service_error in SAFE_FAILURES else "unexpected_failure"
+            print(f"staging_address_service_cause: {cause}")
+        try:
+            records = retained_events(account, obs_token, START_MS, END_MS)
+        except CanaryError as error:
+            label = str(error)
+            cause = label if label in SAFE_FAILURES else "unexpected_failure"
+            print(f"staging_address_events: UNVERIFIED ({cause})")
+            raise
+        except Exception:
+            print("staging_address_events: UNVERIFIED (unexpected_failure)")
+            raise CanaryError("unexpected_failure") from None
+        print(f"staging_address_events: {'view_present' if records else 'explicit_empty'}")
+        need(service_status == "present", service_error or f"service_value_{service_status}")
         label = classify(records)
     except CanaryError as error:
         label = str(error)

@@ -186,6 +186,28 @@ class StagingTraceCanaryTests(unittest.TestCase):
         with patch.object(canary, "query_page", return_value={"count": 2, "events": events()}):
             self.assertEqual(len(canary.retained_events("1" * 32, "fake", 1000, 2000)), 2)
 
+    def test_paginated_count_drift_cannot_certify_completeness(self) -> None:
+        """A later smaller total must not turn a partial first page into all rows."""
+
+        first = [{"$metadata": {"id": f"id-{index}"}} for index in range(200)]
+        second = [{"$metadata": {"id": f"id-{index}"}} for index in range(200, 250)]
+        with patch.object(canary, "query_page", side_effect=[
+            {"count": 300, "events": first}, {"count": 250, "events": second},
+        ]):
+            with self.assertRaisesRegex(canary.CanaryError, "observability_count_malformed"):
+                canary.retained_events("1" * 32, "fake", 1000, 2000)
+
+    def test_paginated_duplicate_id_cannot_certify_completeness(self) -> None:
+        """Repeated rows cannot fill the reported total, regardless of count."""
+
+        first = [{"$metadata": {"id": f"id-{index}"}} for index in range(200)]
+        second = [{"$metadata": {"id": "id-199"}}]
+        with patch.object(canary, "query_page", side_effect=[
+            {"count": 201, "events": first}, {"count": 201, "events": second},
+        ]):
+            with self.assertRaisesRegex(canary.CanaryError, "observability_cursor_stalled"):
+                canary.retained_events("1" * 32, "fake", 1000, 2000)
+
     def test_query_uses_documented_nested_view(self) -> None:
         """Cloudflare defines the events view inside parameters, not top-level."""
 
