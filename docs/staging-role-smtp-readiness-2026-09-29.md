@@ -19,3 +19,20 @@ The earlier pin `8bb3a1a1-aa7f-4b3b-b861-c10db4a2865a` from run 36532066688 is s
 4. Keep the freeze through independent exact-route absence after the harness. On failure/cancellation/ambiguous create or cleanup, retain the freeze and use only reviewed ID-bound recovery plus restricted inventory; never retry ambiguous SMTP merely to obtain green output. The strongest harness pass is `machine_d1_only`. Cron Past Events, provider forwarding and digest events, and destination Inbox/Junk remain distinct oracles. Public sending stays held.
 
 See [the full role-monitor acceptance runbook](staging-role-monitor-acceptance.md) and [hosted gate review](review-staging-role-hosted-acceptance.md) for the exact safety protocol and evidence limits.
+
+## Pin semantics and next invocation (follow-up, 2026-09-29)
+
+The hosted gate does **not** require its selected successful role-deploy run to have the branch's latest source SHA. It requires a completed successful `ci.yml` push/manual run on the selected branch, its exact successful `Deploy isolated staging role monitor` job and deploy step, one version UUID from that step's bounded private log, and Cloudflare's currently single 100%-serving version equal to that UUID and the input pin. Thus an older SHA is not intrinsically rejected, but an older run cannot attest acceptance *after* newer CI, and any newer serving deployment invalidates its version pin. At this follow-up, branch and remote HEAD were `63abdb42319603054622a1b65dabd81514def113`; push [run 36579868487](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36579868487) had a failed `Rust Worker (Wasm)` job and skipped the role-deploy job. It cannot provide a new role-deployment pin. This is a point-in-time CI observation, not a provider readback.
+
+After stable successful CI/deploy and the external freeze/readbacks described above, invoke the branch-local manual workflow with only public control inputs (replace placeholders with the **newly verified** exact run ID and serving version):
+
+```text
+gh workflow run ci.yml --ref codex/amail-v0.1.0 \
+  -f target=staging-role-smtp \
+  -f confirm=RUN_STAGING_ROLE_SMTP \
+  -f role_deploy_run=<successful-current-role-deploy-run-id> \
+  -f role_version=<matching-100%-serving-version-uuid> \
+  -f role_freeze=FREEZE_STAGING_ROLE_DEPLOYS
+```
+
+The GitHub job uses the protected `staging` environment and requires its configured account/API/routing secrets. The existing staging Cloudflare API token is also mapped in memory to the SMTP token; sender-read capability does not establish SMTP AUTH capability. Its 30-minute timeout and shared Actions concurrency group are not an external deployment lock. Keep all branch pushes, manual role deploys, and out-of-band Wrangler changes frozen until the post-run exact-route and version audits complete. The harness arms an ignored local recovery marker before route creation, deletes only the provider ID it recorded, compares all four standard forwards, then requires two exact-route absence readbacks separated by 60 seconds. A canceled hosted runner may not leave a usable marker or upload an artifact; restricted inventory and ownership reconciliation therefore precede any retry or unfreeze. An ambiguous SMTP result must not trigger a second message just to obtain a pass.
