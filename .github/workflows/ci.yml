@@ -12,7 +12,7 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, production]
+        options: [staging, staging-e2e, staging-routing-policy, production]
       confirm:
         description: For staging-e2e only, enter RUN_STAGING_E2E after Identity staging is fixed
         required: false
@@ -99,6 +99,29 @@ jobs:
           CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_hosted_e2e.py
+
+  staging-routing-policy:
+    name: Read configured staging routing-token policy
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-routing-policy' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    env:
+      CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Inspect only token verification and details GETs
+        run: python infra/provider/probe_routing_write.py
 
   worker:
     name: Rust Worker (Wasm)
