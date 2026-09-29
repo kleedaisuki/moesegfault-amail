@@ -25,6 +25,7 @@ TEMP = (ROOT / ".temp").resolve()
 BUILT_BINARY = ROOT / "target" / "debug" / "amail.exe"
 CANARY = Path(__file__).with_name("staging_trace_canary.py")
 CONFIRMATION = "RUN_STAGING_TRACE_CANARY"
+CHILD_SUCCESS = b"staging_trace_canary: retained_marker_absence_and_cli_api_parentage_verified"
 HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 USERNAME = re.compile(r"[a-z0-9_]{3,32}\Z")
 PREFLIGHT_CODES = frozenset({
@@ -141,6 +142,14 @@ def child_failure_code(output: object) -> str:
     return "retained_canary_unverified"
 
 
+def child_success_verified(output: object) -> bool:
+    """Require the child's exact fixed proof line before declaring success."""
+
+    return isinstance(output, bytes) and len(output) <= 160 and output in (
+        CHILD_SUCCESS + b"\n", CHILD_SUCCESS + b"\r\n",
+    )
+
+
 def remove_run_dir(run_dir: Path) -> None:
     """Delete only this run's directory, retrying bounded Windows lock races."""
 
@@ -210,6 +219,8 @@ def execute(mode: str, confirmation: str) -> None:
         )
         if result.returncode:
             raise HostedTraceError(child_failure_code(getattr(result, "stdout", None)))
+        if not child_success_verified(getattr(result, "stdout", None)):
+            raise HostedTraceError("retained_canary_success_unconfirmed")
     except subprocess.TimeoutExpired:
         raise HostedTraceError("retained_canary_timed_out") from None
     finally:

@@ -99,6 +99,46 @@ class HostedTraceSafetyTests(unittest.TestCase):
             with self.subTest(output=output):
                 self.assertEqual(HOSTED.child_failure_code(output), "retained_canary_unverified")
 
+    def test_child_success_requires_exact_fixed_line(self) -> None:
+        """A zero exit alone cannot stand in for the child proof assertion."""
+
+        success = HOSTED.CHILD_SUCCESS
+        self.assertTrue(HOSTED.child_success_verified(success + b"\n"))
+        self.assertTrue(HOSTED.child_success_verified(success + b"\r\n"))
+        for output in (None, b"", success, b" " + success + b"\n",
+                       success + b"\nprivate", success + b"\n" + b"x" * 161,
+                       success + b"\n\xff"):
+            with self.subTest(output=output):
+                self.assertFalse(HOSTED.child_success_verified(output))
+
+    def test_zero_exit_without_proof_line_remains_unverified(self) -> None:
+        """The hosted verdict fails closed even when a child exits zero."""
+
+        run_dir = HOSTED.TEMP / "staging-hosted-trace-unit"
+        identity = SimpleNamespace(
+            ProbeError=type("ProbeError", (Exception,), {}),
+            store_credential=lambda *_: None,
+            native_login=lambda *_: None,
+        )
+        with patch.object(HOSTED, "preflight_live", return_value=("a" * 32, "deploy", "observe")), \
+                patch.object(HOSTED, "validated_credential", return_value=("synthetic_user", "private_password")), \
+                patch.object(HOSTED, "BUILT_BINARY", SimpleNamespace(is_file=lambda: True)), \
+                patch.object(HOSTED, "os", SimpleNamespace(name="nt")), \
+                patch.object(HOSTED.tempfile, "mkdtemp", return_value=str(run_dir)), \
+                patch.object(HOSTED.shutil, "copy2"), \
+                patch.object(HOSTED, "unique_auth_home", return_value=run_dir / "home"), \
+                patch.object(HOSTED, "canary_environment", return_value={}), \
+                patch.object(HOSTED.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=b"")) as probe, \
+                patch.object(HOSTED, "remove_run_dir") as cleanup, \
+                patch.dict(sys.modules, {"staging_identity_cdp": identity}):
+            with self.assertRaisesRegex(HOSTED.HostedTraceError, "retained_canary_success_unconfirmed"):
+                HOSTED.execute("canary", HOSTED.CONFIRMATION)
+            probe.return_value = SimpleNamespace(returncode=0, stdout=HOSTED.CHILD_SUCCESS + b"\r\n")
+            with redirect_stdout(StringIO()) as output:
+                HOSTED.execute("canary", HOSTED.CONFIRMATION)
+            self.assertEqual(output.getvalue().strip(), "staging_trace_hosted: retained_canary_verified")
+        self.assertEqual(cleanup.call_count, 2)
+
     def test_primary_and_cleanup_failures_remain_visible(self) -> None:
         """A failed retained query must not be hidden by a cleanup lock."""
 
