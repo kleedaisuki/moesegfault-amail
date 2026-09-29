@@ -79,17 +79,26 @@ class HostedRoleAcceptanceTests(unittest.TestCase):
         url = "https://logs.actions.githubusercontent.com/restricted?sig=opaque"
         redirect = urllib.error.HTTPError("https://api.github.com", 302, "Found",
                                            {"Location": url}, None)
-        opener = Mock()
-        opener.open.side_effect = redirect
         response = MagicMock()
         response.__enter__.return_value = response
         response.status = 200
         response.read.return_value = b"fixed log only"
-        with patch.object(hosted.urllib.request, "build_opener", return_value=opener), \
+        with patch.object(hosted._NO_REDIRECT, "open", side_effect=redirect) as opener, \
              patch.object(hosted.urllib.request, "urlopen", return_value=response) as storage:
             self.assertEqual(hosted.github_job_log("repo", 77, "secret"), "fixed log only")
+        self.assertEqual(opener.call_count, 1)
         self.assertEqual(storage.call_args.args[0].full_url, url)
         self.assertNotIn("Authorization", storage.call_args.args[0].headers)
+
+    def test_github_json_redirect_never_forwards_bearer(self) -> None:
+        """Only signed job logs may be fetched tokenlessly after a redirect."""
+
+        redirect = urllib.error.HTTPError("https://api.github.com", 302, "Found",
+                                           {"Location": "https://other.example/"}, io.BytesIO(b"private"))
+        with patch.object(hosted._NO_REDIRECT, "open", side_effect=redirect) as opener:
+            with self.assertRaisesRegex(hosted.GateError, "^github_read_unavailable$"):
+                hosted.github_get("/repos/repo/actions/runs/1", "secret")
+        self.assertEqual(opener.call_count, 1)
 
     def test_active_version_requires_one_full_traffic_version(self) -> None:
         """A staged 50/50 rollout is not an acceptable SMTP test target."""

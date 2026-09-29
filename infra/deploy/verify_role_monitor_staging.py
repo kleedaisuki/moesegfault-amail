@@ -23,6 +23,18 @@ DATABASE = "272e024c-453a-461b-bea0-c37a62c89d24"
 MAX_RESPONSE = 262_144
 
 
+class RejectRedirect(urllib.request.HTTPRedirectHandler):
+    """Constrain a deployment bearer to the original provider API request."""
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        """Treat redirects as failed audits without inspecting Location."""
+
+        return None
+
+
+_NO_REDIRECT = urllib.request.build_opener(RejectRedirect)
+
+
 def api_get(path: str, token: str) -> object:
     """Fetch bounded Cloudflare JSON, suppressing sensitive response bodies."""
 
@@ -30,9 +42,11 @@ def api_get(path: str, token: str) -> object:
         API + path, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with _NO_REDIRECT.open(request, timeout=30) as response:
             status, raw = response.status, response.read(MAX_RESPONSE + 1)
     except urllib.error.HTTPError as error:
+        if 300 <= error.code < 400:
+            raise RuntimeError(f"Cloudflare API read failed: HTTP {error.code}") from None
         status, raw = error.code, error.read(MAX_RESPONSE + 1)
     except (urllib.error.URLError, TimeoutError) as error:
         raise RuntimeError("Cloudflare API unavailable") from error

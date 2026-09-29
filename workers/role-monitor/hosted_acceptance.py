@@ -84,7 +84,7 @@ def github_get(path: str, token: str) -> dict:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with _NO_REDIRECT.open(request, timeout=30) as response:
             status, raw = response.status, response.read(MAX_RESPONSE + 1)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
         raise GateError("github_read_unavailable") from None
@@ -136,12 +136,15 @@ def successful_deploy_job(repo: str, run_id: int, token: str, branch: str) -> De
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Keep the GitHub bearer token off the signed log-storage redirect."""
+    """Keep GitHub bearer tokens off every redirect target."""
 
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         """Return the 302 to the caller for a tokenless second request."""
 
         return None
+
+
+_NO_REDIRECT = urllib.request.build_opener(NoRedirect)
 
 
 def github_job_log(repo: str, job_id: int, token: str) -> str:
@@ -156,7 +159,7 @@ def github_job_log(repo: str, job_id: int, token: str) -> str:
         },
     )
     try:
-        urllib.request.build_opener(NoRedirect).open(request, timeout=30)
+        _NO_REDIRECT.open(request, timeout=30)
     except urllib.error.HTTPError as error:
         require(error.code == 302, "deploy_log_unavailable")
         location = error.headers.get("Location", "")

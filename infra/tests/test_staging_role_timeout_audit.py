@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 import sys
 import unittest
+import urllib.error
+import urllib.request
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
@@ -59,7 +61,7 @@ class RoleTimeoutAuditTests(unittest.TestCase):
     def test_d1_uses_bound_aggregate_select_only(self) -> None:
         """Never select raw arrivals or interpolate private fields in SQL."""
 
-        with patch.object(audit.urllib.request, "urlopen", return_value=Response(row())) as open_url:
+        with patch.object(audit._NO_REDIRECT, "open", return_value=Response(row())) as open_url:
             self.assertEqual(audit.query("a" * 32, "secret-token")["on_n"], 0)
         request = open_url.call_args.args[0]
         payload = json.loads(request.data)
@@ -76,9 +78,22 @@ class RoleTimeoutAuditTests(unittest.TestCase):
 
         for bad in (row(extra="private"), row(on_n=1), row(on_n=True),
                     row(on_n=1, on_accepted=1), row(checked_at=None)):
-            with self.subTest(bad=bad), patch.object(audit.urllib.request, "urlopen", return_value=Response(bad)):
+            with self.subTest(bad=bad), patch.object(audit._NO_REDIRECT, "open", return_value=Response(bad)):
                 with self.assertRaises(audit.AuditError):
                     audit.query("a" * 32, "token")
+
+    def test_d1_redirect_does_not_forward_bearer(self) -> None:
+        """A 302 from the aggregate POST cannot become a cross-origin GET."""
+
+        request = urllib.request.Request(audit.API + "/test")
+        self.assertIsNone(audit.RejectRedirect().redirect_request(
+            request, None, 302, "Found", {}, "https://other.example/"))
+        redirect = urllib.error.HTTPError(request.full_url, 302, "Found",
+                                            {"Location": "https://other.example/"}, BytesIO(b"private"))
+        with patch.object(audit._NO_REDIRECT, "open", side_effect=redirect) as opener:
+            with self.assertRaisesRegex(audit.AuditError, "^d1_unavailable$"):
+                audit.query("a" * 32, "secret-token")
+        self.assertEqual(opener.call_count, 1)
 
     def test_fixed_labels_and_historical_lease_limit(self) -> None:
         """Later singleton overwrite is unknown, not historical Cron failure."""

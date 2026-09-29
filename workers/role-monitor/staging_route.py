@@ -18,6 +18,18 @@ API = "https://api.cloudflare.com/client/v4"
 MAX_BODY = 262_144
 
 
+class RejectRedirect(urllib.request.HTTPRedirectHandler):
+    """Never forward a scoped routing bearer to a redirect target."""
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        """Surface provider 30x as a failed operation rather than following it."""
+
+        return None
+
+
+_NO_REDIRECT = urllib.request.build_opener(RejectRedirect)
+
+
 def call(method: str, path: str, token: str, body: dict | None = None) -> tuple[int, dict]:
     """Read a bounded provider response without printing its contents. / 有界读取供应商响应且不打印其内容。"""
 
@@ -28,9 +40,11 @@ def call(method: str, path: str, token: str, body: dict | None = None) -> tuple[
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=25) as response:
+        with _NO_REDIRECT.open(request, timeout=25) as response:
             status, raw = response.status, response.read(MAX_BODY + 1)
     except urllib.error.HTTPError as error:
+        if 300 <= error.code < 400:
+            return error.code, {}
         status, raw = error.code, error.read(MAX_BODY + 1)
     except (urllib.error.URLError, TimeoutError):
         return 0, {}

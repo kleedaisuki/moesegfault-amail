@@ -23,6 +23,14 @@ disposable route remains absent, and verifies all four standard routes remain
 direct forwards. It does not mutate D1, change routes, resend mail, or query
 raw arrival rows. The current-version comparison is a drift check, **not**
 proof that this version served throughout the historical run.
+The `four_direct` label describes the **current structural shape**: four
+enabled, API-owned literal rules that forward directly to one common target.
+It does not prove that their provider IDs or confidential destination are
+unchanged since the failed SMTP run. All token-bearing provider and GitHub
+JSON reads reject redirects without forwarding credentials; the separately
+reviewed GitHub job-log path follows only an allowlisted signed-storage URL
+with a new, tokenless request. A 3xx response is an unavailable audit, not a
+reason to retry a provider request at its `Location`.
 
 Only fixed labels and `zero|one|multiple` cardinality buckets enter the public
 job log. The single-row health table can be overwritten by later Cron runs;

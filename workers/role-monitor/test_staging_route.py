@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from io import BytesIO
+import urllib.error
+import urllib.request
 from unittest.mock import patch
 
 import staging_route as route
@@ -54,6 +57,19 @@ class StagingRouteTests(unittest.TestCase):
             item = rule()
             item["matchers"][0]["value"] = address
             self.assertFalse(route.touches_alias(item))
+
+    def test_provider_redirect_never_replays_routing_bearer(self) -> None:
+        """A redirected read or write returns only a status and no provider body."""
+
+        request = urllib.request.Request(route.API + "/test")
+        self.assertIsNone(route.RejectRedirect().redirect_request(
+            request, None, 302, "Found", {}, "https://other.example/"))
+        redirect = urllib.error.HTTPError(request.full_url, 302, "Found",
+                                            {"Location": "https://other.example/"}, BytesIO(b'{"private":true}'))
+        with patch.object(route._NO_REDIRECT, "open", side_effect=redirect) as opener:
+            self.assertEqual(route.call("GET", "/zones/x/email/routing/rules", "secret"), (302, {}))
+            self.assertEqual(route.call("POST", "/zones/x/email/routing/rules", "secret", {}), (302, {}))
+        self.assertEqual(opener.call_count, 2)
 
 
 if __name__ == "__main__":

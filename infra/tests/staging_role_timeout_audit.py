@@ -56,6 +56,18 @@ class AuditError(Exception):
     """A fixed, non-sensitive failure label."""
 
 
+class RejectRedirect(urllib.request.HTTPRedirectHandler):
+    """Keep the D1 bearer token off any redirected origin."""
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        """Return a 30x error to the caller without following its Location."""
+
+        return None
+
+
+_NO_REDIRECT = urllib.request.build_opener(RejectRedirect)
+
+
 def query(account: str, token: str) -> dict:
     """Retrieve exactly one bounded aggregate row from isolated staging D1."""
 
@@ -66,7 +78,7 @@ def query(account: str, token: str) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with _NO_REDIRECT.open(request, timeout=30) as response:
             status, raw = response.status, response.read(MAX_RESPONSE + 1)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
         raise AuditError("d1_unavailable") from None

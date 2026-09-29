@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+from io import BytesIO
 from pathlib import Path
 import unittest
+import urllib.error
+import urllib.request
+from unittest.mock import patch
 
 
 PATH = Path(__file__).resolve().parents[1] / "deploy/verify_role_monitor_staging.py"
@@ -27,6 +31,19 @@ class RoleMonitorLiveAuditTests(unittest.TestCase):
             {"type": "plain_text", "name": "CF_ZONE_ID", "text": audit.ZONE},
             {"type": "secret_text", "name": "ROLE_FORWARD_DESTINATION"},
         ]}
+
+    def test_provider_redirect_does_not_forward_deployment_bearer(self) -> None:
+        """A 302 is a fixed failed read, never a second-origin credential hop."""
+
+        request = urllib.request.Request(audit.API + "/test")
+        self.assertIsNone(audit.RejectRedirect().redirect_request(
+            request, None, 302, "Found", {}, "https://other.example/"))
+        redirect = urllib.error.HTTPError(request.full_url, 302, "Found",
+                                            {"Location": "https://other.example/"}, BytesIO(b"private"))
+        with patch.object(audit._NO_REDIRECT, "open", side_effect=redirect) as opener:
+            with self.assertRaisesRegex(RuntimeError, "^Cloudflare API read failed: HTTP 302$"):
+                audit.api_get("/test", "secret")
+        self.assertEqual(opener.call_count, 1)
 
     def test_bindings_reject_production_database(self) -> None:
         """A correctly named binding must still target the isolated staging ID."""
