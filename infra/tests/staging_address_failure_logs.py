@@ -12,7 +12,7 @@ import sys
 
 from staging_trace_canary import (
     CanaryError, HEX16, HEX32, UUID, WORKER, allowlisted_event, embedded_events,
-    empty_log_payload, need, preflight, retained_events,
+    empty_log_payload, need, preflight, request_json, retained_events,
 )
 
 
@@ -27,6 +27,10 @@ SAFE_FAILURES = frozenset({
     "observability_permission_denied", "observability_http_unavailable",
     "observability_network_unavailable", "observability_response_too_large",
     "observability_response_malformed", "observability_query_failed",
+    "observability_result_malformed", "observability_run_malformed",
+    "observability_query_incomplete", "observability_query_status_unverified",
+    "observability_query_echo_unverified",
+    "observability_events_view_absent",
     "observability_keys_malformed", "service_filter_key_unverified",
     "observability_events_malformed", "observability_window_too_busy",
     "observability_count_malformed", "observability_page_incomplete",
@@ -37,7 +41,28 @@ SAFE_FAILURES = frozenset({
     "address_add_root_outcome_inconsistent", "address_add_root_status_unverified",
     "routing_phase_missing_or_ambiguous", "routing_phase_order_inconsistent",
     "routing_list_outcome_unverified", "routing_create_outcome_unverified",
+    "service_value_absent", "service_value_unverified",
 })
+
+
+def service_value_status(account: str, token: str) -> str:
+    """Check only exact-window service membership; retain no other values."""
+
+    body = {
+        "datasets": [], "key": "$metadata.service", "type": "string",
+        "timeframe": {"from": START_MS, "to": END_MS},
+        "filters": [{"key": "$metadata.service", "operation": "eq",
+                     "type": "string", "value": WORKER}],
+    }
+    rows = request_json(account, token, "values", body).get("result")
+    if not isinstance(rows, list) or not all(
+        isinstance(row, dict) and isinstance(row.get("dataset"), str)
+        and row.get("key") == "$metadata.service"
+        and row.get("type") == "string" and row.get("value") == WORKER
+        for row in rows
+    ):
+        return "unverified"
+    return "present" if rows else "absent"
 
 
 def reviewed_events(records: list[dict]) -> list[dict]:
@@ -115,6 +140,15 @@ def main() -> int:
         need(HEX32.fullmatch(account) is not None, "account_id_missing_or_invalid")
         need(bool(obs_token and deploy_token), "observability_or_deploy_token_missing")
         preflight(account, obs_token, deploy_token)
+        try:
+            service_status = service_value_status(account, obs_token)
+        except CanaryError:
+            print("staging_address_service: service_value_unverified")
+            raise
+        need(service_status in ("present", "absent", "unverified"),
+             "service_value_unverified")
+        print(f"staging_address_service: service_value_{service_status}")
+        need(service_status == "present", f"service_value_{service_status}")
         records = retained_events(account, obs_token, START_MS, END_MS)
         label = classify(records)
     except CanaryError as error:

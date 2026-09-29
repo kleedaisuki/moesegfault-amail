@@ -99,7 +99,9 @@ def request_json(account: str, token: str, endpoint: str, body: dict) -> dict:
         payload = json.loads(raw)
     except (ValueError, UnicodeDecodeError):
         raise CanaryError("observability_response_malformed") from None
-    need(isinstance(payload, dict) and payload.get("success") is True, "observability_query_failed")
+    need(isinstance(payload, dict) and payload.get("success") is True
+         and ("errors" not in payload or payload["errors"] == []),
+         "observability_query_failed")
     return payload
 
 
@@ -199,8 +201,38 @@ def run_probes(cli: Path, home: Path) -> tuple[int, int, tuple[str, str, str], s
     return start, end, ids, denied_id, (path_marker, query_marker)
 
 
+def expected_service_filter(value: object) -> bool:
+    """Recognize only the one exact service filter, allowing its optional tag."""
+
+    return isinstance(value, dict) and value.get("key") == "$metadata.service" \
+        and value.get("operation") in ("eq", "=") \
+        and value.get("type") == "string" and value.get("value") == WORKER \
+        and set(value).issubset({"key", "operation", "type", "value", "kind"}) \
+        and value.get("kind", "filter") == "filter"
+
+
+def query_echo_matches(run: dict, start: int, end: int) -> bool:
+    """Reject a returned page scoped to another window, view, or service."""
+
+    timeframe = run.get("timeframe")
+    query = run.get("query")
+    if (not isinstance(timeframe, dict) or timeframe.get("from") != start
+            or timeframe.get("to") != end or not isinstance(query, dict)):
+        return False
+    parameters = query.get("parameters")
+    if (not isinstance(parameters, dict) or parameters.get("view") != "events"
+            or parameters.get("datasets") != []
+            or parameters.get("filterCombination") not in ("and", "AND")):
+        return False
+    filters = parameters.get("filters")
+    if not isinstance(filters, list) or len(filters) != 1 or not expected_service_filter(filters[0]):
+        return False
+    # These optional clauses could silently narrow the retained window.
+    return all(not parameters.get(key) for key in ("needle", "havings", "groupBys"))
+
+
 def query_page(account: str, token: str, start: int, end: int, cursor: str | None) -> dict:
-    """Read one dry, service-filtered retained-event page; never save a query."""
+    """Read one dry retained-event page, rejecting absent or unfinished views."""
 
     body: dict = {
         "queryId": str(uuid.uuid4()), "timeframe": {"from": start, "to": end},
@@ -213,10 +245,23 @@ def query_page(account: str, token: str, start: int, end: int, cursor: str | Non
         body["offset"] = cursor
         body["offsetDirection"] = "next"
     result = request_json(account, token, "query", body).get("result")
-    need(isinstance(result, dict) and isinstance(result.get("events"), dict),
-         "observability_events_malformed")
+    need(isinstance(result, dict), "observability_result_malformed")
+    run = result.get("run")
+    need(isinstance(run, dict), "observability_run_malformed")
+    status = run.get("status")
+    need(status == "COMPLETED",
+         "observability_query_incomplete" if status == "STARTED"
+         else "observability_query_status_unverified")
+    need(run.get("dry") is True, "observability_query_echo_unverified")
+    need(query_echo_matches(run, start, end), "observability_query_echo_unverified")
+    # The API schema marks result.events optional even for the events view.
+    # Missing is not equivalent to a completed zero-event container.
+    need("events" in result, "observability_events_view_absent")
+    need(isinstance(result["events"], dict), "observability_events_malformed")
     events = result["events"]
     need(isinstance(events.get("events"), list), "observability_events_malformed")
+    need(type(events.get("count")) is int and events["count"] >= 0,
+         "observability_count_malformed")
     return events
 
 
@@ -228,11 +273,12 @@ def retained_events(account: str, token: str, start: int, end: int) -> list[dict
     while True:
         page = query_page(account, token, start, end, cursor)
         batch = page["events"]
+        need(len(batch) <= MAX_PAGE, "observability_events_malformed")
         need(all(isinstance(item, dict) for item in batch), "observability_events_malformed")
         records.extend(batch)
         need(len(records) <= MAX_EVENTS, "observability_window_too_busy")
         count = page.get("count")
-        need(isinstance(count, int) and count >= len(records), "observability_count_malformed")
+        need(type(count) is int and count >= len(records), "observability_count_malformed")
         if len(records) == count:
             return records
         need(len(batch) == MAX_PAGE, "observability_page_incomplete")

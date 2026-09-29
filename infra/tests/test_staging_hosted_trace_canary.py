@@ -77,6 +77,19 @@ class HostedTraceSafetyTests(unittest.TestCase):
                     self.assertEqual(HOSTED.main(), 1)
         self.assertEqual(output.getvalue().strip(), "staging_trace_hosted: UNVERIFIED (unexpected_failure)")
 
+    def test_child_failure_code_is_exact_and_allowlisted(self) -> None:
+        """Suppressed child output reveals only reviewed query diagnostics."""
+
+        self.assertEqual(
+            HOSTED.child_failure_code(b"staging_trace_canary: UNVERIFIED (observability_events_view_absent)\n"),
+            "observability_events_view_absent",
+        )
+        for output in (b"secret=private\nstaging_trace_canary: UNVERIFIED (observability_events_view_absent)",
+                       b"staging_trace_canary: UNVERIFIED (private_provider_text)",
+                       b"staging_trace_canary: retained_marker_absence_and_cli_api_parentage_verified"):
+            with self.subTest(output=output):
+                self.assertEqual(HOSTED.child_failure_code(output), "retained_canary_unverified")
+
     def test_primary_and_cleanup_failures_remain_visible(self) -> None:
         """A failed retained query must not be hidden by a cleanup lock."""
 
@@ -97,16 +110,20 @@ class HostedTraceSafetyTests(unittest.TestCase):
                 patch.object(HOSTED.subprocess, "run", return_value=SimpleNamespace(returncode=1)) as probe, \
                 patch.object(HOSTED, "remove_run_dir", side_effect=HOSTED.HostedTraceError("run_cleanup_failed")) as cleanup, \
                 patch.dict(sys.modules, {"staging_identity_cdp": identity}):
-            for run_error, primary in (
-                (None, "retained_canary_unverified"),
-                (HOSTED.subprocess.TimeoutExpired("synthetic", 240), "retained_canary_timed_out"),
+            for run_error, child_output, primary in (
+                (None, None, "retained_canary_unverified"),
+                (None, b"staging_trace_canary: UNVERIFIED (observability_events_view_absent)\n",
+                 "observability_events_view_absent"),
+                (HOSTED.subprocess.TimeoutExpired("synthetic", 240), None,
+                 "retained_canary_timed_out"),
             ):
                 with self.subTest(primary=primary):
                     probe.side_effect = run_error
+                    probe.return_value = SimpleNamespace(returncode=1, stdout=child_output)
                     with self.assertRaises(HOSTED.HostedTraceError) as caught:
                         HOSTED.execute("canary", HOSTED.CONFIRMATION)
                     self.assertEqual(str(caught.exception), f"{primary}; run_cleanup_failed")
-        self.assertEqual(cleanup.call_count, 2)
+        self.assertEqual(cleanup.call_count, 3)
         cleanup.assert_any_call(run_dir)
 
     def test_transient_windows_lock_is_retried_and_removed(self) -> None:

@@ -21,6 +21,22 @@ D = "22222222-2222-4222-8222-222222222222"
 MARKERS = ("amail_path_canary_test", "amail_query_canary_test")
 
 
+def query_run(status: str = "COMPLETED", dry: bool = True,
+              view: str = "events", service: str = canary.WORKER,
+              start: int = 1000) -> dict:
+    """Return the documented run echo for a fixed synthetic query window."""
+
+    return {
+        "status": status, "dry": dry,
+        "timeframe": {"from": start, "to": 2000},
+        "query": {"parameters": {
+            "view": view, "datasets": [], "filterCombination": "and",
+            "filters": [{"key": "$metadata.service", "operation": "eq",
+                         "type": "string", "value": service}],
+        }},
+    }
+
+
 def row(event: dict) -> dict:
     """Represent a Cloudflare retained log with a JSON-text Rust console event."""
 
@@ -173,12 +189,84 @@ class StagingTraceCanaryTests(unittest.TestCase):
     def test_query_uses_documented_nested_view(self) -> None:
         """Cloudflare defines the events view inside parameters, not top-level."""
 
-        payload = {"success": True, "result": {"events": {"count": 0, "events": []}}}
+        payload = {"success": True, "result": {
+            "run": query_run(),
+            "events": {"count": 0, "events": []},
+        }}
         with patch.object(canary, "request_json", return_value=payload) as request:
             self.assertEqual(canary.query_page("1" * 32, "fake", 1000, 2000, None)["count"], 0)
         body = request.call_args.args[3]
         self.assertEqual(body["parameters"]["view"], "events")
         self.assertNotIn("view", body)
+
+    def test_explicit_zero_event_view_is_not_a_privacy_pass(self) -> None:
+        """A completed empty container is valid data, but no canary evidence."""
+
+        payload = {"success": True, "result": {
+            "run": query_run(),
+            "events": {"count": 0, "events": []},
+        }}
+        with patch.object(canary, "request_json", return_value=payload):
+            self.assertEqual(canary.query_page("1" * 32, "fake", 1000, 2000, None)["events"], [])
+        with patch.object(canary, "query_page", return_value=payload["result"]["events"]):
+            self.assertEqual(canary.retained_events("1" * 32, "fake", 1000, 2000), [])
+        with self.assertRaisesRegex(canary.CanaryError, "retained_window_empty"):
+            canary.assess([], (T, C, R), D, MARKERS)
+
+    def test_absent_view_is_not_zero_events(self) -> None:
+        """The optional events field may be absent, but cannot prove absence."""
+
+        payload = {"success": True, "result": {"run": query_run()}}
+        with patch.object(canary, "request_json", return_value=payload):
+            with self.assertRaisesRegex(canary.CanaryError, "observability_events_view_absent"):
+                canary.query_page("1" * 32, "fake", 1000, 2000, None)
+
+    def test_missing_run_cannot_verify_dry_completion(self) -> None:
+        """A result without its documented run object is not a usable page."""
+
+        payload = {"success": True, "result": {"events": {"count": 0, "events": []}}}
+        with patch.object(canary, "request_json", return_value=payload):
+            with self.assertRaisesRegex(canary.CanaryError, "observability_run_malformed"):
+                canary.query_page("1" * 32, "fake", 1000, 2000, None)
+
+    def test_unfinished_and_unknown_query_statuses_fail(self) -> None:
+        """Do not read a page whose query run has not completed."""
+
+        for status, code in (("STARTED", "observability_query_incomplete"),
+                             ("FAILED", "observability_query_status_unverified")):
+            with self.subTest(status=status):
+                payload = {"success": True, "result": {
+                    "run": query_run(status=status),
+                    "events": {"count": 0, "events": []},
+                }}
+                with patch.object(canary, "request_json", return_value=payload):
+                    with self.assertRaisesRegex(canary.CanaryError, code):
+                        canary.query_page("1" * 32, "fake", 1000, 2000, None)
+
+    def test_missing_count_cannot_look_like_complete_page(self) -> None:
+        """A present list with no total count does not certify completeness."""
+
+        payload = {"success": True, "result": {
+            "run": query_run(),
+            "events": {"events": []},
+        }}
+        with patch.object(canary, "request_json", return_value=payload):
+            with self.assertRaisesRegex(canary.CanaryError, "observability_count_malformed"):
+                canary.query_page("1" * 32, "fake", 1000, 2000, None)
+
+    def test_echoed_wrong_view_or_persisted_query_fails(self) -> None:
+        """A provider echo contradicting the dry events request is not trusted."""
+
+        for run in (query_run(dry=False), query_run(view="traces"),
+                    query_run(service="other-service"), query_run(start=999)):
+            with self.subTest(run=run):
+                payload = {"success": True, "result": {
+                    "run": run, "events": {"count": 0, "events": []},
+                }}
+                with patch.object(canary, "request_json", return_value=payload):
+                    with self.assertRaisesRegex(canary.CanaryError,
+                                                "observability_query_echo_unverified"):
+                        canary.query_page("1" * 32, "fake", 1000, 2000, None)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,18 @@ PREFLIGHT_CODES = frozenset({
     "observability_keys_malformed",
     "service_filter_key_unverified",
 })
+RETAINED_QUERY_CODES = frozenset({
+    "observability_permission_denied", "observability_http_unavailable",
+    "observability_network_unavailable", "observability_response_too_large",
+    "observability_response_malformed", "observability_query_failed",
+    "observability_result_malformed", "observability_run_malformed",
+    "observability_query_incomplete", "observability_query_status_unverified",
+    "observability_query_echo_unverified",
+    "observability_events_view_absent", "observability_events_malformed",
+    "observability_count_malformed", "observability_window_too_busy",
+    "observability_page_incomplete", "observability_cursor_missing",
+    "observability_cursor_stalled", "retained_window_empty",
+})
 CLEANUP_RETRY_DELAYS = (0.2, 0.4, 0.8, 1.6)
 WINDOWS_LOCK_ERRORS = frozenset({5, 32, 33, 145})
 
@@ -104,6 +116,21 @@ def canary_environment(account: str, deploy_token: str, obs_token: str) -> dict[
     return environment
 
 
+def child_failure_code(output: object) -> str:
+    """Expose only an exact reviewed child code, never arbitrary child output."""
+
+    if not isinstance(output, bytes) or len(output) > 160:
+        return "retained_canary_unverified"
+    try:
+        line = output.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return "retained_canary_unverified"
+    match = re.fullmatch(r"staging_trace_canary: UNVERIFIED \(([a-z_]+)\)", line)
+    if match and match.group(1) in RETAINED_QUERY_CODES:
+        return match.group(1)
+    return "retained_canary_unverified"
+
+
 def remove_run_dir(run_dir: Path) -> None:
     """Delete only this run's directory, retrying bounded Windows lock races."""
 
@@ -168,11 +195,11 @@ def execute(mode: str, confirmation: str) -> None:
             [sys.executable, str(CANARY), "--confirm", CONFIRMATION,
              "--amail", str(binary), "--home", str(home)],
             env=canary_environment(account, deploy_token, obs_token),
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, timeout=240, check=False,
         )
         if result.returncode:
-            raise HostedTraceError("retained_canary_unverified")
+            raise HostedTraceError(child_failure_code(getattr(result, "stdout", None)))
     except subprocess.TimeoutExpired:
         raise HostedTraceError("retained_canary_timed_out") from None
     finally:

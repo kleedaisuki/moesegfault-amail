@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -103,6 +106,65 @@ class AddressFailureLogTests(unittest.TestCase):
                              parent_span_id="9" * 16))]
         with self.assertRaisesRegex(diagnostic.CanaryError, "routing_phase_missing_or_ambiguous"):
             diagnostic.classify(rows)
+
+    def test_service_values_are_exact_window_and_never_echoed(self) -> None:
+        """Only exact expected membership permits the event query to follow."""
+
+        row = {"dataset": "workers", "key": "$metadata.service",
+               "type": "string", "value": diagnostic.WORKER}
+        with patch.object(diagnostic, "request_json", return_value={"result": [row]}) as request:
+            self.assertEqual(diagnostic.service_value_status("a" * 32, "fake"), "present")
+        self.assertEqual(request.call_args.args[2], "values")
+        body = request.call_args.args[3]
+        self.assertEqual(body["timeframe"], {"from": diagnostic.START_MS,
+                                             "to": diagnostic.END_MS})
+        self.assertEqual(body["filters"][0]["value"], diagnostic.WORKER)
+        for rows, expected in (([], "absent"),
+                               ([{"dataset": "workers", "key": "$metadata.service",
+                                  "type": "string", "value": "other-service"}], "unverified"),
+                               ({"unexpected": "shape"}, "unverified")):
+            with self.subTest(expected=expected):
+                with patch.object(diagnostic, "request_json", return_value={"result": rows}):
+                    self.assertEqual(diagnostic.service_value_status("a" * 32, "fake"), expected)
+
+    def test_absent_service_stops_before_event_query(self) -> None:
+        """No service value means UNVERIFIED, not an empty-window inference."""
+
+        output = StringIO()
+        with patch.object(sys, "argv", ["script", diagnostic.CONFIRMATION]), \
+                patch.dict(diagnostic.os.environ, {
+                    "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+                    "CF_OBSERVABILITY_TOKEN": "fake",
+                    "CLOUDFLARE_API_TOKEN": "fake",
+                }), patch.object(diagnostic, "preflight"), \
+                patch.object(diagnostic, "service_value_status", return_value="absent"), \
+                patch.object(diagnostic, "retained_events") as query, redirect_stdout(output):
+            self.assertEqual(diagnostic.main(), 1)
+        query.assert_not_called()
+        self.assertEqual(output.getvalue().strip().splitlines(), [
+            "staging_address_service: service_value_absent",
+            "staging_address_incident: UNVERIFIED (service_value_absent)",
+        ])
+
+    def test_values_permission_error_keeps_fixed_cause(self) -> None:
+        """An authorization failure is not collapsed into a zero-value claim."""
+
+        output = StringIO()
+        with patch.object(sys, "argv", ["script", diagnostic.CONFIRMATION]), \
+                patch.dict(diagnostic.os.environ, {
+                    "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+                    "CF_OBSERVABILITY_TOKEN": "fake",
+                    "CLOUDFLARE_API_TOKEN": "fake",
+                }), patch.object(diagnostic, "preflight"), \
+                patch.object(diagnostic, "service_value_status",
+                             side_effect=diagnostic.CanaryError("observability_permission_denied")), \
+                patch.object(diagnostic, "retained_events") as query, redirect_stdout(output):
+            self.assertEqual(diagnostic.main(), 1)
+        query.assert_not_called()
+        self.assertEqual(output.getvalue().strip().splitlines(), [
+            "staging_address_service: service_value_unverified",
+            "staging_address_incident: UNVERIFIED (observability_permission_denied)",
+        ])
 
 
 if __name__ == "__main__":
