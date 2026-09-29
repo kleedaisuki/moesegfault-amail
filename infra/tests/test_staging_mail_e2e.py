@@ -501,12 +501,53 @@ class CleanupTests(unittest.TestCase):
 
         with patch.object(HARNESS, "amail", side_effect=fake_amail), patch.object(
             HARNESS, "cf_rules", return_value=[]
-        ), patch.object(HARNESS, "cleanup_messages", side_effect=HARNESS.ProbeFailure("cleanup_search_unverified")):
+        ), patch.object(HARNESS, "row_snapshot", return_value=("retired", "null", "reconcile_0")), patch.object(
+            HARNESS, "cleanup_messages", side_effect=HARNESS.ProbeFailure("cleanup_search_unverified")):
             with self.assertRaises(HARNESS.ProbeFailure) as caught:
                 HARNESS.cleanup_run(Path("amail.exe"), {}, "zone", "token", "test@example.test", "nonce")
         self.assertEqual(str(caught.exception), "message_cleanup_failed")
         self.assertIn(("address", "delete", "test@example.test"), calls)
         self.assertIn(("address", "list"), calls)
+
+    def test_retirement_precedes_slow_message_inventory(self) -> None:
+        """A search timeout cannot leave the run's public route enabled."""
+
+        order = []
+
+        def fake_amail(_binary, _env, *args, failure):
+            order.append(args)
+            return []
+
+        def failed_messages(*_args):
+            order.append(("messages",))
+            raise HARNESS.ProbeFailure("cleanup_search_transport_unverified")
+
+        with patch.object(HARNESS, "amail", side_effect=fake_amail), patch.object(
+            HARNESS, "cf_rules", return_value=[]
+        ), patch.object(HARNESS, "row_snapshot", return_value=("retired", "null", "reconcile_0")), patch.object(
+            HARNESS, "cleanup_messages", side_effect=failed_messages
+        ):
+            with self.assertRaises(HARNESS.ProbeFailure):
+                HARNESS.cleanup_run(Path("amail"), {}, "zone", "token", "box@example.test", "nonce")
+        self.assertLess(order.index(("address", "delete", "box@example.test")), order.index(("messages",)))
+
+    def test_route_and_cli_absence_do_not_override_dirty_d1_row(self) -> None:
+        """A provider route gone with D1 reconciliation pending is still live cleanup debt."""
+
+        def fake_amail(_binary, _env, *args, failure):
+            return []
+
+        with patch.object(HARNESS, "amail", side_effect=fake_amail), patch.object(
+            HARNESS, "cf_rules", return_value=[]
+        ), patch.object(HARNESS, "row_snapshot", return_value=("deleting", "null", "reconcile_1")), patch.object(
+            HARNESS, "cleanup_messages"
+        ) as messages, patch.object(HARNESS.time, "monotonic", side_effect=[0, 1, 421]), patch.object(
+            HARNESS.time, "sleep", return_value=None
+        ):
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.cleanup_run(Path("amail"), {}, "zone", "token", "box@example.test", "nonce")
+        self.assertEqual(str(caught.exception), "address_or_route_cleanup_failed")
+        messages.assert_not_called()
 
     def test_cleanup_inventory_restarts_after_mid_page_stale(self) -> None:
         """Never combine pages across a generation change."""
@@ -546,6 +587,19 @@ class CleanupTests(unittest.TestCase):
             with self.assertRaises(HARNESS.ProbeFailure) as caught:
                 HARNESS.cleanup_inventory(Path("amail"), {}, "box@example.test")
         self.assertEqual(str(caught.exception), "cleanup_search_cursor_unverified")
+
+    def test_cleanup_inventory_obeys_one_outer_deadline(self) -> None:
+        """A second page cannot reset the cleanup time budget."""
+
+        first = (b'{"id":"one","mailbox":"box@example.test","direction":"inbound"}\n'
+                 b'{"next_cursor":"later"}\n')
+        with patch.object(HARNESS.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, first, b"")) as run, patch.object(
+            HARNESS.time, "monotonic", side_effect=[0, 0, 121]
+        ):
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.cleanup_inventory(Path("amail"), {}, "box@example.test", 120)
+        self.assertEqual(str(caught.exception), "cleanup_search_deadline")
+        run.assert_called_once()
 
     def test_cleanup_verify_rejects_wrong_mailbox_and_message_id(self) -> None:
         """A matching title alone never authorizes deletion."""
@@ -601,7 +655,8 @@ class CleanupTests(unittest.TestCase):
 
         with patch.object(HARNESS, "amail", side_effect=fake_amail), patch.object(
             HARNESS, "cf_rules", return_value=[]
-        ), patch.object(HARNESS, "cleanup_messages"), patch.object(
+        ), patch.object(HARNESS, "row_snapshot", return_value=("retired", "null", "reconcile_0")), patch.object(
+            HARNESS, "cleanup_messages"), patch.object(
             HARNESS, "cleanup_d1_counts", return_value=(1, 0)
         ), patch.object(HARNESS.time, "sleep", return_value=None):
             with self.assertRaises(HARNESS.ProbeFailure) as caught:

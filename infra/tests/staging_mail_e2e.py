@@ -735,28 +735,32 @@ def semantic_cases(
     print("semantic_two_message_search_verified")
 
 
-def cleanup_inventory(binary: Path, env: dict[str, str], address: str) -> dict[str, dict]:
+def cleanup_inventory(binary: Path, env: dict[str, str], address: str,
+                      outer_deadline: float | None = None) -> dict[str, dict]:
     """Enumerate one complete owner-scoped snapshot, discarding stale partial pages."""
 
+    deadline = min(time.monotonic() + 120, outer_deadline or float("inf"))
     for attempt in range(3):
         cursor = None
         seen: set[str] = set()
         found: dict[str, dict] = {}
         for _ in range(100):
-            args = ["search", "--mailbox", address, "--limit", "100", "--wait-seconds", "300"]
+            args = ["search", "--mailbox", address, "--limit", "100", "--wait-seconds", "30"]
             if cursor:
                 args += ["--cursor", cursor]
             for _resume in range(3):
+                remaining = deadline - time.monotonic()
+                check(remaining > 0, "cleanup_search_deadline")
                 try:
                     proc = subprocess.run([str(binary), *args], env=env, capture_output=True,
-                                          timeout=360, check=False)
+                                          timeout=min(45, remaining), check=False)
                 except (OSError, subprocess.TimeoutExpired):
                     raise ProbeFailure("cleanup_search_transport_unverified") from None
                 check(len(proc.stdout) <= 2_000_000 and len(proc.stderr) <= 65_536,
                       "cleanup_search_output_unverified")
                 job = RUNNING_SEARCH.search(proc.stderr) if proc.returncode else None
                 if job:
-                    args = ["search", "--resume", job[1].decode("ascii"), "--wait-seconds", "300"]
+                    args = ["search", "--resume", job[1].decode("ascii"), "--wait-seconds", "30"]
                     continue
                 break
             else:
@@ -855,23 +859,26 @@ def cleanup_messages(binary: Path, env: dict[str, str], address: str,
                      oracles: dict[str, dict] | None, smtp_attempted: bool) -> None:
     """Delete only current-run verified fixtures; never retry an ambiguous mutation."""
 
+    deadline = time.monotonic() + 12 * 60
     if not smtp_attempted:
-        check(not cleanup_inventory(binary, env, address), "message_cleanup_unverified")
+        check(not cleanup_inventory(binary, env, address, deadline), "message_cleanup_unverified")
         return
     check(oracles is not None and len(oracles) == 2, "message_cleanup_unverified")
-    found = cleanup_inventory(binary, env, address)
+    found = cleanup_inventory(binary, env, address, deadline)
     cleanup_verify(binary, env, address, found, oracles)
-    check(cleanup_inventory(binary, env, address) == found, "cleanup_inventory_changed")
+    check(time.monotonic() < deadline, "cleanup_message_deadline")
+    check(cleanup_inventory(binary, env, address, deadline) == found, "cleanup_inventory_changed")
     for msg_id in list(found):
+        check(time.monotonic() < deadline, "cleanup_message_deadline")
         succeeded = cleanup_delete_once(binary, env, msg_id)
         # An uncertain result is not permission to repeat the mutation.
         amail_not_found(binary, env, "get", msg_id)
         check(succeeded, "cleanup_delete_status_unverified")
-        remaining = cleanup_inventory(binary, env, address)
+        remaining = cleanup_inventory(binary, env, address, deadline)
         expected = {key: value for key, value in found.items() if key != msg_id}
         check(remaining == expected, "cleanup_delete_readback_unverified")
         found = remaining
-    check(not cleanup_inventory(binary, env, address), "message_cleanup_unverified")
+    check(not cleanup_inventory(binary, env, address, deadline), "message_cleanup_unverified")
 
 
 def cleanup_d1_counts(account: str, token: str, address: str,
@@ -922,19 +929,12 @@ def cleanup_run(
     oracles: dict[str, dict] | None = None, smtp_attempted: bool = False,
     delivery_confirmed: bool = False, account: str = "", api_token: str = "",
 ) -> None:
-    """Try message and address cleanup independently; require route absence.
+    """Retire the alias first, then verify only known run mail and D1 state.
 
     中文：消息清理失败仍须尝试退役地址；以独立规则回读确认没有孤儿路由。
     """
 
-    message_error = False
-    try:
-        cleanup_messages(binary, env, address, oracles, smtp_attempted)
-    except Exception:
-        message_error = True
-
-    # Do not let a failed message sync or address list suppress retirement.
-    # 邮件同步或地址列表失败，也不能阻止退役已知的本次地址。
+    # Disable new ingress before bounded but potentially slow mailbox queries.
     retire_error = False
     try:
         amail(binary, env, "address", "delete", address, failure="address_retire_failed")
@@ -947,6 +947,7 @@ def cleanup_run(
     deadline = time.monotonic() + 7 * 60
     route_absent = False
     address_absent = False
+    row_reconciled = False
     while time.monotonic() < deadline:
         try:
             route_absent = not route_for(cf_rules(zone, token), address)
@@ -958,9 +959,20 @@ def cleanup_run(
         except Exception:
             address_absent = False
         if route_absent and address_absent:
+            state, rule_id, reconcile = row_snapshot(account, api_token, address)
+            row_reconciled = (state, rule_id, reconcile) in (
+                ("retired", "null", "reconcile_0"), ("row_absent", "absent", "absent"),
+            )
+        if route_absent and address_absent and row_reconciled:
             break
         time.sleep(3)
-    check(route_absent and address_absent, "address_or_route_cleanup_failed")
+    check(route_absent and address_absent and row_reconciled,
+          "address_or_route_cleanup_failed")
+    message_error = False
+    try:
+        cleanup_messages(binary, env, address, oracles, smtp_attempted)
+    except Exception:
+        message_error = True
     if smtp_attempted:
         # SMTP submission can race the first search. Retirement closes the
         # ingress route; require a settled independent D1 read, not an empty page.
