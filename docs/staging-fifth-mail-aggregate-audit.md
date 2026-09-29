@@ -1,6 +1,6 @@
 # Fifth hosted E2E: exact read-only mail aggregate
 
-This diagnostic is limited to hosted staging E2E [run 36589042183, attempt 1](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36589042183). It is a proposed, review-gated observation—not a replay, cleanup, or successful acceptance claim. The incident reasoning and limits are in [`staging-fifth-mail-sync-409-incident-36589042183.md`](staging-fifth-mail-sync-409-incident-36589042183.md).
+This diagnostic is limited to hosted staging E2E [run 36589042183, attempt 1](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36589042183). It is a review-gated observation—not a replay, cleanup, or successful acceptance claim. The incident reasoning and limits are in [`staging-fifth-mail-sync-409-incident-36589042183.md`](staging-fifth-mail-sync-409-incident-36589042183.md).
 
 After independent review, dispatch **CI and deploy** with target `staging-fifth-mail-audit`, confirmation `READ_FIFTH_MAIL_AGGREGATES`, `alias_run_id=36589042183`, and `alias_attempt=1`. Both workflow and script reject any different coordinates. Staging secrets are scoped only to the final read step. Do not enter or print the alias: `staging_prior_alias_reconcile.alias` derives it in memory from the protected `STAGING_E2E_PASSWORD` and the existing v1 HMAC contract.
 
@@ -16,4 +16,22 @@ The returned aggregates are address state and `needs_reconcile`, whether an expe
 | Generation present | An owner generation row exists now. | Its value at the 409 instant or causality. |
 | Exact route absent | No exact literal `to` rule in a complete inventory at read time. | Wildcard behavior or historical route state. |
 
-Do not dispatch until the independent review and serving-version check have been considered. No local or live test was run while preparing this diagnostic; only syntax and diff inspection were authorized. The synthetic test module covers query shape, privacy, aggregation invariants, and workflow guard for later CI validation.
+## Reviewed live readback
+
+The manually dispatched [audit run 36594138488](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36594138488) at source SHA `415f27b` completed its exact-run read. Its fixed-label output reported:
+
+| Dimension | Observed bucket/status |
+| --- | --- |
+| Exact literal route | absent |
+| Exact address / owner / reconciliation | retired / expected / `0` |
+| Inbound active / deleted | `2` / `0` |
+| Signal active / deleted | `1` / `0` |
+| Distractor active / deleted | `1` / `0` |
+| Other inbound active / deleted | `0` / `0` |
+| Outbound active / deleted | `0` / `0` |
+| Embedding succeeded / pending / quarantined / no-work | `2` / `0` / `0` / `0` |
+| Owner search generation | present |
+
+The two exact-subject fixture matches establish that both synthetic messages were present as **active D1 records at the audit read time**, despite the harness's earlier list 409 and failed message cleanup. Their embedding work had completed by this later read. The retired address and absent exact literal route describe current routing/address state; they do not delete those active messages. These observations do not establish when ingress occurred, whether ZIP retrieval or search succeeded, what exact 409 code was returned, or whether a search-generation change caused it. `generation:present` is not a historical generation value. The original E2E acceptance remains failed, and the two remaining active fixture records require separately reviewed exact-run cleanup rather than a broad delete or SMTP replay.
+
+The diagnostic was independently reviewed before dispatch. No local test was run during preparation; the pre-dispatch checks were syntax and diff inspection. The synthetic test module covers query shape, privacy, aggregation invariants, and workflow guard for later CI validation. No further live query is implied by this readback.
