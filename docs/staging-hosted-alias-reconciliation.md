@@ -29,3 +29,14 @@ metadata belongs to an E2E workflow, or that an absent row was previously
 registered. The operator must use actual run metadata; the test only verifies
 the exact derived address. A passing result is not evidence of production
 readiness or permission to repeat a failed address registration.
+
+The gate is a **point-in-time** cleanup check, not a promise that a dirty row
+will remain dirty. An address delete can race in-flight provisioning and leave
+the D1 row `deleting`; the five-minute staging Cron in
+`crates/mail-worker/wrangler.toml` runs `reconcile_addresses` to retire it and
+later clear `needs_reconcile`. A `not_clean` result after the E2E cleanup
+therefore freezes new creation and warrants a later **read of the same run and
+attempt**, not an alternate alias or a manual rule/D1 mutation. Conversely,
+`not_clean` alone does not identify the row state, and a later `clean` result
+does not diagnose why registration failed. The 2026-09-29 run-specific evidence
+is recorded in [`validation.md`](validation.md#third-hosted-address-add-failure-and-delayed-exact-alias-reconciliation).
