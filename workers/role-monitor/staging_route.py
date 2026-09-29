@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -107,6 +108,53 @@ def owned(rule: dict) -> bool:
         and rule.get("matchers") == [{"type": "literal", "field": "to", "value": ALIAS}]
         and rule.get("actions") == [{"type": "worker", "value": [WORKER]}]
     )
+
+
+def create_owned(zone: str, token: str) -> str:
+    """Create a new exact rule and return its provider ID, or leave ownership ambiguous.
+
+    A POST timeout or missing response ID is never resolved by shape alone: a
+    concurrent operator could have created an indistinguishable rule. Callers
+    must retain their recovery marker and must not auto-delete in that case.
+    """
+
+    if any(touches_alias(item) for item in rules(zone, token)):
+        raise RuntimeError("staging role route create conflict")
+    body = {
+        "name": NAME,
+        "enabled": True,
+        "source": "api",
+        "matchers": [{"type": "literal", "field": "to", "value": ALIAS}],
+        "actions": [{"type": "worker", "value": [WORKER]}],
+    }
+    status, data = call("POST", f"/zones/{zone}/email/routing/rules", token, body)
+    result = data.get("result")
+    route_id = result.get("id") if isinstance(result, dict) else None
+    if (status not in (200, 201) or data.get("success") is not True
+            or not isinstance(route_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", route_id)):
+        raise RuntimeError("staging role route create ownership ambiguous")
+    matches = [item for item in rules(zone, token) if touches_alias(item)]
+    if len(matches) != 1 or not owned(matches[0]) or matches[0]["id"] != route_id:
+        raise RuntimeError("staging role route create readback ambiguous")
+    return route_id
+
+
+def remove_if_id(zone: str, token: str, expected_id: str) -> str:
+    """Delete only this run's recorded provider ID; never a replacement rule."""
+
+    if not isinstance(expected_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", expected_id):
+        raise RuntimeError("staging role route ID invalid")
+    matches = [item for item in rules(zone, token) if touches_alias(item)]
+    if not matches:
+        return "absent"
+    if len(matches) != 1 or not owned(matches[0]) or matches[0]["id"] != expected_id:
+        raise RuntimeError("staging role route ID changed; no changes made")
+    status, data = call("DELETE", f"/zones/{zone}/email/routing/rules/{expected_id}", token)
+    if status != 204 and (status != 200 or data.get("success") is not True):
+        raise RuntimeError("staging role route ID removal failed")
+    if any(touches_alias(item) for item in rules(zone, token)):
+        raise RuntimeError("staging role route ID removal readback failed")
+    return "removed"
 
 
 def reconcile(zone: str, token: str, action: str) -> str:

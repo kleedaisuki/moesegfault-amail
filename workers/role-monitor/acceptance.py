@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import format_datetime
 import importlib.util
+import json
 import os
 from pathlib import Path
 import secrets
@@ -139,7 +140,6 @@ def preflight(zone: str, routing: str, account: str) -> tuple[dict[str, tuple[st
     require(ROUTE.reconcile(zone, routing, "audit") == "absent", "synthetic_route_not_absent")
     require(not MARKER.exists(), "prior_route_marker_requires_recovery")
     rules = standard_rules(zone, routing)
-    SMTP.assert_staging_sender(zone, token)
     return rules, baseline()
 
 
@@ -152,19 +152,50 @@ def arm_marker() -> None:
     except FileExistsError:
         raise ProbeError("prior_route_marker_requires_recovery") from None
     with os.fdopen(handle, "w", encoding="ascii") as output:
-        output.write("exact staging role route may be open\n")
+        output.write('{"version":1,"route_id":null}\n')
         output.flush()
         os.fsync(output.fileno())
 
 
-def cleanup(zone: str, routing: str, before: dict[str, tuple[str, str]]) -> None:
-    """Remove only the uniquely owned synthetic rule and independently read back."""
+def marker_id() -> str | None:
+    """Read the private provider ID; an unknown ID never authorizes deletion."""
 
     try:
-        result = ROUTE.reconcile(zone, routing, "remove")
-    except Exception:
-        raise ProbeError("route_remove_failed") from None
-    require(result in ("removed", "absent"), "route_remove_unexpected")
+        raw = MARKER.read_bytes()
+        require(len(raw) <= 512, "route_marker_invalid")
+        value = json.loads(raw)
+    except (OSError, ValueError):
+        raise ProbeError("route_marker_invalid") from None
+    require(isinstance(value, dict) and value.get("version") == 1, "route_marker_invalid")
+    route_id = value.get("route_id")
+    require(route_id is None or isinstance(route_id, str), "route_marker_invalid")
+    return route_id
+
+
+def record_id(route_id: str) -> None:
+    """Atomically upgrade the crash marker after provider ID-bound readback."""
+
+    temporary = MARKER.with_name(f"route-open-{secrets.token_hex(8)}.tmp")
+    try:
+        with os.fdopen(os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w", encoding="ascii") as output:
+            json.dump({"version": 1, "route_id": route_id}, output, separators=(",", ":"))
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, MARKER)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def cleanup(zone: str, routing: str, before: dict[str, tuple[str, str]], route_id: str | None) -> None:
+    """Remove only the recorded ID, or merely audit absence when ID is unknown."""
+
+    if route_id is not None:
+        try:
+            result = ROUTE.remove_if_id(zone, routing, route_id)
+        except Exception:
+            raise ProbeError("route_id_remove_failed") from None
+        require(result in ("removed", "absent"), "route_id_remove_unexpected")
     try:
         absent = ROUTE.reconcile(zone, routing, "audit") == "absent"
         same = standard_rules(zone, routing) == before
@@ -253,11 +284,12 @@ def poll(baseline_seq: int, submitted_ms: int) -> tuple[bool, bool]:
 
 
 def recover(zone: str, routing: str) -> None:
-    """Explicitly close a crash-left exact route; never touch standard aliases."""
+    """Close only a recorded ID; unknown ownership permits absence audit only."""
 
     require(MARKER.exists(), "no_route_marker")
+    route_id = marker_id()
     before = standard_rules(zone, routing)
-    cleanup(zone, routing, before)
+    cleanup(zone, routing, before, route_id)
 
 
 def main() -> int:
@@ -270,6 +302,7 @@ def main() -> int:
     mode.add_argument("--recover-exact-route", action="store_true")
     args = parser.parse_args()
     armed = False
+    created_id: str | None = None
     failure: str | None = None
     cleanup_failure: str | None = None
     before: dict[str, tuple[str, str]] | None = None
@@ -282,19 +315,13 @@ def main() -> int:
         before, seq = preflight(zone, routing, account)
         print("preflight=passed", flush=True)
         if args.preflight:
+            print("smtp_sender=not_checked; no_route_created")
             return 0
+        SMTP.assert_staging_sender(zone, os.environ["AMAIL_TEST_SMTP_TOKEN"])
         arm_marker()
         armed = True  # A timed-out create may still have reached the provider.
-        outcome = ROUTE.reconcile(zone, routing, "apply")
-        if outcome == "enabled":
-            # Another writer won after the absent baseline; it is not ours to
-            # auto-delete. Retain the marker for explicit audited recovery.
-            armed = False
-            cleanup_failure = "route_ownership_ambiguous"
-            print("route_cleanup=not_attempted; freeze staging; audit exact-route owner",
-                  file=sys.stderr, flush=True)
-            raise ProbeError("route_create_conflict")
-        require(outcome == "created", "route_create_unexpected")
+        created_id = ROUTE.create_owned(zone, routing)
+        record_id(created_id)
         require(ROUTE.reconcile(zone, routing, "audit") == "enabled", "route_not_enabled")
         print("route=enabled", flush=True)
         time.sleep(60)
@@ -313,14 +340,18 @@ def main() -> int:
     except Exception as error:
         failure = str(error) if isinstance(error, ProbeError) else "probe_unexpected_failure"
     finally:
-        if armed and before is not None:
+        if armed and before is not None and created_id is not None:
             try:
-                cleanup(zone, routing, before)
+                cleanup(zone, routing, before, created_id)
                 print("route=absent", flush=True)
             except Exception as error:
                 cleanup_failure = str(error) if isinstance(error, ProbeError) else "route_cleanup_unexpected"
                 print("route_cleanup=failed; freeze staging; run explicit exact-route recovery",
                       file=sys.stderr, flush=True)
+        elif armed:
+            cleanup_failure = "route_ownership_ambiguous"
+            print("route_cleanup=not_attempted; freeze staging; audit exact-route owner",
+                  file=sys.stderr, flush=True)
     if failure or cleanup_failure:
         print(f"acceptance=failed; stage={failure or 'none'}; cleanup={cleanup_failure or 'none'}",
               file=sys.stderr)
