@@ -215,6 +215,8 @@ jobs:
         run: python -m unittest discover -s workers/identity-test-inbox -p 'test_*.py' -v
       - name: Test staging role-monitor route safeguards
         run: python -m unittest discover -s workers/role-monitor -p 'test_*.py' -v
+      - name: Test mail API observability privacy gate
+        run: python -m unittest discover -s crates/mail-worker -p 'test_check_observability.py' -v
       - name: Check private staging Identity inbox config
         run: python workers/identity-test-inbox/check_config.py
       - name: Check staging isolation contract
@@ -303,6 +305,8 @@ jobs:
           trap 'rm -f ../../.temp/worker-secrets.json' EXIT
           node -e 'const fs = require("fs"); const keys = ["OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "INGRESS_SECRET"]; fs.writeFileSync("../../.temp/worker-secrets.json", JSON.stringify(Object.fromEntries(keys.map(key => [key, process.env[key]]))));'
           wrangler deploy --secrets-file ../../.temp/worker-secrets.json
+      - name: Verify deployed mail API observability privacy boundary
+        run: python check_observability.py --realm production
       - name: Smoke test deployed API
         working-directory: .
         shell: bash
@@ -599,6 +603,8 @@ jobs:
           trap 'rm -f ../../.temp/worker-staging-secrets.json' EXIT
           node -e 'const fs = require("fs"); const keys = ["OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "INGRESS_SECRET"]; fs.writeFileSync("../../.temp/worker-staging-secrets.json", JSON.stringify(Object.fromEntries(keys.map(key => [key, process.env[key]]))));'
           wrangler deploy --env staging --secrets-file ../../.temp/worker-staging-secrets.json
+      - name: Verify deployed staging mail API observability privacy boundary
+        run: python check_observability.py --realm staging
       - name: Smoke test staging API
         working-directory: .
         shell: bash
