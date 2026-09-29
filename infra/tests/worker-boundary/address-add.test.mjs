@@ -99,7 +99,8 @@ async function exercise(createResponse, { failActivation = false, listedRuleIds 
       modules: true,
       scriptPath: path.join(worker, "build/worker/shim.mjs"),
       modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],
-      compatibilityDate: "2026-09-25",
+      // Stable v4's workerd supports dates only through 2026-08-06.
+      compatibilityDate: "2026-08-06",
       bindings: {
         IDENTITY_ISSUER: issuer,
         OIDC_CLIENT_ID: "amail-cli-staging",

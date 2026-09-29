@@ -9,7 +9,8 @@ const mf = new Miniflare({
     name: "amail-config-smoke",
     modules: true,
     script: 'export default { fetch() { return fetch("https://fixture.invalid/") } }',
-    compatibilityDate: "2026-09-25",
+    // Stable v4's workerd supports dates only through 2026-08-06.
+    compatibilityDate: "2026-08-06",
     d1Databases: ["MAIL_DB"],
     outboundService(request) {
       assert.equal(request.url, "https://fixture.invalid/");

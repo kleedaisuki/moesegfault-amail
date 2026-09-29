@@ -77,7 +77,20 @@ resolved versions.
 
 The smoke dispatches an external-looking request through a local-only callback
 and checks exactly one callback invocation, guarding the no-live-egress path
-before a Rust build. It uses the fixture's `2026-09-25` compatibility date,
-but cannot prove the generated Rust/Wasm module graph loads: that remains for
-hosted post-build tests. This is a fixture compatibility fix, not evidence that
-the Rust Worker boundary cases pass or that staging HTTP 500 is resolved.
+before a Rust build. It cannot prove the generated Rust/Wasm module graph loads:
+that remains for hosted post-build tests. This is a fixture compatibility fix,
+not evidence that the Rust Worker boundary cases pass or that staging HTTP 500
+is resolved.
+
+### Runtime compatibility-date ceiling (run 36581375547)
+
+The following hosted run [36581375547](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36581375547)
+passed the frozen v4 install, then failed at workerd startup: the fixture asked
+for `2026-09-25`, while bundled workerd `1.20260730.1` supports at most
+`2026-08-06`. Both synthetic fixtures now use that latest supported date.
+**Production Wrangler configuration remains `2026-09-25`**; this local harness
+tests the address-add logic on an older runtime, not exact production
+compatibility behavior. That gap is intentional and must not be interpreted as
+production parity. If a future regression depends on post-August runtime
+semantics, upgrade this harness to a compatible newer workerd/module-loading
+setup rather than silently changing the production date.
