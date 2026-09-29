@@ -69,6 +69,16 @@ class StagingTraceCanaryTests(unittest.TestCase):
         with self.assertRaisesRegex(canary.CanaryError, "application_event_schema_unallowlisted"):
             canary.assess(records, (T, C, R), D, MARKERS)
 
+    def test_malformed_enum_fails_without_type_error(self) -> None:
+        """Provider data cannot provoke a raw exception from set membership."""
+
+        records = events()
+        root = json.loads(records[0]["source"])
+        root["operation"] = {"unexpected": "value"}
+        records[0]["source"] = json.dumps(root)
+        with self.assertRaisesRegex(canary.CanaryError, "application_event_schema_unallowlisted"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
     def test_wrong_parent_fails(self) -> None:
         """Matching a trace ID alone is not a causal CLI-to-API proof."""
 

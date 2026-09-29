@@ -243,19 +243,21 @@ def retained_events(account: str, token: str, start: int, end: int) -> list[dict
         cursor = next_cursor
 
 
-def embedded_events(value: object) -> list[dict]:
+def embedded_events(value: object, depth: int = 0) -> list[dict]:
     """Decode Cloudflare's string or structured console source without printing it."""
 
+    if depth > 5:
+        return []
     if isinstance(value, dict):
         found = [value] if value.get("schema_version") == 1 else []
         for child in value.values():
-            found.extend(embedded_events(child))
+            found.extend(embedded_events(child, depth + 1))
         return found
     if isinstance(value, list):
-        return [event for child in value for event in embedded_events(child)]
+        return [event for child in value for event in embedded_events(child, depth + 1)]
     if isinstance(value, str) and len(value) <= 4096 and value.lstrip().startswith(("{", "[")):
         try:
-            return embedded_events(json.loads(value))
+            return embedded_events(json.loads(value), depth + 1)
         except ValueError:
             return []
     return []
@@ -266,12 +268,18 @@ def allowlisted_event(event: dict) -> bool:
 
     if (not set(event).issubset(EVENT_KEYS)
             or event.get("schema_version") != 1
-            or event.get("service") not in EVENT_SERVICES
-            or event.get("phase") not in EVENT_PHASES
-            or event.get("operation") not in EVENT_OPERATIONS
-            or event.get("outcome") not in EVENT_OUTCOMES):
+            or not isinstance(event.get("service"), str)
+            or event["service"] not in EVENT_SERVICES
+            or not isinstance(event.get("phase"), str)
+            or event["phase"] not in EVENT_PHASES
+            or not isinstance(event.get("operation"), str)
+            or event["operation"] not in EVENT_OPERATIONS
+            or not isinstance(event.get("outcome"), str)
+            or event["outcome"] not in EVENT_OUTCOMES):
         return False
-    if event.get("error_code") is not None and event["error_code"] not in EVENT_ERRORS:
+    if event.get("error_code") is not None and (
+            not isinstance(event["error_code"], str)
+            or event["error_code"] not in EVENT_ERRORS):
         return False
     if event.get("http_status_class") is not None and event["http_status_class"] not in range(6):
         return False
@@ -356,7 +364,8 @@ def main() -> int:
         time.sleep(20)  # Allow Workers Logs indexing; absence remains fail-closed.
         records = retained_events(account, obs_token, start, end)
         assess(records, ids, denied_id, markers)
-    except (CanaryError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as error:
+    except (CanaryError, OSError, sqlite3.Error, subprocess.TimeoutExpired,
+            TypeError, ValueError, RecursionError) as error:
         label = error.args[0] if isinstance(error, CanaryError) else "local_probe_unavailable"
         print(f"staging_trace_canary: UNVERIFIED ({label})")
         return 1
