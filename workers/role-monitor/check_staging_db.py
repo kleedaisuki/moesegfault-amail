@@ -10,8 +10,11 @@ import sys
 
 SQL = (
     "SELECT name FROM sqlite_master WHERE type='table' "
-    "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'd1_%'"
+    "AND name NOT GLOB 'sqlite_*' "
+    "AND name <> 'd1_migrations' AND name <> '_cf_KV'"
 )
+# Cloudflare provisions `_cf_KV` internally even in a fresh isolated D1.
+# Ignore only exact provider tables; an arbitrary d1_* table remains a collision.
 ALLOWED = {"role_arrivals", "role_monitor_health"}
 ARRIVAL_COLUMNS = {
     "arrival_seq", "id", "role", "received_at", "forward_state", "forward_updated_at", "alerted_at"
@@ -22,7 +25,7 @@ HEALTH_COLUMNS = {"singleton", "lease_until", "checked_at"}
 def query(target: str, sql: str) -> list[dict]:
     """Read one bounded Wrangler JSON result without printing private data. / 读取有界 Wrangler JSON 结果且不打印私有数据。"""
 
-    command = ["wrangler", "d1", "execute", "ROLE_MONITOR", "--remote", "--command", sql, "--json"]
+    command = ["wrangler.cmd" if sys.platform == "win32" else "wrangler", "d1", "execute", "ROLE_MONITOR", "--remote", "--command", sql, "--json"]
     if target == "staging":
         command.extend(["--env", "staging"])
     result = subprocess.run(

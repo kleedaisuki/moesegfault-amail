@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import sqlite3
 
 import check_staging_db as guard
 
@@ -46,6 +47,23 @@ class RoleDbGuardTests(unittest.TestCase):
                 columns(guard.HEALTH_COLUMNS - {"lease_until"}, "singleton"),
             )
         )
+
+    def test_provider_internal_table_is_not_an_application_collision(self) -> None:
+        """Ignore only Cloudflare's exact internal table, never arbitrary names."""
+
+        db = sqlite3.connect(":memory:")
+        try:
+            db.execute('CREATE TABLE "_cf_KV" (k TEXT)')
+            self.assertEqual(db.execute(guard.SQL).fetchall(), [])
+            db.execute('CREATE TABLE "_cf_KV_other" (k TEXT)')
+            self.assertEqual(db.execute(guard.SQL).fetchall(), [("_cf_KV_other",)])
+            db.execute('CREATE TABLE "d1_unrelated" (k TEXT)')
+            self.assertEqual(
+                set(db.execute(guard.SQL).fetchall()),
+                {("_cf_KV_other",), ("d1_unrelated",)},
+            )
+        finally:
+            db.close()
 
 
 if __name__ == "__main__":
