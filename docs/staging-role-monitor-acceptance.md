@@ -2,6 +2,21 @@
 
 Status (2026-09-29): **one limited Cloudflare Sending REST data-plane probe executed; SMTP and destination Inbox acceptance remain unexecuted**. The first probe and recovery are recorded below. Use the deployed `amail-role-monitor-staging` and the single disposable `amail-role-e2e@moesegfault.dev` route. Never point one of the four live `abuse`/`postmaster` rules at this Worker during this test. This plan complements [the monitoring contract](role-mail-monitoring.md), [Worker runbook](../workers/role-monitor/README.md), and the existing [real-SMTP harness](../infra/tests/staging_mail_e2e.py). It deliberately needs no account, amail login, public send-gate change, or owner Inbox action to establish the **machine-side** path. Consequently, it cannot attest human notice, response, or `abuse_contact_verified=1`.
 
+### Tracked SMTP harness (offline implementation; not yet executed)
+
+[`workers/role-monitor/acceptance.py`](../workers/role-monitor/acceptance.py) replaces the private REST driver's happy-path state machine with a reviewed, repo-tracked **one-message authenticated SMTP** probe. It reuses the exact-route helper and existing staging SMTP sender, requires a clean baseline above historical resolved D1 rows, and accepts the Worker's documented transient `unknown` forwarding state for at most two minutes after first observation. The first REST probe was **not** rerun; this code and its offline regression tests do not constitute hosted or live SMTP evidence. Invoke only during an explicit staging deployment freeze, after inspecting the active Worker version and current route inventory:
+
+```text
+python workers/role-monitor/acceptance.py --preflight
+python workers/role-monitor/acceptance.py --confirm-staging-smtp
+# Only after an interrupted run leaves the local route marker, and after a fresh rule audit:
+python workers/role-monitor/acceptance.py --recover-exact-route
+```
+
+The operator supplies `CF_ZONE_ID`, `CF_EMAIL_ROUTING_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and, for the send mode only, `AMAIL_TEST_SMTP_TOKEN` through protected environment variables; do not put values in command lines, shell history, logs, or documents. The marker lives under the repository's ignored `.temp/role-monitor-acceptance/`. The harness arms it **before** attempting route creation, including an ambiguous timeout; it closes only the exact, API-owned synthetic rule in `finally` and independently reads back absence plus unchanged IDs and direct-forward targets for all four standard role rules. A cleanup/readback failure leaves the marker in place, demands a staging freeze, and forbids another probe until the explicit recovery command or a restricted manual reconciliation proves absence. The staging deployment job itself refuses to deploy while the synthetic route is open. No routine test run should remove or rewrite any of the four standard rules.
+
+The harness emits only fixed status labels. Its strongest possible green result is **SMTP submission + one accepted D1 arrival + alerted D1 row + fresh health lease**. It explicitly prints `cron_past_events=not_checked`, `provider_forward=not_checked`, `provider_alert=not_checked`, and `external_inbox=not_checked`. An `unknown`→`accepted` transition that occurs between polls may not be directly observed; `d1_unalerted_seen=no` records that limitation rather than inventing evidence. A fresh `checked_at` is consistent with a natural Cron run but is not the provider's Cron Past Events result. Complete the restricted provider and external Inbox/Junk oracles separately in the same bounded UTC window before calling the full machine path or the owner's notification path accepted. Do **not** replay ambiguous SMTP merely to get a green result. See the independent-oracle table below.
+
 ### First live REST probe and recovery (limited, not SMTP acceptance)
 
 After all jobs in [CI run 36525461604](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36525461604) completed successfully at checkout `1b12c832d66cb7bda5508d9a4f55d960cda49148`, a local read-only Wrangler OAuth audit passed: one private role Worker, automatic traces and invocation logs disabled, exact synthetic route absent, isolated role D1 empty with expired lease, and four standard role aliases still direct-forwarded. With staging deployments frozen, a one-shot private driver opened only the exact synthetic route, waited 60 seconds, and sent **one** synthetic message through Cloudflare Email Sending REST at 05:32 UTC. The provider returned HTTP 200. This is API submission, **not authenticated SMTP**. No user-mail send gate, production role rule, or public release flag was changed.
@@ -21,31 +36,13 @@ The no-mutation verifier `python infra/deploy/verify_role_monitor_staging.py`, u
 ## Preconditions and privacy boundary
 
 1. Pin a Git commit and the successful hosted CI/deploy run; require the Rust Worker/native/Wasm jobs, role-route tests, migration, and staging deployment to have passed. **Before opening the route, inspect the effective deployed observability configuration and require automatic traces disabled**: Cloudflare Email Worker automatic traces can include the envelope `from`/`to`, defeating the role monitor's metadata-minimization policy even when application logs are safe. Keep only reviewed application logs with fixed phase labels, role enum, and opaque generated reference; inspect actual log output for accidental envelope fields. The CI deploy refuses to replace the Worker while the synthetic route is open; freeze staging deployments for the probe window. Confirm the staging D1 contains exactly the reviewed two role tables and the single health row using `workers/role-monitor/check_staging_db.py`. The four production rules must remain direct `forward` rules.
-2. Acquire the existing scoped zone routing token, zone ID and staging SMTP sending token through protected environment variables. Do not type a token into a shell command, persist it in a transcript, print it, or put it in a test artifact. `staging_mail_e2e.py` already has the relevant pattern: `assert_staging_sender`, `smtp_send`, TLS SMTP at `smtp.mx.cloudflare.net:465`, and a synthetic sender under `mail-staging.moesegfault.dev`. Extract/reuse those helpers in a future narrowly scoped harness rather than calling the ingress HTTP API or sending from a private human account. Use only a generated nonce in Subject/body and Message-ID; keep nonce and MIME under repo `.temp`, not Actions logs.
+2. Acquire the existing scoped zone routing token, zone ID and staging SMTP sending token through protected environment variables. Do not type a token into a shell command, persist it in a transcript, print it, or put it in a test artifact. The tracked `acceptance.py` reuses `staging_mail_e2e.py`'s `assert_staging_sender` and `smtp_send` helpers: authenticated TLS SMTP at `smtp.mx.cloudflare.net:465` and a synthetic sender under `mail-staging.moesegfault.dev`, never the ingress HTTP API or a private human account. A generated nonce in Subject/body and Message-ID is recorded in an ignored `.temp/role-monitor-acceptance/smtp-oracle-*.private` file for restricted correlation, never Actions logs.
 3. Audit `python workers/role-monitor/staging_route.py` and require `absent` before starting. Audit D1 counts and maximum `arrival_seq` before the run; if old `unknown`/unalerted rows exist, investigate rather than treating this as a clean acceptance run. Confirm the monitor's private recipient secret is provisioned **without reading or logging its value**. Read-only account API can attest one verified destination by equality inside the Worker; the local test need only check the Worker result.
 4. Treat the isolated D1 and Cloudflare's provider message views as restricted. Automatic Worker traces must remain disabled, not merely hidden from the exported report. The only exportable evidence is a case label, commit/deployment ID, UTC timestamp, elapsed time, SMTP response class, D1 counts/state booleans, Cron outcome, and provider event-state booleans. Do not export raw MIME, sender/recipient addresses, subject, destination, token, full GraphQL nodes, or trace attributes containing them. Even a hash of a report field would exceed this Worker's metadata contract.
 
 ## One-run lifecycle and independent oracles
 
-The test driver must own only the synthetic rule it created. Implement a `try/finally` (plus process-exit recovery checklist), not a sequence of manual `apply`/`remove` commands that can leave the route open on assertion failure:
-
-```python
-# Sketch, not a script that has been run. Invoke the reviewed route helper,
-# and keep token-bearing subprocess output suppressed. Never use a production alias.
-assert route.reconcile(zone, token, "audit") == "absent"
-created = False
-try:
-    assert route.reconcile(zone, token, "apply") == "created"
-    created = True
-    assert route.reconcile(zone, token, "audit") == "enabled"
-    sleep(60)  # Observed minimum propagation probe, not a universal guarantee.
-    assert route.reconcile(zone, token, "audit") == "enabled"
-    run_one_smtp_probe_and_poll_restricted_oracles()
-finally:
-    if created:
-        assert route.reconcile(zone, token, "remove") in ("removed", "absent")
-    assert route.reconcile(zone, token, "audit") == "absent"
-```
+The tracked test driver must own only the synthetic rule it created. It implements `try/finally`, arms a crash-recovery marker **before** the possibly ambiguous create call, and requires two absent-route readbacks separated by the same 60-second propagation wait used before SMTP. Do not substitute a sequence of manual `apply`/`remove` commands that can leave the route open on assertion failure. If a concurrent writer creates the exact route after the absent baseline, the driver retains its marker and refuses automatic removal: ownership is ambiguous and must be resolved explicitly.
 
 If removal/readback fails, **stop**: leave the staging deployment frozen and reconcile the exact rule ID with restricted access; do not create another alias, clear the error, or silently turn the test into a permanent intake. A crash that bypasses `finally` requires the same explicit absent-rule recovery before any later run. Route `apply` returning `enabled` at baseline is a conflict with the test's ownership assumption, not permission to remove someone else's rule.
 
