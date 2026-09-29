@@ -98,6 +98,9 @@ class AddressFailureLogTests(unittest.TestCase):
                 record(event("routing_list", "phase_failure"))]
         self.assertEqual(diagnostic.classify(rows), "routing_list_failed_outer_class_5")
         self.assertIsNone(diagnostic.incident_static_warning(warning + " for private user"))
+        self.assertEqual(diagnostic.incident_static_warning(
+            {"message": "amail semantic index retry failed"}),
+            "amail semantic index retry failed")
 
     def test_static_warning_may_not_mask_unknown_or_conflicting_payload(self) -> None:
         """Only exact literal copies may be ignored, never arbitrary text or events."""

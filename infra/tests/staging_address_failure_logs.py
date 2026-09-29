@@ -56,6 +56,7 @@ SAFE_FAILURES = frozenset({
 INCIDENT_STATIC_WARNINGS = frozenset({
     "amail routing reconciliation failed",
     "amail outbound reconciliation failed",
+    "amail semantic index retry failed",
     "amail storage ledger reconciliation failed",
     "amail deleted message cleanup failed",
     "amail orphan object cleanup failed",
