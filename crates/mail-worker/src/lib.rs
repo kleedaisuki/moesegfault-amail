@@ -438,96 +438,251 @@ fn embedding_failure_policy(error: platform::EmbeddingFailure, attempts: i64) ->
 /// lease must outlive that invocation to prevent an overlapping Cron transfer.
 const EMBEDDING_LEASE_MS: i64 = 20 * 60_000;
 
+/// Opaque work identity returned by the bounded owner-fair due query.
+#[derive(Deserialize)]
+struct EmbeddingDue {
+    message_id: String,
+}
+
+/// Active message projection read only after the work item is leased.
+#[derive(Deserialize)]
+struct EmbeddingPending {
+    subject: String,
+    body_text: String,
+    attempts: i64,
+}
+
+/// Provider-wide cooldown; only this timestamp is needed by the sweep.
+#[derive(Deserialize)]
+struct EmbeddingDependency {
+    blocked_until: i64,
+}
+
+/// Identifies a conditional claim; no provider call may precede the active-row read.
+struct EmbeddingLease<'a> {
+    message_id: &'a str,
+    token: String,
+}
+
+/// Sweep a bounded, owner-fair set of due IDs until a provider cooldown begins.
 async fn reindex(env: &Env) -> Result<()> {
-    #[derive(Deserialize)]
-    struct Due {
-        message_id: String,
-    }
-    #[derive(Deserialize)]
-    struct Pending {
-        subject: String,
-        body_text: String,
-        attempts: i64,
-    }
-    #[derive(Deserialize)]
-    struct Dependency {
-        blocked_until: i64,
-    }
     let database = env.d1("MAIL_DB")?;
     let current = now();
     let dependency = database
         .prepare("SELECT blocked_until FROM embedding_dependency WHERE id=1")
-        .first::<Dependency>(None)
+        .first::<EmbeddingDependency>(None)
         .await?;
     if dependency.is_some_and(|row| row.blocked_until > current) {
         return Ok(());
     }
-    // Limit each account to four due items per sweep so one poisoned/busy owner
-    // cannot monopolize the global 20-call budget. All filters are on work IDs.
-    let due = database
-        .prepare(EMBEDDING_DUE_SQL)
-        .bind(&[bind_num(current)])?
-        .all()
-        .await?
-        .results::<Due>()?;
+    let due = embedding_due(&database, current).await?;
     let mut invalid_requests = 0;
     for item in due {
-        let token = uuid::Uuid::new_v4().to_string();
-        let claimed_at = now();
-        let claim = database.prepare("UPDATE embedding_work SET lease_until=?1,lease_token=?2 WHERE message_id=?3 AND state='pending' AND next_attempt_at<=?4 AND lease_until<=?4 AND EXISTS (SELECT 1 FROM messages WHERE id=?3 AND deleted_at IS NULL AND embedding_json IS NULL)")
-            .bind(&[bind_num(claimed_at+EMBEDDING_LEASE_MS),bind_str(&token),bind_str(&item.message_id),bind_num(claimed_at)])?.run().await?;
-        if claim.meta()?.and_then(|meta| meta.changes).unwrap_or(0) != 1 {
-            continue;
-        }
-        database.prepare("UPDATE embedding_owner_schedule SET last_served_at=?1 WHERE EXISTS (SELECT 1 FROM embedding_work w WHERE w.message_id=?2 AND w.lease_token=?3 AND w.owner_iss=embedding_owner_schedule.owner_iss AND w.owner_sub=embedding_owner_schedule.owner_sub)")
-            .bind(&[bind_num(claimed_at),bind_str(&item.message_id),bind_str(&token)])?.run().await?;
-        let row = database.prepare("SELECT m.subject,m.body_text,w.attempts FROM messages m JOIN embedding_work w ON w.message_id=m.id WHERE m.id=?1 AND m.deleted_at IS NULL AND m.embedding_json IS NULL AND w.lease_token=?2 AND w.lease_until>?3")
-            .bind(&[bind_str(&item.message_id),bind_str(&token),bind_num(now())])?
-            .first::<Pending>(None).await?;
-        let Some(row) = row else {
+        let Some(lease) = claim_embedding(&database, &item.message_id).await? else {
             continue;
         };
-        let source = format!("{}\n{}", row.subject, row.body_text);
-        let input = embedding_prefix(&source);
-        let result = platform::embed_classified(env, input, "search_document").await;
-        match result {
-            Ok(vector) => {
-                let serialized = serde_json::to_string(&vector)?;
-                let model = env.var("OPENROUTER_EMBEDDING_MODEL")?.to_string();
-                // The work trigger removes the ledger row only on a successful
-                // active-row update. A tombstone or expired lease cannot revive it.
-                database.prepare("UPDATE messages SET embedding_json=?1,embedding_model=?2,embedding_dimensions=256,embedding_input_version=1,embedding_truncated=?3 WHERE id=?4 AND deleted_at IS NULL AND embedding_json IS NULL AND EXISTS (SELECT 1 FROM embedding_work WHERE message_id=?4 AND lease_token=?5 AND lease_until>?6)")
-                    .bind(&[bind_str(&serialized),bind_str(&model),bind_num((input.len()<source.len()) as i64),bind_str(&item.message_id),bind_str(&token),bind_num(now())])?.run().await?;
-            }
-            Err(error) => {
-                let attempts = row.attempts + 1;
-                let (quarantine, mut cooldown) = embedding_failure_policy(error, attempts);
-                if error == platform::EmbeddingFailure::InvalidRequest {
-                    invalid_requests += 1;
-                    if invalid_requests >= 3 {
-                        cooldown = 60 * 60_000;
-                    }
-                }
-                let next = now() + embedding_retry_delay(attempts, &item.message_id);
-                database.prepare("UPDATE embedding_work SET attempts=?1,next_attempt_at=?2,lease_until=0,lease_token=NULL,state=?3,last_error_code=?4 WHERE message_id=?5 AND lease_token=?6")
-                    .bind(&[bind_num(attempts),bind_num(next),bind_str(if quarantine {"quarantined"} else {"pending"}),bind_str(error.code()),bind_str(&item.message_id),bind_str(&token)])?.run().await?;
-                if quarantine {
-                    console_warn!("amail semantic document quarantined");
-                }
-                if cooldown > 0 {
-                    database.prepare("UPDATE embedding_dependency SET blocked_until=MAX(blocked_until,?1),last_error_code=?2 WHERE id=1")
-                        .bind(&[bind_num(now()+cooldown),bind_str(error.code())])?.run().await?;
-                    console_warn!("amail semantic provider cooldown");
-                    break;
-                }
-            }
+        let Some(row) = read_leased_embedding(&database, &lease).await? else {
+            continue;
+        };
+        if process_embedding(env, &database, &lease, row, &mut invalid_requests).await? {
+            break;
         }
     }
     Ok(())
 }
 
+/// Read only due work IDs, preserving the SQL's per-owner and global caps.
+async fn embedding_due(database: &D1Database, current: i64) -> Result<Vec<EmbeddingDue>> {
+    database
+        .prepare(EMBEDDING_DUE_SQL)
+        .bind(&[bind_num(current)])?
+        .all()
+        .await?
+        .results::<EmbeddingDue>()
+}
+
+/// Claim one still-eligible item and account for its owner's service time.
+async fn claim_embedding<'a>(
+    database: &D1Database,
+    message_id: &'a str,
+) -> Result<Option<EmbeddingLease<'a>>> {
+    let token = uuid::Uuid::new_v4().to_string();
+    let claimed_at = now();
+    let claim = database
+        .prepare(
+            "UPDATE embedding_work SET lease_until=?1,lease_token=?2
+             WHERE message_id=?3 AND state='pending'
+               AND next_attempt_at<=?4 AND lease_until<=?4
+               AND EXISTS (SELECT 1 FROM messages
+                           WHERE id=?3 AND deleted_at IS NULL AND embedding_json IS NULL)",
+        )
+        .bind(&[
+            bind_num(claimed_at + EMBEDDING_LEASE_MS),
+            bind_str(&token),
+            bind_str(message_id),
+            bind_num(claimed_at),
+        ])?
+        .run()
+        .await?;
+    if claim.meta()?.and_then(|meta| meta.changes).unwrap_or(0) != 1 {
+        return Ok(None);
+    }
+    database
+        .prepare(
+            "UPDATE embedding_owner_schedule SET last_served_at=?1
+             WHERE EXISTS (SELECT 1 FROM embedding_work w
+                           WHERE w.message_id=?2 AND w.lease_token=?3
+                             AND w.owner_iss=embedding_owner_schedule.owner_iss
+                             AND w.owner_sub=embedding_owner_schedule.owner_sub)",
+        )
+        .bind(&[bind_num(claimed_at), bind_str(message_id), bind_str(&token)])?
+        .run()
+        .await?;
+    Ok(Some(EmbeddingLease { message_id, token }))
+}
+
+/// Recheck active, unindexed content under the live lease before transfer.
+async fn read_leased_embedding(
+    database: &D1Database,
+    lease: &EmbeddingLease<'_>,
+) -> Result<Option<EmbeddingPending>> {
+    database
+        .prepare(
+            "SELECT m.subject,m.body_text,w.attempts
+             FROM messages m JOIN embedding_work w ON w.message_id=m.id
+             WHERE m.id=?1 AND m.deleted_at IS NULL AND m.embedding_json IS NULL
+               AND w.lease_token=?2 AND w.lease_until>?3",
+        )
+        .bind(&[
+            bind_str(lease.message_id),
+            bind_str(&lease.token),
+            bind_num(now()),
+        ])?
+        .first::<EmbeddingPending>(None)
+        .await
+}
+
+/// Return true when a provider-wide cooldown ends the current sweep.
+async fn process_embedding(
+    env: &Env,
+    database: &D1Database,
+    lease: &EmbeddingLease<'_>,
+    row: EmbeddingPending,
+    invalid_requests: &mut i32,
+) -> Result<bool> {
+    let source = format!("{}\n{}", row.subject, row.body_text);
+    let input = embedding_prefix(&source);
+    match platform::embed_classified(env, input, "search_document").await {
+        Ok(vector) => {
+            persist_embedding_success(env, database, lease, &vector, input.len() < source.len())
+                .await?;
+            Ok(false)
+        }
+        Err(error) => {
+            persist_embedding_failure(database, lease, row.attempts, error, invalid_requests).await
+        }
+    }
+}
+
+/// Commit only if the message remains active, unindexed, and leased to us.
+async fn persist_embedding_success(
+    env: &Env,
+    database: &D1Database,
+    lease: &EmbeddingLease<'_>,
+    vector: &[f32],
+    truncated: bool,
+) -> Result<()> {
+    let serialized = serde_json::to_string(vector)?;
+    let model = env.var("OPENROUTER_EMBEDDING_MODEL")?.to_string();
+    // The trigger removes work only after this conditional active-row update.
+    database
+        .prepare(
+            "UPDATE messages
+             SET embedding_json=?1,embedding_model=?2,embedding_dimensions=256,
+                 embedding_input_version=1,embedding_truncated=?3
+             WHERE id=?4 AND deleted_at IS NULL AND embedding_json IS NULL
+               AND EXISTS (SELECT 1 FROM embedding_work
+                           WHERE message_id=?4 AND lease_token=?5 AND lease_until>?6)",
+        )
+        .bind(&[
+            bind_str(&serialized),
+            bind_str(&model),
+            bind_num(truncated as i64),
+            bind_str(lease.message_id),
+            bind_str(&lease.token),
+            bind_num(now()),
+        ])?
+        .run()
+        .await?;
+    Ok(())
+}
+
+/// Persist bounded retry or quarantine, and stop on the established cooldown rule.
+async fn persist_embedding_failure(
+    database: &D1Database,
+    lease: &EmbeddingLease<'_>,
+    previous_attempts: i64,
+    error: platform::EmbeddingFailure,
+    invalid_requests: &mut i32,
+) -> Result<bool> {
+    let attempts = previous_attempts + 1;
+    let (quarantine, mut cooldown) = embedding_failure_policy(error, attempts);
+    if error == platform::EmbeddingFailure::InvalidRequest {
+        *invalid_requests += 1;
+        if *invalid_requests >= 3 {
+            cooldown = 60 * 60_000;
+        }
+    }
+    let next = now() + embedding_retry_delay(attempts, lease.message_id);
+    database
+        .prepare(
+            "UPDATE embedding_work
+             SET attempts=?1,next_attempt_at=?2,lease_until=0,lease_token=NULL,
+                 state=?3,last_error_code=?4
+             WHERE message_id=?5 AND lease_token=?6",
+        )
+        .bind(&[
+            bind_num(attempts),
+            bind_num(next),
+            bind_str(if quarantine { "quarantined" } else { "pending" }),
+            bind_str(error.code()),
+            bind_str(lease.message_id),
+            bind_str(&lease.token),
+        ])?
+        .run()
+        .await?;
+    if quarantine {
+        console_warn!("amail semantic document quarantined");
+    }
+    if cooldown == 0 {
+        return Ok(false);
+    }
+    database
+        .prepare(
+            "UPDATE embedding_dependency
+             SET blocked_until=MAX(blocked_until,?1),last_error_code=?2 WHERE id=1",
+        )
+        .bind(&[bind_num(now() + cooldown), bind_str(error.code())])?
+        .run()
+        .await?;
+    console_warn!("amail semantic provider cooldown");
+    Ok(true)
+}
+
 /// Owner rank and least-recently-served order avoid starvation across accounts.
-const EMBEDDING_DUE_SQL: &str = "SELECT message_id FROM (SELECT w.message_id,w.next_attempt_at,w.received_at,COALESCE(o.last_served_at,0) AS last_served_at,ROW_NUMBER() OVER (PARTITION BY w.owner_iss,w.owner_sub ORDER BY w.next_attempt_at,w.received_at,w.message_id) AS owner_rank FROM embedding_work w LEFT JOIN embedding_owner_schedule o ON o.owner_iss=w.owner_iss AND o.owner_sub=w.owner_sub WHERE w.state='pending' AND w.next_attempt_at<=?1 AND w.lease_until<=?1) WHERE owner_rank<=4 ORDER BY owner_rank,last_served_at,next_attempt_at,received_at,message_id LIMIT 20";
+const EMBEDDING_DUE_SQL: &str = "SELECT message_id FROM (
+       SELECT w.message_id,w.next_attempt_at,w.received_at,
+              COALESCE(o.last_served_at,0) AS last_served_at,
+              ROW_NUMBER() OVER (
+                PARTITION BY w.owner_iss,w.owner_sub
+                ORDER BY w.next_attempt_at,w.received_at,w.message_id
+              ) AS owner_rank
+       FROM embedding_work w
+       LEFT JOIN embedding_owner_schedule o
+         ON o.owner_iss=w.owner_iss AND o.owner_sub=w.owner_sub
+       WHERE w.state='pending' AND w.next_attempt_at<=?1 AND w.lease_until<=?1
+     ) WHERE owner_rank<=4
+     ORDER BY owner_rank,last_served_at,next_attempt_at,received_at,message_id LIMIT 20";
 
 async fn dispatch(
     mut req: Request,
