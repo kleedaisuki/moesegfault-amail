@@ -129,13 +129,14 @@ class TailTransportTests(unittest.IsolatedAsyncioTestCase):
             return created()
 
         with patch("staging_live_tail_transport._json_request", side_effect=api):
-            async with TailSession(ACCOUNT, "private-token", connect_socket=connect) as session:
-                socket.frames.put_nowait(frame(
-                    event("routing_list", "phase_failure"),
-                    event("request_exit", "server_error"),
-                ).decode())
-                self.assertEqual(await session.finish(REQUEST),
-                                 "UNVERIFIED (transport_cleanup_failed)")
+            with self.assertRaisesRegex(TailTransportError, "^transport_cleanup_failed$"):
+                async with TailSession(ACCOUNT, "private-token", connect_socket=connect) as session:
+                    socket.frames.put_nowait(frame(
+                        event("routing_list", "phase_failure"),
+                        event("request_exit", "server_error"),
+                    ).decode())
+                    self.assertEqual(await session.finish(REQUEST),
+                                     "UNVERIFIED (transport_cleanup_failed)")
 
     def test_unsafe_tail_url_is_rejected(self) -> None:
         """Never connect to a downgraded, credential-bearing, or local URL."""
@@ -221,4 +222,57 @@ class TailTransportTests(unittest.IsolatedAsyncioTestCase):
                 await TailSession(ACCOUNT, "private-token", connect_socket=connect).__aenter__()
         self.assertEqual(calls, ["POST", "DELETE"])
         self.assertTrue(socket.closed)
+
+    async def test_handshake_and_delete_failure_reports_cleanup_priority(self) -> None:
+        """An orphan-risk label must override the original connection failure."""
+
+        async def connect(_url, **_kwargs):
+            """Fail before a socket is returned."""
+
+            raise RuntimeError("private handshake text")
+
+        calls = []
+
+        def api(_url, _token, method, _body=None):
+            """Fail the exact Tail deletion without exposing provider details."""
+
+            calls.append(method)
+            if method == "DELETE":
+                raise TailTransportError("private API text")
+            return created()
+
+        with patch("staging_live_tail_transport._json_request", side_effect=api):
+            with self.assertRaisesRegex(TailTransportError, "^transport_cleanup_failed$"):
+                await TailSession(ACCOUNT, "private-token", connect_socket=connect).__aenter__()
+        self.assertEqual(calls, ["POST", "DELETE"])
+
+    async def test_failed_delete_is_retried_on_context_exit(self) -> None:
+        """A transient delete failure leaves the Tail ID available to retry."""
+
+        socket = FakeSocket()
+        deletes = 0
+
+        async def connect(_url, **_kwargs):
+            """Return the fake socket without network."""
+
+            return socket
+
+        def api(_url, _token, method, _body=None):
+            """Fail one cleanup attempt, then confirm the second."""
+
+            nonlocal deletes
+            if method == "POST":
+                return created()
+            deletes += 1
+            if deletes == 1:
+                raise TailTransportError("private transient failure")
+            return {"success": True}
+
+        with patch("staging_live_tail_transport._json_request", side_effect=api):
+            async with TailSession(ACCOUNT, "private-token", connect_socket=connect) as session:
+                self.assertEqual(await session.finish(REQUEST),
+                                 "UNVERIFIED (transport_cleanup_failed)")
+                self.assertEqual(session._tail_id, TAIL)
+            self.assertIsNone(session._tail_id)
+        self.assertEqual(deletes, 2)
 

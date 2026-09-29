@@ -150,10 +150,12 @@ class TailSession:
             self._reader = asyncio.create_task(self._read())
             return self
         except asyncio.CancelledError:
-            await self._close()
+            if not await self._close():
+                raise TailTransportError("transport_cleanup_failed") from None
             raise
         except Exception:
-            await self._close()
+            if not await self._close():
+                raise TailTransportError("transport_cleanup_failed") from None
             raise TailTransportError("transport_unverified") from None
 
     async def _read(self) -> None:
@@ -236,4 +238,5 @@ class TailSession:
 
         if self._result is None:
             self._observer.lost()
-        await self._close()
+        if not await self._close():
+            raise TailTransportError("transport_cleanup_failed") from None
