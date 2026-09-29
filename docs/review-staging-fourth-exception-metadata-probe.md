@@ -1,0 +1,28 @@
+# Review: bounded historical exception-metadata probe
+
+Status: independent source review on 2026-09-29; **do not execute until the corrections below and hosted synthetic tests are complete**. I reviewed `infra/provider/probe_staging_fourth_exception.py`, `infra/tests/test_staging_fourth_exception.py`, `docs/staging-fourth-exception-metadata-probe.md`, the established retained-event query/parser notes, and Cloudflare's current [telemetry query API](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/) and [generated TypeScript schema](https://github.com/cloudflare/cloudflare-typescript/blob/main/src/resources/workers/observability/telemetry.ts). I made no live provider call, local test run, or production change.
+
+## Findings
+
+### 1. Correct the credential statement before any owner-side run (documentation/security, high confidence)
+
+`docs/staging-fourth-exception-metadata-probe.md` calls the operator credential “read-only”. The operation is a dry, read-only **query**, but Cloudflare documents **Workers Observability Write** as the permission for `POST /workers/observability/telemetry/query`. The existing project-level observability token and local Wrangler OAuth are not guaranteed to be read-only credentials. This matters because an operator may choose a broad credential under a false least-privilege assumption, and the term blurs the distinction between the script's constrained behavior and what a stolen token could do. State “credential authorized for the query endpoint (Cloudflare currently requires Workers Observability Write); script sends one dry query and makes no write call”, and prefer the narrow existing Observability token over a broad OAuth token if it works. Do not copy either token to logs or repository files.
+
+### 2. Make the optional `$workers` row check honest and fail closed (scope/contract, medium confidence)
+
+`classify()` currently accepts a present `$workers` object with no `scriptName` because `workers.get("scriptName", WORKER)` manufactures the expected value. The documented `$workers` event variants have a required `scriptName`; a missing field is therefore malformed rather than evidence of a match. Since the document promises rejection of a wrong service/script and this probe handles sensitive event records, require `workers["scriptName"] == WORKER` when `$workers` is present; keep `$workers` itself optional as documented. Add a synthetic row with `$workers={"outcome":"exception"}` that must be `UNVERIFIED (scope)` or `schema`, and one with a different script name. This is a defensive scope correction, not evidence that Cloudflare has emitted such a row.
+
+### 3. Keep the one-page completeness claim explicitly conditional (coverage, medium confidence)
+
+Cloudflare's schema defines `result.events.count` as the **total** matching events, potentially greater than the returned list length; the API provides cursor pagination through `offset`. The parser's `count == len(rows)` is therefore a valid fail-closed check for a single-page response. At exactly 200 returned rows it remains sound **only if** Cloudflare's total count is authoritative and stable; the previous project canary's complete pagination uses cursor IDs because it handles larger windows. State that the new one-request probe deliberately refuses any total over 200, and add tests for `count=201, len(rows)=200`, exactly 200, missing count, and a response body above 256 KiB. Do not silently page or raise the limit to obtain a diagnosis. This is not a blocker to one dry read if the total-count contract holds.
+
+### 4. Expand synthetic failure-path coverage before execution (test adequacy, medium confidence)
+
+Current tests cover a recognized literal, private error mapped to a fixed label, wrong service, count mismatch, and missing opt-in. They do not exercise duplicate JSON keys, redirect rejection, body-cap rejection, `STARTED`/non-dry responses, wrong timeframe/filter echo, out-of-window rows, wrong script name, multiple candidates, or the final `main()` output envelope when a provider error or unexpected exception occurs. These are precisely the boundaries that make a sensitive log query safe to run. Mock `fetch`/opener and capture stdout without network to prove one fixed label, no provider/body/token text, and no second request; use the hosted infrastructure test job as required by the project. Tests should assert behavior, not only repeat classifier branches.
+
+## Positives and interpretation limits
+
+- Exact hard-coded Worker/timeframe and confirmation, `dry=true`, no redirect, one request, bounded read, duplicate-key rejection, no raw HTTP response printing, and a closed output vocabulary are appropriate privacy boundaries. The fixed milliseconds correspond to the documented 69-second E2E step window.
+- The classifier examines only two exact WebAssembly error literals from `$metadata.error`, not private `source`, `$metadata.message`, URL, stack, or request ID. Unexpected strings map to `other_or_absent`. Even a recognized literal is explicitly `_not_attributed`; one aggregate `scriptThrewException` plus one retained exact error in a busy window does **not** prove it was the address-add invocation or identify a Rust panic site.
+- Empty or missing retained events cannot rebut the aggregate metric because invocation logs are disabled and retention/sampling differ. The chosen query may simply return `UNVERIFIED` or an uninformative fixed label; do not replay address creation to force a better answer.
+- I did not validate a real Cloudflare response or inspect credential configuration. The conclusion is a source/API-contract review, not an operational privacy attestation.
