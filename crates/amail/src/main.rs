@@ -18,10 +18,18 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Privacy disclosure for exploratory help, never compact command output.
+const SEMANTIC_PRIVACY_NOTICE: &str = concat!(
+    "Privacy: Active received and sent mail subjects plus bounded body-text excerpts ",
+    "(combined first 12,000 UTF-8 bytes) are sent to OpenRouter and its model provider ",
+    "for background semantic indexing, even if --semantic is never used. ",
+    "--semantic also sends the search query. AMAIL_TELEMETRY=off does not disable indexing."
+);
+
 /// Compact JSONL by default; `--human` opts into readable formatting.
 /// 默认输出紧凑 JSONL；`--human` 才启用可读排版。
 #[derive(Parser)]
-#[command(name = "amail", version, about = "Agent-first mail for moeSegFault", long_about = None)]
+#[command(name = "amail", version, about = "Agent-first mail for moeSegFault", long_about = None, after_help = SEMANTIC_PRIVACY_NOTICE)]
 struct Cli {
     /// Human-readable output, with terminal color when supported.
     #[arg(long, global = true)]
@@ -40,6 +48,7 @@ enum Command {
         command: AuthCommand,
     },
     /// Short alias for `auth login`.
+    #[command(after_help = SEMANTIC_PRIVACY_NOTICE)]
     Login {
         #[arg(long)]
         no_browser: bool,
@@ -63,6 +72,7 @@ enum Command {
         out_dir: Option<PathBuf>,
     },
     /// Search message metadata, text, or semantic meaning with AND predicates.
+    #[command(after_help = SEMANTIC_PRIVACY_NOTICE)]
     Search(SearchArgs),
     /// Fetch metadata only, without changing read state.
     Get { id: String },
@@ -114,6 +124,7 @@ enum Command {
 #[derive(Subcommand)]
 enum AuthCommand {
     /// Open system browser for authorization (or print URL for manual browser use).
+    #[command(after_help = SEMANTIC_PRIVACY_NOTICE)]
     Login {
         #[arg(long)]
         no_browser: bool,
@@ -164,6 +175,7 @@ struct SearchArgs {
     /// KEY=VALUE filter (message_id, in_reply_to, content_type, attachment_name); distinct keys may repeat this flag.
     #[arg(long = "meta")]
     metadata: Vec<String>,
+    /// Send this query to OpenRouter for semantic search; background mail indexing happens even without this option.
     #[arg(long)]
     semantic: Option<String>,
     #[arg(long)]
@@ -669,6 +681,29 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Keep the third-party processing disclosure visible at first-use discovery points.
+    #[test]
+    fn help_discloses_automatic_semantic_indexing() {
+        for args in [
+            vec!["amail", "--help"],
+            vec!["amail", "login", "--help"],
+            vec!["amail", "auth", "login", "--help"],
+            vec!["amail", "search", "--help"],
+        ] {
+            let help = Cli::try_parse_from(args.clone()).unwrap_err();
+            assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+            let output = help.to_string().split_whitespace().collect::<Vec<_>>().join(" ");
+            for phrase in [
+                "background semantic indexing",
+                "even if --semantic is never used",
+                "--semantic also sends the search query",
+                "AMAIL_TELEMETRY=off does not disable indexing",
+            ] {
+                assert!(output.contains(phrase), "missing {phrase} from {args:?}");
+            }
+        }
+    }
 
     #[test]
     fn search_keeps_composed_predicates() {
