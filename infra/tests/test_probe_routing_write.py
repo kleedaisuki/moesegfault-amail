@@ -84,6 +84,22 @@ class RoutingWriteProbeTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("routing_write_check=configured_grant", output)
 
+    def test_nested_exact_zone_scope(self) -> None:
+        """An account-nested exact-zone selector grants only the target zone."""
+
+        resources = {f"com.cloudflare.api.account.{ENV['CLOUDFLARE_ACCOUNT_ID']}": {f"com.cloudflare.api.account.zone.{ENV['CF_ZONE_ID']}": "*"}}
+        code, output, _ = self._run([policy("allow", resources)])
+        self.assertEqual(code, 0)
+        self.assertIn("routing_write_check=configured_grant", output)
+
+    def test_nested_unrecognized_selector_is_inconclusive(self) -> None:
+        """Unknown nested resource syntax cannot justify a no-grant conclusion."""
+
+        resources = {f"com.cloudflare.api.account.{ENV['CLOUDFLARE_ACCOUNT_ID']}": {"unrecognized-selector": "*"}}
+        code, output, _ = self._run([policy("allow", resources)])
+        self.assertEqual(code, 1)
+        self.assertIn("routing_write_check=unknown", output)
+
     def test_account_owned_token_uses_account_details(self) -> None:
         """Fallback to account verification and use its matching detail endpoint."""
 

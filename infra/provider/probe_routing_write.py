@@ -26,11 +26,15 @@ def _covers(resources: object, account: str, zone: str) -> bool | None:
     direct = (f"com.cloudflare.api.account.zone.{zone}", "com.cloudflare.api.account.zone.*")
     for key in direct:
         if key in resources:
-            return resources[key] == "*" if isinstance(resources[key], str) else None
+            return True if resources[key] == "*" else None
     nested = resources.get(f"com.cloudflare.api.account.{account}")
     if isinstance(nested, dict):
-        value = nested.get("com.cloudflare.api.account.zone.*")
-        return value == "*" if value is not None else False
+        for key in direct:
+            if key in nested:
+                return True if nested[key] == "*" else None
+        if any(not isinstance(key, str) or not key.startswith("com.cloudflare.api.account.zone.") for key in nested):
+            return None
+        return False
     if nested is not None:
         return None
     return False
