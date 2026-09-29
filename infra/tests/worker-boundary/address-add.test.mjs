@@ -93,21 +93,25 @@ function fakeNetwork(createResponse, listedRuleIds = [], runCron = false, cronRu
 async function exercise(createResponse, { failActivation = false, listedRuleIds = [], runCron = false, cronRuleIds = listedRuleIds, stalePending = false, markDeleting = false, oldProvisioning = false, flagActive = false, backlogCount = 0 } = {}) {
   const mock = fakeNetwork(createResponse, listedRuleIds, runCron, cronRuleIds, backlogCount);
   const mf = new Miniflare({
-    modules: true,
-    scriptPath: path.join(worker, "build/worker/shim.mjs"),
-    modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],
-    compatibilityDate: "2026-09-25",
-    bindings: {
-      IDENTITY_ISSUER: issuer,
-      OIDC_CLIENT_ID: "amail-cli-staging",
-      CF_ZONE_ID: "synthetic-zone",
-      CF_EMAIL_ROUTING_TOKEN: "synthetic-token",
-      MAIL_DOMAIN: "mail-staging.moesegfault.dev",
-      EMAIL_INGRESS_WORKER_NAME: "synthetic-ingress",
-      ADDRESS_DIAGNOSTICS: "v1",
-    },
-    d1Databases: ["MAIL_DB"],
-    outboundService: mock.outboundService,
+    cf: false,
+    workers: [{
+      name: "amail-synthetic",
+      modules: true,
+      scriptPath: path.join(worker, "build/worker/shim.mjs"),
+      modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],
+      compatibilityDate: "2026-09-25",
+      bindings: {
+        IDENTITY_ISSUER: issuer,
+        OIDC_CLIENT_ID: "amail-cli-staging",
+        CF_ZONE_ID: "synthetic-zone",
+        CF_EMAIL_ROUTING_TOKEN: "synthetic-token",
+        MAIL_DOMAIN: "mail-staging.moesegfault.dev",
+        EMAIL_INGRESS_WORKER_NAME: "synthetic-ingress",
+        ADDRESS_DIAGNOSTICS: "v1",
+      },
+      d1Databases: ["MAIL_DB"],
+      outboundService: mock.outboundService,
+    }],
   });
   try {
     const { MAIL_DB: db } = await mf.getBindings();

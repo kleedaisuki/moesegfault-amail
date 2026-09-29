@@ -526,7 +526,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Check installed Miniflare module contract before Rust build
         working-directory: infra/tests/worker-boundary
-        run: node --input-type=module -e "import { Miniflare } from 'miniflare'; if (typeof Miniflare !== 'function') process.exit(1)"
+        run: node miniflare-config-smoke.mjs
       - name: Set up Rust Wasm target
         run: |
           rustup update stable
