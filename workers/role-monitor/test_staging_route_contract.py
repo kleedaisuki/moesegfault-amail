@@ -85,6 +85,30 @@ class RouteLifecycleContractTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "pagination"):
                 route.rules("zone", "token")
 
+    def test_inventory_accepts_provider_pagination_without_total_pages(self) -> None:
+        """Email Routing omits total_pages, unlike some Cloudflare APIs. / 接受实际供应商分页。"""
+
+        page = {
+            "success": True,
+            "result": [owned_rule()],
+            "result_info": {"page": 1, "per_page": 50, "count": 1, "total_count": 1},
+        }
+        with patch.object(route, "call", return_value=(200, page)) as provider:
+            self.assertEqual(route.rules("zone", "token"), [owned_rule()])
+            provider.assert_called_once()
+
+    def test_inventory_rejects_inconsistent_optional_total_pages(self) -> None:
+        """A supplied page count must still agree with the inventory. / 仍拒绝错误页数。"""
+
+        page = {
+            "success": True,
+            "result": [owned_rule()],
+            "result_info": {"page": 1, "per_page": 50, "count": 1, "total_count": 1, "total_pages": 2},
+        }
+        with patch.object(route, "call", return_value=(200, page)):
+            with self.assertRaisesRegex(RuntimeError, "pagination"):
+                route.rules("zone", "token")
+
     def test_unknown_action_cannot_delete_owned_route(self) -> None:
         """A typo must fail rather than select the destructive branch. / 拼写错误必须失败，不能进入删除分支。"""
 

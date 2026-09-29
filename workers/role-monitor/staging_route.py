@@ -57,9 +57,23 @@ def rules(zone: str, token: str) -> list[dict]:
         if type(available) is not int or not 0 <= available <= 5000 or (total is not None and total != available):
             raise RuntimeError("staging route inventory count drift")
         pages = max(1, (available + 49) // 50)
-        if (info.get("page"), info.get("per_page"), info.get("count"), info.get("total_pages")) != (
-            page, 50, len(batch), pages
-        ) or len(batch) != min(50, max(0, available - (page - 1) * 50)):
+        reported_pages = info.get("total_pages")
+        # The Email Routing API omits total_pages. When present, still verify it
+        # against total_count so an incomplete inventory cannot pass unnoticed.
+        if reported_pages is not None and (
+            type(reported_pages) is not int
+            or (reported_pages != pages and not (available == 0 and reported_pages == 0))
+        ):
+            raise RuntimeError("staging route inventory pagination drift")
+        if (
+            type(info.get("page")) is not int
+            or info["page"] != page
+            or type(info.get("per_page")) is not int
+            or info["per_page"] != 50
+            or type(info.get("count")) is not int
+            or info["count"] != len(batch)
+            or len(batch) != min(50, max(0, available - (page - 1) * 50))
+        ):
             raise RuntimeError("staging route inventory pagination drift")
         if not all(isinstance(item, dict) for item in batch):
             raise RuntimeError("staging route inventory malformed")

@@ -117,7 +117,9 @@ async fn handle_email(message: ForwardableEmailMessage, env: &Env) -> Result<()>
     headers.set("X-Amail-Role-Ref", &id)?;
     // The Email binding accepts web_sys::Headers, not the worker wrapper type.
     // Email 绑定接受 web_sys::Headers，而不是 worker 的封装类型。
-    message.forward_with_headers(&destination, &headers.0).await?;
+    message
+        .forward_with_headers(&destination, &headers.0)
+        .await?;
     staging_fault(env, "after_forward")?;
     db.prepare("UPDATE role_arrivals SET forward_state='accepted',forward_updated_at=?2 WHERE id=?1 AND forward_state='unknown'")
         .bind(&[JsValue::from_str(&id), JsValue::from_f64(now() as f64)])?
@@ -421,7 +423,15 @@ struct PageInfo {
     per_page: usize,
     count: usize,
     total_count: usize,
-    total_pages: usize,
+    /// Email Routing may omit this field; total_count remains authoritative.
+    total_pages: Option<usize>,
+}
+
+impl PageInfo {
+    /// Derive the exhaustive page bound from the always-required total_count.
+    fn pages(&self) -> usize {
+        self.total_count.div_ceil(50).max(1)
+    }
 }
 #[derive(Deserialize)]
 struct Rule {
@@ -485,7 +495,7 @@ async fn audit_rules(env: &Env, expected: &[Role]) -> Result<()> {
                 }
             }
         }
-        if page == info.total_pages.max(1) {
+        if page == info.pages() {
             break;
         }
     }
@@ -532,7 +542,7 @@ async fn audit_destination(env: &Env, destination: &str) -> Result<()> {
                 }
             }
         }
-        if page == info.total_pages.max(1) {
+        if page == info.pages() {
             break;
         }
     }
@@ -553,13 +563,16 @@ fn valid_page(
     count: usize,
     prior: Option<usize>,
 ) -> bool {
-    let pages = info.total_count.div_ceil(50).max(1);
+    let pages = info.pages();
     success
         && info.page == page
         && info.per_page == 50
         && info.count == count
-        && info.total_pages == pages
+        && info
+            .total_pages
+            .is_none_or(|reported| reported == pages || (info.total_count == 0 && reported == 0))
         && pages <= 100
+        && page <= pages
         && prior.is_none_or(|value| value == info.total_count)
         && count == (info.total_count.saturating_sub((page - 1) * 50)).min(50)
 }
@@ -676,11 +689,21 @@ mod tests {
             per_page: 50,
             count: 50,
             total_count: 51,
-            total_pages: 2,
+            total_pages: Some(2),
         };
         assert!(valid_page(true, &info, 1, 50, None));
         assert!(!valid_page(true, &info, 1, 49, None));
         assert!(!valid_page(true, &info, 1, 50, Some(52)));
+        let omitted = PageInfo {
+            total_pages: None,
+            ..info
+        };
+        assert!(valid_page(true, &omitted, 1, 50, None));
+        let bad = PageInfo {
+            total_pages: Some(3),
+            ..omitted
+        };
+        assert!(!valid_page(true, &bad, 1, 50, None));
     }
 
     /// Reject malformed or header-injectable private destinations before use.
