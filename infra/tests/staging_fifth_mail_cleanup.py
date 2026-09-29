@@ -165,7 +165,7 @@ def control_any(account: str, token: str, route_token: str, mailbox: str) -> dic
 
 def verify_row(binary: Path, env: dict[str, str], msg_id: str, mailbox: str,
                subject: str, signal: bool) -> None:
-    """Corroborate exact fixture metadata and MIME-shape flags via owner-scoped get."""
+    """Corroborate each exact get field; reveal only fixed mismatch categories."""
 
     rows = success(binary, env, "get", msg_id)
     require(len(rows) == 1, "get_shape_unverified")
@@ -173,15 +173,23 @@ def verify_row(binary: Path, env: dict[str, str], msg_id: str, mailbox: str,
     nonce = subject.split("-")[2]
     suffix = "signal" if signal else "distractor"
     metadata = row.get("metadata")
-    require(row.get("id") == msg_id and row.get("mailbox") == mailbox and
-            row.get("direction") == "inbound" and row.get("subject") == subject and
-            row.get("from") == SENDER and row.get("to") == [mailbox] and
-            row.get("has_text") is True and row.get("has_html") is signal and
-            row.get("has_attachments") is signal and
-            row.get("attachment_count") == (2 if signal else 0) and
-            isinstance(metadata, dict) and
-            metadata.get("message_id") == f"<amail-e2e-{nonce}-{suffix}@mail-staging.moesegfault.dev>",
-            "fixture_get_mismatch")
+    # Keep each predicate independent so the hosted log identifies the failed
+    # contract without emitting any received header, subject, or message ID.
+    require(row.get("id") == msg_id, "fixture_get_id_mismatch")
+    require(row.get("mailbox") == mailbox, "fixture_get_mailbox_mismatch")
+    require(row.get("direction") == "inbound", "fixture_get_direction_mismatch")
+    require(row.get("subject") == subject, "fixture_get_subject_mismatch")
+    require(row.get("from") == SENDER, "fixture_get_from_mismatch")
+    require(row.get("to") == [mailbox], "fixture_get_to_mismatch")
+    require(row.get("has_text") is True, "fixture_get_text_mismatch")
+    require(row.get("has_html") is signal, "fixture_get_html_mismatch")
+    require(row.get("has_attachments") is signal, "fixture_get_attachments_mismatch")
+    require(row.get("attachment_count") == (2 if signal else 0),
+            "fixture_get_attachment_count_mismatch")
+    require(isinstance(metadata, dict), "fixture_get_metadata_shape_mismatch")
+    require(metadata.get("message_id") ==
+            f"<amail-e2e-{nonce}-{suffix}@mail-staging.moesegfault.dev>",
+            "fixture_get_message_id_mismatch")
 
 
 def not_found(binary: Path, env: dict[str, str], msg_id: str) -> None:

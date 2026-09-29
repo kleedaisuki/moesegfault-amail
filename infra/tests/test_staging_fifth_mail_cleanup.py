@@ -46,8 +46,8 @@ class CleanupGuardTests(unittest.TestCase):
             self.assertEqual(cleanup.inventory(Path("amail"), {}, MAILBOX), {"known_1": row})
             self.assertNotIn("--cursor", search.call_args_list[-1].args[2])
 
-    def test_get_requires_exact_message_id_and_mime(self) -> None:
-        """Subject and sender equality alone cannot authorize deletion."""
+    def test_get_reports_fixed_field_mismatches_without_weakening_gate(self) -> None:
+        """Every strict predicate has a fixed label and never embeds its value."""
 
         row = {"id": "known_1", "mailbox": MAILBOX, "direction": "inbound",
                "subject": SUBJECT, "from": cleanup.SENDER, "to": [MAILBOX],
@@ -56,9 +56,40 @@ class CleanupGuardTests(unittest.TestCase):
                "metadata": {"message_id": "<amail-e2e-0123456789abcdef-signal@mail-staging.moesegfault.dev>"}}
         with patch.object(cleanup, "success", return_value=[row]):
             cleanup.verify_row(Path("amail"), {}, "known_1", MAILBOX, SUBJECT, True)
-        with patch.object(cleanup, "success", return_value=[{**row, "metadata": {"message_id": "spoof"}}]):
-            with self.assertRaises(cleanup.CleanupFailure):
-                cleanup.verify_row(Path("amail"), {}, "known_1", MAILBOX, SUBJECT, True)
+        cases = (
+            ("id", "other", "fixture_get_id_mismatch"),
+            ("mailbox", "other", "fixture_get_mailbox_mismatch"),
+            ("direction", "outbound", "fixture_get_direction_mismatch"),
+            ("subject", "other", "fixture_get_subject_mismatch"),
+            ("from", "other", "fixture_get_from_mismatch"),
+            ("to", ["other"], "fixture_get_to_mismatch"),
+            ("has_text", False, "fixture_get_text_mismatch"),
+            ("has_html", False, "fixture_get_html_mismatch"),
+            ("has_attachments", False, "fixture_get_attachments_mismatch"),
+            ("attachment_count", 1, "fixture_get_attachment_count_mismatch"),
+            ("metadata", "other", "fixture_get_metadata_shape_mismatch"),
+            ("metadata", {"message_id": "other"}, "fixture_get_message_id_mismatch"),
+        )
+        for field, value, label in cases:
+            with self.subTest(field=field, label=label), \
+                 patch.object(cleanup, "success", return_value=[{**row, field: value}]):
+                with self.assertRaisesRegex(cleanup.CleanupFailure, f"^{label}$"):
+                    cleanup.verify_row(Path("amail"), {}, "known_1", MAILBOX, SUBJECT, True)
+
+    def test_get_distractor_requires_plain_text_shape(self) -> None:
+        """The second fixture has no HTML or attachments, even if the first does."""
+
+        subject = SUBJECT.replace("Signal", "Distractor")
+        row = {"id": "known_2", "mailbox": MAILBOX, "direction": "inbound",
+               "subject": subject, "from": cleanup.SENDER, "to": [MAILBOX],
+               "has_text": True, "has_html": False, "has_attachments": False,
+               "attachment_count": 0,
+               "metadata": {"message_id": "<amail-e2e-0123456789abcdef-distractor@mail-staging.moesegfault.dev>"}}
+        with patch.object(cleanup, "success", return_value=[row]):
+            cleanup.verify_row(Path("amail"), {}, "known_2", MAILBOX, subject, False)
+        with patch.object(cleanup, "success", return_value=[{**row, "has_html": True}]):
+            with self.assertRaisesRegex(cleanup.CleanupFailure, "^fixture_get_html_mismatch$"):
+                cleanup.verify_row(Path("amail"), {}, "known_2", MAILBOX, subject, False)
 
     def test_control_refuses_extra_mail_and_duplicate_fixture(self) -> None:
         """Only the exact two historical rows, active or deleted, are acceptable."""
