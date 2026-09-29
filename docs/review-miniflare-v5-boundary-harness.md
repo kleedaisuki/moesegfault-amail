@@ -94,3 +94,23 @@ compatibility behavior. That gap is intentional and must not be interpreted as
 production parity. If a future regression depends on post-August runtime
 semantics, upgrade this harness to a compatible newer workerd/module-loading
 setup rather than silently changing the production date.
+
+### Generated JavaScript module classification (run 36581647194)
+
+The next hosted run [36581647194](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36581647194)
+passed the early smoke, Rust unit/check steps, and the `worker-build` bundle,
+but every post-build boundary case failed before dispatch with
+`ERR_MODULE_PARSE` at generated `build/index.js`. Stable Miniflare v4's default
+rules classify `.mjs` as ES modules and `.js` as CommonJS; the fixture had
+overridden only `.wasm` as `CompiledWasm`. The generated `index.js` begins with
+ES module syntax, so a custom `ESModule` rule must classify `.js` before the
+default CommonJS rule. Miniflare's rule compiler suppresses later rules of the
+same type after a non-fallthrough custom rule, so the fixture's shared rule
+explicitly includes both `.mjs` and `.js`; the Wasm rule remains intact.
+
+The early smoke now loads a local `.mjs` entrypoint importing a `.js` ES module
+with the same shared rules, then verifies the exact local-only outbound callback
+was called once. This catches the previously untested module-parse failure
+*before* Rust builds. It does not exercise generated Wasm; the post-build suite
+still must establish that import graph and application behavior. No live
+network call is allowed by either fixture's outbound callback.

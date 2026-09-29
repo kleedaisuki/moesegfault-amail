@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
+import { workerModuleRules } from "./worker-module-rules.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
@@ -98,7 +99,7 @@ async function exercise(createResponse, { failActivation = false, listedRuleIds 
       name: "amail-synthetic",
       modules: true,
       scriptPath: path.join(worker, "build/worker/shim.mjs"),
-      modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],
+      modulesRules: workerModuleRules,
       // Stable v4's workerd supports dates only through 2026-08-06.
       compatibilityDate: "2026-08-06",
       bindings: {
