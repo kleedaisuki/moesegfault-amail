@@ -62,7 +62,7 @@ class HostedRoleAcceptanceTests(unittest.TestCase):
         """An out-of-band deployment in the job window cannot self-attest."""
 
         job = hosted.DeployedJob(NOW, NOW.replace(minute=10), 77,
-                                  NOW.replace(minute=4), NOW.replace(minute=6))
+                                  NOW.replace(minute=4), NOW.replace(minute=5))
         lines = (
             "2026-09-29T05:01:00Z Current Version ID: 11111111-1111-4111-8111-111111111111\n"
             f"2026-09-29T05:05:00.8395859Z Current Version ID: {VERSION}\n"

@@ -190,7 +190,9 @@ def logged_version(repo: str, job: DeployedJob, token: str) -> str:
         if match is None:
             continue
         emitted = parse_time(match.group("time"), "deploy_log_time_invalid")
-        if job.step_started <= emitted <= job.step_ended:
+        # Actions step API times are second-resolution while log lines include
+        # fractions; a terminal line at 00.839 belongs to a step ending 00Z.
+        if job.step_started - timedelta(seconds=1) <= emitted <= job.step_ended + timedelta(seconds=1):
             candidates.append(match.group("version"))
     require(len(candidates) == 1 and valid_uuid(candidates[0]), "deploy_log_version_ambiguous")
     return candidates[0]
