@@ -1,0 +1,70 @@
+# Manual, staging-only retained-log acceptance; never mutates mail or routing.
+name: Staging retained-log trace canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Check permission/settings only, or run the synthetic canary
+        required: true
+        type: choice
+        options: [preflight, canary]
+      confirm:
+        description: For canary mode only, enter RUN_STAGING_TRACE_CANARY
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  trace-canary:
+    name: Staging privacy preflight and optional native trace canary
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: windows-latest
+    environment: staging
+    timeout-minutes: 45
+    concurrency:
+      group: staging-retained-trace-canary
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require confirmation before the full probe
+        env:
+          TRACE_MODE: ${{ inputs.mode }}
+          TRACE_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if ($env:TRACE_MODE -eq 'canary' -and $env:TRACE_CONFIRM -ne 'RUN_STAGING_TRACE_CANARY') {
+            throw 'Explicit staging trace canary confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Verify effective privacy and Observability service-key access before login
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_hosted_trace_canary.py --mode preflight
+      - name: Install native-login adapters
+        if: inputs.mode == 'canary'
+        run: python -m pip install pywin32==312 websocket-client==1.9.2
+      - name: Build native amail on the hosted runner
+        if: inputs.mode == 'canary'
+        run: |
+          rustup update stable
+          cargo build -p amail --locked
+      - name: Check retained logs and CLI to API parentage
+        if: inputs.mode == 'canary'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_hosted_trace_canary.py --mode canary --confirm RUN_STAGING_TRACE_CANARY
