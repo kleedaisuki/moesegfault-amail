@@ -192,10 +192,12 @@ class AddressFailureLogTests(unittest.TestCase):
             "staging_address_incident: UNVERIFIED (observability_events_view_absent)",
         ])
 
-    def test_unverified_values_never_classify_present_event_view(self) -> None:
-        """An event-view shape alone is not enough to name an incident cause."""
+    def test_mixed_values_allow_only_exact_service_causal_records(self) -> None:
+        """Other account services in Values cannot defeat exact event checks."""
 
         output = StringIO()
+        rows = [record(event("request_exit", "server_error")),
+                record(event("routing_list", "phase_failure"))]
         with patch.object(sys, "argv", ["script", diagnostic.CONFIRMATION]), \
                 patch.dict(diagnostic.os.environ, {
                     "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
@@ -203,17 +205,19 @@ class AddressFailureLogTests(unittest.TestCase):
                     "CLOUDFLARE_API_TOKEN": "fake",
                 }), patch.object(diagnostic, "preflight"), \
                 patch.object(diagnostic, "service_value_status", return_value="present_with_others"), \
-                patch.object(diagnostic, "retained_events", return_value=[record(
-                    event("request_exit", "server_error"))]), \
-                patch.object(diagnostic, "classify") as classify, redirect_stdout(output):
-            self.assertEqual(diagnostic.main(), 1)
-        classify.assert_not_called()
+                patch.object(diagnostic, "retained_events", return_value=rows), \
+                redirect_stdout(output):
+            self.assertEqual(diagnostic.main(), 0)
         lines = output.getvalue().strip().splitlines()
         self.assertEqual(lines[0], "staging_address_service: service_value_present_with_others")
         self.assertEqual(lines[-2:], [
             "staging_address_events: view_present",
-            "staging_address_incident: UNVERIFIED (service_value_present_with_others)",
+            "staging_address_incident: routing_list_failed_outer_class_5",
         ])
+
+        rows[1]["$metadata"]["service"] = "other-service"
+        with self.assertRaisesRegex(diagnostic.CanaryError, "service_filter_unverified"):
+            diagnostic.classify(rows)
 
 
 if __name__ == "__main__":

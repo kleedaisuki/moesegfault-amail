@@ -227,7 +227,12 @@ def shape_match(container: object, key: str, expected: object) -> str:
 
 
 def query_shape(result: object, start: int, end: int) -> dict[str, str]:
-    """Reduce a query response to fixed, non-sensitive echo/view categories."""
+    """Reduce a query response to fixed, non-sensitive echo/view categories.
+
+    Cloudflare does not echo the top-level requested view in the documented run.
+    An unexpected legacy parameters.view is reported only as a contradiction.
+    The required result.events container verifies the requested result shape.
+    """
 
     run = result.get("run") if isinstance(result, dict) else None
     query = run.get("query") if isinstance(run, dict) else None
@@ -267,11 +272,11 @@ def query_shape(result: object, start: int, end: int) -> dict[str, str]:
 
 
 def query_echo_matches(run: dict, start: int, end: int) -> bool:
-    """Require every scoping component of the returned query to match."""
+    """Require documented scope echoes; reject a contradictory legacy view."""
 
     shape = query_shape({"run": run}, start, end)
-    return all(shape[key] == "match" for key in (
-        "timeframe", "view", "datasets", "filter_combination", "service_filter", "narrowing",
+    return shape["view"] != "mismatch" and all(shape[key] == "match" for key in (
+        "timeframe", "datasets", "filter_combination", "service_filter", "narrowing",
     ))
 
 
@@ -281,10 +286,10 @@ def query_page(account: str, token: str, start: int, end: int, cursor: str | Non
 
     body: dict = {
         "queryId": str(uuid.uuid4()), "timeframe": {"from": start, "to": end},
-        "dry": True, "limit": MAX_PAGE,
+        "dry": True, "limit": MAX_PAGE, "view": "events",
         "parameters": {"datasets": [], "filterCombination": "and", "filters": [{
             "key": "$metadata.service", "operation": "eq", "type": "string", "value": WORKER,
-        }], "view": "events"},
+        }]},
     }
     if cursor:
         body["offset"] = cursor

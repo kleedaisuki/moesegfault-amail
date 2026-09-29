@@ -194,7 +194,11 @@ def main() -> int:
             raise CanaryError("unexpected_failure") from None
         print_query_shape(query_shapes)
         print(f"staging_address_events: {'view_present' if records else 'explicit_empty'}")
-        need(service_status == "present", service_error or f"service_value_{service_status}")
+        # Values may include unrelated account services even with a filter.
+        # Positive membership suffices here only because classify() independently
+        # requires the exact service on every retained event in the complete view.
+        need(service_status in ("present", "present_with_others"),
+             service_error or f"service_value_{service_status}")
         label = classify(records)
     except CanaryError as error:
         label = str(error)

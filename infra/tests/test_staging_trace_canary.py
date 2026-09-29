@@ -22,19 +22,22 @@ MARKERS = ("amail_path_canary_test", "amail_query_canary_test")
 
 
 def query_run(status: str = "COMPLETED", dry: bool = True,
-              view: str = "events", service: str = canary.WORKER,
+              view: str | None = None, service: str = canary.WORKER,
               start: int = 1000) -> dict:
-    """Return the documented run echo for a fixed synthetic query window."""
+    """Return the documented run echo, optionally with a conflicting legacy view."""
 
-    return {
+    run = {
         "status": status, "dry": dry,
         "timeframe": {"from": start, "to": 2000},
         "query": {"parameters": {
-            "view": view, "datasets": [], "filterCombination": "and",
+            "datasets": [], "filterCombination": "and",
             "filters": [{"key": "$metadata.service", "operation": "eq",
                          "type": "string", "value": service}],
         }},
     }
+    if view is not None:
+        run["query"]["parameters"]["view"] = view
+    return run
 
 
 def row(event: dict) -> dict:
@@ -208,8 +211,8 @@ class StagingTraceCanaryTests(unittest.TestCase):
             with self.assertRaisesRegex(canary.CanaryError, "observability_cursor_stalled"):
                 canary.retained_events("1" * 32, "fake", 1000, 2000)
 
-    def test_query_uses_documented_nested_view(self) -> None:
-        """Cloudflare defines the events view inside parameters, not top-level."""
+    def test_query_uses_documented_top_level_view(self) -> None:
+        """Cloudflare defines the events view at top level, not in parameters."""
 
         payload = {"success": True, "result": {
             "run": query_run(),
@@ -218,8 +221,8 @@ class StagingTraceCanaryTests(unittest.TestCase):
         with patch.object(canary, "request_json", return_value=payload) as request:
             self.assertEqual(canary.query_page("1" * 32, "fake", 1000, 2000, None)["count"], 0)
         body = request.call_args.args[3]
-        self.assertEqual(body["parameters"]["view"], "events")
-        self.assertNotIn("view", body)
+        self.assertEqual(body["view"], "events")
+        self.assertNotIn("view", body["parameters"])
 
     def test_explicit_zero_event_view_is_not_a_privacy_pass(self) -> None:
         """A completed empty container is valid data, but no canary evidence."""
@@ -241,6 +244,14 @@ class StagingTraceCanaryTests(unittest.TestCase):
         payload = {"success": True, "result": {"run": query_run()}}
         with patch.object(canary, "request_json", return_value=payload):
             with self.assertRaisesRegex(canary.CanaryError, "observability_events_view_absent"):
+                canary.query_page("1" * 32, "fake", 1000, 2000, None)
+
+    def test_invalid_events_container_cannot_substitute_for_view_echo(self) -> None:
+        """A documented run without view echo still needs a valid events view."""
+
+        payload = {"success": True, "result": {"run": query_run(), "events": []}}
+        with patch.object(canary, "request_json", return_value=payload):
+            with self.assertRaisesRegex(canary.CanaryError, "observability_events_malformed"):
                 canary.query_page("1" * 32, "fake", 1000, 2000, None)
 
     def test_missing_run_cannot_verify_dry_completion(self) -> None:
@@ -276,8 +287,8 @@ class StagingTraceCanaryTests(unittest.TestCase):
             with self.assertRaisesRegex(canary.CanaryError, "observability_count_malformed"):
                 canary.query_page("1" * 32, "fake", 1000, 2000, None)
 
-    def test_echoed_wrong_view_or_persisted_query_fails(self) -> None:
-        """A provider echo contradicting the dry events request is not trusted."""
+    def test_echoed_wrong_scope_or_persisted_query_fails(self) -> None:
+        """An optional contradictory view or documented scope mismatch fails."""
 
         for run in (query_run(dry=False), query_run(view="traces"),
                     query_run(service="other-service"), query_run(start=999)):
@@ -308,6 +319,14 @@ class StagingTraceCanaryTests(unittest.TestCase):
         })
         self.assertNotIn("other-service", str(shape))
         self.assertNotIn("private-text", str(shape))
+
+    def test_documented_run_has_no_view_echo(self) -> None:
+        """No view echo is normal when the events result container exists."""
+
+        result = {"run": query_run(), "events": {"count": 0, "events": []}}
+        shape = canary.query_shape(result, 1000, 2000)
+        self.assertEqual(shape["view"], "unavailable")
+        self.assertEqual(shape["events_container"], "present")
 
     def test_query_shape_is_reported_before_strict_echo_rejection(self) -> None:
         """A failed echo still reveals the independent event-container shape."""
