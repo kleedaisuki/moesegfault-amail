@@ -8,12 +8,14 @@ proof. The script makes only dry Cloudflare Observability requests.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
 from staging_address_failure_logs import SAFE_FAILURES, classify, print_query_shape
 from staging_trace_canary import (
-    CanaryError, HEX32, WORKER, need, preflight, retained_events,
+    CanaryError, HEX16, HEX32, UUID, WORKER, allowlisted_event, need, preflight,
+    retained_events,
 )
 
 
@@ -36,6 +38,146 @@ REVIEWED_SOURCE_KEYS = frozenset({
     "duration_ms_bucket", "request_bytes_bucket", "response_bytes_bucket",
     "provider_http_status", "provider_error_code",
 })
+CANDIDATE_FAILURES = frozenset({
+    "candidate_root_missing_or_ambiguous", "candidate_root_schema_unverified",
+    "candidate_phase_missing_or_ambiguous", "candidate_phase_schema_unverified",
+    "candidate_phase_order_unverified", "candidate_message_schema_unverified",
+    "candidate_source_echo_unverified", "candidate_timestamp_unverified",
+})
+REQUIRED_EVENT_KEYS = frozenset({
+    "schema_version", "service", "operation", "phase", "trace_id", "span_id",
+    "request_id", "outcome", "duration_ms_bucket",
+})
+
+
+class DuplicateKeyError(ValueError):
+    """Private malformed JSON marker; never copy its source into diagnostics."""
+
+
+def unique_object(pairs: list[tuple[str, object]]) -> dict:
+    """Reject duplicate JSON keys rather than allowing the last value to win."""
+
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise DuplicateKeyError("duplicate key")
+        result[key] = value
+    return result
+
+
+def candidate_event(record: dict) -> tuple[dict, int] | None:
+    """Accept only a producer-shaped console trace with an exact source echo.
+
+    Opaque extra source fields remain unreviewed. This does not turn the record
+    into a privacy-canary pass or prove the console entry's E2E provenance.
+    """
+
+    metadata = record.get("$metadata")
+    need(isinstance(metadata, dict) and metadata.get("service") == WORKER,
+         "service_filter_unverified")
+    message = metadata.get("message")
+    if not isinstance(message, str) or not message.isascii() \
+            or not message.startswith("{") or not message.endswith("}") \
+            or "\n" in message or "\r" in message \
+            or len(message.encode("utf-8")) > 4096:
+        return None
+    try:
+        event = json.loads(message, object_pairs_hook=unique_object)
+    except DuplicateKeyError:
+        raise CanaryError("candidate_message_schema_unverified") from None
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(event, dict) or event.get("schema_version") != 1 \
+            or event.get("service") != "mail_api" \
+            or event.get("operation") != "addresses_add":
+        return None
+    need(type(event.get("schema_version")) is int
+         and REQUIRED_EVENT_KEYS.issubset(event)
+         and allowlisted_event(event)
+         and "response_bytes_bucket" not in event
+         and event.get("phase") in ("request_exit", "routing_list", "routing_create")
+         and isinstance(event.get("span_id"), str)
+         and HEX16.fullmatch(event["span_id"]) is not None
+         and any(c != "0" for c in event["span_id"])
+         and isinstance(event.get("request_id"), str)
+         and UUID.fullmatch(event["request_id"]) is not None
+         and isinstance(event.get("trace_id"), str)
+         and HEX32.fullmatch(event["trace_id"]) is not None
+         and any(c != "0" for c in event["trace_id"]),
+         "candidate_message_schema_unverified")
+    source = record.get("source")
+    need(isinstance(source, dict) and source.get("message") == message
+         and ("level" not in source or source["level"] == "log")
+         and ("level" not in metadata or metadata["level"] == "log"),
+         "candidate_source_echo_unverified")
+    timestamp = record.get("timestamp")
+    need(type(timestamp) is int and START_MS <= timestamp <= END_MS,
+         "candidate_timestamp_unverified")
+    return event, timestamp
+
+
+def candidate_classify(records: list[dict]) -> str:
+    """Report only an observed failed routing phase, never an absent phase.
+
+    Unknown records may conceal other requests or events. Even a coherent
+    candidate chain is not an exhaustive log or exact CLI request binding.
+    """
+
+    observed = [item for record in records if (item := candidate_event(record)) is not None]
+    roots = [(event, stamp) for event, stamp in observed
+             if event["phase"] == "request_exit"]
+    need(len(roots) == 1, "candidate_root_missing_or_ambiguous")
+    root, root_time = roots[0]
+    status_class = root.get("http_status_class")
+    need(type(status_class) is int and status_class in (4, 5)
+         and root.get("outcome") == {4: "client_error", 5: "server_error"}[status_class]
+         and root.get("error_code") is not None
+         and "provider_http_status" not in root
+         and "provider_error_code" not in root,
+         "candidate_root_schema_unverified")
+    phases = [(event, stamp) for event, stamp in observed
+              if event["phase"] != "request_exit"
+              and event.get("request_id") == root["request_id"]
+              and event.get("trace_id") == root["trace_id"]
+              and event.get("parent_span_id") == root["span_id"]]
+    lists = [(event, stamp) for event, stamp in phases if event["phase"] == "routing_list"]
+    creates = [(event, stamp) for event, stamp in phases if event["phase"] == "routing_create"]
+    need(len(lists) == 1 and len(creates) <= 1,
+         "candidate_phase_missing_or_ambiguous")
+    need(len({event["span_id"] for event, _ in lists + creates}) == len(lists + creates)
+         and all(event["span_id"] != root["span_id"] for event, _ in lists + creates),
+         "candidate_phase_schema_unverified")
+    listed, list_time = lists[0]
+    for phase, _ in lists + creates:
+        success = phase.get("outcome") == "success"
+        need(phase.get("outcome") in ("success", "phase_failure")
+             and "http_status_class" not in phase
+             and "request_bytes_bucket" not in phase
+             and ("error_code" not in phase if success else
+                  phase.get("error_code") == "dependency_failure")
+             and (phase["phase"] == "routing_create"
+                  or "provider_http_status" not in phase
+                  and "provider_error_code" not in phase),
+             "candidate_phase_schema_unverified")
+    need(list_time <= root_time, "candidate_phase_order_unverified")
+    if listed["outcome"] == "phase_failure":
+        need(not creates, "candidate_phase_order_unverified")
+        return f"routing_list_phase_failure_outer_class_{status_class}"
+    if not creates:
+        raise CanaryError("candidate_phase_missing_or_ambiguous")
+    created, create_time = creates[0]
+    need(list_time <= create_time <= root_time,
+         "candidate_phase_order_unverified")
+    if created["outcome"] == "success":
+        need(created.get("provider_http_status") is None
+             and created.get("provider_error_code") is None,
+             "candidate_phase_schema_unverified")
+        return f"routing_create_success_later_failure_outer_class_{status_class}"
+    status = created.get("provider_http_status")
+    code = created.get("provider_error_code")
+    status_label = f"provider_http_{status}" if status is not None else "provider_http_absent"
+    code_label = f"provider_code_{code}" if code is not None else "provider_code_absent"
+    return f"routing_create_phase_failure_outer_class_{status_class}_{status_label}_{code_label}"
 
 
 def value_type(value: object, present: bool = True) -> str:
@@ -132,7 +274,26 @@ def main() -> int:
         # The historic classifier rejects every unreviewed source/message and
         # demands a single root with linked routing phases. No D1 phase is
         # emitted by addresses_add, so absence of routing cannot imply D1.
-        label = classify(records)
+        try:
+            label = classify(records)
+        except CanaryError as strict_error:
+            if str(strict_error) != "unreviewed_source_object":
+                raise
+            # This positive-only fallback does not bless the opaque source.
+            # Retained-log privacy remains unverified even if a candidate
+            # metadata-message chain is observed.
+            print("staging_current_address_retained_privacy: "
+                  "UNVERIFIED (unreviewed_source_object)")
+            try:
+                candidate = candidate_classify(records)
+            except CanaryError as candidate_error:
+                cause = str(candidate_error)
+                cause = cause if cause in CANDIDATE_FAILURES else "unexpected_failure"
+                print(f"staging_current_address_incident: UNVERIFIED ({cause})")
+            else:
+                print("staging_current_address_incident: "
+                      f"candidate_window_consistent_{candidate}")
+            return 1
     except CanaryError as error:
         if not shape_reported:
             print_query_shape(shapes)
