@@ -114,3 +114,24 @@ was called once. This catches the previously untested module-parse failure
 *before* Rust builds. It does not exercise generated Wasm; the post-build suite
 still must establish that import graph and application behavior. No live
 network call is allowed by either fixture's outbound callback.
+
+### Module root must contain the generated import graph (run 36583039962)
+
+The next hosted run [36583039962](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36583039962)
+passed the improved smoke and Rust build, but all 13 boundary cases failed
+before dispatch with workerd's `can't use ".." to break out of starting
+directory` error. `worker-build` places the entrypoint at
+`build/worker/shim.mjs`, which imports `../index.js`; that JavaScript imports
+`./index_bg.wasm`. Miniflare's default `modulesRoot` is the current working
+directory (here `infra/tests/worker-boundary`), so it gives the generated
+entrypoint a module name with parent-directory components. Workerd rejects
+escaping the module root with `..`. The fixture now sets `modulesRoot` to the
+common `build` directory containing all three generated modules.
+
+The pre-build smoke mirrors this shape with `module-smoke/entry.mjs` importing
+`../module-smoke.js` and sets its module root to the containing test directory.
+It changes its own working directory to the nested entrypoint directory while
+running, so omitting the explicit root fails there as it would in the Rust
+fixture. The rule and outbound fixtures remain shared and local-only. The
+hosted post-build suite must still establish that the generated Wasm graph and
+application assertions run successfully.

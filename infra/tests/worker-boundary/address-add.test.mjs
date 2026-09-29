@@ -99,6 +99,7 @@ async function exercise(createResponse, { failActivation = false, listedRuleIds 
       name: "amail-synthetic",
       modules: true,
       scriptPath: path.join(worker, "build/worker/shim.mjs"),
+      modulesRoot: path.join(worker, "build"),
       modulesRules: workerModuleRules,
       // Stable v4's workerd supports dates only through 2026-08-06.
       compatibilityDate: "2026-08-06",
