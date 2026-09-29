@@ -39,6 +39,9 @@ TEMP = (ROOT / ".temp").resolve()
 API = "https://api.cloudflare.com/client/v4"
 DOMAIN = "mail-staging.moesegfault.dev"
 INGRESS = "amail-inbound-staging"
+ACCOUNT_DB = "74f35f95-42ce-482c-86e6-dffbdd35cbbe"
+ISSUER = "https://identity-staging.moesegfault.dev"
+ADDRESS_ROW_SQL = "SELECT state,cf_rule_id,needs_reconcile,owner_iss,owner_sub FROM addresses WHERE address=?1"
 ACCOUNT_ADDRESS_LIMIT = 10
 DOMAIN_LITERAL_RULE_LIMIT = 200
 SENDING_TAG = "176c49089bf54e7e91e3e537eadcc140"
@@ -47,6 +50,24 @@ PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
     "0000000b49444154789c636000020000050001a5f645400000000049454e44ae426082"
 )
+
+
+class RejectRedirect(urllib.request.HTTPRedirectHandler):
+    """Keep bearer credentials on the one exact Cloudflare control-plane host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Treat every provider redirect as an unverified read, never follow it."""
+
+        return None
+
+
+_NO_REDIRECT = urllib.request.build_opener(RejectRedirect)
+
+
+def control_open(req: urllib.request.Request, timeout: int):
+    """Open a bounded control-plane request without forwarding credentials."""
+
+    return _NO_REDIRECT.open(req, timeout=timeout)
 
 
 class ProbeFailure(Exception):
@@ -80,6 +101,15 @@ def acceptance_failure(primary: ProbeFailure | None, cleanup: ProbeFailure | Non
     if primary and cleanup:
         return ProbeFailure(f"{primary}_cleanup_{cleanup}")
     return cleanup or primary
+
+
+def fixed_label(error: ProbeFailure | None) -> str:
+    """Expose only harness-owned labels; reject arbitrary exception payloads."""
+
+    if error is None:
+        return "none"
+    value = str(error)
+    return value if re.fullmatch(r"[a-z][a-z0-9_]{2,160}", value) else "unverified"
 
 
 def inside_temp(value: str, *, must_exist: bool = True) -> Path:
@@ -117,8 +147,30 @@ SAFE_API_CODES = frozenset({
     "routing_unavailable", "capacity_exhausted", "address_unavailable",
     "address_limit", "address_provision_unknown", "address_state_changed",
     "address_deleting", "address_retired", "not_found", "service_unavailable", "send_held",
-    "semantic_index_incomplete",
+    "semantic_index_incomplete", "http_error", "unauthorized", "invalid_json",
+    "reserved_or_invalid_name",
 })
+DIAG_PHASES = frozenset({
+    "input", "d1_lookup", "d1_allocate", "d1_claim", "routing_list",
+    "routing_create", "d1_activate", "d1_readback", "response_encode", "success",
+})
+DIAG_KINDS = frozenset({"none", "request", "http", "provider", "decode", "d1", "state"})
+ROW_STATES = frozenset({"pending", "provisioning", "active", "deleting", "retired"})
+
+
+def checked_diag(value: bytes) -> str | None:
+    """Accept only the versioned, closed staging diagnostic contract."""
+
+    match = re.fullmatch(
+        rb"v1:([a-z_]{2,20}):([a-z]{2,8}):(0|[1-5][0-9]{2}):(0|[1-9][0-9]{3,5})",
+        value,
+    )
+    if not match:
+        return None
+    phase, kind = (part.decode("ascii") for part in match.group(1, 2))
+    if phase not in DIAG_PHASES or kind not in DIAG_KINDS:
+        return None
+    return value.decode("ascii")
 
 
 def cli_failure(stderr: bytes, fallback: str) -> str:
@@ -130,16 +182,33 @@ def cli_failure(stderr: bytes, fallback: str) -> str:
 
     if len(stderr) > 65_536:
         return fallback
+    if fallback == "address_register_failed":
+        if re.fullmatch(rb"amail: mail API addresses\.add transport failed: kind=timeout\r?\n?", stderr):
+            return fallback + "_transport_timeout"
+        if re.fullmatch(rb"amail: mail API addresses\.add transport failed: kind=other\r?\n?", stderr):
+            return fallback + "_transport_other"
+        if re.fullmatch(rb"amail: mail API addresses\.add body read failed: kind=timeout\r?\n?", stderr):
+            return fallback + "_body_timeout"
+        if re.fullmatch(rb"amail: mail API addresses\.add body read failed: kind=other\r?\n?", stderr):
+            return fallback + "_body_other"
+        if re.fullmatch(rb"amail: mail API addresses\.add response invalid: kind=json\r?\n?", stderr):
+            return fallback + "_success_body_invalid"
+        if re.fullmatch(rb"amail: not logged in; run `amail login`\r?\n?", stderr):
+            return fallback + "_auth_before_request"
     found = re.search(
-        rb"mail API [a-z_.]+ failed: HTTP ([45][0-9]{2})[^\r\n]{0,40}, code=([a-z][a-z0-9_]{0,48})(?:,|\r|\n|$)",
+        rb"(?:^|\n)amail: mail API ([a-z.]+) failed: HTTP ([45][0-9]{2})(?: [A-Za-z ]{1,40})?, "
+        rb"code=([a-z][a-z0-9_]{0,48})(?:, correlation_id=[^,\r\n]{1,128})?"
+        rb"(?:, diag=([^,\r\n]{1,100}))?\r?(?:\n|$)",
         stderr,
     )
     if not found:
         return fallback
-    code = found.group(2).decode("ascii")
+    code = found.group(3).decode("ascii")
     if code not in SAFE_API_CODES:
-        return fallback
-    return f"{fallback}_http_{found.group(1).decode('ascii')}_{code}"
+        return f"{fallback}_http_{found.group(2).decode('ascii')}_unknown_code"
+    label = f"{fallback}_http_{found.group(2).decode('ascii')}_{code}"
+    diag = checked_diag(found.group(4)) if found.group(4) and found.group(1) == b"addresses.add" else None
+    return f"{label}_diag_{diag.replace(':', '_')}" if diag else label
 
 
 def amail(binary: Path, env: dict[str, str], *args: str, failure: str) -> list[dict]:
@@ -149,8 +218,10 @@ def amail(binary: Path, env: dict[str, str], *args: str, failure: str) -> list[d
         proc = subprocess.run(
             [str(binary), *args], env=env, capture_output=True, timeout=90, check=False
         )
-    except (subprocess.TimeoutExpired, OSError):
-        raise ProbeFailure(failure) from None
+    except subprocess.TimeoutExpired:
+        raise ProbeFailure(f"{failure}_subprocess_timeout") from None
+    except OSError:
+        raise ProbeFailure(f"{failure}_process_error") from None
     check(proc.returncode == 0, cli_failure(proc.stderr, failure))
     check(len(proc.stdout) <= 2_000_000, "cli_output_oversized")
     try:
@@ -177,6 +248,7 @@ def cf_rules(zone: str, token: str) -> list[dict]:
     """Read a complete, count-consistent Cloudflare routing inventory."""
 
     rules: list[dict] = []
+    seen_ids: set[str] = set()
     total_count: int | None = None
     for page in range(1, 201):
         path = f"/zones/{zone}/email/routing/rules?per_page=50&page={page}"
@@ -184,7 +256,7 @@ def cf_rules(zone: str, token: str) -> list[dict]:
             API + path, headers={"Authorization": "Bearer " + token, "Accept": "application/json"}
         )
         try:
-            with urllib.request.urlopen(req, timeout=25) as response:
+            with control_open(req, timeout=25) as response:
                 check(response.status == 200, "routing_read_failed")
                 raw = response.read(262_145)
         except Exception:
@@ -195,8 +267,18 @@ def cf_rules(zone: str, token: str) -> list[dict]:
         except (ValueError, UnicodeDecodeError):
             raise ProbeFailure("routing_response_invalid") from None
         batch, total_count, pages = validated_rule_page(value, page, total_count)
+        for rule in batch:
+            rule_id = rule.get("id")
+            check(
+                isinstance(rule_id, str)
+                and re.fullmatch(r"[a-f0-9]{1,32}", rule_id) is not None
+                and rule_id not in seen_ids,
+                "routing_inventory_id_invalid",
+            )
+            seen_ids.add(rule_id)
         rules.extend(batch)
         if page == pages:
+            check(len(rules) == total_count, "routing_inventory_id_invalid")
             return rules
     raise ProbeFailure("routing_page_bound")
 
@@ -243,7 +325,7 @@ def assert_staging_sender(zone: str, token: str) -> None:
         headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with control_open(req, timeout=20) as response:
             raw = response.read(65_537)
             status = response.status
         check(len(raw) <= 65_536, "staging_sender_status_invalid")
@@ -276,6 +358,115 @@ def route_for(rules: list[dict], address: str) -> list[dict]:
             for m in rule.get("matchers") or []
         )
     ]
+
+
+def route_snapshot(zone: str, token: str, address: str) -> str:
+    """Classify only the exact alias's complete provider inventory, fail closed."""
+
+    try:
+        matches = []
+        for rule in cf_rules(zone, token):
+            matchers = rule.get("matchers")
+            if not isinstance(matchers, list) or not all(isinstance(m, dict) for m in matchers):
+                return "unverified"
+            relevant = rule.get("name") == f"amail {address}"
+            for matcher in matchers:
+                if (not isinstance(matcher.get("type"), str)
+                        or matcher.get("field") is not None and not isinstance(matcher.get("field"), str)
+                        or matcher.get("value") is not None and not isinstance(matcher.get("value"), str)):
+                    return "unverified"
+                if (matcher.get("type") == "literal" and matcher.get("field") == "to"
+                        and isinstance(matcher.get("value"), str)
+                        and matcher["value"].lower() == address):
+                    relevant = True
+            if relevant:
+                matches.append(rule)
+        if not matches:
+            return "route_absent"
+        if len(matches) != 1:
+            return "conflict"
+        rule = matches[0]
+        if not isinstance(rule.get("id"), str) or re.fullmatch(r"[a-f0-9]{1,32}", rule["id"]) is None:
+            return "unverified"
+        owned = (
+            rule.get("source") == "api"
+            and rule.get("name") == f"amail {address}"
+            and rule.get("enabled") is True
+            and rule.get("actions") == [{"type": "worker", "value": [INGRESS]}]
+            and rule.get("matchers") == [{"type": "literal", "field": "to", "value": address}]
+        )
+        return "one_exact_owned" if owned else "conflict"
+    except Exception:
+        return "unverified"
+
+
+def row_snapshot(account: str, token: str, address: str) -> tuple[str, str, str]:
+    """Reduce a parameterized staging D1 SELECT to fixed state/flag labels."""
+
+    try:
+        req = urllib.request.Request(
+            f"{API}/accounts/{account}/d1/database/{ACCOUNT_DB}/query",
+            data=json.dumps({"sql": ADDRESS_ROW_SQL, "params": [address]}).encode("utf-8"),
+            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            method="POST",
+        )
+        with control_open(req, timeout=25) as response:
+            if response.status != 200:
+                return "unverified", "unverified", "unverified"
+            raw = response.read(262_145)
+        if len(raw) > 262_144:
+            return "unverified", "unverified", "unverified"
+        data = json.loads(raw)
+        batches = data.get("result") if isinstance(data, dict) and data.get("success") is True else None
+        if not isinstance(batches, list) or len(batches) != 1 or not isinstance(batches[0], dict):
+            return "unverified", "unverified", "unverified"
+        batch = batches[0]
+        rows = batch.get("results") if batch.get("success") is True else None
+        if not isinstance(rows, list) or len(rows) > 1:
+            return "unverified", "unverified", "unverified"
+        if not rows:
+            return "row_absent", "absent", "absent"
+        row = rows[0]
+        if (not isinstance(row, dict)
+                or set(row) != {"state", "cf_rule_id", "needs_reconcile", "owner_iss", "owner_sub"}
+                or row["state"] not in ROW_STATES
+                or row["owner_iss"] != ISSUER
+                or not isinstance(row["owner_sub"], str)
+                or not 1 <= len(row["owner_sub"]) <= 256
+                or any(ord(char) < 33 or ord(char) > 126 for char in row["owner_sub"])
+                or type(row["needs_reconcile"]) is not int
+                or row["needs_reconcile"] not in (0, 1)
+                or row["cf_rule_id"] is not None and not isinstance(row["cf_rule_id"], str)):
+            return "unverified", "unverified", "unverified"
+        rule_id = "null" if row["cf_rule_id"] is None else "set"
+        return row["state"], rule_id, f"reconcile_{row['needs_reconcile']}"
+    except Exception:
+        return "unverified", "unverified", "unverified"
+
+
+def print_snapshot(zone: str, route_token: str, account: str, api_token: str, address: str) -> tuple[str, str]:
+    """Expose only fixed pre-cleanup route and D1 labels, never source data."""
+
+    route = route_snapshot(zone, route_token, address)
+    state, rule_id, reconcile = row_snapshot(account, api_token, address)
+    print(f"address_add_snapshot_route:{route}")
+    print(f"address_add_snapshot_row:{state}")
+    print(f"address_add_snapshot_rule_id:{rule_id}")
+    print(f"address_add_snapshot_reconcile:{reconcile}")
+    return route, state
+
+
+def capture_snapshot(zone: str, route_token: str, account: str, api_token: str, address: str) -> tuple[str, str]:
+    """Never allow a failed diagnostic read to suppress alias retirement."""
+
+    try:
+        return print_snapshot(zone, route_token, account, api_token, address)
+    except Exception:
+        print("address_add_snapshot_route:unverified")
+        print("address_add_snapshot_row:unverified")
+        print("address_add_snapshot_rule_id:unverified")
+        print("address_add_snapshot_reconcile:unverified")
+        return "unverified", "unverified"
 
 
 def assert_address_creation_preflight(owned: list[dict], rules: list[dict], address: str) -> None:
@@ -600,8 +791,11 @@ def main() -> int:
     zone = os.environ.get("CLOUDFLARE_ZONE_ID", "")
     routing_token = os.environ.get("CF_EMAIL_ROUTING_TOKEN", "")
     smtp_token = os.environ.get("AMAIL_TEST_SMTP_TOKEN", "")
+    account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+    api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
     check(bool(re.fullmatch(r"[a-f0-9]{32}", zone)), "zone_id_missing")
     check(bool(routing_token) and bool(smtp_token), "cloudflare_tokens_missing")
+    check(bool(re.fullmatch(r"[a-f0-9]{32}", account)) and bool(api_token), "d1_snapshot_credentials_missing")
     assert_staging_sender(zone, smtp_token)
     env = cli_env(home)
     status = amail(binary, env, "auth", "status", failure="auth_status_failed")
@@ -618,9 +812,14 @@ def main() -> int:
     creation_attempted = False
     primary_error: ProbeFailure | None = None
     cleanup_error: ProbeFailure | None = None
+    snapshot_taken = False
     try:
         creation_attempted = True
         result = amail(binary, env, "address", "add", part, failure="address_register_failed")
+        route_state, row_state = capture_snapshot(zone, routing_token, account, api_token, address)
+        snapshot_taken = True
+        check(route_state != "unverified" and row_state != "unverified", "address_snapshot_unverified")
+        check(route_state != "conflict", "address_snapshot_conflict")
         check(len(result) == 1 and result[0].get("address") == address, "address_register_mismatch")
         check(result[0].get("state") in ("pending", "active"), "address_register_state")
         deadline = time.monotonic() + 90
@@ -690,12 +889,16 @@ def main() -> int:
         primary_error = error if isinstance(error, ProbeFailure) else ProbeFailure("probe_unexpected_failure")
     finally:
         if creation_attempted:
+            if not snapshot_taken:
+                capture_snapshot(zone, routing_token, account, api_token, address)
             try:
                 cleanup_run(binary, env, zone, routing_token, address, nonce)
             except ProbeFailure as error:
                 cleanup_error = error
             except Exception:
                 cleanup_error = ProbeFailure("cleanup_unexpected_failure")
+            print(f"address_add_primary:{fixed_label(primary_error)}")
+            print(f"address_add_cleanup:{fixed_label(cleanup_error)}")
     failure = acceptance_failure(primary_error, cleanup_error)
     if failure:
         raise failure

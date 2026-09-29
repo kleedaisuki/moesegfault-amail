@@ -7,6 +7,7 @@ import importlib.util
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+import json
 import os
 import subprocess
 import sys
@@ -95,6 +96,37 @@ class CleanupTests(unittest.TestCase):
             HARNESS.validated_rule_page(complete, 1, 2)
         self.assertEqual(str(caught.exception), "routing_pages_invalid")
 
+    def test_rule_inventory_rejects_duplicate_ids_across_complete_pages(self) -> None:
+        """Stable total counts alone cannot prove a paginated inventory is complete."""
+
+        class Response:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps(self.payload).encode()
+
+        def page(number, rules):
+            return {"success": True, "result": rules,
+                    "result_info": {"page": number, "per_page": 50,
+                                    "count": len(rules), "total_count": 51, "total_pages": 2}}
+
+        first = [{"id": f"{n:032x}", "matchers": []} for n in range(50)]
+        second = [{"id": first[0]["id"], "matchers": []}]
+        responses = iter([Response(page(1, first)), Response(page(2, second))])
+        with patch.object(HARNESS, "control_open", side_effect=lambda *_args, **_kw: next(responses)):
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.cf_rules("a" * 32, "private-token")
+        self.assertEqual(str(caught.exception), "routing_inventory_id_invalid")
+
     def test_address_preflight_stops_before_add_and_cleanup(self) -> None:
         """A known full account cannot cause any mutation or cleanup call."""
 
@@ -120,6 +152,8 @@ class CleanupTests(unittest.TestCase):
 
             env = {
                 "CLOUDFLARE_ZONE_ID": "a" * 32,
+                "CLOUDFLARE_ACCOUNT_ID": "b" * 32,
+                "CLOUDFLARE_API_TOKEN": "d1-read",
                 "CF_EMAIL_ROUTING_TOKEN": "routing",
                 "AMAIL_TEST_SMTP_TOKEN": "sending",
             }
@@ -139,7 +173,7 @@ class CleanupTests(unittest.TestCase):
         """Preserve a useful status while dropping correlation and private text."""
 
         stderr = (
-            b"Error: mail API addresses.add failed: HTTP 503 Service Unavailable, "
+            b"amail: mail API addresses.add failed: HTTP 503 Service Unavailable, "
             b"code=routing_unavailable, correlation_id=private-identifier\n"
         )
         self.assertEqual(
@@ -154,19 +188,113 @@ class CleanupTests(unittest.TestCase):
             "address_register_failed_http_503_service_unavailable",
         )
         unsafe = stderr.replace(b"routing_unavailable", b"private_mailbox_body")
-        self.assertEqual(HARNESS.cli_failure(unsafe, "address_register_failed"), "address_register_failed")
+        self.assertEqual(HARNESS.cli_failure(unsafe, "address_register_failed"), "address_register_failed_http_503_unknown_code")
         self.assertEqual(
             HARNESS.cli_failure(b"provider says private_mailbox_body", "address_register_failed"),
             "address_register_failed",
         )
         self.assertEqual(
             HARNESS.cli_failure(
-                b"Error: mail API messages.search failed: HTTP 503 Service Unavailable, "
+                b"amail: mail API messages.search failed: HTTP 503 Service Unavailable, "
                 b"code=semantic_index_incomplete, correlation_id=private-identifier\n",
                 "semantic_search_failed",
             ),
             "semantic_search_failed_http_503_semantic_index_incomplete",
         )
+
+    def test_address_failure_closed_diagnostic_and_transport_contract(self) -> None:
+        """Discard hostile suffixes and accept only fixed CLI diagnostic grammar."""
+
+        base = (b"amail: mail API addresses.add failed: HTTP 503 Service Unavailable, "
+                b"code=routing_unavailable, correlation_id=private-id")
+        good = base + b", diag=v1:routing_create:provider:403:10000\n"
+        self.assertEqual(
+            HARNESS.cli_failure(good, "address_register_failed"),
+            "address_register_failed_http_503_routing_unavailable_diag_v1_routing_create_provider_403_10000",
+        )
+        for bad in (b"v1:routing_create:provider:0403:10000",
+                    b"v1:routing_create:provider:403:private@example.test",
+                    b"v1:unknown:provider:403:10000", b"v1:routing_create:provider:403:10000:secret"):
+            self.assertEqual(
+                HARNESS.cli_failure(base + b", diag=" + bad + b"\n", "address_register_failed"),
+                "address_register_failed_http_503_routing_unavailable",
+            )
+        fixed = {
+            b"amail: mail API addresses.add transport failed: kind=timeout\n": "transport_timeout",
+            b"amail: mail API addresses.add transport failed: kind=other\n": "transport_other",
+            b"amail: mail API addresses.add body read failed: kind=timeout\n": "body_timeout",
+            b"amail: mail API addresses.add body read failed: kind=other\n": "body_other",
+            b"amail: mail API addresses.add response invalid: kind=json\n": "success_body_invalid",
+            b"amail: not logged in; run `amail login`\n": "auth_before_request",
+        }
+        for stderr, label in fixed.items():
+            self.assertEqual(HARNESS.cli_failure(stderr, "address_register_failed"),
+                             "address_register_failed_" + label)
+        self.assertEqual(
+            HARNESS.cli_failure(
+                b"amail: mail API addresses.add failed: HTTP 502 Bad Gateway, "
+                b"code=http_error, correlation_id=private-id\n", "address_register_failed"),
+            "address_register_failed_http_502_http_error",
+        )
+        self.assertEqual(
+            HARNESS.cli_failure(
+                b"amail: mail API addresses.add failed: HTTP 599, "
+                b"code=http_error, correlation_id=private-id\n", "address_register_failed"),
+            "address_register_failed_http_599_http_error",
+        )
+        self.assertEqual(HARNESS.cli_failure(b"Error: private@example.test", "address_register_failed"),
+                         "address_register_failed")
+
+    def test_precleanup_snapshot_is_fixed_and_read_only(self) -> None:
+        """Exact route and parameterized row reduce to labels without payload exposure."""
+
+        address = "e2e-private@mail-staging.moesegfault.dev"
+        rule = {
+            "id": "a" * 32,
+            "source": "api", "name": "amail " + address, "enabled": True,
+            "actions": [{"type": "worker", "value": [HARNESS.INGRESS]}],
+            "matchers": [{"type": "literal", "field": "to", "value": address}],
+        }
+        with patch.object(HARNESS, "cf_rules", return_value=[rule]):
+            self.assertEqual(HARNESS.route_snapshot("zone", "token", address), "one_exact_owned")
+        with patch.object(HARNESS, "cf_rules", return_value=[{**rule, "id": "private-id"}]):
+            self.assertEqual(HARNESS.route_snapshot("zone", "token", address), "unverified")
+        with patch.object(HARNESS, "cf_rules", return_value=[rule, rule]):
+            self.assertEqual(HARNESS.route_snapshot("zone", "token", address), "conflict")
+        with patch.object(HARNESS, "cf_rules", return_value=[{"matchers": "private"}]):
+            self.assertEqual(HARNESS.route_snapshot("zone", "token", address), "unverified")
+
+        row = {"state": "provisioning", "cf_rule_id": None, "needs_reconcile": 1,
+               "owner_iss": HARNESS.ISSUER, "owner_sub": "synthetic-sub"}
+        payload = {"success": True, "result": [{"success": True, "results": [row]}]}
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps(payload).encode()
+
+        def fetch(req, timeout):
+            self.assertEqual(timeout, 25)
+            self.assertEqual(req.get_method(), "POST")
+            self.assertEqual(json.loads(req.data), {"sql": HARNESS.ADDRESS_ROW_SQL, "params": [address]})
+            return Response()
+
+        with patch.object(HARNESS, "control_open", side_effect=fetch):
+            self.assertEqual(HARNESS.row_snapshot("a" * 32, "secret", address),
+                             ("provisioning", "null", "reconcile_1"))
+            payload["result"][0]["results"] = []
+            self.assertEqual(HARNESS.row_snapshot("a" * 32, "secret", address),
+                             ("row_absent", "absent", "absent"))
+            payload["result"][0]["results"] = [{**row, "state": "private@example.test"}]
+            self.assertEqual(HARNESS.row_snapshot("a" * 32, "secret", address),
+                             ("unverified", "unverified", "unverified"))
 
     def test_semantic_gate_reuses_delivered_rows_and_retries_only_index_lag(self) -> None:
         """One timed index miss may recover without another SMTP send or mutation."""
@@ -247,13 +375,69 @@ class CleanupTests(unittest.TestCase):
         self.assertIs(HARNESS.acceptance_failure(primary, None), primary)
         self.assertIs(HARNESS.acceptance_failure(None, cleanup), cleanup)
 
+    def test_failed_add_snapshots_before_cleanup_and_preserves_both_failures(self) -> None:
+        """One failed add must read exact state before retiring its same alias."""
+
+        HARNESS.TEMP.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=HARNESS.TEMP) as directory:
+            root = Path(directory)
+            home = root / "home"
+            home.mkdir()
+            binary = root / "amail.exe"
+            binary.touch()
+            order = []
+
+            def fake_amail(_binary, _env, *args, failure):
+                if args == ("auth", "status"):
+                    return [{"authenticated": True}]
+                if args == ("address", "list"):
+                    return []
+                if args[:2] == ("address", "add"):
+                    order.append("add")
+                    raise HARNESS.ProbeFailure("address_register_failed_http_503_routing_unavailable")
+                raise AssertionError("unexpected CLI operation")
+
+            def snapshot(*_args):
+                order.append("snapshot")
+                raise RuntimeError("private-address@example.test")
+
+            def cleanup(*_args):
+                order.append("cleanup")
+                raise HARNESS.ProbeFailure("address_or_route_cleanup_failed")
+
+            env = {
+                "CLOUDFLARE_ZONE_ID": "a" * 32,
+                "CLOUDFLARE_ACCOUNT_ID": "b" * 32,
+                "CLOUDFLARE_API_TOKEN": "d1-read",
+                "CF_EMAIL_ROUTING_TOKEN": "routing",
+                "AMAIL_TEST_SMTP_TOKEN": "sending",
+            }
+            argv = ["probe", "--confirm-staging", "--home", str(home), "--amail", str(binary)]
+            output = StringIO()
+            with patch.dict(os.environ, env), patch.object(sys, "argv", argv), patch.object(
+                HARNESS, "amail", side_effect=fake_amail
+            ), patch.object(HARNESS, "cf_rules", return_value=[]), patch.object(
+                HARNESS, "assert_staging_sender"
+            ), patch.object(HARNESS, "print_snapshot", side_effect=snapshot), patch.object(
+                HARNESS, "cleanup_run", side_effect=cleanup
+            ), redirect_stdout(output):
+                with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                    HARNESS.main()
+        self.assertEqual(order, ["add", "snapshot", "cleanup"])
+        self.assertEqual(str(caught.exception),
+                         "address_register_failed_http_503_routing_unavailable_cleanup_address_or_route_cleanup_failed")
+        self.assertIn("address_add_snapshot_route:unverified", output.getvalue())
+        self.assertIn("address_add_primary:address_register_failed_http_503_routing_unavailable", output.getvalue())
+        self.assertIn("address_add_cleanup:address_or_route_cleanup_failed", output.getvalue())
+        self.assertNotIn("private-address", output.getvalue())
+
     def test_cli_timeout_has_fixed_label(self) -> None:
         """Hide process payload on a timeout. / 超时不泄露进程负载。"""
 
         with patch.object(HARNESS.subprocess, "run", side_effect=subprocess.TimeoutExpired("amail", 90)):
             with self.assertRaises(HARNESS.ProbeFailure) as caught:
                 HARNESS.amail(Path("amail.exe"), {}, "sync", failure="sync_failed")
-        self.assertEqual(str(caught.exception), "sync_failed")
+        self.assertEqual(str(caught.exception), "sync_failed_subprocess_timeout")
 
     def test_message_timeout_still_retires_address(self) -> None:
         """Retire even when cleanup sync times out. / 清理同步超时仍需注销地址。"""
@@ -326,6 +510,8 @@ class CleanupTests(unittest.TestCase):
 
                     env = {
                         "CLOUDFLARE_ZONE_ID": "a" * 32,
+                        "CLOUDFLARE_ACCOUNT_ID": "b" * 32,
+                        "CLOUDFLARE_API_TOKEN": "d1-read",
                         "CF_EMAIL_ROUTING_TOKEN": "routing",
                         "AMAIL_TEST_SMTP_TOKEN": "sending",
                     }
@@ -337,6 +523,8 @@ class CleanupTests(unittest.TestCase):
                     ), patch.object(HARNESS, "assert_staging_sender"), patch.object(
                         HARNESS, "smtp_send", side_effect=subprocess.TimeoutExpired("smtp", 30)
                     ), patch.object(HARNESS, "cleanup_run", side_effect=cleanup_failure) as cleanup, patch.object(
+                        HARNESS, "print_snapshot", return_value=("route_absent", "row_absent")
+                    ), patch.object(
                         HARNESS.time, "sleep", return_value=None
                     ):
                         with self.assertRaises(HARNESS.ProbeFailure) as caught:
