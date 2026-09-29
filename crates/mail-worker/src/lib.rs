@@ -390,6 +390,16 @@ async fn reconcile_outbound(env: &Env) -> Result<()> {
     Ok(())
 }
 
+/// Return the longest UTF-8 prefix accepted by the embedding provider's byte limit.
+/// A boundary inside a multibyte character must not fall back to the whole input.
+fn embedding_prefix(source: &str) -> &str {
+    let mut end = source.len().min(platform::EMBEDDING_INPUT_MAX_BYTES);
+    while !source.is_char_boundary(end) {
+        end -= 1;
+    }
+    &source[..end]
+}
+
 async fn reindex(env: &Env) -> Result<()> {
     #[derive(Deserialize)]
     struct Pending {
@@ -401,7 +411,7 @@ async fn reindex(env: &Env) -> Result<()> {
     let result = database.prepare("SELECT id,subject,body_text FROM messages WHERE embedding_json IS NULL AND deleted_at IS NULL ORDER BY received_at LIMIT 20").all().await?;
     for row in result.results::<Pending>()? {
         let source = format!("{}\n{}", row.subject, row.body_text);
-        let truncated = source.get(..source.len().min(12_000)).unwrap_or(&source);
+        let truncated = embedding_prefix(&source);
         let Ok(vector) = platform::embed(env, truncated, "search_document").await else {
             continue;
         };
@@ -2136,6 +2146,18 @@ fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Multibyte content crossing the byte ceiling is clipped to a valid prefix.
+    #[test]
+    fn embedding_prefix_respects_utf8_and_provider_limit() {
+        let cjk = format!("{}中", "a".repeat(11_999));
+        let emoji = format!("{}😀", "a".repeat(11_998));
+        assert_eq!(embedding_prefix(&cjk).len(), 11_999);
+        assert_eq!(embedding_prefix(&emoji).len(), 11_998);
+        assert_eq!(embedding_prefix(&"中".repeat(4_000)).len(), 12_000);
+        assert_eq!(embedding_prefix(""), "");
+        assert_eq!(embedding_prefix("short"), "short");
+    }
 
     /// Provider internals never become public codes, including uncertain responses.
     #[test]

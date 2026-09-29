@@ -268,9 +268,12 @@ struct EmbeddingData {
     embedding: Vec<f64>,
 }
 
+/// OpenRouter embedding input ceiling in UTF-8 bytes, shared with document projection.
+pub const EMBEDDING_INPUT_MAX_BYTES: usize = 12_000;
+
 /// Request exactly 256 dimensions and reject malformed/nonfinite vectors. / 请求恰好 256 维，并拒绝畸形或非有限向量。
 pub async fn embed(env: &Env, input: &str, input_type: &str) -> Result<Vec<f32>> {
-    if input.is_empty() || input.len() > 12_000 {
+    if input.is_empty() || input.len() > EMBEDDING_INPUT_MAX_BYTES {
         return Err(worker::Error::RustError("embedding_input_size".into()));
     }
     let headers = Headers::new();

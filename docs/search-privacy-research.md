@@ -13,6 +13,8 @@ Status: research-backed implementation guidance for `crates/mail-worker` and `cr
 | Privacy | Send only minimized text to a vetted OpenRouter endpoint; explicitly disable response caching and enforce approved retention routing. Telemetry is an allowlist of operational fields. | Redacting local CLI logs does not redact OpenRouter or Cloudflare automatic spans by itself. |
 | CLI | Stable compact JSONL on stdout, diagnostics on stderr, `--human` opt-in, color only for suitable terminals, discoverable help/field vocabulary. | A one-line record is one JSON object even when subject/body contains newline or control characters. |
 
+The current document embedding projection takes the longest valid UTF-8 prefix of `subject + newline + body_text` within 12,000 bytes. This ceiling applies only to the provider input; stored mail, archive downloads, and literal search retain their existing independent bounds.
+
 ## 1. Search is a contract, not a particular index
 
 ### Exact scoring vs complete retrieval
