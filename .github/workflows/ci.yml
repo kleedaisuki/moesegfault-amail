@@ -12,7 +12,7 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-serving-pin, staging-routing-policy, staging-routing-diagnostic, staging-current-address-diagnostic, staging-role-smtp, staging-trace-canary, production]
+        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-role-smtp, staging-trace-canary, production]
       confirm:
         description: Staging E2E, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -50,6 +50,14 @@ on:
         type: string
       alias_attempt:
         description: GitHub run attempt for that exact staging-e2e run
+        required: false
+        type: string
+      routing_probe_run_id:
+        description: Original one-use routing Write probe run ID for recovery or delayed audit
+        required: false
+        type: string
+      routing_probe_attempt:
+        description: Original one-use routing Write probe attempt for recovery or delayed audit
         required: false
         type: string
 
@@ -263,6 +271,94 @@ jobs:
           python-version: '3.12'
       - name: Inspect only token verification and details GETs
         run: python infra/provider/probe_routing_write.py
+
+  staging-routing-write-probe:
+    name: One valid disabled staging Routing Rules Write probe
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-routing-write-probe' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Create one disabled valid rule and remove only exact owned rule
+        env:
+          PROBE_CONFIRM: ${{ inputs.confirm }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/provider/probe_routing_effective_write.py probe "$PROBE_CONFIRM" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+
+  staging-routing-write-recover:
+    name: Recover exact prior staging Routing Rules Write probe
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-routing-write-recover' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read and clean only the original exact owned disabled rule
+        env:
+          PROBE_CONFIRM: ${{ inputs.confirm }}
+          PROBE_RUN_ID: ${{ inputs.routing_probe_run_id }}
+          PROBE_ATTEMPT: ${{ inputs.routing_probe_attempt }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/provider/probe_routing_effective_write.py recover "$PROBE_CONFIRM" "$PROBE_RUN_ID" "$PROBE_ATTEMPT"
+
+  staging-routing-write-audit:
+    name: Delayed read-only audit of exact staging Routing Rules probe
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-routing-write-audit' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Confirm exact candidate is still absent after cleanup
+        env:
+          PROBE_CONFIRM: ${{ inputs.confirm }}
+          PROBE_RUN_ID: ${{ inputs.routing_probe_run_id }}
+          PROBE_ATTEMPT: ${{ inputs.routing_probe_attempt }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/provider/probe_routing_effective_write.py audit "$PROBE_CONFIRM" "$PROBE_RUN_ID" "$PROBE_ATTEMPT"
 
   staging-routing-diagnostic:
     name: Classify retained staging address-add incident without mutation
