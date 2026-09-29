@@ -12,7 +12,7 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-role-smtp, staging-trace-canary, production]
+        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-trace-canary, production]
       confirm:
         description: Staging E2E, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -422,6 +422,31 @@ jobs:
             throw 'Explicit read-only staging incident confirmation required'
           }
           python infra/tests/staging_current_address_failure_logs.py READ_STAGING_ADDRESS_INCIDENT_36553799873
+
+  staging-fourth-invocation-metrics:
+    name: Read only fourth staging E2E Worker invocation metrics
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-fourth-invocation-metrics' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Query bounded aggregate status counters, never raw Worker logs
+        env:
+          DIAGNOSTIC_CONFIRM: ${{ inputs.confirm }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python infra/provider/probe_staging_fourth_invocation_metrics.py "$DIAGNOSTIC_CONFIRM"
 
   staging-role-smtp:
     name: One guarded staging role-monitor SMTP probe
