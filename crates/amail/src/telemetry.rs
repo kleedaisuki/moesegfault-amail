@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use reqwest::blocking::Client;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 use serde::Serialize;
 use std::time::Duration;
 
@@ -24,7 +24,7 @@ struct Event {
 
 fn db(cfg: &Runtime) -> Result<Connection> {
     let path = cfg.home.join("telemetry.sqlite3");
-    let conn = Connection::open(&path)?;
+    let mut conn = Connection::open(&path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -42,21 +42,23 @@ fn db(cfg: &Runtime) -> Result<Connection> {
     ); CREATE TABLE IF NOT EXISTS journal_state (
         key TEXT PRIMARY KEY, value INTEGER NOT NULL
     );")?;
-    ensure_span_column(&conn)?;
+    ensure_span_column(&mut conn)?;
     Ok(conn)
 }
 
-/// Extend pre-trace journals in place; NULL means an upload from an older CLI.
-fn ensure_span_column(conn: &Connection) -> Result<()> {
-    let has_span_id = conn
+/// Serialize the legacy schema check and ALTER across concurrent CLI processes.
+fn ensure_span_column(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let has_span_id = tx
         .prepare("PRAGMA table_info(events)")?
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<std::result::Result<Vec<_>, _>>()?
         .iter()
         .any(|name| name == "span_id");
     if !has_span_id {
-        conn.execute("ALTER TABLE events ADD COLUMN span_id TEXT", [])?;
+        tx.execute("ALTER TABLE events ADD COLUMN span_id TEXT", [])?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -201,14 +203,14 @@ mod tests {
     /// Existing rows must survive the additive span-ID migration unchanged.
     #[test]
     fn upgrades_legacy_journal_without_losing_rows() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE events (id INTEGER PRIMARY KEY, trace_id TEXT NOT NULL);
              INSERT INTO events(trace_id) VALUES('0123456789abcdef0123456789abcdef');",
         )
         .unwrap();
-        ensure_span_column(&conn).unwrap();
-        ensure_span_column(&conn).unwrap();
+        ensure_span_column(&mut conn).unwrap();
+        ensure_span_column(&mut conn).unwrap();
         let row: (String, Option<String>) = conn
             .query_row("SELECT trace_id,span_id FROM events", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
@@ -216,6 +218,48 @@ mod tests {
             .unwrap();
         assert_eq!(row.0, "0123456789abcdef0123456789abcdef");
         assert_eq!(row.1, None);
+    }
+
+    /// Two old-CLI processes must not race into a duplicate-column startup failure.
+    #[test]
+    fn concurrent_legacy_upgrade_is_idempotent() {
+        use std::sync::{Arc, Barrier};
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir_in(root).unwrap();
+        let path = temp.path().join("telemetry.sqlite3");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE events (id INTEGER PRIMARY KEY, trace_id TEXT NOT NULL)")
+            .unwrap();
+
+        let barrier = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut conn = Connection::open(path).unwrap();
+                    conn.busy_timeout(Duration::from_secs(5)).unwrap();
+                    barrier.wait();
+                    ensure_span_column(&mut conn).unwrap();
+                })
+            })
+            .collect();
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let conn = Connection::open(path).unwrap();
+        let names: Vec<String> = conn
+            .prepare("PRAGMA table_info(events)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(names.iter().filter(|name| *name == "span_id").count(), 1);
     }
 
     /// Older upload rows omit span_id instead of inventing a parent.
