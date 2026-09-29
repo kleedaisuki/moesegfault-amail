@@ -143,7 +143,8 @@ class HostedRoleAcceptanceTests(unittest.TestCase):
         marker = unittest.mock.Mock()
         marker.exists.return_value = True
         output = io.StringIO()
-        with patch.object(hosted, "gates", return_value=("zone", "routing", "account", VERSION)), \
+        with patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "synthetic-test-token"}), \
+             patch.object(hosted, "gates", return_value=("zone", "routing", "account", VERSION)), \
              patch.object(hosted.probe, "MARKER", marker), \
              patch.object(hosted.probe.ROUTE, "reconcile", return_value="enabled"), \
              patch.object(hosted, "active_version", return_value=(VERSION, NOW)), \
@@ -159,7 +160,8 @@ class HostedRoleAcceptanceTests(unittest.TestCase):
         marker = unittest.mock.Mock()
         marker.exists.return_value = False
         output = io.StringIO()
-        with patch.object(hosted, "gates", return_value=("zone", "routing", "account", VERSION)), \
+        with patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "synthetic-test-token"}), \
+             patch.object(hosted, "gates", return_value=("zone", "routing", "account", VERSION)), \
              patch.object(hosted.probe, "MARKER", marker), \
              patch.object(hosted.probe.ROUTE, "reconcile", return_value="absent"), \
              patch.object(hosted, "active_version", return_value=(VERSION, NOW)), \
