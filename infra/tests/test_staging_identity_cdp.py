@@ -31,6 +31,79 @@ SPEC.loader.exec_module(probe)
 class HarnessSafetyTests(unittest.TestCase):
     """Exercise secret isolation and route-finally semantics. / 验证秘密隔离与路由 finally 语义。"""
 
+    def test_cdp_cold_start_can_attach_after_old_deadline(self) -> None:
+        """A live Chrome with a late page target remains within the finite startup budget."""
+
+        browser = object.__new__(probe.Browser)
+        browser.port = 42317
+        browser.process = Mock()
+        browser.process.poll.return_value = None
+        target = {"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:42317/devtools/page/1"}
+        socket = object()
+        with (
+            patch.object(probe.time, "monotonic", side_effect=[0, 13, 14]),
+            patch.object(probe, "build_opener") as opener,
+            patch.object(probe.json, "load", return_value=[target]),
+            patch.object(probe.websocket, "create_connection", return_value=socket) as connect,
+        ):
+            self.assertIs(browser._connect("http://127.0.0.1:42317"), socket)
+        self.assertEqual(probe.CHROME_CDP_STARTUP_SECONDS, 45)
+        self.assertEqual(opener.call_args.args[0].proxies, {})
+        self.assertEqual(connect.call_args.kwargs["http_no_proxy"], ["127.0.0.1"])
+
+    def test_cdp_startup_distinguishes_early_exit_and_timeout(self) -> None:
+        """Only fixed diagnostic labels leave a failed Chrome startup."""
+
+        browser = object.__new__(probe.Browser)
+        browser.port = 42317
+        browser.process = Mock()
+        browser.process.poll.return_value = 1
+        with patch.object(probe.time, "monotonic", side_effect=[0, 1]):
+            with self.assertRaisesRegex(probe.ProbeError, "^chrome_exited_before_cdp$"):
+                browser._connect("http://127.0.0.1:42317")
+
+        browser.process.poll.return_value = None
+        with patch.object(probe.time, "monotonic", side_effect=[0, 46]):
+            with self.assertRaisesRegex(probe.ProbeError, "^chrome_cdp_startup_timeout$"):
+                browser._connect("http://127.0.0.1:42317")
+
+    def test_cdp_rejects_foreign_debugger_target(self) -> None:
+        """A wrong-port debugger URL never becomes a WebSocket connection."""
+
+        browser = object.__new__(probe.Browser)
+        browser.port = 42317
+        browser.process = Mock()
+        browser.process.poll.return_value = None
+        target = {"type": "page", "webSocketDebuggerUrl": "ws://127.0.0.1:42318/devtools/page/1"}
+        with (
+            patch.object(probe.time, "monotonic", side_effect=[0, 1]),
+            patch.object(probe, "build_opener"),
+            patch.object(probe.json, "load", return_value=[target]),
+            patch.object(probe.websocket, "create_connection") as connect,
+        ):
+            with self.assertRaisesRegex(probe.ProbeError, "^chrome_cdp_endpoint_mismatch$"):
+                browser._connect("http://127.0.0.1:42317")
+        connect.assert_not_called()
+
+    def test_cdp_constructor_reaps_failed_browser_without_logging(self) -> None:
+        """Failure before Browser is returned still closes Chrome and suppresses its output."""
+
+        process = Mock()
+        process.poll.return_value = None
+        with (
+            patch.object(probe.Path, "mkdir"),
+            patch.object(probe, "chrome_path", return_value=Path("chrome.exe")),
+            patch.object(probe, "local_port", return_value=42317),
+            patch.object(probe.subprocess, "Popen", return_value=process) as launch,
+            patch.object(probe.Browser, "_connect", side_effect=probe.ProbeError("chrome_cdp_startup_timeout")),
+        ):
+            with self.assertRaisesRegex(probe.ProbeError, "^chrome_cdp_startup_timeout$"):
+                probe.Browser(Path(".temp/mock-browser"))
+        process.kill.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=5)
+        self.assertIs(launch.call_args.kwargs["stdout"], probe.subprocess.DEVNULL)
+        self.assertIs(launch.call_args.kwargs["stderr"], probe.subprocess.DEVNULL)
+
     def test_browser_environment_is_allowlisted(self) -> None:
         """An unrecognized credential-like value never reaches Chrome or CLI.
 

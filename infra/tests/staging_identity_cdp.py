@@ -48,6 +48,10 @@ DPAPI_ENTROPY = b"moesegfault-amail-staging-identity-test-v1"
 REGISTRATION = "/v1/password/registrations"
 VERIFICATION_START = re.compile(r"^/v1/me/contacts/[^/]+/verification-transactions$")
 VERIFICATION_DONE = re.compile(r"^/v1/me/contacts/[^/]+/verification-transactions/[^/]+/completion$")
+# Hosted Windows Chrome can need longer than a dozen seconds to create its
+# first isolated profile. Keep a finite pre-mutation budget instead of racing
+# cold startup; the enclosing E2E job has its own overall deadline.
+CHROME_CDP_STARTUP_SECONDS = 45
 
 
 class ProbeError(Exception):
@@ -243,18 +247,18 @@ class Browser:
                     self.ws.close()
             except Exception:
                 pass
-            if self.process.poll() is None:
-                try:
+            try:
+                if self.process.poll() is None:
                     self.process.kill()
-                    self.process.wait(timeout=5)
-                except Exception:
-                    pass
+                self.process.wait(timeout=5)
+            except Exception:
+                pass
             raise
 
     def _connect(self, origin: str) -> websocket.WebSocket:
         """Attach only to the local page target. / 仅连接本机页面目标。"""
 
-        deadline = time.monotonic() + 12
+        deadline = time.monotonic() + CHROME_CDP_STARTUP_SECONDS
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 break
@@ -264,7 +268,6 @@ class Browser:
                 page = next(t for t in targets if t.get("type") == "page")
                 endpoint = urlsplit(page["webSocketDebuggerUrl"])
                 if endpoint.scheme != "ws" or endpoint.hostname != "127.0.0.1" or endpoint.port != self.port:
-                    self.process.kill()
                     raise ProbeError("chrome_cdp_endpoint_mismatch")
                 return websocket.create_connection(
                     page["webSocketDebuggerUrl"], timeout=1, origin=origin,
@@ -272,8 +275,8 @@ class Browser:
                 )
             except (OSError, ValueError, KeyError, StopIteration, websocket.WebSocketException):
                 time.sleep(0.15)
-        self.process.kill()
-        raise ProbeError("chrome_cdp_unavailable")
+        exited = self.process.poll() is not None
+        raise ProbeError("chrome_exited_before_cdp" if exited else "chrome_cdp_startup_timeout")
 
     def _receive(self, timeout: float) -> dict:
         """Retain statuses only for actual POSTs, never CORS preflight responses.
