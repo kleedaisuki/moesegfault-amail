@@ -97,6 +97,15 @@ class StagingTraceCanaryTests(unittest.TestCase):
         with self.assertRaisesRegex(canary.CanaryError, "unreviewed_retained_payload"):
             canary.assess(records, (T, C, R), D, MARKERS)
 
+    def test_safe_event_nested_beside_unreviewed_field_fails(self) -> None:
+        """A known event inside a larger source object cannot bless siblings."""
+
+        records = events()
+        valid = json.loads(records[0]["source"])
+        records[0]["source"] = {"event": valid, "unreviewed": "other private data"}
+        with self.assertRaisesRegex(canary.CanaryError, "unreviewed_retained_payload"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
     def test_indexed_message_cannot_mask_unreviewed_source(self) -> None:
         """A valid metadata echo cannot certify arbitrary custom source text."""
 

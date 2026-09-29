@@ -245,17 +245,18 @@ def retained_events(account: str, token: str, start: int, end: int) -> list[dict
 
 
 def embedded_events(value: object, depth: int = 0) -> list[dict]:
-    """Decode Cloudflare's string or structured console source without printing it."""
+    """Decode only an exact event or a single reviewed transport wrapper."""
 
     if depth > 5:
         return []
     if isinstance(value, dict):
-        found = [value] if value.get("schema_version") == 1 else []
-        for child in value.values():
-            found.extend(embedded_events(child, depth + 1))
-        return found
+        if value.get("schema_version") == 1:
+            return [value]
+        if set(value) == {"message"}:
+            return embedded_events(value["message"], depth + 1)
+        return []
     if isinstance(value, list):
-        return [event for child in value for event in embedded_events(child, depth + 1)]
+        return embedded_events(value[0], depth + 1) if len(value) == 1 else []
     if isinstance(value, str) and len(value) <= 4096 and value.lstrip().startswith(("{", "[")):
         try:
             return embedded_events(json.loads(value), depth + 1)
