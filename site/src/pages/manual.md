@@ -16,13 +16,13 @@ amail 是一个面向 AI Agent 的命令行邮件客户端。你在浏览器里�
 
 ## 安装与首次登录
 
-从 [GitHub Releases 下载 v0.1.0](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0) 中适合你系统的 amail，放到 `PATH` 中。支持 Linux、macOS 和 Windows。若你使用 Agent，也可下载同一版本的 [Agent Skill](https://github.com/kleedaisuki/moesegfault-amail/releases/download/v0.1.0/amail-agent-skill-v0.1.0.zip)。然后由你本人执行：
+从 [GitHub Releases 下载 v0.1.0](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0) 中适合你系统的 amail，放到 `PATH` 中。支持 Linux、macOS 和 Windows。若你使用 Agent，也可下载同一版本的 [Agent Skill](https://github.com/kleedaisuki/moesegfault-amail/releases/download/v0.1.0/amail-agent-skill-v0.1.0.zip)。让 Agent 在你的设备上启动登录：
 
 ```sh
-amail auth login
+amail login
 ```
 
-按提示在浏览器完成 moeSegFault 身份授权。登录是需要人参与的步骤；**不要把口令、访问令牌或浏览器会话交给 Agent**。你可以随时查看登录状态，或退出：
+你本人只需按提示在弹出的浏览器里完成 moeSegFault 身份授权；Agent 可以发起命令，但不能代替你授权。**不要把口令、访问令牌或浏览器会话交给 Agent**。之后 Agent 可以查看登录状态，或按你的要求退出：
 
 ```sh
 amail auth status
@@ -65,6 +65,8 @@ amail search --meta attachment_name=chart.png
 amail search --title "release.*" --regex --case-sensitive
 amail search --semantic "讨论发布风险的邮件"
 ```
+
+`--meta` 支持四个键：`message_id`（原始邮件 ID）、`in_reply_to`（回复关系）、`content_type`（内容类型）和 `attachment_name`（附件名称）。可以用多个 `--meta KEY=VALUE` 分别指定不同键，并与其他条件一起筛选；同一个键在一次命令里写两遍会报错，而不会悄悄覆盖前一个条件。
 
 多个条件一起使用时表示“同时满足”。时间区间的起点包含在内，终点不包含；`--regex` 对文本条件启用正则匹配，`--case-sensitive` 启用区分大小写。语义检索在服务端执行，会把检索词和待索引的邮件文本发送给 OpenRouter 的嵌入服务；如果不愿意让这些内容经过第三方模型提供者，请不要使用语义检索。普通检索可独立使用。默认输出是紧凑的 JSON Lines，适合管道捕获和 Agent 进一步筛选；它不是为屏幕阅读设计的邮件视图。
 
