@@ -693,7 +693,11 @@ mod tests {
         ] {
             let help = Cli::try_parse_from(args.clone()).unwrap_err();
             assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
-            let output = help.to_string().split_whitespace().collect::<Vec<_>>().join(" ");
+            let output = help
+                .to_string()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             for phrase in [
                 "background semantic indexing",
                 "even if --semantic is never used",
