@@ -1,0 +1,28 @@
+# Independent review: staging retained-log canary
+
+Reviewed commits: `cd35519`, `33d3b59`, and `1f88682` (2026-09-29). Scope: the synthetic canary harness, its offline tests, the current typed Rust trace schema, and the Cloudflare Observability API contract. This was a static review; I did not run the live canary, query retained account logs, modify production code, or inspect credentials.
+
+## Findings
+
+### P2 — Unknown custom logs are invisible to the schema assertion
+
+At `infra/tests/staging_trace_canary.py:246-263`, `embedded_events()` only recognizes a nested object if `schema_version == 1`. At lines 320-323, `assess()` validates only these recognized objects; unrelated custom records with JSON source/message that lack that exact discriminator are silently skipped. The two expected `request_exit` objects can be present while an accidental `console_log!` JSON record containing an address, URL, arbitrary field, or a future schema version is also retained. The marker scan will catch the *two synthetic URL markers* if present, but not an unrelated sensitive value, so `application_event_schema_unallowlisted` and the printed broad PASS do not certify that all retained application logs follow the allowlist. This is a demonstrated logic gap in the asserted scope, not evidence that such a log is currently emitted.
+
+**Correction:** classify every custom log record for this Worker in the bounded window: accept a known typed schema, explicitly allow fixed static warning strings after review, and fail closed on other/custom JSON or unknown schema versions. Alternatively limit the final success label and documentation strictly to “recognized version-1 events,” without claiming the application log stream is allowlisted. Include an offline test with a valid pair of roots plus an extra unknown-schema JSON record.
+
+### P2 — The canary's copied trace vocabulary is already stale
+
+`infra/tests/staging_trace_canary.py:34-55` omits `routing_list`, `routing_create`, `provider_http_status`, and `provider_error_code`. These are emitted by the current canonical Rust event schema in `crates/mail-worker/src/trace.rs` (`Phase` and `Event`, around lines 65-78 and 132-156). If an address registration in staging emits a routing diagnostic during this canary's time window, lines 322-323 reject the otherwise safe event as unallowlisted. This is a fail-closed false negative, not a false privacy pass, but it makes a legitimate live acceptance ambiguous and encourages unsafe “retry until green” behavior. The offline tests model only list and denial records and cannot catch this drift.
+
+**Correction:** derive the Python validator's fixed schema from a shared versioned schema artifact or at least add an explicit synchronization test/fixture for every Rust phase and optional field. Prefer restricting the privacy canary to its own request IDs for typed-schema checks while separately scanning *all* returned records for the path/query markers; that reduces unrelated concurrent operation noise without weakening the marker test.
+
+## Confirmed boundaries and residual limits
+
+* The `33d3b59` child environment allowlist no longer passes `CF_OBSERVABILITY_TOKEN` or `CLOUDFLARE_API_TOKEN` to `amail`; stdout/stderr of the native process and raw Cloudflare responses are not printed. The staging host, explicit confirmation argument, exact under-`.temp` paths, settings readback, and no-mail-mutation probe are appropriate safeguards. I found no concrete credential leak in the reviewed harness.
+* The current Cloudflare [query API](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/) documents `view=events`, `dry=true`, a Unix-millisecond timeframe, `$metadata.id` cursor pagination, and `events.count` as the total matching count. The [keys API](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/keys/) documents a result list with `key` and `type`. Thus the request shape and page-completeness check are plausible, not an invented API contract. A live result remains necessary because the schema does not guarantee how Rust `console_log!` text is represented/indexed.
+* The CLI→API assertion is genuinely causal for the sampled successful call: `crates/amail/src/api.rs` sends `00-T-C-01`, journals `(T,C,R)`, and the authenticated mail API accepts `C` as the remote parent and emits `(T,S,parent=C,R)`. The harness additionally requires the rejected anonymous request's independent 4xx exit. It does **not** establish Cloudflare native waterfall tracing or external provider propagation, consistent with `docs/mail-trace-privacy-decision.md`.
+* Cloudflare [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) documents head-based sampling and account/day caps; the deployed verifier requires a configured 1.0 rate, while the canary's own evidence still covers only returned retained records. The run should remain `UNVERIFIED` on missing rows, retention/indexing delay, truncation or an incomplete query, and should not be described as a full synthetic mail-content/panic-path privacy attestation.
+
+## Disposition
+
+No live run was attempted. Correct the unknown-custom-log classification before interpreting a green run as an application-schema privacy pass; sync the copied Rust vocabulary so unrelated staging traffic does not obscure the result. The present harness remains a useful, safely bounded probe of the two synthetic URL markers and CLI/API parentage once Cloudflare Observability access is available.
