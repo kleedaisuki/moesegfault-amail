@@ -64,6 +64,15 @@ def validate_environment() -> tuple[str, str]:
     return username, password
 
 
+def semantic_requested() -> bool:
+    """Require an explicit bounded hosted semantic probe, never infer consent."""
+
+    value = os.environ.get("AMAIL_STAGING_SEMANTIC_E2E", "0")
+    if value not in ("0", "1"):
+        raise HostedProbeError("semantic_confirmation_invalid")
+    return value == "1"
+
+
 def unique_auth_home(run_dir: Path) -> Path:
     """Select only the fresh home created by this run's successful native login."""
 
@@ -94,6 +103,7 @@ def execute() -> None:
     """Exercise deployed staging services while containing all data in one run dir."""
 
     username, password = validate_environment()
+    semantic = semantic_requested()
     nonce = recoverable_run_nonce(password)
     if TEMP != ROOT / ".temp":
         raise HostedProbeError("repo_temp_redirected")
@@ -125,6 +135,8 @@ def execute() -> None:
                 "staging_mail_e2e.py", "--confirm-staging",
                 "--home", str(home), "--amail", str(binary),
             ]
+            if semantic:
+                sys.argv.append("--check-semantic")
             try:
                 outcome = staging_mail_e2e.main()
             except staging_mail_e2e.ProbeFailure as error:

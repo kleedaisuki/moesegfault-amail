@@ -4,6 +4,8 @@
 """
 
 import importlib.util
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import os
 import subprocess
@@ -41,6 +43,66 @@ class CleanupTests(unittest.TestCase):
             HARNESS.cli_failure(b"provider says private_mailbox_body", "address_register_failed"),
             "address_register_failed",
         )
+        self.assertEqual(
+            HARNESS.cli_failure(
+                b"Error: mail API messages.search failed: HTTP 503 Service Unavailable, "
+                b"code=semantic_index_incomplete, correlation_id=private-identifier\n",
+                "semantic_search_failed",
+            ),
+            "semantic_search_failed_http_503_semantic_index_incomplete",
+        )
+
+    def test_semantic_gate_reuses_delivered_rows_and_retries_only_index_lag(self) -> None:
+        """One timed index miss may recover without another SMTP send or mutation."""
+
+        nonce = "0123456789abcdef"
+        signal = {"id": "one", "received_at": "2026-09-29T00:00:01Z", "read": False, "score": 0.8}
+        distractor = {"id": "two", "received_at": "2026-09-29T00:00:00Z", "read": False, "score": 0.7}
+        calls = []
+
+        def fake_amail(_binary, _env, *args, failure):
+            calls.append(args)
+            if len(calls) == 1:
+                raise HARNESS.ProbeFailure("semantic_search_failed_http_503_semantic_index_incomplete")
+            if "--read" in args or "signal-private-absent" in args:
+                return []
+            if "--body" in args:
+                return [signal]
+            return [signal, distractor]
+
+        output = StringIO()
+        with patch.object(HARNESS, "amail", side_effect=fake_amail), patch.object(
+            HARNESS.time, "monotonic", side_effect=[0, 0]
+        ), patch.object(HARNESS.time, "sleep") as sleep, redirect_stdout(output):
+            HARNESS.semantic_cases(
+                Path("amail.exe"), {}, "fixture@mail-staging.moesegfault.dev", nonce,
+                signal, {"phrase": "signal-private"}, distractor,
+            )
+        self.assertEqual(output.getvalue().strip(), "semantic_two_message_search_verified")
+        self.assertEqual(len(calls), 5)
+        self.assertTrue(all(args[0] == "search" for args in calls))
+        sleep.assert_called_once_with(30)
+
+    def test_semantic_gate_fails_closed_after_bounded_index_wait(self) -> None:
+        """An incomplete index cannot become a false semantic-search pass."""
+
+        nonce = "0123456789abcdef"
+        row = {"id": "one", "received_at": "2026-09-29T00:00:01Z"}
+        other = {"id": "two", "received_at": "2026-09-29T00:00:00Z"}
+        with patch.object(
+            HARNESS, "amail", side_effect=HARNESS.ProbeFailure(
+                "semantic_search_failed_http_503_semantic_index_incomplete"
+            )
+        ), patch.object(HARNESS.time, "monotonic", side_effect=[0, 390]), patch.object(
+            HARNESS.time, "sleep"
+        ) as sleep:
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.semantic_cases(
+                    Path("amail.exe"), {}, "fixture@mail-staging.moesegfault.dev", nonce,
+                    row, {"phrase": "signal-private"}, other,
+                )
+        self.assertEqual(str(caught.exception), "semantic_index_timeout")
+        sleep.assert_not_called()
 
     def test_hosted_nonce_is_validated_without_changing_local_default(self) -> None:
         """Reject malformed recovery suffixes; retain random local behavior."""

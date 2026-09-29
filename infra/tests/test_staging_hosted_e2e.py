@@ -25,6 +25,18 @@ SPEC.loader.exec_module(HARNESS)
 class HostedHarnessSafetyTests(unittest.TestCase):
     """Exercise private recoverability and fixed-label failure semantics."""
 
+    def test_semantic_probe_requires_explicit_boolean_switch(self) -> None:
+        """The first inbound run remains independent of provider indexing."""
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(HARNESS.semantic_requested())
+        with patch.dict(os.environ, {"AMAIL_STAGING_SEMANTIC_E2E": "1"}):
+            self.assertTrue(HARNESS.semantic_requested())
+        with patch.dict(os.environ, {"AMAIL_STAGING_SEMANTIC_E2E": "yes"}):
+            with self.assertRaises(HARNESS.HostedProbeError) as caught:
+                HARNESS.semantic_requested()
+        self.assertEqual(str(caught.exception), "semantic_confirmation_invalid")
+
     def test_typed_stage_labels_are_bounded(self) -> None:
         """Preserve fixed stage codes but never echo provider or secret payloads."""
 

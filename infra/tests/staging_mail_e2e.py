@@ -115,6 +115,7 @@ SAFE_API_CODES = frozenset({
     "routing_unavailable", "capacity_exhausted", "address_unavailable",
     "address_limit", "address_provision_unknown", "address_state_changed",
     "address_deleting", "address_retired", "not_found", "send_held",
+    "semantic_index_incomplete",
 })
 
 
@@ -422,6 +423,44 @@ def search_cases(binary: Path, env: dict[str, str], address: str, oracle: dict, 
     )
 
 
+def semantic_cases(
+    binary: Path, env: dict[str, str], address: str, nonce: str,
+    rich_row: dict, rich_oracle: dict, distractor_row: dict,
+) -> None:
+    """Check the two delivered messages without adding mail or changing state.
+
+    Document indexing runs on a five-minute Cron. Only the typed incomplete
+    index result is retried, under one seven-minute deadline for all four
+    searches. Provider/auth/quota failures remain failures, never retries.
+    """
+
+    from staging_semantic_e2e import SemanticProbeError, check_cli_search
+
+    deadline = time.monotonic() + 7 * 60
+
+    def search(*args: str) -> list[dict]:
+        """Return only complete CLI JSONL rows; suppress raw provider output."""
+
+        while True:
+            try:
+                return rows(amail(binary, env, "search", *args, failure="semantic_search_failed"))
+            except ProbeFailure as error:
+                if str(error) != "semantic_search_failed_http_503_semantic_index_incomplete":
+                    raise
+                if time.monotonic() + 30 >= deadline:
+                    raise ProbeFailure("semantic_index_timeout") from None
+                time.sleep(30)
+
+    signal = {"id": rich_row.get("id"), "received_at": rich_row.get("received_at"),
+              "phrase": rich_oracle["phrase"]}
+    distractor = {"id": distractor_row.get("id"), "received_at": distractor_row.get("received_at")}
+    try:
+        check_cli_search(search, address, nonce, signal, distractor)
+    except SemanticProbeError as error:
+        raise ProbeFailure(str(error)) from None
+    print("semantic_two_message_search_verified")
+
+
 def cleanup_run(
     binary: Path, env: dict[str, str], zone: str, token: str, address: str, nonce: str
 ) -> None:
@@ -484,6 +523,7 @@ def main() -> int:
     parser.add_argument("--confirm-staging", action="store_true")
     parser.add_argument("--home", required=True)
     parser.add_argument("--amail", required=True)
+    parser.add_argument("--check-semantic", action="store_true")
     args = parser.parse_args()
     check(args.confirm_staging, "staging_confirmation_required")
     home, binary = inside_temp(args.home), inside_temp(args.amail)
@@ -561,6 +601,11 @@ def main() -> int:
         print("smtp_to_zip_verified")
 
         search_cases(binary, env, address, rich_oracle, rich_row)
+        if args.check_semantic:
+            semantic_cases(
+                binary, env, address, nonce, rich_row, rich_oracle,
+                messages[distractor_oracle["subject"]],
+            )
         amail(binary, env, "mark", target, "--read", failure="mark_read_failed")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--read", failure="read_search_failed"), rich_oracle["subject"], 1, "read_search_count")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--unread", failure="unread_search_failed"), rich_oracle["subject"], 0, "unread_search_count")
