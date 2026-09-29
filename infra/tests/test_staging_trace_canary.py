@@ -76,7 +76,9 @@ class StagingTraceCanaryTests(unittest.TestCase):
 
         cases = (
             (401, D, None),
-            (403, D, "rejected_url_status_forbidden"),
+            (403, D, "rejected_url_forbidden_with_worker_id"),
+            (403, None, "rejected_url_forbidden_without_worker_id"),
+            (403, "private-header-value", "rejected_url_forbidden_without_worker_id"),
             (404, D, "rejected_url_status_not_found"),
             (503, D, "rejected_url_status_server_error"),
             (200, D, "rejected_url_status_other"),
@@ -101,7 +103,7 @@ class StagingTraceCanaryTests(unittest.TestCase):
                 patch.object(canary.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
                 patch.object(canary, "urlopen", side_effect=denied) as http:
             with self.assertRaisesRegex(canary.CanaryError,
-                                        "^rejected_url_status_forbidden$"):
+                                        "^rejected_url_forbidden_without_worker_id$"):
                 canary.run_probes(Path("private-cli"), Path("private-home"))
         request = http.call_args.args[0]
         target = urlsplit(request.full_url)
@@ -114,25 +116,28 @@ class StagingTraceCanaryTests(unittest.TestCase):
     def test_main_does_not_query_after_rejected_url_failure(self) -> None:
         """Only a fixed child code escapes, and the query stage is skipped."""
 
-        output = StringIO()
-        with patch.dict(canary.os.environ, {
-                "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
-                "CF_OBSERVABILITY_TOKEN": "private-observability-token",
-                "CLOUDFLARE_API_TOKEN": "private-deploy-token",
-        }), patch.object(canary.sys, "argv", [
-                "canary", "--confirm", "RUN_STAGING_TRACE_CANARY",
-                "--amail", "private-cli", "--home", "private-home",
-        ]), patch.object(canary, "under_temp", side_effect=[
-                Path(__file__), Path(__file__).parent,
-        ]), patch.object(canary, "preflight"), patch.object(
-                canary, "run_probes", side_effect=canary.CanaryError(
-                    "rejected_url_header_malformed")), patch.object(
-                canary, "retained_events") as retained:
-            with redirect_stdout(output):
-                self.assertEqual(canary.main(), 1)
-        retained.assert_not_called()
-        self.assertEqual(output.getvalue().strip(),
-                         "staging_trace_canary: UNVERIFIED (rejected_url_header_malformed)")
+        for code in ("rejected_url_forbidden_with_worker_id",
+                     "rejected_url_forbidden_without_worker_id",
+                     "rejected_url_header_malformed"):
+            with self.subTest(code=code):
+                output = StringIO()
+                with patch.dict(canary.os.environ, {
+                        "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+                        "CF_OBSERVABILITY_TOKEN": "private-observability-token",
+                        "CLOUDFLARE_API_TOKEN": "private-deploy-token",
+                }), patch.object(canary.sys, "argv", [
+                        "canary", "--confirm", "RUN_STAGING_TRACE_CANARY",
+                        "--amail", "private-cli", "--home", "private-home",
+                ]), patch.object(canary, "under_temp", side_effect=[
+                        Path(__file__), Path(__file__).parent,
+                ]), patch.object(canary, "preflight"), patch.object(
+                        canary, "run_probes", side_effect=canary.CanaryError(code)), patch.object(
+                        canary, "retained_events") as retained:
+                    with redirect_stdout(output):
+                        self.assertEqual(canary.main(), 1)
+                retained.assert_not_called()
+                self.assertEqual(output.getvalue().strip(),
+                                 f"staging_trace_canary: UNVERIFIED ({code})")
 
     def test_valid_records_pass(self) -> None:
         """A safe root is linked to the CLI span and denial is independent."""

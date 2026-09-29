@@ -158,10 +158,12 @@ def journal_new(home: Path, watermark: int) -> tuple[str, str, str]:
 
 
 def rejected_url_failure(status: int, request_id: object) -> str | None:
-    """Classify only reviewed status/header facts; never expose response data."""
+    """Classify only status and UUID syntax, not actual Worker provenance."""
 
     if status == 403:
-        return "rejected_url_status_forbidden"
+        if isinstance(request_id, str) and UUID.fullmatch(request_id) is not None:
+            return "rejected_url_forbidden_with_worker_id"
+        return "rejected_url_forbidden_without_worker_id"
     if status == 404:
         return "rejected_url_status_not_found"
     if 500 <= status <= 599:
