@@ -161,6 +161,7 @@ pub(super) async fn search(
         },
         hits: Vec::new(),
         query_vector: None,
+        query_model: None,
     };
     if !semantic && expensive(&input) {
         reserve_search_work(&database, user).await?;
@@ -237,6 +238,8 @@ pub(super) async fn search(
             state.query_vector = Some(platform::embed(env, term, "search_query").await.map_err(|_| AppError {
                 status:503, code:"semantic_unavailable"
             })?);
+            state.query_model = Some(env.var("OPENROUTER_EMBEDDING_MODEL")
+                .map_err(|_| AppError { status:503, code:"semantic_unavailable" })?.to_string());
             let serialized = serde_json::to_string(&state).map_err(|_| AppError::bad("invalid_search"))?;
             let changed = database.prepare("UPDATE search_jobs SET state='running',state_json=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='preparing'")
                 .bind(&[bind_str(&serialized),bind_str(&id),bind_str(&user.iss),bind_str(&user.sub)])?
@@ -530,6 +533,15 @@ async fn scan_batch(
                 row.body_text.clear();
             }
             let score = if let Some(query) = state.query_vector.as_ref() {
+                // A model/configuration transition must fail closed rather than
+                // compare vectors from different spaces. Old jobs without a model
+                // checkpoint are explicitly incomplete and can be restarted.
+                if !semantic_document_compatible(&row, state.query_model.as_deref()) {
+                    return Err(AppError {
+                        status: 503,
+                        code: "semantic_index_incomplete",
+                    });
+                }
                 let saved = row.embedding_json.as_deref().ok_or(AppError {
                     status: 503,
                     code: "semantic_index_incomplete",

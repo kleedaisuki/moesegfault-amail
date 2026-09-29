@@ -271,22 +271,73 @@ struct EmbeddingData {
 /// OpenRouter embedding input ceiling in UTF-8 bytes, shared with document projection.
 pub const EMBEDDING_INPUT_MAX_BYTES: usize = 12_000;
 
+/// Fixed, non-content-bearing failure classes for durable indexing decisions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EmbeddingFailure {
+    InvalidInput,
+    InvalidRequest,
+    Dependency,
+    RateLimited,
+    Transient,
+    Malformed,
+}
+
+impl EmbeddingFailure {
+    /// A stable operator code; never include provider text or the embedding input.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::InvalidInput => "invalid_input",
+            Self::InvalidRequest => "invalid_request",
+            Self::Dependency => "dependency_unavailable",
+            Self::RateLimited => "provider_rate_limited",
+            Self::Transient => "provider_transient",
+            Self::Malformed => "provider_malformed",
+        }
+    }
+}
+
 /// Request exactly 256 dimensions and reject malformed/nonfinite vectors. / 请求恰好 256 维，并拒绝畸形或非有限向量。
 pub async fn embed(env: &Env, input: &str, input_type: &str) -> Result<Vec<f32>> {
+    embed_classified(env, input, input_type)
+        .await
+        .map_err(|error| worker::Error::RustError(error.code().into()))
+}
+
+/// Preserve only failure class for scheduler backoff; never propagate provider bodies.
+pub(crate) async fn embed_classified(
+    env: &Env,
+    input: &str,
+    input_type: &str,
+) -> std::result::Result<Vec<f32>, EmbeddingFailure> {
     if input.is_empty() || input.len() > EMBEDDING_INPUT_MAX_BYTES {
-        return Err(worker::Error::RustError("embedding_input_size".into()));
+        return Err(EmbeddingFailure::InvalidInput);
     }
     let headers = Headers::new();
-    headers.set(
-        "Authorization",
-        &format!("Bearer {}", env.secret("OPENROUTER_API_KEY")?.to_string()),
-    )?;
-    headers.set("Content-Type", "application/json")?;
-    headers.set("HTTP-Referer", "https://amail.moesegfault.dev")?;
-    headers.set("X-Title", "amail")?;
-    headers.set("X-OpenRouter-Cache", "false")?;
+    headers
+        .set(
+            "Authorization",
+            &format!(
+                "Bearer {}",
+                env.secret("OPENROUTER_API_KEY")
+                    .map_err(|_| EmbeddingFailure::Dependency)?
+                    .to_string()
+            ),
+        )
+        .map_err(|_| EmbeddingFailure::Dependency)?;
+    headers
+        .set("Content-Type", "application/json")
+        .map_err(|_| EmbeddingFailure::Dependency)?;
+    headers
+        .set("HTTP-Referer", "https://amail.moesegfault.dev")
+        .map_err(|_| EmbeddingFailure::Dependency)?;
+    headers
+        .set("X-Title", "amail")
+        .map_err(|_| EmbeddingFailure::Dependency)?;
+    headers
+        .set("X-OpenRouter-Cache", "false")
+        .map_err(|_| EmbeddingFailure::Dependency)?;
     let payload = serde_json::json!({
-        "model": env.var("OPENROUTER_EMBEDDING_MODEL")?.to_string(),
+        "model": env.var("OPENROUTER_EMBEDDING_MODEL").map_err(|_| EmbeddingFailure::Dependency)?.to_string(),
         "dimensions": 256, "input": input, "input_type": input_type,
         "provider": {"zdr":true,"data_collection":"deny"}
     });
@@ -294,28 +345,36 @@ pub async fn embed(env: &Env, input: &str, input_type: &str) -> Result<Vec<f32>>
     init.with_method(Method::Post)
         .with_headers(headers)
         .with_body(Some(JsValue::from_str(&payload.to_string())));
-    let mut response = Fetch::Request(Request::new_with_init(
-        "https://openrouter.ai/api/v1/embeddings",
-        &init,
-    )?)
+    let mut response = Fetch::Request(
+        Request::new_with_init("https://openrouter.ai/api/v1/embeddings", &init)
+            .map_err(|_| EmbeddingFailure::Transient)?,
+    )
     .send()
-    .await?;
-    if response.status_code() != 200 {
-        return Err(worker::Error::RustError("embedding_unavailable".into()));
+    .await
+    .map_err(|_| EmbeddingFailure::Transient)?;
+    match response.status_code() {
+        200 => {}
+        400 | 413 | 422 => return Err(EmbeddingFailure::InvalidRequest),
+        401 | 403 => return Err(EmbeddingFailure::Dependency),
+        429 => return Err(EmbeddingFailure::RateLimited),
+        _ => return Err(EmbeddingFailure::Transient),
     }
-    let data: EmbeddingResult = response.json().await?;
+    let data: EmbeddingResult = response
+        .json()
+        .await
+        .map_err(|_| EmbeddingFailure::Malformed)?;
     let values = data
         .data
         .into_iter()
         .next()
-        .ok_or_else(|| worker::Error::RustError("embedding_shape".into()))?
+        .ok_or(EmbeddingFailure::Malformed)?
         .embedding;
     if values.len() != 256 || values.iter().any(|x| !x.is_finite()) {
-        return Err(worker::Error::RustError("embedding_shape".into()));
+        return Err(EmbeddingFailure::Malformed);
     }
     let norm = values.iter().map(|x| x * x).sum::<f64>().sqrt();
     if norm <= 1e-12 || !norm.is_finite() {
-        return Err(worker::Error::RustError("embedding_norm".into()));
+        return Err(EmbeddingFailure::Malformed);
     }
     Ok(values.into_iter().map(|x| (x / norm) as f32).collect())
 }

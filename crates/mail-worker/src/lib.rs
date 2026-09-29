@@ -400,27 +400,130 @@ fn embedding_prefix(source: &str) -> &str {
     &source[..end]
 }
 
+/// Retry schedule in milliseconds. Jitter is deterministic per message so retries
+/// do not synchronize, and an indefinitely unavailable provider cannot hot-loop.
+fn embedding_retry_delay(attempts: i64, id: &str) -> i64 {
+    let base: i64 = match attempts {
+        0 | 1 => 5 * 60_000,
+        2 => 15 * 60_000,
+        3 => 60 * 60_000,
+        4 => 6 * 60 * 60_000,
+        _ => 20 * 60 * 60_000,
+    };
+    let hash = id.bytes().fold(0u64, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u64::from(byte)
+    });
+    base + (hash % (base as u64 / 5 + 1)) as i64
+}
+
+/// Separate per-message defects from provider-wide outages without inspecting
+/// or logging the provider's response body.
+fn embedding_failure_policy(error: platform::EmbeddingFailure, attempts: i64) -> (bool, i64) {
+    // HTTP 400/413/422 may be a globally bad model or route, not bad content.
+    let quarantine = error == platform::EmbeddingFailure::InvalidInput
+        || (error == platform::EmbeddingFailure::Malformed && attempts >= 3);
+    let cooldown = match error {
+        platform::EmbeddingFailure::Dependency => 60 * 60_000,
+        platform::EmbeddingFailure::RateLimited => 15 * 60_000,
+        platform::EmbeddingFailure::Transient => 5 * 60_000,
+        _ => 0,
+    };
+    (quarantine, cooldown)
+}
+
+/// D1 supplies work durability; Cron is only a wake-up, never the work ledger.
+/// The due query transfers IDs, not content. Each lease holder reads one active
+/// message immediately before the provider call and commits only under that lease.
 async fn reindex(env: &Env) -> Result<()> {
     #[derive(Deserialize)]
+    struct Due {
+        message_id: String,
+    }
+    #[derive(Deserialize)]
     struct Pending {
-        id: String,
         subject: String,
         body_text: String,
+        attempts: i64,
+    }
+    #[derive(Deserialize)]
+    struct Dependency {
+        blocked_until: i64,
     }
     let database = env.d1("MAIL_DB")?;
-    let result = database.prepare("SELECT id,subject,body_text FROM messages WHERE embedding_json IS NULL AND deleted_at IS NULL ORDER BY received_at LIMIT 20").all().await?;
-    for row in result.results::<Pending>()? {
-        let source = format!("{}\n{}", row.subject, row.body_text);
-        let truncated = embedding_prefix(&source);
-        let Ok(vector) = platform::embed(env, truncated, "search_document").await else {
+    let current = now();
+    let dependency = database
+        .prepare("SELECT blocked_until FROM embedding_dependency WHERE id=1")
+        .first::<Dependency>(None)
+        .await?;
+    if dependency.is_some_and(|row| row.blocked_until > current) {
+        return Ok(());
+    }
+    // Limit each account to four due items per sweep so one poisoned/busy owner
+    // cannot monopolize the global 20-call budget. All filters are on work IDs.
+    let due = database
+        .prepare(EMBEDDING_DUE_SQL)
+        .bind(&[bind_num(current)])?
+        .all()
+        .await?
+        .results::<Due>()?;
+    let mut invalid_requests = 0;
+    for item in due {
+        let token = uuid::Uuid::new_v4().to_string();
+        let claimed_at = now();
+        let claim = database.prepare("UPDATE embedding_work SET lease_until=?1,lease_token=?2 WHERE message_id=?3 AND state='pending' AND next_attempt_at<=?4 AND lease_until<=?4 AND EXISTS (SELECT 1 FROM messages WHERE id=?3 AND deleted_at IS NULL AND embedding_json IS NULL)")
+            .bind(&[bind_num(claimed_at+120_000),bind_str(&token),bind_str(&item.message_id),bind_num(claimed_at)])?.run().await?;
+        if claim.meta()?.and_then(|meta| meta.changes).unwrap_or(0) != 1 {
+            continue;
+        }
+        database.prepare("UPDATE embedding_owner_schedule SET last_served_at=?1 WHERE EXISTS (SELECT 1 FROM embedding_work w WHERE w.message_id=?2 AND w.lease_token=?3 AND w.owner_iss=embedding_owner_schedule.owner_iss AND w.owner_sub=embedding_owner_schedule.owner_sub)")
+            .bind(&[bind_num(claimed_at),bind_str(&item.message_id),bind_str(&token)])?.run().await?;
+        let row = database.prepare("SELECT m.subject,m.body_text,w.attempts FROM messages m JOIN embedding_work w ON w.message_id=m.id WHERE m.id=?1 AND m.deleted_at IS NULL AND m.embedding_json IS NULL AND w.lease_token=?2 AND w.lease_until>?3")
+            .bind(&[bind_str(&item.message_id),bind_str(&token),bind_num(now())])?
+            .first::<Pending>(None).await?;
+        let Some(row) = row else {
             continue;
         };
-        let serialized = serde_json::to_string(&vector)?;
-        database.prepare("UPDATE messages SET embedding_json=?1,embedding_model='qwen/qwen3-embedding-8b',embedding_dimensions=256 WHERE id=?2 AND embedding_json IS NULL")
-            .bind(&[bind_str(&serialized),bind_str(&row.id)])?.run().await?;
+        let source = format!("{}\n{}", row.subject, row.body_text);
+        let input = embedding_prefix(&source);
+        let result = platform::embed_classified(env, input, "search_document").await;
+        match result {
+            Ok(vector) => {
+                let serialized = serde_json::to_string(&vector)?;
+                let model = env.var("OPENROUTER_EMBEDDING_MODEL")?.to_string();
+                // The work trigger removes the ledger row only on a successful
+                // active-row update. A tombstone or expired lease cannot revive it.
+                database.prepare("UPDATE messages SET embedding_json=?1,embedding_model=?2,embedding_dimensions=256,embedding_input_version=1,embedding_truncated=?3 WHERE id=?4 AND deleted_at IS NULL AND embedding_json IS NULL AND EXISTS (SELECT 1 FROM embedding_work WHERE message_id=?4 AND lease_token=?5 AND lease_until>?6)")
+                    .bind(&[bind_str(&serialized),bind_str(&model),bind_num((input.len()<source.len()) as i64),bind_str(&item.message_id),bind_str(&token),bind_num(now())])?.run().await?;
+            }
+            Err(error) => {
+                let attempts = row.attempts + 1;
+                let (quarantine, mut cooldown) = embedding_failure_policy(error, attempts);
+                if error == platform::EmbeddingFailure::InvalidRequest {
+                    invalid_requests += 1;
+                    if invalid_requests >= 3 {
+                        cooldown = 60 * 60_000;
+                    }
+                }
+                let next = now() + embedding_retry_delay(attempts, &item.message_id);
+                database.prepare("UPDATE embedding_work SET attempts=?1,next_attempt_at=?2,lease_until=0,lease_token=NULL,state=?3,last_error_code=?4 WHERE message_id=?5 AND lease_token=?6")
+                    .bind(&[bind_num(attempts),bind_num(next),bind_str(if quarantine {"quarantined"} else {"pending"}),bind_str(error.code()),bind_str(&item.message_id),bind_str(&token)])?.run().await?;
+                if quarantine {
+                    console_warn!("amail semantic document quarantined");
+                }
+                if cooldown > 0 {
+                    database.prepare("UPDATE embedding_dependency SET blocked_until=MAX(blocked_until,?1),last_error_code=?2 WHERE id=1")
+                        .bind(&[bind_num(now()+cooldown),bind_str(error.code())])?.run().await?;
+                    console_warn!("amail semantic provider cooldown");
+                    break;
+                }
+            }
+        }
     }
     Ok(())
 }
+
+/// Owner rank and least-recently-served order avoid starvation across accounts.
+const EMBEDDING_DUE_SQL: &str = "SELECT message_id FROM (SELECT w.message_id,w.next_attempt_at,w.received_at,COALESCE(o.last_served_at,0) AS last_served_at,ROW_NUMBER() OVER (PARTITION BY w.owner_iss,w.owner_sub ORDER BY w.next_attempt_at,w.received_at,w.message_id) AS owner_rank FROM embedding_work w LEFT JOIN embedding_owner_schedule o ON o.owner_iss=w.owner_iss AND o.owner_sub=w.owner_sub WHERE w.state='pending' AND w.next_attempt_at<=?1 AND w.lease_until<=?1) WHERE owner_rank<=4 ORDER BY owner_rank,last_served_at,next_attempt_at,received_at,message_id LIMIT 20";
 
 async fn dispatch(
     mut req: Request,
@@ -1158,6 +1261,19 @@ struct MessageRow {
     r2_key: String,
     size_bytes: i64,
     embedding_json: Option<String>,
+    #[serde(default)]
+    embedding_model: Option<String>,
+    #[serde(default)]
+    embedding_dimensions: Option<i64>,
+    #[serde(default)]
+    embedding_input_version: Option<i64>,
+}
+
+/// A query and document may be compared only in the same configured vector space.
+fn semantic_document_compatible(row: &MessageRow, query_model: Option<&str>) -> bool {
+    query_model.is_some_and(|model| row.embedding_model.as_deref() == Some(model))
+        && row.embedding_dimensions == Some(256)
+        && row.embedding_input_version == Some(1)
 }
 
 fn summary(row: &MessageRow, score: Option<f64>) -> serde_json::Value {
@@ -1307,6 +1423,8 @@ struct SearchState {
     marker: Option<(i64, String)>,
     hits: Vec<SearchHit>,
     query_vector: Option<Vec<f32>>,
+    #[serde(default)]
+    query_model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1406,7 +1524,7 @@ fn search_projection(input: &SearchRequest) -> String {
         "'{}' AS metadata_json"
     };
     let vector = if input.semantic.is_some() {
-        "embedding_json"
+        "embedding_json,embedding_model,embedding_dimensions,embedding_input_version"
     } else {
         "NULL AS embedding_json"
     };
@@ -2159,6 +2277,137 @@ mod tests {
         assert_eq!(embedding_prefix("short"), "short");
     }
 
+    /// Atomic insert/backfill, tombstones, owner fairness and claim exclusion use
+    /// the same SQL as the Worker rather than a provider-facing integration test.
+    #[test]
+    fn embedding_work_survives_poison_and_deletion() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(include_str!("../migrations/0001_initial.sql"))
+            .unwrap();
+        db.execute("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES('a','a','i','a',0,'active',0)", [])
+            .unwrap();
+        for n in 0..25 {
+            db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES(?1,'a','i','a','inbound','s','[]','subject','body','{}',?2,0,1,0,'k',1)", rusqlite::params![format!("old-{n:02}"),n]).unwrap();
+        }
+        let valid = serde_json::to_string(&[vec![1.0f32], vec![0.0; 255]].concat()).unwrap();
+        db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes,embedding_json,embedding_model,embedding_dimensions) VALUES('legacy-valid','a','i','a','inbound','s','[]','subject','body','{}',30,0,1,0,'k',1,?1,'qwen/qwen3-embedding-8b',256)",rusqlite::params![valid]).unwrap();
+        db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes,embedding_json,embedding_model,embedding_dimensions) VALUES('legacy-invalid','a','i','a','inbound','s','[]','subject','body','{}',31,0,1,0,'k',1,'[1]','qwen/qwen3-embedding-8b',256)",[]).unwrap();
+        db.execute_batch(include_str!("../migrations/0007_embedding_work.sql"))
+            .unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT embedding_input_version FROM messages WHERE id='legacy-valid'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM embedding_work WHERE message_id='legacy-valid'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM embedding_work WHERE message_id='legacy-invalid'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES('new','a','i','b','inbound','s','[]','subject','body','{}',100,0,1,0,'k',1)",[]).unwrap();
+        let due = db
+            .prepare(EMBEDDING_DUE_SQL)
+            .unwrap()
+            .query_map([0], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(due.len(), 5); // Four old-owner rows, one new-owner row.
+        assert_eq!(due[0], "old-00");
+        assert_eq!(due[1], "new");
+        db.execute("UPDATE embedding_work SET state='quarantined',last_error_code='invalid_request' WHERE message_id='old-00'",[]).unwrap();
+        let due = db
+            .prepare(EMBEDDING_DUE_SQL)
+            .unwrap()
+            .query_map([0], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(due[0], "old-01");
+        for n in 0..25 {
+            db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES(?1,'a','i',?2,'inbound','s','[]','subject','body','{}',?3,0,1,0,'k',1)",rusqlite::params![format!("fresh-{n:02}"),format!("fresh-owner-{n:02}"),200+n]).unwrap();
+        }
+        db.execute(
+            "UPDATE embedding_owner_schedule SET last_served_at=10 WHERE owner_sub='a'",
+            [],
+        )
+        .unwrap();
+        let many_owners = db
+            .prepare(EMBEDDING_DUE_SQL)
+            .unwrap()
+            .query_map([0], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(many_owners.len(), 20);
+        assert!(!many_owners.iter().any(|id| id.starts_with("old-")));
+        db.execute("UPDATE messages SET deleted_at=1 WHERE id='old-01'", [])
+            .unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM embedding_work WHERE message_id='old-01'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        let claim = "UPDATE embedding_work SET lease_until=120000,lease_token='one' WHERE message_id='new' AND state='pending' AND next_attempt_at<=0 AND lease_until<=0 AND EXISTS (SELECT 1 FROM messages WHERE id='new' AND deleted_at IS NULL AND embedding_json IS NULL)";
+        assert_eq!(db.execute(claim, []).unwrap(), 1);
+        assert_eq!(db.execute(claim, []).unwrap(), 0);
+        db.execute("UPDATE messages SET deleted_at=1 WHERE id='new'", [])
+            .unwrap();
+        assert_eq!(db.execute("UPDATE messages SET embedding_json='[1]' WHERE id='new' AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM embedding_work WHERE message_id='new' AND lease_token='one')",[]).unwrap(),0);
+    }
+
+    /// Retry intervals are bounded but owner-specific, and transient errors are
+    /// never implicitly treated as a permanent content defect.
+    #[test]
+    fn embedding_backoff_is_bounded() {
+        assert!(embedding_retry_delay(1, "a") >= 5 * 60_000);
+        assert!(embedding_retry_delay(2, "a") >= 15 * 60_000);
+        assert!(embedding_retry_delay(3, "a") >= 60 * 60_000);
+        assert!(embedding_retry_delay(4, "a") >= 6 * 60 * 60_000);
+        assert!(embedding_retry_delay(999, "a") <= 24 * 60 * 60_000);
+        assert_ne!(embedding_retry_delay(2, "a"), embedding_retry_delay(2, "b"));
+        use platform::EmbeddingFailure as Failure;
+        assert_eq!(
+            embedding_failure_policy(Failure::InvalidRequest, 1),
+            (false, 0)
+        );
+        assert_eq!(
+            embedding_failure_policy(Failure::InvalidInput, 1),
+            (true, 0)
+        );
+        assert_eq!(embedding_failure_policy(Failure::Malformed, 2), (false, 0));
+        assert_eq!(embedding_failure_policy(Failure::Malformed, 3), (true, 0));
+        assert_eq!(
+            embedding_failure_policy(Failure::RateLimited, 1),
+            (false, 15 * 60_000)
+        );
+        assert_eq!(
+            embedding_failure_policy(Failure::Dependency, 1),
+            (false, 60 * 60_000)
+        );
+    }
+
     /// Provider internals never become public codes, including uncertain responses.
     #[test]
     fn rule_create_public_error_contract() {
@@ -2366,6 +2615,9 @@ mod tests {
             r2_key: "k".into(),
             size_bytes: 1,
             embedding_json: None,
+            embedding_model: None,
+            embedding_dimensions: None,
+            embedding_input_version: None,
         };
         let request = SearchRequest {
             title: Some("release [0-9]+".into()),
@@ -2402,6 +2654,20 @@ mod tests {
         let literal = TextPredicate::new("[0-9]+", false, true).unwrap();
         assert!(!literal.matches("Release 42"));
         assert!(literal.matches("Release [0-9]+"));
+        assert!(!semantic_document_compatible(
+            &row,
+            Some("qwen/qwen3-embedding-8b")
+        ));
+        let mut row = row;
+        row.embedding_model = Some("qwen/qwen3-embedding-8b".into());
+        row.embedding_dimensions = Some(256);
+        row.embedding_input_version = Some(1);
+        assert!(semantic_document_compatible(
+            &row,
+            Some("qwen/qwen3-embedding-8b")
+        ));
+        assert!(!semantic_document_compatible(&row, Some("other-model")));
+        assert!(!semantic_document_compatible(&row, None));
     }
 
     /// Score, time and ID form a total deterministic order for semantic cursors. / 分数、时间及 ID 为语义游标提供确定性全序。
@@ -2444,7 +2710,7 @@ mod tests {
             ..Default::default()
         });
         assert!(detailed.contains("body_text,metadata_json"));
-        assert!(detailed.contains("embedding_json FROM messages"));
+        assert!(detailed.contains("embedding_json,embedding_model,embedding_dimensions,embedding_input_version FROM messages"));
         assert!(search_summary_projection().contains("substr(subject,1,2048)"));
     }
 
