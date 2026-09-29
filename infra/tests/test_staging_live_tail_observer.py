@@ -200,7 +200,7 @@ class LiveTailObserverTests(unittest.TestCase):
         """Hostile JSON types are fixed failures, not uncaught tracebacks."""
 
         for malformed in (
-            event("routing_list", "success", phase=[]),
+            {**event("routing_list", "success"), "phase": []},
             event("routing_list", "success", error_code=[]),
             event("routing_list", "success", provider_http_status=True),
         ):
