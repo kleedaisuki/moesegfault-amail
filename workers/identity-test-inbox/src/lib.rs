@@ -83,8 +83,14 @@ mod tests {
     fn accepts_only_dedicated_alias() {
         let allowlist = "amail-e2e@moesegfault.dev,amail-e2e-isolation@moesegfault.dev";
         assert!(valid_recipient("amail-e2e@moesegfault.dev", allowlist));
-        assert!(valid_recipient("amail-e2e-isolation@moesegfault.dev", allowlist));
-        assert!(!valid_recipient("amail-e2e@mail.moesegfault.dev", allowlist));
+        assert!(valid_recipient(
+            "amail-e2e-isolation@moesegfault.dev",
+            allowlist
+        ));
+        assert!(!valid_recipient(
+            "amail-e2e@mail.moesegfault.dev",
+            allowlist
+        ));
         assert!(!valid_recipient("other@moesegfault.dev", allowlist));
     }
 
