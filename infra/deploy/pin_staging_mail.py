@@ -96,6 +96,11 @@ def bindings_match(version: dict, expected_version: str) -> bool:
     if version.get("id") != expected_version or not isinstance(resources, dict):
         return False
     actual = resources.get("bindings")
+    # Cloudflare's version API has used both a direct list and a wrapper with a
+    # `result` list across generated SDK schemas. Never treat its `{}` example
+    # as an empty binding set or fall back to unversioned /settings.
+    if isinstance(actual, dict) and set(actual) == {"result"}:
+        actual = actual["result"]
     expected = expected_bindings()
     if not isinstance(actual, list) or len(actual) != len(expected):
         return False

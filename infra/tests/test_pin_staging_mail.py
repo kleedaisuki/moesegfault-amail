@@ -70,6 +70,8 @@ class PinTests(unittest.TestCase):
 
         good = {"id": VERSION, "resources": {"bindings": bindings()}}
         self.assertTrue(pin.bindings_match(good, VERSION))
+        wrapped = {"id": VERSION, "resources": {"bindings": {"result": bindings()}}}
+        self.assertTrue(pin.bindings_match(wrapped, VERSION))
         wrong = {"id": VERSION, "resources": {"bindings": bindings()}}
         next(item for item in wrong["resources"]["bindings"] if item["name"] == "MAIL_DB")["database_id"] = OTHER
         self.assertFalse(pin.bindings_match(wrong, VERSION))
@@ -80,6 +82,8 @@ class PinTests(unittest.TestCase):
         wrong["resources"]["bindings"].append({"name": "UNREVIEWED", "type": "secret_text"})
         self.assertFalse(pin.bindings_match(wrong, VERSION))
         self.assertFalse(pin.bindings_match({"id": VERSION, "resources": {"bindings": {}}}, VERSION))
+        self.assertFalse(pin.bindings_match({"id": VERSION, "resources": {"bindings": {"result": []}}}, VERSION))
+        self.assertFalse(pin.bindings_match({"id": VERSION, "resources": {"bindings": {"result": bindings(), "unknown": True}}}, VERSION))
 
     @patch.object(pin, "fetch")
     def test_readback_is_bookended_by_deployment(self, fetch) -> None:
