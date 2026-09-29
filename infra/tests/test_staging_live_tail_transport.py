@@ -37,6 +37,12 @@ class FakeSocket:
 
         self.frames: asyncio.Queue = asyncio.Queue()
         self.closed = False
+        self.sent: list[str] = []
+
+    async def send(self, message: str) -> None:
+        """Record Wrangler-compatible initial control frames."""
+
+        self.sent.append(message)
 
     async def recv(self):
         """Block until a synthetic complete WebSocket message arrives."""
@@ -84,6 +90,7 @@ class TailTransportTests(unittest.IsolatedAsyncioTestCase):
                     label = await session.finish(REQUEST)
         self.assertEqual(label, "routing_list_failed")
         self.assertEqual(calls, [("POST", FILTER), ("DELETE", None)])
+        self.assertEqual(socket.sent, ['{"debug":false}'])
         self.assertTrue(socket.closed)
         self.assertEqual(output.getvalue(), "")
 
@@ -140,4 +147,78 @@ class TailTransportTests(unittest.IsolatedAsyncioTestCase):
             value["result"]["url"] = url
             with self.subTest(url=url), self.assertRaises(TailTransportError):
                 _tail_record(value)
+
+    async def test_cancellation_during_close_still_deletes_tail(self) -> None:
+        """A cancelled socket close cannot skip the exact server-side DELETE."""
+
+        class SlowClose(FakeSocket):
+            """Suspend the first close until the owner task is cancelled."""
+
+            def __init__(self) -> None:
+                """Prepare a deterministic close barrier."""
+
+                super().__init__()
+                self.started = asyncio.Event()
+
+            async def close(self) -> None:
+                """Hold the first close; let a later cleanup complete."""
+
+                self.started.set()
+                await asyncio.Event().wait()
+
+        socket = SlowClose()
+        calls = []
+
+        async def connect(_url, **_kwargs):
+            """Return the fake socket without network."""
+
+            return socket
+
+        def api(_url, _token, method, _body=None):
+            """Count control-plane calls without retaining credentials."""
+
+            calls.append(method)
+            return created() if method == "POST" else {"success": True}
+
+        with patch("staging_live_tail_transport._json_request", side_effect=api):
+            session = TailSession(ACCOUNT, "private-token", connect_socket=connect)
+            await session.__aenter__()
+            closing = asyncio.create_task(session._close())
+            await asyncio.wait_for(socket.started.wait(), timeout=2)
+            closing.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await closing
+            self.assertEqual(calls, ["POST", "DELETE"])
+            self.assertIsNone(session._tail_id)
+
+    async def test_initial_control_frame_failure_deletes_tail(self) -> None:
+        """No connected claim is issued if the WebSocket control send fails."""
+
+        class FailedSend(FakeSocket):
+            """Fail before the stream can be accepted by the parser."""
+
+            async def send(self, _message: str) -> None:
+                """Simulate a transport error without exposing its text."""
+
+                raise RuntimeError("private WebSocket error")
+
+        socket = FailedSend()
+        calls = []
+
+        async def connect(_url, **_kwargs):
+            """Return the fake socket without network."""
+
+            return socket
+
+        def api(_url, _token, method, _body=None):
+            """Count only the control-plane method."""
+
+            calls.append(method)
+            return created() if method == "POST" else {"success": True}
+
+        with patch("staging_live_tail_transport._json_request", side_effect=api):
+            with self.assertRaises(TailTransportError):
+                await TailSession(ACCOUNT, "private-token", connect_socket=connect).__aenter__()
+        self.assertEqual(calls, ["POST", "DELETE"])
+        self.assertTrue(socket.closed)
 

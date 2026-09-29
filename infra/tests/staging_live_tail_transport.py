@@ -51,7 +51,7 @@ def _json_request(url: str, token: str, method: str, body: dict | None = None) -
         return value
     except TailTransportError:
         raise
-    except Exception from None:
+    except Exception:
         raise TailTransportError("api_request_failed") from None
 
 
@@ -84,7 +84,7 @@ def _tail_record(value: dict) -> tuple[str, str, datetime]:
         raise TailTransportError("tail_record_unverified")
     try:
         expires_at = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
-    except ValueError from None:
+    except ValueError:
         raise TailTransportError("tail_record_unverified") from None
     if expires_at.tzinfo is None or expires_at <= datetime.now(timezone.utc):
         raise TailTransportError("tail_record_unverified")
@@ -114,7 +114,6 @@ class TailSession:
         self._reader: asyncio.Task | None = None
         self._expiry: datetime | None = None
         self._deadline = time.monotonic() + MAX_SECONDS
-        self._closed = False
         self._result: str | None = None
         logger = logging.getLogger("amail.staging.tail.transport")
         logger.addHandler(logging.NullHandler())
@@ -144,9 +143,15 @@ class TailSession:
             )
             if self._socket.subprotocol != "trace-v1":
                 raise TailTransportError("transport_unverified")
+            # Wrangler sends this after the upgrade. It is a protocol control
+            # frame, not a server acknowledgement of the create-time filter.
+            await self._socket.send('{"debug":false}')
             self._observer.connected()
             self._reader = asyncio.create_task(self._read())
             return self
+        except asyncio.CancelledError:
+            await self._close()
+            raise
         except Exception:
             await self._close()
             raise TailTransportError("transport_unverified") from None
@@ -201,29 +206,30 @@ class TailSession:
     async def _close(self) -> bool:
         """Cancel the receiver, close the socket, then delete the exact session."""
 
-        if self._closed:
-            return self._tail_id is None
-        self._closed = True
         if self._reader is not None:
             self._reader.cancel()
-            try:
-                await self._reader
-            except asyncio.CancelledError:
-                pass
-        if self._socket is not None:
-            try:
-                await asyncio.wait_for(self._socket.close(), timeout=5)
-            except Exception:
-                self._observer.lost()
-        if self._tail_id is None:
-            return True
+            self._reader = None
+        deleted = self._tail_id is None
         try:
-            # Keep deletion non-cancellable for the same orphan-prevention reason.
-            _json_request(f"{self._endpoint}/{self._tail_id}", self._token, "DELETE")
-            self._tail_id = None
-            return True
+            if self._socket is not None:
+                await asyncio.wait_for(self._socket.close(), timeout=5)
+                self._socket = None
+        except asyncio.CancelledError:
+            self._observer.lost()
+            raise
         except Exception:
-            return False
+            self._observer.lost()
+        finally:
+            if self._tail_id is not None:
+                try:
+                    # A synchronous bounded call in finally cannot be skipped
+                    # by cancellation while socket close is pending.
+                    _json_request(f"{self._endpoint}/{self._tail_id}", self._token, "DELETE")
+                    self._tail_id = None
+                    deleted = True
+                except Exception:
+                    deleted = False
+        return deleted
 
     async def __aexit__(self, _type, _value, _traceback) -> None:
         """Always attempt server-side deletion even when the caller fails."""
