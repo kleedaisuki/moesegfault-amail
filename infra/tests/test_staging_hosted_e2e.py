@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import hmac
 import hashlib
 import importlib.util
 from io import StringIO
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -36,6 +37,35 @@ class HostedHarnessSafetyTests(unittest.TestCase):
             with self.assertRaises(HARNESS.HostedProbeError) as caught:
                 HARNESS.semantic_requested()
         self.assertEqual(str(caught.exception), "semantic_confirmation_invalid")
+
+    def test_manual_workflow_wires_default_off_semantic_input(self) -> None:
+        """A reviewer must be able to dispatch the optional stage explicitly."""
+
+        workflow = (HARNESS.ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        inputs = workflow.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
+        semantic = re.search(r"(?ms)^      semantic:\n(.*?)(?=^      [a-z_]+:|\Z)", inputs)
+        self.assertIsNotNone(semantic)
+        self.assertIn("default: false", semantic.group(1))
+        self.assertIn("type: boolean", semantic.group(1))
+        job = workflow.split("  staging-e2e:\n", 1)[1].split("\n  staging-routing-policy:", 1)[0]
+        self.assertIn("inputs.target == 'staging-e2e'", job)
+        self.assertIn(
+            "AMAIL_STAGING_SEMANTIC_E2E: ${{ inputs.semantic && '1' || '0' }}", job
+        )
+        self.assertEqual(workflow.count("AMAIL_STAGING_SEMANTIC_E2E:"), 1)
+
+    def test_success_marker_distinguishes_basic_and_semantic_scope(self) -> None:
+        """A basic pass must never look like a semantic-search pass."""
+
+        for enabled, expected in (
+            (False, "staging_hosted_native_login_and_inbound_mail_verified"),
+            (True, "staging_hosted_native_login_inbound_and_semantic_verified"),
+        ):
+            with self.subTest(semantic=enabled), patch.object(
+                HARNESS, "execute", return_value=enabled
+            ), redirect_stdout(StringIO()) as output:
+                self.assertEqual(HARNESS.main(), 0)
+            self.assertEqual(output.getvalue().strip(), expected)
 
     def test_typed_stage_labels_are_bounded(self) -> None:
         """Preserve fixed stage codes but never echo provider or secret payloads."""

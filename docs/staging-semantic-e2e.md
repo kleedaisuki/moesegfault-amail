@@ -15,8 +15,12 @@ run-owned deliveries**, after ordinary search and before `mark`/`delete`, only
 when `--check-semantic` is selected. The hosted wrapper translates the explicit
 `AMAIL_STAGING_SEMANTIC_E2E=1` environment switch into that flag; an absent
 switch preserves the base inbound gate. The workflow must explicitly pass the
-switch for a semantic dispatch; merely running today's basic `staging-e2e`
-target does **not** attest semantic search. No extra address or SMTP submission
+switch for a semantic dispatch: `gh workflow run ci.yml --ref codex/amail-v0.1.0
+-f target=staging-e2e -f confirm=RUN_STAGING_E2E -f semantic=true`. The
+`semantic` workflow input is a default-off boolean. A successful optional run
+prints `staging_hosted_native_login_inbound_and_semantic_verified`; the basic
+run instead prints `staging_hosted_native_login_and_inbound_mail_verified` and
+does **not** attest semantic search. No extra address or SMTP submission
 is made for this stage. The callback captures JSONL and suppresses raw stderr,
 passing only the existing message IDs, timestamps and private phrase in memory.
 

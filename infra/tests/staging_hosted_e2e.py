@@ -99,8 +99,8 @@ def recoverable_run_nonce(password: str) -> str:
     return digest[:16]
 
 
-def execute() -> None:
-    """Exercise deployed staging services while containing all data in one run dir."""
+def execute() -> bool:
+    """Exercise deployed staging services and return the selected probe scope."""
 
     username, password = validate_environment()
     semantic = semantic_requested()
@@ -157,20 +157,24 @@ def execute() -> None:
             shutil.rmtree(run_dir)
         except OSError:
             raise HostedProbeError("run_cleanup_failed") from None
+    return semantic
 
 
 def main() -> int:
     """Report only static phase markers; never render a third-party exception."""
 
     try:
-        execute()
+        semantic = execute()
     except HostedProbeError as error:
         print(f"staging_hosted_e2e_failed:{error}", file=sys.stderr)
         return 1
     except Exception:
         print("staging_hosted_e2e_failed:unexpected_failure", file=sys.stderr)
         return 1
-    print("staging_hosted_native_login_and_inbound_mail_verified")
+    print(
+        "staging_hosted_native_login_inbound_and_semantic_verified"
+        if semantic else "staging_hosted_native_login_and_inbound_mail_verified"
+    )
     return 0
 
 
