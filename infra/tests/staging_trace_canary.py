@@ -264,6 +264,12 @@ def embedded_events(value: object, depth: int = 0) -> list[dict]:
     return []
 
 
+def empty_log_payload(value: object) -> bool:
+    """Treat only absent or structurally empty log fields as non-evidence."""
+
+    return value is None or value == "" or value == {} or value == []
+
+
 def allowlisted_event(event: dict) -> bool:
     """Reject arbitrary application-event attributes and malformed identifiers."""
 
@@ -329,15 +335,13 @@ def assess(records: list[dict], ids: tuple[str, str, str], denied_id: str,
         source_events = embedded_events(source)
         message_events = embedded_events(message)
         recognized = source_events or message_events
-        # A custom console line with no reviewed schema is not silently safe.
-        # Platform-generated event/error rows still receive whole-record canary
-        # scanning, but are outside the application-event schema verdict.
-        if metadata.get("type") == "cf-worker-log":
-            need(bool(recognized), "unreviewed_custom_log")
-            need(source in (None, "", {}) or bool(source_events),
-                 "unreviewed_custom_log")
-            need(message in (None, "") or bool(message_events),
-                 "unreviewed_custom_log")
+        # Cloudflare's event type is optional. A missing or unknown classifier
+        # cannot turn arbitrary retained text into an application-schema pass.
+        # No platform payload type is exempt until a separate live review.
+        need(empty_log_payload(source) or bool(source_events),
+             "unreviewed_retained_payload")
+        need(empty_log_payload(message) or bool(message_events),
+             "unreviewed_retained_payload")
         need(all(allowlisted_event(event) for event in source_events + message_events),
              "application_event_schema_unallowlisted")
         safe_events.extend(recognized)

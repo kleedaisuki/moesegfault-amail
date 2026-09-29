@@ -86,7 +86,15 @@ class StagingTraceCanaryTests(unittest.TestCase):
         records = events() + [{"$metadata": {"id": "custom", "service": canary.WORKER,
                                              "type": "cf-worker-log"},
                                "source": "some free-form diagnostic"}]
-        with self.assertRaisesRegex(canary.CanaryError, "unreviewed_custom_log"):
+        with self.assertRaisesRegex(canary.CanaryError, "unreviewed_retained_payload"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
+    def test_missing_type_cannot_hide_unreviewed_payload(self) -> None:
+        """Cloudflare's optional type field is not a privacy bypass."""
+
+        records = events() + [{"$metadata": {"id": "untyped", "service": canary.WORKER},
+                               "source": "unreviewed retained text"}]
+        with self.assertRaisesRegex(canary.CanaryError, "unreviewed_retained_payload"):
             canary.assess(records, (T, C, R), D, MARKERS)
 
     def test_indexed_message_cannot_mask_unreviewed_source(self) -> None:
@@ -95,7 +103,7 @@ class StagingTraceCanaryTests(unittest.TestCase):
         records = events()
         records[0]["$metadata"]["message"] = records[0]["source"]
         records[0]["source"] = "unreviewed custom text"
-        with self.assertRaisesRegex(canary.CanaryError, "unreviewed_custom_log"):
+        with self.assertRaisesRegex(canary.CanaryError, "unreviewed_retained_payload"):
             canary.assess(records, (T, C, R), D, MARKERS)
 
     def test_unallowlisted_indexed_message_fails(self) -> None:
