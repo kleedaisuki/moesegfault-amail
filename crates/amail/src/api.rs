@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use rand::RngCore;
 use reqwest::{
     blocking::{Client, RequestBuilder},
-    header::CONTENT_TYPE,
+    header::{HeaderMap, CONTENT_TYPE},
     Method, StatusCode,
 };
 use serde_json::Value;
@@ -86,6 +86,126 @@ fn address_delete_parts(address: &str) -> (Method, &'static str, Value) {
     )
 }
 
+/// Accept only the staging add diagnostic's closed, canonical wire grammar.
+/// Unknown server or intermediary headers must never enter CLI stderr.
+fn address_diag(headers: &HeaderMap) -> Option<&str> {
+    let mut values = headers.get_all("x-amail-address-diag").iter();
+    let value = values.next()?.to_str().ok()?;
+    if values.next().is_some() {
+        return None;
+    }
+    let mut parts = value.split(':');
+    if parts.next()? != "v1" {
+        return None;
+    }
+    let phase = parts.next()?;
+    if !matches!(
+        phase,
+        "input"
+            | "d1_lookup"
+            | "d1_allocate"
+            | "d1_claim"
+            | "routing_list"
+            | "routing_create"
+            | "d1_activate"
+            | "d1_readback"
+            | "response_encode"
+            | "success"
+    ) {
+        return None;
+    }
+    let kind = parts.next()?;
+    if !matches!(
+        kind,
+        "none" | "request" | "http" | "provider" | "decode" | "d1" | "state"
+    ) {
+        return None;
+    }
+    let status = parts.next()?;
+    let code = parts.next()?;
+    if parts.next().is_some()
+        || !canonical_number(status, 100, 599)
+        || !canonical_number(code, 1000, 999_999)
+    {
+        return None;
+    }
+    Some(value)
+}
+
+/// Only a single UUID may link a response to telemetry and stderr.
+/// Do not use untrusted header bytes as a log or terminal string.
+fn header_uuid(headers: &HeaderMap, name: &str) -> Option<String> {
+    let mut values = headers.get_all(name).iter();
+    let value = values.next()?.to_str().ok()?;
+    if values.next().is_some() {
+        return None;
+    }
+    let uuid = uuid::Uuid::parse_str(value).ok()?;
+    if uuid.hyphenated().to_string() != value {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+/// Prefer the Mail Worker's request ID; a malformed primary cannot be rescued by fallback.
+fn response_correlation(headers: &HeaderMap) -> Option<String> {
+    if headers.contains_key("x-amail-request-id") {
+        header_uuid(headers, "x-amail-request-id")
+    } else {
+        header_uuid(headers, "x-moesegfault-correlation-id")
+    }
+}
+
+/// A phase is causal evidence only when the same response has a canonical Worker ID.
+fn address_response_diag(headers: &HeaderMap) -> Option<&str> {
+    header_uuid(headers, "x-amail-request-id")?;
+    address_diag(headers)
+}
+
+/// Zero denotes an unobserved provider result; all other numbers are canonical decimal.
+fn canonical_number(value: &str, min: u32, max: u32) -> bool {
+    value == "0"
+        || (!value.starts_with('0')
+            && value.bytes().all(|byte| byte.is_ascii_digit())
+            && value
+                .parse::<u32>()
+                .is_ok_and(|number| (min..=max).contains(&number)))
+}
+
+/// Address-add codes are a closed API vocabulary, not arbitrary response text.
+fn address_problem_code(problem: &Value) -> &'static str {
+    let code = problem
+        .get("code")
+        .or_else(|| problem.get("error_code"))
+        .and_then(Value::as_str);
+    match code {
+        Some("service_unavailable") => "service_unavailable",
+        Some("not_found") => "not_found",
+        Some("routing_unavailable") => "routing_unavailable",
+        Some("unauthorized") => "unauthorized",
+        Some("forbidden") => "forbidden",
+        Some("address_provision_unknown") => "address_provision_unknown",
+        Some("invalid_json") => "invalid_json",
+        Some("address_deleting") => "address_deleting",
+        Some("address_limit") => "address_limit",
+        Some("address_retired") => "address_retired",
+        Some("address_state_changed") => "address_state_changed",
+        Some("address_unavailable") => "address_unavailable",
+        Some("capacity_exhausted") => "capacity_exhausted",
+        Some("reserved_or_invalid_name") => "reserved_or_invalid_name",
+        _ => "http_error",
+    }
+}
+
+/// Keep transport failure output fixed even when reqwest carries a sensitive URL.
+fn transport_kind(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else {
+        "other"
+    }
+}
+
 impl<'a> Api<'a> {
     /// Construct bounded-time client / 创建具有超时的客户端。
     pub fn new(cfg: &'a Runtime) -> Result<Self> {
@@ -141,17 +261,27 @@ impl<'a> Api<'a> {
                     &span_id,
                     None,
                 );
-                return Err(err.into());
+                bail!(
+                    "mail API {operation} transport failed: kind={}",
+                    transport_kind(&err)
+                );
             }
         };
         let status = response.status();
-        let correlation = response
-            .headers()
-            .get("x-amail-request-id")
-            .or_else(|| response.headers().get("x-moesegfault-correlation-id"))
-            .and_then(|v| v.to_str().ok())
+        let correlation = response_correlation(response.headers());
+        let diagnostic = (operation == "addresses.add")
+            .then(|| address_response_diag(response.headers()))
+            .flatten()
             .map(str::to_owned);
-        let body = response.bytes()?.to_vec();
+        let body = response
+            .bytes()
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "mail API {operation} body read failed: kind={}",
+                    transport_kind(&err)
+                )
+            })?
+            .to_vec();
         telemetry::record(
             self.cfg,
             operation,
@@ -164,15 +294,24 @@ impl<'a> Api<'a> {
         );
         if !status.is_success() {
             let problem: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-            let code = problem
+            let raw_code = problem
                 .get("code")
                 .or_else(|| problem.get("error_code"))
                 .and_then(Value::as_str)
                 .unwrap_or("http_error");
-            bail!(
+            let code = if operation == "addresses.add" {
+                address_problem_code(&problem)
+            } else {
+                raw_code
+            };
+            let prefix = format!(
                 "mail API {operation} failed: HTTP {status}, code={code}, correlation_id={}",
                 correlation.as_deref().unwrap_or("none")
             );
+            if let Some(diagnostic) = diagnostic {
+                bail!("{prefix}, diag={diagnostic}");
+            }
+            bail!("{prefix}");
         }
         Ok((status, body))
     }
@@ -203,8 +342,13 @@ impl<'a> Api<'a> {
         if bytes.is_empty() {
             return Ok(serde_json::json!({"ok":true}));
         }
-        serde_json::from_slice(&bytes)
-            .with_context(|| format!("invalid JSON response for {operation}"))
+        if operation == "addresses.add" {
+            serde_json::from_slice(&bytes)
+                .map_err(|_| anyhow::anyhow!("mail API addresses.add response invalid: kind=json"))
+        } else {
+            serde_json::from_slice(&bytes)
+                .with_context(|| format!("invalid JSON response for {operation}"))
+        }
     }
 
     /// List owned addresses / 列出拥有的地址。
@@ -339,6 +483,105 @@ impl<'a> Api<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue};
+
+    fn diagnostic_header(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-amail-address-diag",
+            HeaderValue::from_str(value).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn address_diagnostic_accepts_only_closed_canonical_header() {
+        let good = "v1:routing_create:provider:403:10000";
+        assert_eq!(address_diag(&diagnostic_header(good)), Some(good));
+        assert_eq!(
+            address_diag(&diagnostic_header("v1:d1_claim:d1:0:0")),
+            Some("v1:d1_claim:d1:0:0")
+        );
+        for bad in [
+            "v1:other:provider:403:10000",
+            "v1:routing_create:other:403:10000",
+            "v1:routing_create:provider:0403:10000",
+            "v1:routing_create:provider:200:01000",
+            "v1:routing_create:provider:600:10000",
+            "v1:routing_create:provider:200:1000000",
+            "v1:routing_create:provider:200:10000:private",
+            "v2:routing_create:provider:200:10000",
+            "v1:routing_create:provider:200:-1",
+        ] {
+            assert_eq!(address_diag(&diagnostic_header(bad)), None, "{bad}");
+        }
+        let mut duplicate = diagnostic_header(good);
+        duplicate.append("x-amail-address-diag", HeaderValue::from_static(good));
+        assert_eq!(address_diag(&duplicate), None);
+    }
+
+    #[test]
+    fn untrusted_problem_code_never_reaches_output() {
+        assert_eq!(
+            address_problem_code(&serde_json::json!({"code":"routing_unavailable"})),
+            "routing_unavailable"
+        );
+        assert_eq!(
+            address_problem_code(&serde_json::json!({"code":"private-address@example.org"})),
+            "http_error"
+        );
+        assert_eq!(
+            address_problem_code(&serde_json::json!({"message":"secret"})),
+            "http_error"
+        );
+    }
+
+    #[test]
+    fn correlation_requires_one_canonical_uuid() {
+        let id = "123e4567-e89b-42d3-a456-426614174000";
+        let mut headers = HeaderMap::new();
+        headers.insert("x-amail-request-id", HeaderValue::from_static(id));
+        assert_eq!(response_correlation(&headers).as_deref(), Some(id));
+
+        headers.append("x-amail-request-id", HeaderValue::from_static(id));
+        assert_eq!(response_correlation(&headers), None);
+
+        headers.clear();
+        headers.insert(
+            "x-amail-request-id",
+            HeaderValue::from_static("private-address@example.org"),
+        );
+        headers.insert("x-moesegfault-correlation-id", HeaderValue::from_static(id));
+        assert_eq!(response_correlation(&headers), None);
+
+        headers.clear();
+        headers.insert("x-moesegfault-correlation-id", HeaderValue::from_static(id));
+        assert_eq!(response_correlation(&headers).as_deref(), Some(id));
+        assert!(HeaderValue::from_bytes(b"secret\r\nX-Leak: yes").is_err());
+    }
+
+    #[test]
+    fn address_phase_requires_canonical_primary_worker_id() {
+        let id = HeaderValue::from_static("123e4567-e89b-42d3-a456-426614174000");
+        let diag = "v1:routing_list:http:403:0";
+        let mut headers = diagnostic_header(diag);
+        assert_eq!(address_response_diag(&headers), None);
+
+        headers.insert("x-moesegfault-correlation-id", id.clone());
+        assert_eq!(address_response_diag(&headers), None);
+
+        headers.insert(
+            "x-amail-request-id",
+            HeaderValue::from_static("private-address@example.org"),
+        );
+        assert_eq!(address_response_diag(&headers), None);
+
+        headers.insert("x-amail-request-id", id.clone());
+        assert_eq!(address_response_diag(&headers), Some(diag));
+
+        headers.append("x-amail-request-id", id);
+        assert_eq!(address_response_diag(&headers), None);
+    }
 
     #[test]
     fn address_deletion_keeps_personal_address_out_of_url() {
