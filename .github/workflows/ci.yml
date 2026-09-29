@@ -12,7 +12,7 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-trace-canary, production]
+        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-trace-canary, production]
       confirm:
         description: Staging E2E, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -313,6 +313,54 @@ jobs:
           ALIAS_ATTEMPT: ${{ inputs.alias_attempt }}
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_fifth_mail_audit.py READ_FIFTH_MAIL_AGGREGATES $env:ALIAS_RUN_ID $env:ALIAS_ATTEMPT
+
+  staging-fifth-mail-cleanup:
+    name: Guarded one-shot cleanup of fifth hosted mail fixtures
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-fifth-mail-cleanup' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: windows-latest
+    environment: staging
+    timeout-minutes: 45
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact-run destructive confirmation before accessing secrets
+        env:
+          CLEANUP_CONFIRM: ${{ inputs.confirm }}
+          ALIAS_RUN_ID: ${{ inputs.alias_run_id }}
+          ALIAS_ATTEMPT: ${{ inputs.alias_attempt }}
+        run: |
+          if ($env:CLEANUP_CONFIRM -ne 'DELETE_FIFTH_MAIL_EXACT_FIXTURES' -or
+              $env:ALIAS_RUN_ID -ne '36589042183' -or
+              $env:ALIAS_ATTEMPT -ne '1') {
+            throw 'Exact fifth-run fixture cleanup confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install native browser and DPAPI adapters
+        run: python -m pip install pywin32==312 websocket-client==1.9.2
+      - name: Build native amail CLI
+        run: |
+          rustup update stable
+          cargo build -p amail --locked
+      - name: Verify exact fixtures and delete only their owner-scoped CLI IDs
+        env:
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.expected_worker_version }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_fifth_mail_cleanup.py DELETE_FIFTH_MAIL_EXACT_FIXTURES 36589042183 1
 
   staging-routing-write-probe:
     name: One valid disabled staging Routing Rules Write probe
