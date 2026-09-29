@@ -691,7 +691,10 @@ mod tests {
             vec!["amail", "auth", "login", "--help"],
             vec!["amail", "search", "--help"],
         ] {
-            let help = Cli::try_parse_from(args.clone()).unwrap_err();
+            let help = match Cli::try_parse_from(args.clone()) {
+                Ok(_) => panic!("help unexpectedly parsed as a command: {args:?}"),
+                Err(help) => help,
+            };
             assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
             let output = help
                 .to_string()
