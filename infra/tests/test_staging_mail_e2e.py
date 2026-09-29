@@ -269,6 +269,11 @@ class CleanupTests(unittest.TestCase):
             HARNESS.cli_failure(base + b", cf_error=1101\rleak\n", "address_register_failed"),
             "address_register_failed",
         )
+        client_error = base.replace(b"500 Internal Server Error", b"409 Conflict")
+        self.assertEqual(
+            HARNESS.cli_failure(client_error + b", cf_error=1101\n", "address_register_failed"),
+            "address_register_failed_http_409_http_error",
+        )
 
     def test_precleanup_snapshot_is_fixed_and_read_only(self) -> None:
         """Exact route and parameterized row reduce to labels without payload exposure."""

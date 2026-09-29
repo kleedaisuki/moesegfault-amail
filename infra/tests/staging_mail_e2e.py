@@ -211,7 +211,9 @@ def cli_failure(stderr: bytes, fallback: str) -> str:
     diag = checked_diag(found.group(4)) if found.group(4) and found.group(1) == b"addresses.add" else None
     if diag:
         label += f"_diag_{diag.replace(':', '_')}"
-    if found.group(5) in (b"1101", b"1102", b"other", b"absent") and found.group(1) == b"addresses.add":
+    if (found.group(1) == b"addresses.add"
+            and found.group(2).startswith(b"5")
+            and found.group(5) in (b"1101", b"1102", b"other", b"absent")):
         label += f"_cf_{found.group(5).decode('ascii')}"
     return label
 
