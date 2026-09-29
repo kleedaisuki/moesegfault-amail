@@ -30,9 +30,10 @@ def row(error: object = None, outcome: str | None = None) -> dict:
 
     result = {"$metadata": {"service": probe.WORKER, "error": error},
               "timestamp": probe.START_MS + 1,
+              "$workers": {"scriptName": probe.WORKER},
               "source": {"url": "PRIVATE_URL", "message": "PRIVATE_MAIL_BODY"}}
     if outcome is not None:
-        result["$workers"] = {"scriptName": probe.WORKER, "outcome": outcome}
+        result["$workers"]["outcome"] = outcome
     return result
 
 
@@ -65,6 +66,14 @@ class ExceptionProbeTests(unittest.TestCase):
 
         payload = response([row("RuntimeError: unreachable")])
         payload["result"]["events"]["events"][0]["$metadata"]["service"] = "other"
+        with self.assertRaises(probe.Unverified):
+            probe.classify(payload, probe.query_body())
+
+    def test_missing_script_name_fails(self) -> None:
+        """An absent Worker identity cannot inherit the requested script name."""
+
+        payload = response([row("RuntimeError: unreachable", "exception")])
+        del payload["result"]["events"]["events"][0]["$workers"]["scriptName"]
         with self.assertRaises(probe.Unverified):
             probe.classify(payload, probe.query_body())
 

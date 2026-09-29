@@ -144,7 +144,7 @@ def classify(payload: object, body: dict) -> str:
         if type(at) is not int or not START_MS <= at <= END_MS:
             raise Unverified("scope")
         workers = row.get("$workers")
-        if workers is not None and (not isinstance(workers, dict) or workers.get("scriptName", WORKER) != WORKER):
+        if not isinstance(workers, dict) or workers.get("scriptName") != WORKER:
             raise Unverified("scope")
         if meta.get("error") is not None or (isinstance(workers, dict) and workers.get("outcome") == "exception"):
             candidates.append(_error_kind(meta.get("error")))
