@@ -514,6 +514,16 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+          run_install: false
+      - name: Install workerd boundary-test dependencies
+        working-directory: infra/tests/worker-boundary
+        run: pnpm install --frozen-lockfile
       - name: Set up Rust Wasm target
         run: |
           rustup update stable
@@ -545,10 +555,7 @@ jobs:
         run: worker-build --release
       - name: Run built Rust Worker address-add boundary tests in workerd
         working-directory: infra/tests/worker-boundary
-        run: |
-          corepack enable
-          pnpm install --frozen-lockfile
-          pnpm test
+        run: pnpm test
       - name: Bundle Rust Email ingress for Wrangler
         working-directory: workers/mail-ingress
         run: worker-build --release
@@ -806,44 +813,45 @@ jobs:
         run: python infra/deploy/ensure_email_events.py --target production --phase subscription
 
   release-ready:
-    name: Gate public site on published download assets
+    name: Gate public site on verified published release
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: read
     outputs:
       ready: ${{ steps.check.outputs.ready }}
     steps:
       - uses: actions/checkout@v4
-      - name: Check matching published GitHub Release
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check matching published and attested GitHub Release
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           version=$(python -c 'import json; print(json.load(open("site/package.json"))["version"])')
-          release=$(gh release view "v$version" --json isDraft,assets 2>/dev/null || true)
+          tag="v$version"
+          release=$(gh release view "$tag" --json isDraft --jq '.isDraft' 2>/dev/null || true)
+          tag_sha=$(git rev-parse "refs/tags/$tag^{commit}" 2>/dev/null || true)
           ready=false
-          if [ -n "$release" ] && jq -e '.isDraft == false' <<< "$release" > /dev/null; then
+          if [ "$release" = false ] && [ -n "$tag_sha" ] && git merge-base --is-ancestor "$tag_sha" HEAD; then
+            mkdir -p .temp/release-published
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir .temp/release-published
+            python infra/release/verify_published_assets.py .temp/release-published "$tag" \
+              --repo "$GITHUB_REPOSITORY" --source-digest "$tag_sha"
             ready=true
-            for asset in \
-              "amail-v$version-x86_64-unknown-linux-gnu.tar.gz" \
-              "amail-v$version-aarch64-unknown-linux-gnu.tar.gz" \
-              "amail-v$version-x86_64-pc-windows-msvc.zip" \
-              "amail-v$version-aarch64-apple-darwin.tar.gz" \
-              "amail-v$version-x86_64-apple-darwin.tar.gz" \
-              "amail-agent-skill-v$version.zip" \
-              SHA256SUMS; do
-              if ! jq -e --arg name "$asset" 'any(.assets[]; .name == $name)' <<< "$release" > /dev/null; then
-                ready=false
-                break
-              fi
-            done
           fi
           if [ "$ready" = true ]; then
             echo 'ready=true' >> "$GITHUB_OUTPUT"
           else
             echo 'ready=false' >> "$GITHUB_OUTPUT"
-            echo "Public site deferred: GitHub Release v$version and all expected assets are not published"
+            echo "Public site deferred: matching published tag or attested Release is unavailable"
           fi
 
   deploy-site:

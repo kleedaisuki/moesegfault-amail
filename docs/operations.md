@@ -185,12 +185,17 @@ Release with all five platform archives, the agent skill ZIP, and
 release workflow publishes those assets first, downloads all seven published
 files back from the GitHub Release into repository `.temp`, and verifies the
 exact five native archives, skill ZIP, and six matching SHA-256 digests before
-launching the public site. The public site cannot deploy if the download or
-byte check fails. Live mail API health remains a separate launch check. The
-manifest is not a cryptographic trust root by itself; tag ancestry and archive
-attestations are separate provenance controls. This ordering preserves a
-working download path without blocking earlier mail API/ingress deployment
-and live acceptance.
+launching the public site. The tag path also compares the downloaded manifest
+to the immutable bundle artifact from the **same run**. A later manual
+production-site deployment repeats the byte check and verifies each archive's
+GitHub artifact attestation against the exact release tag commit and release
+workflow; an unpublished release leaves the site deferred. The downloaded
+manifest alone is not a trust root. Both paths fail closed on bad bytes or
+missing provenance, while live mail API health remains a separate launch
+check. Verification is a point-in-time gate; protect Release assets against
+later replacement through repository release-immutability policy. This
+ordering preserves a working download path without blocking earlier mail
+API/ingress deployment and live acceptance.
 The deployment token lacks Email Routing Rules Read (HTTP 403 in staging run
 36416776818), so neither Worker is deployed with it as a routing-token fallback.
 Missing dedicated routing secrets fail immediately before checkout or tool
