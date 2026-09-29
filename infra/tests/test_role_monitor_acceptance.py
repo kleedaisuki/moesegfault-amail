@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
+TEMP = ROOT / ".temp"
 SPEC = importlib.util.spec_from_file_location("role_acceptance", ROOT / "workers/role-monitor/acceptance.py")
 assert SPEC is not None and SPEC.loader is not None
 ACCEPTANCE = importlib.util.module_from_spec(SPEC)
@@ -20,6 +21,14 @@ SPEC.loader.exec_module(ACCEPTANCE)
 
 class RoleAcceptanceTests(unittest.TestCase):
     """Check the state machine without touching Cloudflare or SMTP."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Create the ignored repository-local test parent on fresh CI runners."""
+
+        TEMP.mkdir(parents=True, exist_ok=True)
+        if not TEMP.is_dir() or TEMP.resolve().parent != ROOT.resolve():
+            raise AssertionError("role acceptance test temp must stay in repository")
 
     def test_transient_unknown_is_pending_not_failure(self) -> None:
         """A D1 read between insert and forward resolution must be tolerated."""
@@ -48,7 +57,7 @@ class RoleAcceptanceTests(unittest.TestCase):
     def test_cleanup_removes_only_owned_alias_and_checks_standard_rules(self) -> None:
         """Removal/readback must be exact, and recovery marker survives failure."""
 
-        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP) as temp:
             marker = Path(temp) / "route-open.marker"
             marker.write_text("armed", encoding="ascii")
             before = {"abuse@moesegfault.dev": ("rule", "private-target")}
@@ -65,7 +74,7 @@ class RoleAcceptanceTests(unittest.TestCase):
     def test_cleanup_failure_preserves_recovery_marker(self) -> None:
         """A route still present cannot be silently converted into a pass."""
 
-        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP) as temp:
             marker = Path(temp) / "route-open.marker"
             marker.write_text("armed", encoding="ascii")
             with (patch.object(ACCEPTANCE, "MARKER", marker),
@@ -79,7 +88,7 @@ class RoleAcceptanceTests(unittest.TestCase):
     def test_late_route_reappearance_preserves_recovery_marker(self) -> None:
         """An ambiguous create cannot pass on one temporarily absent inventory."""
 
-        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP) as temp:
             marker = Path(temp) / "route-open.marker"
             marker.write_text("armed", encoding="ascii")
             with (patch.object(ACCEPTANCE, "MARKER", marker),
@@ -94,7 +103,7 @@ class RoleAcceptanceTests(unittest.TestCase):
     def test_unknown_id_never_authorizes_remove(self) -> None:
         """An ambiguous POST timeout must leave a present matching rule untouched."""
 
-        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as temp:
+        with tempfile.TemporaryDirectory(dir=TEMP) as temp:
             marker = Path(temp) / "route-open.marker"
             marker.write_text('{"version":1,"route_id":null}\n', encoding="ascii")
             with (patch.object(ACCEPTANCE, "MARKER", marker),
