@@ -1,0 +1,3 @@
+# Only workerd's reviewed native binary validation may run an install script.
+allowBuilds:
+  workerd: true

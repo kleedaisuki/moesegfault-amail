@@ -1,0 +1,7 @@
+# Hosted workerd boundary-test install correction
+
+In [hosted CI run 36573648976](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36573648976), the new Rust/Wasm Worker boundary test did **not** execute. Its dependency installation failed first with `ERR_PNPM_IGNORED_BUILDS` because pnpm 12.6.0 correctly refused the `workerd@1.20260926.1` package's install script without an explicit project approval. This is an installation gate, not a passing or failing address-add assertion; it gives no evidence about the historical staging HTTP 500.
+
+The boundary-test package now pins `pnpm@12.6.0` and declares `allowBuilds: { workerd: true }` in its own `pnpm-workspace.yaml`. No blanket script permission is granted. Cloudflare's `workerd` package is the native runtime that Miniflare invokes, so refusing its install script prevents these tests from starting. This package-level approval does not affect the Astro site or other project dependencies. The existing frozen lockfile remains the source of dependency versions; the added package-manager pin and build approval do not change the resolved graph.
+
+Verification remains **pending** until a GitHub-hosted rerun performs `pnpm install --frozen-lockfile` and then reaches the actual workerd tests. Per project policy, no local heavy dependency install or Worker build was run for this correction. [pnpm's allow-build documentation](https://pnpm.io/cli/add#--allow-build) and [pnpm 12.7 release notes](https://pnpm.io/blog/releases/12.7) describe the explicit `allowBuilds` mechanism and its security purpose.
