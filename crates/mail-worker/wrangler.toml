@@ -63,6 +63,8 @@ workers_dev = false
 routes = [{ pattern = "mail-staging.moesegfault.dev", custom_domain = true }]
 
 [env.staging.vars]
+# Authenticated address-add emits a bounded diagnostic header only on this isolated domain.
+ADDRESS_DIAGNOSTICS = "v1"
 IDENTITY_ISSUER = "https://identity-staging.moesegfault.dev"
 OIDC_CLIENT_ID = "amail-cli-staging"
 CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"

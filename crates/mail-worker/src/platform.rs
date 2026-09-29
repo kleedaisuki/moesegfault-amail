@@ -69,7 +69,7 @@ struct CfRule {
 #[derive(Deserialize)]
 struct CfRuleList {
     success: bool,
-    result: Vec<CfListedRule>,
+    result: Option<Vec<CfListedRule>>,
     result_info: Option<CfResultInfo>,
 }
 #[derive(Deserialize)]
@@ -95,33 +95,91 @@ struct CfMatcher {
     value: Option<String>,
 }
 
+/// Reject negative or incomplete list envelopes without retaining provider text.
+fn checked_rule_list(
+    data: CfRuleList,
+    status: u16,
+) -> std::result::Result<(Vec<CfListedRule>, Option<usize>), RuleListFailure> {
+    if !data.success {
+        return Err(RuleListFailure::Provider { status });
+    }
+    let result = data.result.ok_or(RuleListFailure::Decode { status })?;
+    let total_pages = data.result_info.and_then(|info| info.total_pages);
+    if total_pages.is_some_and(|total| total > 200) {
+        return Err(RuleListFailure::Decode { status });
+    }
+    Ok((result, total_pages))
+}
+
 /// Find all provider rules for one exact address, including orphan rules after partial failure. / 查找一个地址的全部供应商规则，包括局部失败留下的孤儿规则。
 pub async fn rules_for_address(env: &Env, address: &str) -> Result<Vec<String>> {
-    let zone = env.var("CF_ZONE_ID")?.to_string();
-    let ingress = env.var("EMAIL_INGRESS_WORKER_NAME")?.to_string();
+    rules_for_address_typed(env, address)
+        .await
+        .map_err(|_| worker::Error::RustError("routing_list_failed".into()))
+}
+
+/// Preserve only the first observable Rules GET failure boundary and numeric HTTP status.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum RuleListFailure {
+    /// No HTTP response was observed; the request may nevertheless have reached Cloudflare.
+    Request,
+    /// Cloudflare returned a non-200 HTTP status.
+    Http { status: u16 },
+    /// A 200 envelope explicitly reported `success=false`.
+    Provider { status: u16 },
+    /// A 200 envelope was malformed, incomplete, or exceeded the page safety bound.
+    Decode { status: u16 },
+}
+
+impl RuleListFailure {
+    /// Return the status only when a provider response was actually observed.
+    pub(crate) fn provider_status(&self) -> Option<u16> {
+        match self {
+            Self::Request => None,
+            Self::Http { status } | Self::Provider { status } | Self::Decode { status } => {
+                Some(*status)
+            }
+        }
+    }
+}
+
+/// Typed variant for the authenticated address-add diagnostic; other callers keep the old API.
+pub(crate) async fn rules_for_address_typed(
+    env: &Env,
+    address: &str,
+) -> std::result::Result<Vec<String>, RuleListFailure> {
+    let zone = env
+        .var("CF_ZONE_ID")
+        .map_err(|_| RuleListFailure::Request)?
+        .to_string();
+    let ingress = env
+        .var("EMAIL_INGRESS_WORKER_NAME")
+        .map_err(|_| RuleListFailure::Request)?
+        .to_string();
     let expected_name = format!("amail {address}");
     let mut ids = Vec::new();
     // The API permits at most 50 per page. A zone can include several mail domains.
     for page in 1..=200 {
         let url = format!("https://api.cloudflare.com/client/v4/zones/{zone}/email/routing/rules?per_page=50&page={page}");
         let mut init = RequestInit::new();
-        init.with_method(Method::Get).with_headers(cf_headers(env)?);
-        let mut response = Fetch::Request(Request::new_with_init(&url, &init)?)
+        init.with_method(Method::Get)
+            .with_headers(cf_headers(env).map_err(|_| RuleListFailure::Request)?);
+        let request = Request::new_with_init(&url, &init).map_err(|_| RuleListFailure::Request)?;
+        let mut response = Fetch::Request(request)
             .send()
-            .await?;
-        if response.status_code() != 200 {
-            return Err(worker::Error::RustError("routing_list_failed".into()));
+            .await
+            .map_err(|_| RuleListFailure::Request)?;
+        let status = response.status_code();
+        if status != 200 {
+            return Err(RuleListFailure::Http { status });
         }
-        let data: CfRuleList = response.json().await?;
-        if !data.success {
-            return Err(worker::Error::RustError("routing_list_failed".into()));
-        }
-        let count = data.result.len();
-        let total_pages = data.result_info.as_ref().and_then(|info| info.total_pages);
-        if total_pages.is_some_and(|total| total > 200) {
-            return Err(worker::Error::RustError("routing_list_limit".into()));
-        }
-        for rule in data.result {
+        let data: CfRuleList = response
+            .json()
+            .await
+            .map_err(|_| RuleListFailure::Decode { status })?;
+        let (result, total_pages) = checked_rule_list(data, status)?;
+        let count = result.len();
+        for rule in result {
             if rule.name.as_deref() == Some(expected_name.as_str())
                 && rule.actions.iter().any(|a| {
                     a.r#type == "worker"
@@ -142,7 +200,7 @@ pub async fn rules_for_address(env: &Env, address: &str) -> Result<Vec<String>> 
             break;
         }
         if page == 200 {
-            return Err(worker::Error::RustError("routing_list_limit".into()));
+            return Err(RuleListFailure::Decode { status });
         }
     }
     Ok(ids)
@@ -445,6 +503,43 @@ pub async fn send(env: &Env, draft: &Draft) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Negative, missing, and oversized list envelopes remain distinct fixed outcomes.
+    #[test]
+    fn routing_list_failure_classification() {
+        let negative: CfRuleList = serde_json::from_str(
+            r#"{"success":false,"errors":[{"message":"private-address@example.com"}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            checked_rule_list(negative, 200),
+            Err(RuleListFailure::Provider { status: 200 })
+        ));
+
+        let missing: CfRuleList = serde_json::from_str(r#"{"success":true}"#).unwrap();
+        assert!(matches!(
+            checked_rule_list(missing, 200),
+            Err(RuleListFailure::Decode { status: 200 })
+        ));
+
+        let huge: CfRuleList = serde_json::from_str(
+            r#"{"success":true,"result":[],"result_info":{"total_pages":201}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            checked_rule_list(huge, 200),
+            Err(RuleListFailure::Decode { status: 200 })
+        ));
+        assert!(
+            serde_json::from_str::<CfRuleList>(r#"{"success":true,"result":"secret"}"#).is_err()
+        );
+
+        assert_eq!(RuleListFailure::Request.provider_status(), None);
+        assert_eq!(
+            RuleListFailure::Http { status: 403 }.provider_status(),
+            Some(403)
+        );
+    }
 
     /// A successful provider response returns only the rule identifier.
     #[test]

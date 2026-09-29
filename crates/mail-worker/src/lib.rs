@@ -1,5 +1,6 @@
 //! amail mail service. / amail 邮件服务。
 
+mod address_diag;
 mod archive;
 mod auth;
 mod platform;
@@ -13,6 +14,7 @@ use subtle::ConstantTimeEq;
 use wasm_bindgen::JsValue;
 use worker::*;
 
+use crate::address_diag::{AddressDiag, Kind as AddressDiagKind, Stage as AddressDiagStage};
 use crate::archive::{parse_draft, Draft};
 use crate::auth::Principal;
 use crate::trace::{Operation, Phase, Trace};
@@ -710,7 +712,21 @@ async fn dispatch(
     match (req.method(), segments.as_slice()) {
         (Method::Get, ["v1", "addresses"]) => list_addresses(&env, &user, request_id).await,
         (Method::Post, ["v1", "addresses"]) => {
-            add_address(&mut req, &env, &user, request_id, trace).await
+            let mut diagnostic = AddressDiag::new();
+            let result =
+                add_address(&mut req, &env, &user, request_id, trace, &mut diagnostic).await;
+            if !address_diagnostics_enabled(&env) {
+                return result;
+            }
+            let success = result.is_ok();
+            let mut response = match result {
+                Ok(response) => response,
+                Err(error) => problem(request_id, error)?,
+            };
+            response
+                .headers_mut()
+                .set("x-amail-address-diag", &diagnostic.header(success))?;
+            Ok(response)
         }
         (Method::Delete, ["v1", "addresses"]) => {
             delete_address(&mut req, &env, &user, request_id).await
@@ -759,6 +775,17 @@ async fn dispatch(
         (Method::Post, ["v1", "telemetry"]) => telemetry(&mut req, request_id).await,
         _ => Err(AppError::not_found()),
     }
+}
+
+/// Diagnostics require both an explicit staging switch and the exact isolated domain.
+fn address_diagnostics_enabled(env: &Env) -> bool {
+    env.var("ADDRESS_DIAGNOSTICS")
+        .ok()
+        .is_some_and(|value| value.to_string() == "v1")
+        && env
+            .var("MAIL_DOMAIN")
+            .ok()
+            .is_some_and(|value| value.to_string() == "mail-staging.moesegfault.dev")
 }
 
 /// Classify only known routes after authentication; never retain URL segments.
@@ -1196,7 +1223,9 @@ async fn add_address(
     user: &Principal,
     request_id: &str,
     trace: &Trace,
+    diagnostic: &mut AddressDiag,
 ) -> AppResult<Response> {
+    diagnostic.enter(AddressDiagStage::Input);
     let input: AddAddress = req
         .json()
         .await
@@ -1204,6 +1233,7 @@ async fn add_address(
     let part = local_part(&input.local_part)
         .ok_or_else(|| AppError::conflict("reserved_or_invalid_name"))?;
     let address = format!("{part}@{}", env.var("MAIL_DOMAIN")?.to_string());
+    diagnostic.enter(AddressDiagStage::D1Lookup);
     let database = db(env)?;
     let existing = database
         .prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1")
@@ -1212,25 +1242,35 @@ async fn add_address(
         .await?;
     if let Some(row) = existing {
         if row.state == "retired" {
+            diagnostic.fail(AddressDiagKind::State, None, None);
             return Err(AppError::conflict("address_retired"));
         }
         let mine = database.prepare("SELECT 1 AS mine FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3")
             .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.first::<serde_json::Value>(None).await?.is_some();
         if !mine {
+            diagnostic.fail(AddressDiagKind::State, None, None);
             return Err(AppError::conflict("address_unavailable"));
         }
         if row.state == "active" {
-            return Ok(Response::from_json(
+            diagnostic.enter(AddressDiagStage::ResponseEncode);
+            let response = Response::from_json(
                 &serde_json::json!({"address":address,"state":"active","created_at":iso(row.created_at),"request_id":request_id}),
-            )?);
+            )?;
+            diagnostic.success();
+            return Ok(response);
         }
         if row.state == "deleting" {
+            diagnostic.fail(AddressDiagKind::State, None, None);
             return Err(AppError::conflict("address_deleting"));
         }
         if row.state == "provisioning" {
-            return Ok(Response::from_json(&serde_json::json!({"address":address,"state":"pending","created_at":iso(row.created_at),"request_id":request_id}))?.with_status(202));
+            diagnostic.enter(AddressDiagStage::ResponseEncode);
+            let response = Response::from_json(&serde_json::json!({"address":address,"state":"pending","created_at":iso(row.created_at),"request_id":request_id}))?.with_status(202);
+            diagnostic.success();
+            return Ok(response);
         }
     } else {
+        diagnostic.enter(AddressDiagStage::D1Allocate);
         #[derive(Deserialize)]
         struct CountRow {
             n: i64,
@@ -1241,6 +1281,7 @@ async fn add_address(
             .await?
             .map_or(0, |r| r.n);
         if count >= USER_ADDRESS_CAPACITY {
+            diagnostic.fail(AddressDiagKind::State, None, None);
             return Err(AppError::conflict("capacity_exhausted"));
         }
         // One conditional SQLite statement allocates a free slot; a partial unique index resolves races.
@@ -1257,34 +1298,51 @@ async fn add_address(
             .run()
             .await;
         if result.is_err() {
+            diagnostic.fail(AddressDiagKind::D1, None, None);
             return Err(AppError::conflict("address_unavailable"));
         }
         let owned = database.prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3")
             .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.first::<AddressRow>(None).await?;
         if owned.is_none() {
+            diagnostic.fail(AddressDiagKind::State, None, None);
             return Err(AppError::conflict("address_limit"));
         }
     }
+    diagnostic.enter(AddressDiagStage::D1Claim);
     let claim = database.prepare("UPDATE addresses SET state='provisioning' WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='pending'")
         .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.run().await?;
     if claim.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
-        return Ok(Response::from_json(
+        diagnostic.enter(AddressDiagStage::ResponseEncode);
+        let response = Response::from_json(
             &serde_json::json!({"address":address,"state":"pending","request_id":request_id}),
         )?
-        .with_status(202));
+        .with_status(202);
+        diagnostic.success();
+        return Ok(response);
     }
+    diagnostic.enter(AddressDiagStage::RoutingList);
     let list_start = js_sys::Date::now();
-    let existing_rules = platform::rules_for_address(env, &address).await;
+    let existing_rules = platform::rules_for_address_typed(env, &address).await;
     trace.phase(
         request_id,
         Phase::RoutingList,
         existing_rules.is_ok(),
         trace::elapsed_ms(list_start),
     );
-    let mut existing_rules = existing_rules?;
+    let mut existing_rules = existing_rules.map_err(|error| {
+        let kind = match &error {
+            platform::RuleListFailure::Request => AddressDiagKind::Request,
+            platform::RuleListFailure::Http { .. } => AddressDiagKind::Http,
+            platform::RuleListFailure::Provider { .. } => AddressDiagKind::Provider,
+            platform::RuleListFailure::Decode { .. } => AddressDiagKind::Decode,
+        };
+        diagnostic.fail(kind, error.provider_status(), None);
+        AppError::from(worker::Error::RustError("routing_list_failed".into()))
+    })?;
     let rule_id = if let Some(id) = existing_rules.first() {
         id.clone()
     } else {
+        diagnostic.enter(AddressDiagStage::RoutingCreate);
         let create_start = js_sys::Date::now();
         let created = platform::create_rule(env, &address).await;
         trace.routing_create(
@@ -1300,11 +1358,20 @@ async fn add_address(
                 .and_then(|error| error.provider_code()),
             trace::elapsed_ms(create_start),
         );
-        created.map_err(|error| rule_create_app_error(&error))?
+        created.map_err(|error| {
+            let kind = match &error {
+                platform::RuleCreateFailure::Request => AddressDiagKind::Request,
+                platform::RuleCreateFailure::UnexpectedResponse { .. } => AddressDiagKind::Decode,
+                platform::RuleCreateFailure::Provider { .. } => AddressDiagKind::Provider,
+            };
+            diagnostic.fail(kind, error.provider_status(), error.provider_code());
+            rule_create_app_error(&error)
+        })?
     };
     for extra in existing_rules.drain(1..) {
         let _ = platform::delete_rule(env, &extra).await;
     }
+    diagnostic.enter(AddressDiagStage::D1Activate);
     let transition = database.prepare("UPDATE addresses SET state='active',cf_rule_id=?1 WHERE address=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='provisioning'")
         .bind(&[bind_str(&rule_id),bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.run().await;
     let changed = transition
@@ -1328,21 +1395,30 @@ async fn add_address(
                 .await;
         }
         return if changed == 0 {
+            diagnostic.fail(AddressDiagKind::State, None, None);
             Err(AppError::conflict("address_state_changed"))
         } else {
+            diagnostic.fail(AddressDiagKind::D1, None, None);
             Err(AppError {
                 status: 503,
                 code: "address_provision_unknown",
             })
         };
     }
+    diagnostic.enter(AddressDiagStage::D1Readback);
     let row = database
         .prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1")
         .bind(&[bind_str(&address)])?
         .first::<AddressRow>(None)
         .await?
-        .ok_or_else(AppError::not_found)?;
-    Ok(Response::from_json(&serde_json::json!({"address":address,"state":row.state,"created_at":iso(row.created_at),"request_id":request_id}))?.with_status(201))
+        .ok_or_else(|| {
+            diagnostic.fail(AddressDiagKind::State, None, None);
+            AppError::not_found()
+        })?;
+    diagnostic.enter(AddressDiagStage::ResponseEncode);
+    let response = Response::from_json(&serde_json::json!({"address":address,"state":row.state,"created_at":iso(row.created_at),"request_id":request_id}))?.with_status(201);
+    diagnostic.success();
+    Ok(response)
 }
 
 async fn delete_address(
