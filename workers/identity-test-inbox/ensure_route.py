@@ -24,7 +24,7 @@ MAX_BODY = 262_144
 
 
 def allowed_addresses() -> frozenset[str]:
-    """Read only the reviewed, deployed staging inbox recipient allowlist."""
+    """Validate the local allowlist; this is not proof of deployed bindings."""
 
     with Path(__file__).with_name("wrangler.toml").open("rb") as stream:
         config = tomllib.load(stream)
@@ -176,6 +176,18 @@ def reconcile(zone: str, token: str, action: str, address: str = ADDRESS) -> str
     return "removed"
 
 
+def audit_all_absent(zone: str, token: str) -> str:
+    """Require every locally configured exact route absent before Worker replacement."""
+
+    addresses = allowed_addresses()
+    if not addresses or ADDRESS not in addresses:
+        raise RuntimeError("staging test alias allowlist unavailable")
+    rules = list_rules(zone, token)
+    if any(is_alias(rule, address) for address in addresses for rule in rules):
+        raise RuntimeError("test alias route active; no changes made")
+    return "absent"
+
+
 def main() -> int:
     """Use the existing single zone-scoped routing token. / 复用现有单一域名路由令牌。"""
 
@@ -183,6 +195,7 @@ def main() -> int:
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--apply", action="store_true")
     action.add_argument("--remove", action="store_true")
+    action.add_argument("--all-absent", action="store_true", help="require every configured alias unrouted")
     parser.add_argument("--address", default=ADDRESS, help="exact configured staging Identity test alias")
     args = parser.parse_args()
     zone = os.environ.get("CLOUDFLARE_ZONE_ID", "")
@@ -192,7 +205,12 @@ def main() -> int:
         return 2
     desired = "apply" if args.apply else "remove" if args.remove else "audit"
     try:
-        print(reconcile(zone, token, desired, args.address))
+        if args.all_absent:
+            if args.address != ADDRESS:
+                raise RuntimeError("--address cannot be combined with --all-absent")
+            print(audit_all_absent(zone, token))
+        else:
+            print(reconcile(zone, token, desired, args.address))
     except RuntimeError as error:
         print(str(error), file=sys.stderr)
         return 1

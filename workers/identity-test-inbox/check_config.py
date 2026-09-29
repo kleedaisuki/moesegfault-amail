@@ -135,6 +135,35 @@ def private_bucket(account: str, token: str) -> None:
         raise RuntimeError("R2 verification expiry rule is disabled or too long")
 
 
+def deployed_bindings(account: str, token: str, config: dict) -> None:
+    """Read back the active Worker bindings without printing recipient values."""
+
+    if re.fullmatch(r"[0-9a-fA-F]{32}", account) is None or not token:
+        raise RuntimeError("missing or invalid Worker read credentials")
+    status, payload = fetch_json(
+        f"/accounts/{account}/workers/scripts/{EXPECTED_WORKER}/settings", token
+    )
+    result = payload.get("result")
+    if status != 200 or payload.get("success") is not True or not isinstance(result, dict):
+        raise RuntimeError(f"Worker settings readback unavailable: HTTP{status}")
+    bindings = result.get("bindings")
+    if not isinstance(bindings, list) or len(bindings) != 2:
+        raise RuntimeError("Worker binding inventory unexpected")
+    if any(not isinstance(binding, dict) for binding in bindings):
+        raise RuntimeError("Worker binding inventory unexpected")
+    by_name = {binding.get("name"): binding for binding in bindings}
+    if set(by_name) != {"PRIVATE_INBOX", "TEST_RECIPIENTS"}:
+        raise RuntimeError("Worker binding inventory unexpected")
+    expected = config["vars"]["TEST_RECIPIENTS"]
+    if (
+        by_name["PRIVATE_INBOX"].get("type") != "r2_bucket"
+        or by_name["PRIVATE_INBOX"].get("bucket_name") != EXPECTED_BUCKET
+        or by_name["TEST_RECIPIENTS"].get("type") != "plain_text"
+        or by_name["TEST_RECIPIENTS"].get("text") != expected
+    ):
+        raise RuntimeError("Worker bindings differ from reviewed staging configuration")
+
+
 def main() -> int:
     """Check source, optionally verify live R2 privacy, without mutation.
 
@@ -143,6 +172,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true", help="also verify private R2 domain state")
+    parser.add_argument("--deployed", action="store_true", help="read back active Worker bindings")
     args = parser.parse_args()
     path = Path(__file__).with_name("wrangler.toml")
     with path.open("rb") as stream:
@@ -155,6 +185,16 @@ def main() -> int:
             private_bucket(
                 os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""),
                 os.environ.get("CLOUDFLARE_API_TOKEN", ""),
+            )
+        except RuntimeError as error:
+            print(str(error), file=sys.stderr)
+            return 1
+    if args.deployed:
+        try:
+            deployed_bindings(
+                os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""),
+                os.environ.get("CLOUDFLARE_API_TOKEN", ""),
+                config,
             )
         except RuntimeError as error:
             print(str(error), file=sys.stderr)

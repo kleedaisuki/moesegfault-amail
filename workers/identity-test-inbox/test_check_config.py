@@ -116,6 +116,40 @@ class ConfigTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     check.private_bucket("a" * 32, "token")
 
+    def test_deployed_binding_readback_matches_exact_allowlist(self) -> None:
+        """Read only the active settings endpoint and compare private values in memory."""
+
+        bindings = [
+            {"type": "r2_bucket", "name": "PRIVATE_INBOX", "bucket_name": check.EXPECTED_BUCKET},
+            {"type": "plain_text", "name": "TEST_RECIPIENTS", "text": self.config["vars"]["TEST_RECIPIENTS"]},
+        ]
+        response = (200, {"success": True, "result": {"bindings": bindings}})
+        with patch.object(check, "fetch_json", return_value=response) as fetch:
+            check.deployed_bindings("a" * 32, "token", self.config)
+            self.assertTrue(fetch.call_args.args[0].endswith("/amail-identity-test-inbox-staging/settings"))
+
+    def test_deployed_binding_readback_rejects_stale_or_extra_capability(self) -> None:
+        """A source config alone cannot claim B is accepted by the active Worker."""
+
+        base = [
+            {"type": "r2_bucket", "name": "PRIVATE_INBOX", "bucket_name": check.EXPECTED_BUCKET},
+            {"type": "plain_text", "name": "TEST_RECIPIENTS", "text": self.config["vars"]["TEST_RECIPIENTS"]},
+        ]
+        stale = copy.deepcopy(base)
+        stale[1]["text"] = check.PRIMARY_ADDRESS
+        wrong_bucket = copy.deepcopy(base)
+        wrong_bucket[0]["bucket_name"] = "unexpected-bucket"
+        cases = [stale, wrong_bucket, base + [{"type": "secret_text", "name": "UNREVIEWED"}], []]
+        for bindings in cases:
+            with self.subTest(bindings=len(bindings)), patch.object(check, "fetch_json", return_value=(
+                200, {"success": True, "result": {"bindings": bindings}}
+            )):
+                with self.assertRaises(RuntimeError):
+                    check.deployed_bindings("a" * 32, "token", self.config)
+        with patch.object(check, "fetch_json", return_value=(403, {})):
+            with self.assertRaises(RuntimeError):
+                check.deployed_bindings("a" * 32, "token", self.config)
+
 
 if __name__ == "__main__":
     unittest.main()

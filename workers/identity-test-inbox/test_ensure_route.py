@@ -63,6 +63,22 @@ class RouteTests(unittest.TestCase):
             listed.assert_not_called()
             call.assert_not_called()
 
+    def test_deploy_guard_requires_both_aliases_absent_without_mutation(self) -> None:
+        """An open B challenge route blocks replacement even when A is absent."""
+
+        second = "amail-e2e-isolation@moesegfault.dev"
+        with patch.object(route, "list_rules", return_value=[fixture(address=second)]), patch.object(
+            route, "call"
+        ) as mutation:
+            with self.assertRaisesRegex(RuntimeError, "route active"):
+                route.audit_all_absent("zone", "token")
+            mutation.assert_not_called()
+        with patch.object(route, "list_rules", return_value=[]):
+            self.assertEqual(route.audit_all_absent("zone", "token"), "absent")
+        with patch.object(route, "list_rules", return_value=[fixture()]):
+            with self.assertRaisesRegex(RuntimeError, "route active"):
+                route.audit_all_absent("zone", "token")
+
     def test_conflicting_worker_is_not_taken_over(self) -> None:
         """A foreign target is a hard conflict. / 外部目标属于硬冲突。"""
 

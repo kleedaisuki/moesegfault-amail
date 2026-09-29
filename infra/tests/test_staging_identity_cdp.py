@@ -118,6 +118,13 @@ class HarnessSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(probe.ProbeError, "dpapi_credential_invalid"):
             probe.decoded_credential({**payload, "address": "mail@moesegfault.dev"})
 
+    def test_login_rejects_contact_argument_that_disagrees_with_encrypted_run(self) -> None:
+        """An operator cannot mistake A's run directory for B's login."""
+
+        with patch.object(probe, "load_credential", return_value=("synthetic", "safe-password-123456789", probe.ALIAS)):
+            with self.assertRaisesRegex(probe.ProbeError, "login_contact_does_not_match_encrypted_run"):
+                probe.native_login(Path(".temp/mock-run"), Path(".temp/fake-cli.exe"), "amail-e2e-isolation@moesegfault.dev")
+
     def test_native_url_requires_state_nonce_and_pkce_challenge(self) -> None:
         """A syntactically plausible URL without fresh proof fields is refused.
 

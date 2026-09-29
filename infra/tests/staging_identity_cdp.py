@@ -611,13 +611,15 @@ def valid_authorization_url(value: str) -> bool:
         return False
 
 
-def native_login(run_dir: Path, binary: Path) -> None:
+def native_login(run_dir: Path, binary: Path, expected_address: str | None = None) -> None:
     """Run actual native PKCE in a fresh browser and cross-process CLI session.
 
     中文：在全新浏览器内完成真实原生 PKCE，并跨进程检验 CLI 会话。
     """
 
-    username, password, _address = load_credential(run_dir)
+    username, password, address = load_credential(run_dir)
+    if expected_address is not None and address != expected_address:
+        raise ProbeError("login_contact_does_not_match_encrypted_run")
     attempt = secrets.token_hex(8)
     home = run_dir / f"amail-home-{attempt}"
     home.mkdir(parents=True, exist_ok=False)
@@ -710,7 +712,7 @@ def main() -> int:
     parser.add_argument("--confirm-staging", action="store_true")
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--amail")
-    parser.add_argument("--address", default=ALIAS, help="configured staging Identity contact alias for registration")
+    parser.add_argument("--address", help="registered staging contact; checked against encrypted run on login")
     args = parser.parse_args()
     if not args.confirm_staging:
         print("staging_confirmation_required", file=sys.stderr)
@@ -719,14 +721,14 @@ def main() -> int:
         run_dir = under_temp(args.run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
         if args.phase == "register":
-            registration(run_dir, args.address)
+            registration(run_dir, args.address or ALIAS)
         else:
             if not args.amail:
                 raise ProbeError("ci_built_amail_required")
             binary = under_temp(args.amail)
             if not binary.is_file():
                 raise ProbeError("ci_built_amail_missing")
-            native_login(run_dir, binary)
+            native_login(run_dir, binary, args.address)
     except ProbeError as error:
         print(str(error), file=sys.stderr)
         return 1

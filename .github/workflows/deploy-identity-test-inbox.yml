@@ -56,12 +56,12 @@ jobs:
         run: |
           cargo install worker-build --version 0.8.5 --locked
           npm install --global wrangler@4.142.0
-      - name: Refuse deployment while test alias is routed
+      - name: Refuse deployment while any test alias is routed
         shell: bash
         run: |
-          state=$(python workers/identity-test-inbox/ensure_route.py)
+          state=$(python workers/identity-test-inbox/ensure_route.py --all-absent)
           if [ "$state" != absent ]; then
-            echo '::error::Close the exact test routing rule before replacing the inbox Worker'
+            echo '::error::Close every exact test routing rule before replacing the inbox Worker'
             exit 1
           fi
       - name: Check private staging binding and live R2 public surfaces
@@ -72,11 +72,13 @@ jobs:
       - name: Deploy staging-only private Email Worker
         working-directory: workers/identity-test-inbox
         run: wrangler deploy
-      - name: Confirm deploy did not open the test alias
+      - name: Confirm deploy did not open any test alias
         shell: bash
         run: |
-          state=$(python workers/identity-test-inbox/ensure_route.py)
+          state=$(python workers/identity-test-inbox/ensure_route.py --all-absent)
           if [ "$state" != absent ]; then
             echo '::error::Inbox deployment unexpectedly changed Email Routing'
             exit 1
           fi
+      - name: Read back deployed recipient allowlist and private bucket
+        run: python workers/identity-test-inbox/check_config.py --live --deployed
