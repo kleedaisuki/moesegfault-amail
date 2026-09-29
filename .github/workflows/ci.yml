@@ -12,7 +12,11 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, production]
+        options: [staging, staging-e2e, production]
+      confirm:
+        description: For staging-e2e only, enter RUN_STAGING_E2E after Identity staging is fixed
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -50,6 +54,51 @@ jobs:
           path: target/debug/amail.exe
           if-no-files-found: error
           retention-days: 3
+
+  staging-e2e:
+    name: Hosted Windows native PKCE and SMTP to ZIP/search
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-e2e' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: windows-latest
+    environment: staging
+    timeout-minutes: 40
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require explicit staging probe confirmation
+        env:
+          AMAIL_STAGING_E2E_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if ($env:AMAIL_STAGING_E2E_CONFIRM -ne 'RUN_STAGING_E2E') {
+            throw 'Explicit staging E2E confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install browser and DPAPI adapters
+        run: python -m pip install pywin32==312 websocket-client==1.9.2
+      - name: Build tested amail binary on hosted Windows
+        run: |
+          rustup update stable
+          cargo test -p amail --locked --all-targets
+          cargo build -p amail --locked
+      - name: Execute staging native and inbound-mail acceptance
+        env:
+          AMAIL_STAGING_E2E_CONFIRM: ${{ inputs.confirm }}
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_hosted_e2e.py
 
   worker:
     name: Rust Worker (Wasm)

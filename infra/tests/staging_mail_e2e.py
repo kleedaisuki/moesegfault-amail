@@ -58,6 +58,28 @@ def check(condition: bool, label: str) -> None:
         raise ProbeFailure(label)
 
 
+def run_nonce() -> str:
+    """Use a guarded hosted-run suffix or an unpredictable local default.
+
+    中文：托管运行仅接受已校验的后缀；本地默认为不可预测随机值。
+    """
+
+    supplied = os.environ.get("AMAIL_TEST_RUN_NONCE", "")
+    check(not supplied or bool(re.fullmatch(r"[a-f0-9]{16}", supplied)), "run_nonce_invalid")
+    return supplied or secrets.token_hex(8)
+
+
+def acceptance_failure(primary: ProbeFailure | None, cleanup: ProbeFailure | None) -> ProbeFailure | None:
+    """Retain both fixed failure stages when cleanup also fails.
+
+    中文：清理也失败时保留原始阶段与清理阶段，绝不误报通过。
+    """
+
+    if primary and cleanup:
+        return ProbeFailure(f"{primary}_cleanup_{cleanup}")
+    return cleanup or primary
+
+
 def inside_temp(value: str, *, must_exist: bool = True) -> Path:
     """Confine all local artifacts to repository `.temp`. / 限制所有产物在仓库 `.temp`。"""
 
@@ -446,12 +468,17 @@ def main() -> int:
     check(len(status) == 1 and status[0].get("authenticated") is True, "not_authenticated")
     amail(binary, env, "address", "list", failure="address_preflight_failed")
 
-    nonce = secrets.token_hex(8)
+    # A hosted run may crash before cleanup. The protected synthetic password
+    # plus run ID/attempt can reconstruct only its alias for exact-rule
+    # reconciliation, without publishing the address; local probes stay random.
+    # 托管运行崩溃后须有受保护密码及运行编号才能重建别名；本地仍默认随机。
+    nonce = run_nonce()
     address = f"e2e-{nonce}@{DOMAIN}"
     part = f"e2e-{nonce}"
     assert_route(zone, routing_token, address, False)
     creation_attempted = False
     primary_error: ProbeFailure | None = None
+    cleanup_error: ProbeFailure | None = None
     try:
         creation_attempted = True
         result = amail(binary, env, "address", "add", part, failure="address_register_failed")
@@ -519,9 +546,15 @@ def main() -> int:
         primary_error = error if isinstance(error, ProbeFailure) else ProbeFailure("probe_unexpected_failure")
     finally:
         if creation_attempted:
-            cleanup_run(binary, env, zone, routing_token, address, nonce)
-    if primary_error:
-        raise primary_error
+            try:
+                cleanup_run(binary, env, zone, routing_token, address, nonce)
+            except ProbeFailure as error:
+                cleanup_error = error
+            except Exception:
+                cleanup_error = ProbeFailure("cleanup_unexpected_failure")
+    failure = acceptance_failure(primary_error, cleanup_error)
+    if failure:
+        raise failure
     print("staging_inbound_e2e_verified")
     return 0
 
