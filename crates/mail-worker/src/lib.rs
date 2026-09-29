@@ -4,6 +4,7 @@ mod archive;
 mod auth;
 mod platform;
 mod search_jobs;
+mod trace;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ use worker::*;
 
 use crate::archive::{parse_draft, Draft};
 use crate::auth::Principal;
+use crate::trace::{Operation, Phase, Trace};
 
 /// Bound one synchronous search below D1's request query cap and Worker memory. / 将同步搜索限制在 D1 单次请求查询上限与 Worker 内存以内。
 const SEARCH_SQL_BUDGET: usize = 400;
@@ -119,7 +121,9 @@ fn stored_rejection(code: &str) -> Option<AppError> {
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let request_id = uuid::Uuid::new_v4().to_string();
-    let result = dispatch(req, env, &request_id).await;
+    let start = js_sys::Date::now();
+    let mut trace = Trace::new();
+    let result = dispatch(req, env, &request_id, &mut trace).await;
     let mut response = match result {
         Ok(response) => response,
         Err(err) => problem(&request_id, err)?,
@@ -128,6 +132,11 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .headers_mut()
         .set("x-amail-request-id", &request_id)?;
     response.headers_mut().set("Cache-Control", "no-store")?;
+    trace.exit(
+        &request_id,
+        response.status_code(),
+        trace::elapsed_ms(start),
+    );
     Ok(response)
 }
 
@@ -391,21 +400,29 @@ async fn reindex(env: &Env) -> Result<()> {
     Ok(())
 }
 
-async fn dispatch(mut req: Request, env: Env, request_id: &str) -> AppResult<Response> {
+async fn dispatch(
+    mut req: Request,
+    env: Env,
+    request_id: &str,
+    trace: &mut Trace,
+) -> AppResult<Response> {
     let path = req.path();
     if req.method() == Method::Get && path == "/health" {
+        trace.operation(Operation::Health);
         return Ok(Response::from_json(
             &serde_json::json!({"status":"ok","request_id":request_id}),
         )?);
     }
     if path == "/internal/inbound" && req.method() == Method::Post {
-        return inbound(&mut req, &env, request_id).await;
+        return inbound(&mut req, &env, request_id, trace).await;
     }
     let user = auth::authenticate(&req, &env).await.map_err(|_| AppError {
         status: 401,
         code: "unauthorized",
     })?;
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    trace.accept_parent(req.headers().get("traceparent").ok().flatten().as_deref());
+    trace.operation(operation_for(req.method(), &segments));
     match (req.method(), segments.as_slice()) {
         (Method::Get, ["v1", "addresses"]) => list_addresses(&env, &user, request_id).await,
         (Method::Post, ["v1", "addresses"]) => add_address(&mut req, &env, &user, request_id).await,
@@ -445,7 +462,7 @@ async fn dispatch(mut req: Request, env: Env, request_id: &str) -> AppResult<Res
             search_jobs::poll(&env, &user, id, request_id).await
         }
         (Method::Post, ["v1", "messages", "send"]) => {
-            send_message(&mut req, &env, &user, request_id).await
+            send_message(&mut req, &env, &user, request_id, trace).await
         }
         (Method::Get, ["v1", "messages", id]) => get_message(&env, &user, id, request_id).await,
         (Method::Get, ["v1", "messages", id, "archive"]) => get_archive(&env, &user, id).await,
@@ -455,6 +472,25 @@ async fn dispatch(mut req: Request, env: Env, request_id: &str) -> AppResult<Res
         (Method::Delete, ["v1", "messages", id]) => delete_message(&env, &user, id).await,
         (Method::Post, ["v1", "telemetry"]) => telemetry(&mut req, request_id).await,
         _ => Err(AppError::not_found()),
+    }
+}
+
+/// Classify only known routes after authentication; never retain URL segments.
+fn operation_for(method: Method, segments: &[&str]) -> Operation {
+    match (method, segments) {
+        (Method::Get, ["v1", "addresses"]) => Operation::AddressesList,
+        (Method::Post, ["v1", "addresses"]) => Operation::AddressesAdd,
+        (Method::Delete, ["v1", "addresses"]) => Operation::AddressesDelete,
+        (Method::Get, ["v1", "messages"]) => Operation::MessagesList,
+        (Method::Post, ["v1", "messages", "search"]) => Operation::MessagesSearch,
+        (Method::Get, ["v1", "messages", "search", "jobs", _]) => Operation::SearchPoll,
+        (Method::Post, ["v1", "messages", "send"]) => Operation::MessagesSend,
+        (Method::Get, ["v1", "messages", _, "archive"]) => Operation::MessagesArchive,
+        (Method::Get, ["v1", "messages", _]) => Operation::MessagesGet,
+        (Method::Patch, ["v1", "messages", _]) => Operation::MessagesMark,
+        (Method::Delete, ["v1", "messages", _]) => Operation::MessagesDelete,
+        (Method::Post, ["v1", "telemetry"]) => Operation::TelemetryUpload,
+        _ => Operation::Unknown,
     }
 }
 
@@ -1638,6 +1674,7 @@ async fn send_message(
     env: &Env,
     user: &Principal,
     request_id: &str,
+    trace: &Trace,
 ) -> AppResult<Response> {
     if req.headers().get("Content-Type")?.as_deref() != Some("application/zip") {
         return Err(AppError::bad("content_type"));
@@ -1738,10 +1775,19 @@ async fn send_message(
         }
         return Err(err);
     }
-    env.bucket("MAIL_BODIES")?
+    let started = js_sys::Date::now();
+    let archive_write = env
+        .bucket("MAIL_BODIES")?
         .put(&r2_key, bytes.clone())
         .execute()
-        .await?;
+        .await;
+    trace.phase(
+        request_id,
+        Phase::R2Write,
+        archive_write.is_ok(),
+        trace::elapsed_ms(started),
+    );
+    archive_write?;
     let transition = database.prepare("UPDATE send_requests SET state='submitting' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing' AND quota_reserved=1")
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
     if transition.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
@@ -1754,7 +1800,15 @@ async fn send_message(
             .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
         return Err(err);
     }
-    let provider_id = match platform::send(env, &draft).await {
+    let started = js_sys::Date::now();
+    let send_result = platform::send(env, &draft).await;
+    trace.phase(
+        request_id,
+        Phase::ProviderSend,
+        send_result.is_ok(),
+        trace::elapsed_ms(started),
+    );
+    let provider_id = match send_result {
         Ok(id) => id,
         Err(err) => {
             if let Some(rejection) = definitive_send_error(&err) {
@@ -1842,7 +1896,12 @@ fn outbound_metadata(draft: &Draft, provider_id: &str) -> serde_json::Value {
     })
 }
 
-async fn inbound(req: &mut Request, env: &Env, request_id: &str) -> AppResult<Response> {
+async fn inbound(
+    req: &mut Request,
+    env: &Env,
+    request_id: &str,
+    trace: &mut Trace,
+) -> AppResult<Response> {
     let provided = req
         .headers()
         .get("x-amail-ingress-secret")?
@@ -1854,28 +1913,15 @@ async fn inbound(req: &mut Request, env: &Env, request_id: &str) -> AppResult<Re
             code: "forbidden",
         });
     }
+    trace.accept_parent(req.headers().get("traceparent").ok().flatten().as_deref());
+    trace.operation(Operation::Inbound);
     let envelope_to = req
         .headers()
         .get("x-amail-envelope-to")?
         .unwrap_or_default()
         .to_ascii_lowercase();
     let raw = req.bytes().await?;
-    let trace = req.headers().get("traceparent")?.unwrap_or_default();
-    if trace.len() == 55
-        && trace.starts_with("00-")
-        && trace.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-    {
-        let bucket = if raw.is_empty() {
-            0
-        } else {
-            1u64 << (usize::BITS - (raw.len() - 1).leading_zeros()).min(30)
-        };
-        console_log!(
-            "amail.inbound traceparent={} bytes_bucket={}",
-            trace,
-            bucket
-        );
-    }
+    trace.measured_request_bytes(raw.len());
     if raw.is_empty() || raw.len() > 25 * 1024 * 1024 {
         return Err(AppError::bad("inbound_size"));
     }
@@ -1885,12 +1931,19 @@ async fn inbound(req: &mut Request, env: &Env, request_id: &str) -> AppResult<Re
         owner_iss: String,
         owner_sub: String,
     }
-    let owner = database
+    let started = js_sys::Date::now();
+    let owner_result = database
         .prepare("SELECT owner_iss,owner_sub FROM addresses WHERE address=?1 AND state='active'")
         .bind(&[bind_str(&envelope_to)])?
         .first::<Owner>(None)
-        .await?
-        .ok_or_else(AppError::not_found)?;
+        .await;
+    trace.phase(
+        request_id,
+        Phase::D1Read,
+        owner_result.is_ok(),
+        trace::elapsed_ms(started),
+    );
+    let owner = owner_result?.ok_or_else(AppError::not_found)?;
     let id = uuid::Uuid::new_v4().to_string();
     let received_at = now();
     let (archive, sender, subject, to, text, has_html, has_text, metadata) =
@@ -1915,22 +1968,48 @@ async fn inbound(req: &mut Request, env: &Env, request_id: &str) -> AppResult<Re
     .await?;
     let r2_key = format!("messages/{id}.zip");
     // Preserve original MIME separately for forensic recovery; never expose raw headers to the agent archive.
-    env.bucket("MAIL_BODIES")?
+    let started = js_sys::Date::now();
+    let raw_write = env
+        .bucket("MAIL_BODIES")?
         .put(format!("raw/{id}.eml"), raw)
         .execute()
-        .await?;
-    env.bucket("MAIL_BODIES")?
+        .await;
+    trace.phase(
+        request_id,
+        Phase::R2Write,
+        raw_write.is_ok(),
+        trace::elapsed_ms(started),
+    );
+    raw_write?;
+    let started = js_sys::Date::now();
+    let archive_write = env
+        .bucket("MAIL_BODIES")?
         .put(&r2_key, archive.clone())
         .execute()
-        .await?;
+        .await;
+    trace.phase(
+        request_id,
+        Phase::R2Write,
+        archive_write.is_ok(),
+        trace::elapsed_ms(started),
+    );
+    archive_write?;
     let attachments = metadata
         .get("attachments")
         .and_then(|v| v.as_array())
         .map_or(0, Vec::len);
     let metadata = metadata.to_string();
     let first_text = store_text(&database, &id, &text).await?;
-    database.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,storage_bytes,embedding_json,embedding_model,embedding_dimensions) VALUES(?1,?2,?3,?4,'inbound',?5,?6,?7,?8,?9,?10,0,?11,?12,?13,?14,?15,?16,?17,?18,?19)")
-        .bind(&[bind_str(&id),bind_str(&envelope_to),bind_str(&owner.owner_iss),bind_str(&owner.owner_sub),bind_str(&sender),bind_str(&serde_json::to_string(&to).unwrap_or_default()),bind_str(&subject),bind_str(&first_text),bind_str(&metadata),bind_num(received_at),bind_num(has_html as i64),bind_num(has_text as i64),bind_num(attachments as i64),bind_str(&r2_key),bind_num(archive.len() as i64),bind_num(storage_bytes),JsValue::NULL,JsValue::NULL,JsValue::NULL])?.run().await?;
+    let started = js_sys::Date::now();
+    let insert = database.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,storage_bytes,embedding_json,embedding_model,embedding_dimensions) VALUES(?1,?2,?3,?4,'inbound',?5,?6,?7,?8,?9,?10,0,?11,?12,?13,?14,?15,?16,?17,?18,?19)")
+        .bind(&[bind_str(&id),bind_str(&envelope_to),bind_str(&owner.owner_iss),bind_str(&owner.owner_sub),bind_str(&sender),bind_str(&serde_json::to_string(&to).unwrap_or_default()),bind_str(&subject),bind_str(&first_text),bind_str(&metadata),bind_num(received_at),bind_num(has_html as i64),bind_num(has_text as i64),bind_num(attachments as i64),bind_str(&r2_key),bind_num(archive.len() as i64),bind_num(storage_bytes),JsValue::NULL,JsValue::NULL,JsValue::NULL])?.run().await;
+    trace.phase(
+        request_id,
+        Phase::D1Write,
+        insert.is_ok(),
+        trace::elapsed_ms(started),
+    );
+    insert?;
     if mark_storage_indexed(&database, &id).await.is_err() {
         console_warn!("amail storage ledger state deferred");
     }
@@ -1948,6 +2027,7 @@ struct TelemetryEvent {
     duration_ms: u64,
     bytes_bucket: u64,
     trace_id: String,
+    span_id: Option<String>,
     correlation_id: Option<String>,
 }
 #[derive(Deserialize)]
@@ -1961,26 +2041,17 @@ async fn telemetry(req: &mut Request, request_id: &str) -> AppResult<Response> {
         .json()
         .await
         .map_err(|_| AppError::bad("invalid_json"))?;
-    const OPS: &[&str] = &[
-        "addresses.list",
-        "addresses.add",
-        "addresses.delete",
-        "messages.list",
-        "messages.search",
-        "messages.get",
-        "messages.archive",
-        "messages.mark",
-        "messages.delete",
-        "messages.send",
-    ];
     if batch.events.len() > 100
         || batch.events.iter().any(|e| {
-            !OPS.contains(&e.operation.as_str())
+            Operation::from_cli(&e.operation).is_none()
                 || e.trace_id.len() > 64
                 || !e
                     .trace_id
                     .chars()
                     .all(|c| c.is_ascii_hexdigit() || c == '-')
+                || e.span_id
+                    .as_ref()
+                    .is_some_and(|id| !trace::valid_hex_id(id, 16))
                 || e.correlation_id.as_ref().is_some_and(|v| {
                     v.len() > 64 || !v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
                 })
@@ -1991,14 +2062,19 @@ async fn telemetry(req: &mut Request, request_id: &str) -> AppResult<Response> {
         return Err(AppError::bad("invalid_telemetry"));
     }
     for event in &batch.events {
-        console_log!(
-            "amail.telemetry operation={} status={} duration_ms={} bytes_bucket={} trace_id={}",
-            event.operation,
-            event.status,
-            event.duration_ms,
-            event.bytes_bucket,
-            event.trace_id
-        );
+        if trace::valid_hex_id(&event.trace_id, 32)
+            && (event.status == 0 || (100..=599).contains(&event.status))
+        {
+            trace::client_event(
+                Operation::from_cli(&event.operation).unwrap_or(Operation::Unknown),
+                &event.trace_id,
+                event.span_id.as_deref(),
+                event.correlation_id.as_deref(),
+                event.status,
+                event.duration_ms,
+                event.bytes_bucket,
+            );
+        }
     }
     Ok(Response::from_json(
         &serde_json::json!({"accepted":batch.events.len(),"request_id":request_id}),
@@ -2031,6 +2107,35 @@ fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Legacy uploads remain valid while new uploads carry the client span ID.
+    #[test]
+    fn telemetry_span_is_optional_on_the_wire() {
+        let base = serde_json::json!({
+            "events":[{"operation":"messages.list","status":200,"duration_ms":1,
+                "bytes_bucket":0,"trace_id":"0123456789abcdef0123456789abcdef",
+                "correlation_id":null}]
+        });
+        let old: TelemetryBatch = serde_json::from_value(base.clone()).unwrap();
+        assert!(old.events[0].span_id.is_none());
+        let mut current = base;
+        current["events"][0]["span_id"] = "0123456789abcdef".into();
+        let new: TelemetryBatch = serde_json::from_value(current).unwrap();
+        assert_eq!(new.events[0].span_id.as_deref(), Some("0123456789abcdef"));
+    }
+
+    /// Even an authenticated malicious URL can only become a fixed operation label.
+    #[test]
+    fn route_classification_does_not_retain_path_segments() {
+        assert!(matches!(
+            operation_for(Method::Get, &["v1", "messages", "secret@example.test"]),
+            Operation::MessagesGet
+        ));
+        assert!(matches!(
+            operation_for(Method::Get, &["secret@example.test"]),
+            Operation::Unknown
+        ));
+    }
 
     /// A lease must be strictly in the future, independent of the manually
     /// attested send gates and the single-use canary exception.

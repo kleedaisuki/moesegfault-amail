@@ -17,6 +17,8 @@ struct Event {
     duration_ms: u64,
     bytes_bucket: u64,
     trace_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    span_id: Option<String>,
     correlation_id: Option<String>,
 }
 
@@ -32,14 +34,30 @@ fn db(cfg: &Runtime) -> Result<Connection> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY, operation TEXT NOT NULL, status INTEGER NOT NULL,
         duration_ms INTEGER NOT NULL, bytes_bucket INTEGER NOT NULL,
-        trace_id TEXT NOT NULL, correlation_id TEXT, uploaded INTEGER NOT NULL DEFAULT 0
+        trace_id TEXT NOT NULL, correlation_id TEXT, uploaded INTEGER NOT NULL DEFAULT 0,
+        span_id TEXT
     ); CREATE INDEX IF NOT EXISTS events_pending ON events(uploaded, id);
     CREATE TABLE IF NOT EXISTS send_attempts (
         payload_hash TEXT PRIMARY KEY, attempt_key TEXT NOT NULL, accepted INTEGER NOT NULL DEFAULT 0
     ); CREATE TABLE IF NOT EXISTS journal_state (
         key TEXT PRIMARY KEY, value INTEGER NOT NULL
     );")?;
+    ensure_span_column(&conn)?;
     Ok(conn)
+}
+
+/// Extend pre-trace journals in place; NULL means an upload from an older CLI.
+fn ensure_span_column(conn: &Connection) -> Result<()> {
+    let has_span_id = conn
+        .prepare("PRAGMA table_info(events)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == "span_id");
+    if !has_span_id {
+        conn.execute("ALTER TABLE events ADD COLUMN span_id TEXT", [])?;
+    }
+    Ok(())
 }
 
 /// Prepare local tables before the first OAuth refresh lock.
@@ -57,6 +75,7 @@ pub fn record(
     duration_ms: u64,
     bytes: usize,
     trace_id: &str,
+    span_id: &str,
     correlation_id: Option<&str>,
 ) {
     if std::env::var("AMAIL_TELEMETRY").ok().as_deref() == Some("off") {
@@ -72,8 +91,8 @@ pub fn record(
     } else {
         1u64 << (usize::BITS - (bytes - 1).leading_zeros()).min(30)
     };
-    let _ = conn.execute("INSERT INTO events(operation,status,duration_ms,bytes_bucket,trace_id,correlation_id) VALUES(?1,?2,?3,?4,?5,?6)",
-        params![operation, status, duration_ms.min(120_000), bucket, trace_id, correlation_id]);
+    let _ = conn.execute("INSERT INTO events(operation,status,duration_ms,bytes_bucket,trace_id,span_id,correlation_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![operation, status, duration_ms.min(120_000), bucket, trace_id, span_id, correlation_id]);
     let _ = maybe_spawn_flush(&conn);
 }
 
@@ -117,7 +136,7 @@ pub fn flush_pending(cfg: &Runtime) -> Result<()> {
 }
 
 fn flush(cfg: &Runtime, token: &str, conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT id,operation,status,duration_ms,bytes_bucket,trace_id,correlation_id FROM events WHERE uploaded=0 ORDER BY id LIMIT 20")?;
+    let mut stmt = conn.prepare("SELECT id,operation,status,duration_ms,bytes_bucket,trace_id,span_id,correlation_id FROM events WHERE uploaded=0 ORDER BY id LIMIT 20")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
@@ -127,7 +146,8 @@ fn flush(cfg: &Runtime, token: &str, conn: &Connection) -> Result<()> {
                 duration_ms: row.get(3)?,
                 bytes_bucket: row.get(4)?,
                 trace_id: row.get(5)?,
-                correlation_id: row.get(6)?,
+                span_id: row.get(6)?,
+                correlation_id: row.get(7)?,
             },
         ))
     })?;
@@ -172,4 +192,58 @@ pub fn send_key(cfg: &Runtime, hash: &str, random_key: &str) -> Result<String> {
 pub fn accepted(cfg: &Runtime, hash: &str) -> Result<()> {
     db(cfg)?.execute("DELETE FROM send_attempts WHERE payload_hash=?1", [hash])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Existing rows must survive the additive span-ID migration unchanged.
+    #[test]
+    fn upgrades_legacy_journal_without_losing_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, trace_id TEXT NOT NULL);
+             INSERT INTO events(trace_id) VALUES('0123456789abcdef0123456789abcdef');",
+        )
+        .unwrap();
+        ensure_span_column(&conn).unwrap();
+        ensure_span_column(&conn).unwrap();
+        let row: (String, Option<String>) = conn
+            .query_row("SELECT trace_id,span_id FROM events", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(row.0, "0123456789abcdef0123456789abcdef");
+        assert_eq!(row.1, None);
+    }
+
+    /// Older upload rows omit span_id instead of inventing a parent.
+    #[test]
+    fn legacy_upload_shape_is_unchanged() {
+        let event = Event {
+            operation: "messages.list".into(),
+            status: 200,
+            duration_ms: 1,
+            bytes_bucket: 0,
+            trace_id: "0123456789abcdef0123456789abcdef".into(),
+            span_id: None,
+            correlation_id: None,
+        };
+        let encoded = serde_json::to_value(event).unwrap();
+        assert!(encoded.get("span_id").is_none());
+        let current = Event {
+            operation: "messages.list".into(),
+            status: 200,
+            duration_ms: 1,
+            bytes_bucket: 0,
+            trace_id: "0123456789abcdef0123456789abcdef".into(),
+            span_id: Some("0123456789abcdef".into()),
+            correlation_id: None,
+        };
+        assert_eq!(
+            serde_json::to_value(current).unwrap()["span_id"],
+            "0123456789abcdef"
+        );
+    }
 }

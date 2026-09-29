@@ -138,6 +138,7 @@ impl<'a> Api<'a> {
                     start.elapsed().as_millis() as u64,
                     0,
                     &trace_id,
+                    &span_id,
                     None,
                 );
                 return Err(err.into());
@@ -146,8 +147,8 @@ impl<'a> Api<'a> {
         let status = response.status();
         let correlation = response
             .headers()
-            .get("x-moesegfault-correlation-id")
-            .or_else(|| response.headers().get("x-amail-request-id"))
+            .get("x-amail-request-id")
+            .or_else(|| response.headers().get("x-moesegfault-correlation-id"))
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
         let body = response.bytes()?.to_vec();
@@ -158,6 +159,7 @@ impl<'a> Api<'a> {
             start.elapsed().as_millis() as u64,
             body.len(),
             &trace_id,
+            &span_id,
             correlation.as_deref(),
         );
         if !status.is_success() {

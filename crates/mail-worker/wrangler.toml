@@ -43,12 +43,16 @@ remote = true
 [observability]
 enabled = true
 head_sampling_rate = 1.0
+redact_query_string = true
 
+# Keep only reviewed application events; automatic invocation logs include untrusted URLs.
 [observability.logs]
 enabled = true
+invocation_logs = false
 
+# Automatic root/dependency spans can retain path, SQL, and R2 metadata.
 [observability.traces]
-enabled = true
+enabled = false
 
 [triggers]
 crons = ["*/5 * * * *"]
@@ -89,3 +93,16 @@ remote = true
 
 [env.staging.triggers]
 crons = ["*/5 * * * *"]
+
+# Staging does not inherit the production privacy boundary.
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1.0
+redact_query_string = true
+
+[env.staging.observability.logs]
+enabled = true
+invocation_logs = false
+
+[env.staging.observability.traces]
+enabled = false
