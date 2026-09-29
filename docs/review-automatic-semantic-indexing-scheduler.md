@@ -16,3 +16,7 @@ The follow-up sets `EMBEDDING_LEASE_MS` to 20 minutes, longer than the documente
 - The semantic scan requires query/document model, 256 dimensions, and input version 1 before scoring. The model is read from the same invocation's `Env` after the query embedding call, so I found no concrete configuration-change race there. Existing jobs lacking a model checkpoint fail typed incomplete rather than being compared in an unknown vector space.
 
 Hosted CI, synthetic-message staging, real provider-route eligibility, and deployed public disclosure are separate release gates, not established by this review.
+
+## Refactor re-review (`67b139b`)
+
+The stage extraction preserves the relevant behavior in source: the owner-partitioned due SQL has the same predicates, ranking, order and `LIMIT 20`; the conditional claim still uses the 20-minute lease and the active/NULL-vector checks; the active-row read remains after claim and before provider transfer; the success write retains its active-row and live-token fence. Retry increments, deterministic backoff, quarantine threshold, three-ambiguous-4xx cooldown, provider-wide cooldowns, and fixed-code logging are unchanged. The new `EmbeddingLease` carries only message ID and token, not mail content. I found no new correctness or privacy regression in this diff. This is a static equivalence assessment, not an execution or hosted-behavior result.
