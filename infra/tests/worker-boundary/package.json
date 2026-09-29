@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test address-add.test.mjs"
+    "test": "node --test address-add.test.mjs sql-comments.test.mjs"
   },
   "devDependencies": {
     "miniflare": "4.20260730.0"

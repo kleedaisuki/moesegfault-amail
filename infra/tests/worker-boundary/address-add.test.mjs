@@ -4,11 +4,11 @@
  */
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
+import { applyMigrations } from "./migration-fixture.mjs";
 import { workerModuleRules } from "./worker-module-rules.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -118,14 +118,7 @@ async function exercise(createResponse, { failActivation = false, listedRuleIds 
   });
   try {
     const { MAIL_DB: db } = await mf.getBindings();
-    const names = await readdir(path.join(worker, "migrations"));
-    const migrations = names.filter((name) => /^\d{4}_.*\.sql$/.test(name)).sort();
-    assert.ok(migrations.length >= 8, "address scheduling migration is required");
-    for (let n = 0; n < migrations.length; n++) {
-      const name = migrations[n];
-      assert.equal(name.slice(0, 4), String(n + 1).padStart(4, "0"), "migrations must be contiguous");
-      await db.exec(await readFile(path.join(worker, "migrations", name), "utf8"));
-    }
+    await applyMigrations(db, path.join(worker, "migrations"));
     if (failActivation) {
       // Fail only the post-provider activation, not allocation or claiming.
       await db.exec(`CREATE TRIGGER fail_activation BEFORE UPDATE ON addresses

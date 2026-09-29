@@ -135,3 +135,24 @@ running, so omitting the explicit root fails there as it would in the Rust
 fixture. The rule and outbound fixtures remain shared and local-only. The
 hosted post-build suite must still establish that the generated Wasm graph and
 application assertions run successfully.
+
+### Local D1 migration comment parsing (run 36584433046)
+
+The next hosted run [36584433046](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36584433046)
+started the Rust/Wasm Worker and reached all 13 boundary cases, but each failed
+before request dispatch while loading the first SQL migration. Local D1's
+`db.exec(fullMigration)` treated its initial `--` comment as an empty statement
+and raised `D1_EXEC_ERROR: SQL code did not contain a statement`. Later
+migrations also contain inline `--` comments; removing only leading comment
+lines would not address the general fixture failure. An upstream
+[D1 issue reports similar comment and semicolon parsing failures](https://github.com/cloudflare/workers-sdk/issues/3892).
+
+The **test-only** migration loader now removes SQLite `--` line comments
+outside quoted strings and identifiers before calling `db.exec`; it preserves
+the SQL statements, quoted contents, migration ordering, and production SQL
+files. The pre-build smoke uses the *same ordered migration loader* as the
+Rust boundary suite, applying all eight current migrations to local D1 and
+checking both the `addresses` table and the final `next_reconcile_at` column.
+That detects comment and later-schema setup failures before compiling Rust.
+The hosted post-build suite remains necessary to verify address behavior;
+none of these fixture changes establish a fix for live staging.
