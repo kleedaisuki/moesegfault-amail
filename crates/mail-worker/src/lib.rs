@@ -295,10 +295,26 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
         created_at: i64,
     }
     let database = env.d1("MAIL_DB")?;
-    let rows = database.prepare("SELECT address,state,cf_rule_id,created_at FROM addresses WHERE state IN ('provisioning','deleting') OR needs_reconcile=1 ORDER BY CASE WHEN state='retired' THEN 1 ELSE 0 END,created_at ASC LIMIT 30")
+    let rows = database.prepare("SELECT address,state,cf_rule_id,created_at FROM addresses WHERE state IN ('provisioning','deleting') OR needs_reconcile=1 ORDER BY CASE state WHEN 'provisioning' THEN 0 WHEN 'deleting' THEN 1 WHEN 'active' THEN 2 ELSE 3 END,created_at ASC LIMIT 30")
         .all().await?.results::<Row>()?;
     for row in rows {
         let mut ids = platform::rules_for_address(env, &row.address).await?;
+        if row.state == "active" {
+            // Only prune duplicates after the committed active rule is known
+            // to exist at the provider. Never treat active as a delete state.
+            let Some(saved) = row.cf_rule_id.as_deref() else {
+                continue;
+            };
+            if !ids.iter().any(|id| id == saved) {
+                continue;
+            }
+            for extra in ids.iter().filter(|id| id.as_str() != saved) {
+                platform::delete_rule(env, extra).await?;
+            }
+            database.prepare("UPDATE addresses SET needs_reconcile=0 WHERE address=?1 AND state='active' AND cf_rule_id=?2")
+                .bind(&[bind_str(&row.address), bind_str(saved)])?.run().await?;
+            continue;
+        }
         if let Some(saved) = row.cf_rule_id.clone() {
             if !ids.contains(&saved) {
                 ids.push(saved);
@@ -306,15 +322,38 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
         }
         if row.state == "provisioning" {
             if let Some(first) = ids.first() {
-                database.prepare("UPDATE addresses SET state='active',cf_rule_id=?1 WHERE address=?2 AND state='provisioning'")
-                    .bind(&[bind_str(first),bind_str(&row.address)])?.run().await?;
-                for extra in ids.iter().skip(1) {
-                    let _ = platform::delete_rule(env, extra).await;
+                if ids.len() > 1 {
+                    // Record duplicate evidence before a racing add can choose
+                    // a different rule from a later, narrower provider view.
+                    database.prepare("UPDATE addresses SET needs_reconcile=1 WHERE address=?1 AND state='provisioning'")
+                        .bind(&[bind_str(&row.address)])?.run().await?;
+                }
+                let result = database.prepare("UPDATE addresses SET state='active',cf_rule_id=?1,needs_reconcile=MAX(needs_reconcile,?2) WHERE address=?3 AND state='provisioning'")
+                    .bind(&[bind_str(first),bind_num((ids.len() > 1) as i64),bind_str(&row.address)])?.run().await?;
+                if result.meta()?.and_then(|meta| meta.changes) == Some(0) && ids.len() > 1 {
+                    // Another actor may have activated a different rule. Mark
+                    // the active row for state-aware pruning, never delete here.
+                    database.prepare("UPDATE addresses SET needs_reconcile=1 WHERE address=?1 AND state='active'")
+                        .bind(&[bind_str(&row.address)])?.run().await?;
                 }
             } else if row.created_at < now() - 10 * 60_000 {
-                database.prepare("UPDATE addresses SET state='pending' WHERE address=?1 AND state='provisioning'")
+                database.prepare("UPDATE addresses SET state='pending',needs_reconcile=0 WHERE address=?1 AND state='provisioning'")
                     .bind(&[bind_str(&row.address)])?.run().await?;
             }
+            continue;
+        }
+        if row.state == "pending" {
+            // A stale duplicate marker must never send pending through the
+            // deletion path. If a route exists, restore the repair journal.
+            let query = if ids.is_empty() {
+                "UPDATE addresses SET needs_reconcile=0 WHERE address=?1 AND state='pending'"
+            } else {
+                "UPDATE addresses SET state='provisioning' WHERE address=?1 AND state='pending'"
+            };
+            database.prepare(query).bind(&[bind_str(&row.address)])?.run().await?;
+            continue;
+        }
+        if !matches!(row.state.as_str(), "deleting" | "retired") {
             continue;
         }
         for id in ids {
@@ -1196,6 +1235,15 @@ struct AddressRow {
     cf_rule_id: Option<String>,
 }
 
+/// Schedule state-aware duplicate pruning when a provider side effect may have
+/// raced with activation. The caller must not treat a failed mark as a license
+/// to delete any provider rule.
+async fn flag_active_address(database: &D1Database, address: &str, user: &Principal) -> Result<()> {
+    database.prepare("UPDATE addresses SET needs_reconcile=1 WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='active'")
+        .bind(&[bind_str(address), bind_str(&user.iss), bind_str(&user.sub)])?.run().await?;
+    Ok(())
+}
+
 async fn list_addresses(env: &Env, user: &Principal, request_id: &str) -> AppResult<Response> {
     let database = db(env)?;
     let result = database.prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE owner_iss=?1 AND owner_sub=?2 AND state!='retired' ORDER BY created_at")
@@ -1329,7 +1377,7 @@ async fn add_address(
         existing_rules.is_ok(),
         trace::elapsed_ms(list_start),
     );
-    let mut existing_rules = existing_rules.map_err(|error| {
+    let existing_rules = existing_rules.map_err(|error| {
         let kind = match &error {
             platform::RuleListFailure::Request => AddressDiagKind::Request,
             platform::RuleListFailure::Http { .. } => AddressDiagKind::Http,
@@ -1358,63 +1406,66 @@ async fn add_address(
                 .and_then(|error| error.provider_code()),
             trace::elapsed_ms(create_start),
         );
-        created.map_err(|error| {
-            let kind = match &error {
-                platform::RuleCreateFailure::Request => AddressDiagKind::Request,
-                platform::RuleCreateFailure::UnexpectedResponse { .. } => AddressDiagKind::Decode,
-                platform::RuleCreateFailure::Provider { .. } => AddressDiagKind::Provider,
-            };
-            diagnostic.fail(kind, error.provider_status(), error.provider_code());
-            rule_create_app_error(&error)
-        })?
-    };
-    for extra in existing_rules.drain(1..) {
-        let _ = platform::delete_rule(env, &extra).await;
-    }
-    diagnostic.enter(AddressDiagStage::D1Activate);
-    let transition = database.prepare("UPDATE addresses SET state='active',cf_rule_id=?1 WHERE address=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='provisioning'")
-        .bind(&[bind_str(&rule_id),bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.run().await;
-    let changed = transition
-        .as_ref()
-        .ok()
-        .and_then(|r| r.meta().ok().flatten())
-        .and_then(|m| m.changes)
-        .unwrap_or(0);
-    if changed != 1 {
-        // Persist ID even if DELETE won; cron can then complete cleanup if provider deletion fails.
-        let _ = database
-            .prepare("UPDATE addresses SET cf_rule_id=?1 WHERE address=?2 AND state='deleting'")
-            .bind(&[bind_str(&rule_id), bind_str(&address)])?
-            .run()
-            .await;
-        if platform::delete_rule(env, &rule_id).await.is_err() {
-            let _ = database
-                .prepare("UPDATE addresses SET needs_reconcile=1 WHERE address=?1")
-                .bind(&[bind_str(&address)])?
-                .run()
-                .await;
+        match created {
+            Ok(id) => id,
+            Err(error) => {
+                // A failed response may still follow a provider-side create.
+                // If Cron activated another exact rule, revisit duplicates.
+                let _ = flag_active_address(&database, &address, user).await;
+                let kind = match &error {
+                    platform::RuleCreateFailure::Request => AddressDiagKind::Request,
+                    platform::RuleCreateFailure::UnexpectedResponse { .. } => AddressDiagKind::Decode,
+                    platform::RuleCreateFailure::Provider { .. } => AddressDiagKind::Provider,
+                };
+                diagnostic.fail(kind, error.provider_status(), error.provider_code());
+                return Err(rule_create_app_error(&error));
+            }
         }
-        return if changed == 0 {
-            diagnostic.fail(AddressDiagKind::State, None, None);
-            Err(AppError::conflict("address_state_changed"))
-        } else {
-            diagnostic.fail(AddressDiagKind::D1, None, None);
-            Err(AppError {
-                status: 503,
-                code: "address_provision_unknown",
-            })
-        };
-    }
+    };
+    // Defer duplicate pruning until an active D1 row names the surviving rule.
+    let duplicate_rules = existing_rules.len() > 1;
+    diagnostic.enter(AddressDiagStage::D1Activate);
+    let transition = database.prepare("UPDATE addresses SET state='active',cf_rule_id=?1,needs_reconcile=MAX(needs_reconcile,?2) WHERE address=?3 AND owner_iss=?4 AND owner_sub=?5 AND state='provisioning'")
+        .bind(&[bind_str(&rule_id),bind_num(duplicate_rules as i64),bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.run().await;
+    let no_change = match transition {
+        Ok(result) => match result.meta().ok().flatten().and_then(|meta| meta.changes) {
+            Some(0) => true,
+            _ => false,
+        },
+        Err(_) => false,
+    };
     diagnostic.enter(AddressDiagStage::D1Readback);
+    // A failed D1 response does not prove the write failed: deleting the route
+    // could strand an already-committed active address. Read the exact owned row
+    // before acknowledging activation or classifying a concurrent deletion.
     let row = database
-        .prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1")
-        .bind(&[bind_str(&address)])?
+        .prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3")
+        .bind(&[bind_str(&address), bind_str(&user.iss), bind_str(&user.sub)])?
         .first::<AddressRow>(None)
-        .await?
-        .ok_or_else(|| {
+        .await;
+    let row = match row {
+        Ok(Some(row)) => row,
+        _ => {
+            diagnostic.fail(AddressDiagKind::D1, None, None);
+            return Err(AppError { status: 503, code: "address_provision_unknown" });
+        }
+    };
+    if row.state == "active" && row.cf_rule_id.as_deref() != Some(rule_id.as_str()) {
+        // Cron may have adopted a different exact rule concurrently. Preserve
+        // duplicate evidence without changing its committed active rule.
+        let _ = flag_active_address(&database, &address, user).await;
+    }
+    if row.state != "active" || row.cf_rule_id.as_deref() != Some(rule_id.as_str()) {
+        // Provisioning and deleting are reconciled by cron. Do not destroy a
+        // possibly committed route, including when the UPDATE reported zero.
+        if no_change && matches!(row.state.as_str(), "deleting" | "retired")
+        {
             diagnostic.fail(AddressDiagKind::State, None, None);
-            AppError::not_found()
-        })?;
+            return Err(AppError::conflict("address_state_changed"));
+        }
+        diagnostic.fail(AddressDiagKind::D1, None, None);
+        return Err(AppError { status: 503, code: "address_provision_unknown" });
+    }
     diagnostic.enter(AddressDiagStage::ResponseEncode);
     let response = Response::from_json(&serde_json::json!({"address":address,"state":row.state,"created_at":iso(row.created_at),"request_id":request_id}))?.with_status(201);
     diagnostic.success();
