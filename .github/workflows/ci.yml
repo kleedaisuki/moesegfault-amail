@@ -808,3 +808,4 @@ jobs:
           if [ "$state" != absent ]; then
             echo '::error::Staging role route changed unexpectedly'
             exit 1
+          fi
