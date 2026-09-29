@@ -10,6 +10,21 @@ The same Cron invocation then processes up to 20 semantic-index work items, each
 
 There is a separate unresolved **D1** documentation boundary: the current [D1 limits page](https://developers.cloudflare.com/d1/platform/limits/) lists 50 queries per Worker invocation on Free and 1,000 on Paid, while the newer [Workers limits page](https://developers.cloudflare.com/workers/platform/limits/) and [subrequest changelog](https://developers.cloudflare.com/changelog/post/2026-02-11-subrequests-limit/) describe 1,000 Free internal-service subrequests. These may be a product-specific D1 limit or stale wording; do not silently pick the larger number. The current 30-row address scan alone can consume one selection plus 30 claims and additional state writes, before other Cron D1 work. Account-plan verification and a hosted high-backlog D1 test are required before calling the **whole Cron** Free-safe.
 
+### Whole-Cron D1 call inventory
+
+The following are code-derived **call counts**, not observed latency or D1 `rows_read` measurements. Concurrent row changes can reduce completed work; errors can stop a phase early. A D1 `batch()` is not assumed to erase per-statement limits.
+
+| Scheduled phase | Bound from inspected source | Why the peak matters |
+| --- | --- | --- |
+| Address repair | One select, up to 30 due-time claims, then zero to roughly two state writes per row | A busy 30-row sweep can approach 91 D1 statements before other phases. |
+| Outbound recovery | Two setup queries, then one `messages` insert, one ledger update and one `send_requests` update per item, **plus one chunk INSERT for each text part after the first** | `validate_draft` permits a text-only draft near 4,000,000 bytes; 60,000-byte parts mean about 66 chunk INSERTs. Twenty such accepted rows could use roughly `2 + 20 × (66 + 3) = 1,382` D1 statements in this phase alone, exceeding even the published Paid 1,000-query invocation bound. This is a feasible stress shape, not a measured production backlog. |
+| Semantic retry | Two initial reads and up to 20 claimed items; each item performs a claim, owner-schedule update, leased-content read, then success/failure persistence | At least about 62 D1 statements if all 20 items progress; the actual failure/success paths can do more. Also up to 20 external OpenRouter calls. |
+| Deleted-content collection | One list, then three D1 deletes per row for up to 20 rows | Up to 61 D1 statements, besides R2 operations. |
+| Orphan-object collection | One list, then a send-state read and two D1 deletes per processed row, up to 20 | Up to 61 D1 statements, besides R2 operations. |
+| Other maintenance | One storage update, three abuse-retention statements, and three search-job cleanup statements | Seven more D1 statements before any future maintenance work. |
+
+Therefore batching provider inventory removes a real external-fetch failure mode but **does not** make this combined Cron safe at 50 D1 queries and cannot by itself guarantee the 1,000-query Paid bound under a backlog of large outbound recovery items. Two actionable paths are: (a) verify Workers Paid, give the combined invocation a conservative D1 call budget, and stop each phase before its next row would cross it, leaving durable work for another tick; or (b) if Free is required, split address repair, outbound recovery, semantic retry, and storage cleanup into separate invocations (for example, dedicated scheduled Workers or Queue consumers), each with a much smaller row/chunk budget and durable continuation. Merely changing the address `LIMIT 30` to five is insufficient if the same invocation still runs all remaining phases. For outbound recovery, estimate the chunk count **before writing**, and permit only work that fits the remaining query budget; otherwise a large item can be retried forever without progress. A continuation cursor or another per-item invocation boundary is needed if a single valid item exceeds the budget.
+
 ## Small, safe batching model
 
 1. Select the same bounded due rows in the same fair due-time order. If none exist, do not list Rules.
