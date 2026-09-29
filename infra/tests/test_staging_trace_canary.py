@@ -24,7 +24,8 @@ MARKERS = ("amail_path_canary_test", "amail_query_canary_test")
 def row(event: dict) -> dict:
     """Represent a Cloudflare retained log with a JSON-text Rust console event."""
 
-    return {"$metadata": {"id": event["request_id"], "service": canary.WORKER},
+    return {"$metadata": {"id": event["request_id"], "service": canary.WORKER,
+                          "type": "cf-worker-log"},
             "source": json.dumps(event)}
 
 
@@ -76,6 +77,37 @@ class StagingTraceCanaryTests(unittest.TestCase):
         root = json.loads(records[0]["source"])
         root["operation"] = {"unexpected": "value"}
         records[0]["source"] = json.dumps(root)
+        with self.assertRaisesRegex(canary.CanaryError, "application_event_schema_unallowlisted"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
+    def test_unreviewed_custom_log_fails(self) -> None:
+        """Arbitrary console text cannot coexist with a broad schema pass."""
+
+        records = events() + [{"$metadata": {"id": "custom", "service": canary.WORKER,
+                                             "type": "cf-worker-log"},
+                               "source": "some free-form diagnostic"}]
+        with self.assertRaisesRegex(canary.CanaryError, "unreviewed_custom_log"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
+    def test_routing_numeric_phase_is_allowlisted(self) -> None:
+        """Current Rust routing diagnostics use fixed numeric provider facts."""
+
+        records = events()
+        routing = json.loads(records[0]["source"])
+        routing.update({"phase": "routing_create", "span_id": "7" * 16,
+                        "parent_span_id": S, "provider_http_status": 403,
+                        "provider_error_code": 10000, "outcome": "phase_failure"})
+        records.append(row(routing))
+        canary.assess(records, (T, C, R), D, MARKERS)
+
+    def test_arbitrary_provider_fact_fails(self) -> None:
+        """Provider diagnostics remain numeric, not response-text escape hatches."""
+
+        records = events()
+        routing = json.loads(records[0]["source"])
+        routing.update({"phase": "routing_create", "span_id": "7" * 16,
+                        "provider_http_status": "forbidden with secret"})
+        records.append(row(routing))
         with self.assertRaisesRegex(canary.CanaryError, "application_event_schema_unallowlisted"):
             canary.assess(records, (T, C, R), D, MARKERS)
 

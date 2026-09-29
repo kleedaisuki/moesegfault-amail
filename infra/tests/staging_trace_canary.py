@@ -35,11 +35,12 @@ EVENT_KEYS = frozenset({
     "schema_version", "service", "operation", "phase", "trace_id", "span_id",
     "parent_span_id", "request_id", "outcome", "error_code",
     "http_status_class", "duration_ms_bucket", "request_bytes_bucket",
-    "response_bytes_bucket",
+    "response_bytes_bucket", "provider_http_status", "provider_error_code",
 })
 EVENT_SERVICES = frozenset({"mail_api", "mail_cli"})
 EVENT_PHASES = frozenset({
     "request_exit", "operation_exit", "d1_read", "d1_write", "r2_write", "provider_send",
+    "routing_list", "routing_create",
 })
 EVENT_OUTCOMES = frozenset({"success", "client_error", "server_error", "phase_failure"})
 EVENT_OPERATIONS = frozenset({
@@ -287,6 +288,12 @@ def allowlisted_event(event: dict) -> bool:
         value = event.get(key)
         if value is not None and (type(value) is not int or value < 0 or value > 1 << 30):
             return False
+    status = event.get("provider_http_status")
+    if status is not None and (type(status) is not int or not 100 <= status <= 599):
+        return False
+    code = event.get("provider_error_code")
+    if code is not None and (type(code) is not int or not 0 <= code <= 0xFFFFFFFF):
+        return False
     trace = event.get("trace_id")
     span = event.get("span_id")
     parent = event.get("parent_span_id")
@@ -318,7 +325,13 @@ def assess(records: list[dict], ids: tuple[str, str, str], denied_id: str,
         need(isinstance(metadata, dict) and metadata.get("service") == WORKER,
              "service_filter_not_enforced")
         source_events = embedded_events(record.get("source"))
-        safe_events.extend(source_events or embedded_events(metadata.get("message")))
+        recognized = source_events or embedded_events(metadata.get("message"))
+        # A custom console line with no reviewed schema is not silently safe.
+        # Platform-generated event/error rows still receive whole-record canary
+        # scanning, but are outside the application-event schema verdict.
+        need(metadata.get("type") != "cf-worker-log" or bool(recognized),
+             "unreviewed_custom_log")
+        safe_events.extend(recognized)
     need(all(allowlisted_event(event) for event in safe_events),
          "application_event_schema_unallowlisted")
     for event in safe_events:
