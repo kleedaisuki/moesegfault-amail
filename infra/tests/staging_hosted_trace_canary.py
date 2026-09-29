@@ -38,7 +38,17 @@ PREFLIGHT_CODES = frozenset({
     "observability_keys_malformed",
     "service_filter_key_unverified",
 })
-RETAINED_QUERY_CODES = frozenset({
+RETAINED_CHILD_CODES = PREFLIGHT_CODES | frozenset({
+    # Fixed local-probe and retained-assertion codes from staging_trace_canary.
+    "account_id_missing_or_invalid", "observability_or_deploy_token_missing",
+    "path_not_under_temp", "cli_or_home_missing", "cli_journal_missing",
+    "cli_list_not_correlatable", "cli_trace_id_invalid", "cli_span_id_invalid",
+    "cli_request_id_invalid", "cli_address_list_failed",
+    "rejected_url_network_unavailable", "rejected_url_contract_failed",
+    "local_probe_unavailable", "synthetic_url_marker_retained",
+    "service_filter_not_enforced", "unreviewed_retained_payload",
+    "application_event_schema_unallowlisted", "cli_api_root_missing_or_duplicate",
+    "cli_api_parentage_invalid", "rejected_request_event_missing",
     "observability_permission_denied", "observability_http_unavailable",
     "observability_network_unavailable", "observability_response_too_large",
     "observability_response_malformed", "observability_query_failed",
@@ -126,7 +136,7 @@ def child_failure_code(output: object) -> str:
     except UnicodeDecodeError:
         return "retained_canary_unverified"
     match = re.fullmatch(r"staging_trace_canary: UNVERIFIED \(([a-z_]+)\)", line)
-    if match and match.group(1) in RETAINED_QUERY_CODES:
+    if match and match.group(1) in RETAINED_CHILD_CODES:
         return match.group(1)
     return "retained_canary_unverified"
 

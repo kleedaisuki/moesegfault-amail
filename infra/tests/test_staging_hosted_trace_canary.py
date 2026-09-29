@@ -78,12 +78,21 @@ class HostedTraceSafetyTests(unittest.TestCase):
         self.assertEqual(output.getvalue().strip(), "staging_trace_hosted: UNVERIFIED (unexpected_failure)")
 
     def test_child_failure_code_is_exact_and_allowlisted(self) -> None:
-        """Suppressed child output reveals only reviewed query diagnostics."""
+        """Expose only exact fixed child stages, never arbitrary child output."""
 
-        self.assertEqual(
-            HOSTED.child_failure_code(b"staging_trace_canary: UNVERIFIED (observability_events_view_absent)\n"),
-            "observability_events_view_absent",
-        )
+        for code in (
+                "deployed_privacy_settings_unverified",
+                "cli_list_not_correlatable",
+                "rejected_url_contract_failed",
+                "observability_events_view_absent",
+                "unreviewed_retained_payload",
+                "application_event_schema_unallowlisted",
+                "cli_api_parentage_invalid",
+                "local_probe_unavailable",
+        ):
+            with self.subTest(code=code):
+                output = f"staging_trace_canary: UNVERIFIED ({code})\n".encode("ascii")
+                self.assertEqual(HOSTED.child_failure_code(output), code)
         for output in (b"secret=private\nstaging_trace_canary: UNVERIFIED (observability_events_view_absent)",
                        b"staging_trace_canary: UNVERIFIED (private_provider_text)",
                        b"staging_trace_canary: retained_marker_absence_and_cli_api_parentage_verified"):
