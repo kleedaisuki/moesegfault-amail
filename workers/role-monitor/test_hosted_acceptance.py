@@ -7,7 +7,8 @@ import io
 import os
 import subprocess
 import unittest
-from unittest.mock import patch
+import urllib.error
+from unittest.mock import MagicMock, Mock, patch
 
 import hosted_acceptance as hosted
 
@@ -30,17 +31,24 @@ class HostedRoleAcceptanceTests(unittest.TestCase):
             "head_sha": SHA,
         }
         job = {
+            "id": 77,
             "name": hosted.JOB_NAME, "head_sha": SHA,
             "status": "completed", "conclusion": "success",
             "started_at": "2026-09-29T05:00:00Z",
             "completed_at": "2026-09-29T05:10:00Z",
+            "steps": [{
+                "name": hosted.DEPLOY_STEP, "conclusion": "success",
+                "started_at": "2026-09-29T05:04:00Z",
+                "completed_at": "2026-09-29T05:06:00Z",
+            }],
         }
         with patch.object(hosted, "github_get", side_effect=[run, {"total_count": 1, "jobs": [job]}]):
-            started, ended = hosted.successful_deploy_job(
+            deployed = hosted.successful_deploy_job(
                 "kleedaisuki/moesegfault-amail", 42, "token", "codex/amail-v0.1.0"
             )
-        self.assertEqual(started, NOW)
-        self.assertEqual(ended.minute, 10)
+        self.assertEqual(deployed.started, NOW)
+        self.assertEqual(deployed.ended.minute, 10)
+        self.assertEqual(deployed.job_id, 77)
         job["head_sha"] = "b" * 40
         with patch.object(hosted, "github_get", side_effect=[run, {"total_count": 1, "jobs": [job]}]):
             with self.assertRaisesRegex(hosted.GateError, "deploy_job_not_successful"):
@@ -49,6 +57,39 @@ class HostedRoleAcceptanceTests(unittest.TestCase):
         with patch.object(hosted, "github_get", return_value=run):
             with self.assertRaisesRegex(hosted.GateError, "deploy_run_wrong_workflow"):
                 hosted.successful_deploy_job("kleedaisuki/moesegfault-amail", 42, "token", "codex/amail-v0.1.0")
+
+    def test_logged_version_is_unique_within_exact_deploy_step(self) -> None:
+        """An out-of-band deployment in the job window cannot self-attest."""
+
+        job = hosted.DeployedJob(NOW, NOW.replace(minute=10), 77,
+                                  NOW.replace(minute=4), NOW.replace(minute=6))
+        lines = (
+            "2026-09-29T05:01:00Z Current Version ID: 11111111-1111-4111-8111-111111111111\n"
+            f"2026-09-29T05:05:00.8395859Z Current Version ID: {VERSION}\n"
+        )
+        with patch.object(hosted, "github_job_log", return_value=lines):
+            self.assertEqual(hosted.logged_version("repo", job, "token"), VERSION)
+        with patch.object(hosted, "github_job_log", return_value=lines + lines.splitlines()[1] + "\n"):
+            with self.assertRaisesRegex(hosted.GateError, "deploy_log_version_ambiguous"):
+                hosted.logged_version("repo", job, "token")
+
+    def test_job_log_redirect_does_not_forward_bearer(self) -> None:
+        """GitHub's signed-storage redirect receives no Actions bearer token."""
+
+        url = "https://logs.actions.githubusercontent.com/restricted?sig=opaque"
+        redirect = urllib.error.HTTPError("https://api.github.com", 302, "Found",
+                                           {"Location": url}, None)
+        opener = Mock()
+        opener.open.side_effect = redirect
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b"fixed log only"
+        with patch.object(hosted.urllib.request, "build_opener", return_value=opener), \
+             patch.object(hosted.urllib.request, "urlopen", return_value=response) as storage:
+            self.assertEqual(hosted.github_job_log("repo", 77, "secret"), "fixed log only")
+        self.assertEqual(storage.call_args.args[0].full_url, url)
+        self.assertNotIn("Authorization", storage.call_args.args[0].headers)
 
     def test_active_version_requires_one_full_traffic_version(self) -> None:
         """A staged 50/50 rollout is not an acceptable SMTP test target."""
@@ -87,7 +128,9 @@ class HostedRoleAcceptanceTests(unittest.TestCase):
         }
         with patch.dict(os.environ, env, clear=True), \
              patch.object(hosted.probe, "credentials", return_value=("zone", "routing", "a" * 32)), \
-             patch.object(hosted, "successful_deploy_job", return_value=(NOW, NOW)), \
+             patch.object(hosted, "successful_deploy_job", return_value=hosted.DeployedJob(
+                 NOW, NOW, 77, NOW, NOW)), \
+             patch.object(hosted, "logged_version", return_value=VERSION), \
              patch.object(hosted, "active_version", return_value=(VERSION, NOW.replace(hour=6))), \
              patch.object(hosted.probe, "preflight") as preflight:
             with self.assertRaisesRegex(hosted.GateError, "worker_deployment_not_from_successful_job"):

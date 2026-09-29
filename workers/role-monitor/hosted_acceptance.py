@@ -8,6 +8,7 @@ fixed labels without exporting mail, credentials, or provider response bodies.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -16,6 +17,7 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from uuid import UUID
 
@@ -26,12 +28,29 @@ ROOT = Path(__file__).resolve().parents[2]
 GITHUB_API = "https://api.github.com"
 MAX_RESPONSE = 262_144
 JOB_NAME = "Deploy isolated staging role monitor"
+DEPLOY_STEP = "Deploy staging Worker with private destination and provider audit secrets"
 CONFIRM = "RUN_STAGING_ROLE_SMTP"
 FREEZE = "FREEZE_STAGING_ROLE_DEPLOYS"
+MAX_JOB_LOG = 4_194_304
+VERSION_LINE = re.compile(
+    r"(?:^|\t)(?P<time>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) "
+    r"Current Version ID: (?P<version>[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\s*$"
+)
 
 
 class GateError(Exception):
     """A fixed label safe to print in an Actions log."""
+
+
+@dataclass(frozen=True)
+class DeployedJob:
+    """One successful job and the exact step that emitted a Worker version."""
+
+    started: datetime
+    ended: datetime
+    job_id: int
+    step_started: datetime
+    step_ended: datetime
 
 
 def require(ok: bool, label: str) -> None:
@@ -78,8 +97,8 @@ def github_get(path: str, token: str) -> dict:
     return value
 
 
-def successful_deploy_job(repo: str, run_id: int, token: str, branch: str) -> tuple[datetime, datetime]:
-    """Bind the latest Worker deployment to a successful staging CI job."""
+def successful_deploy_job(repo: str, run_id: int, token: str, branch: str) -> DeployedJob:
+    """Identify the successful staging job and its exact deploy step."""
 
     run = github_get(f"/repos/{repo}/actions/runs/{run_id}", token)
     require(run.get("conclusion") == "success" and run.get("status") == "completed", "deploy_run_not_successful")
@@ -103,7 +122,78 @@ def successful_deploy_job(repo: str, run_id: int, token: str, branch: str) -> tu
     started = parse_time(matched[0].get("started_at"), "deploy_job_time_invalid")
     ended = parse_time(matched[0].get("completed_at"), "deploy_job_time_invalid")
     require(started <= ended, "deploy_job_time_invalid")
-    return started, ended
+    job_id = matched[0].get("id")
+    require(type(job_id) is int and job_id > 0, "deploy_job_id_invalid")
+    steps = matched[0].get("steps")
+    require(isinstance(steps, list), "deploy_step_unavailable")
+    selected = [step for step in steps if isinstance(step, dict) and step.get("name") == DEPLOY_STEP]
+    require(len(selected) == 1 and selected[0].get("conclusion") == "success",
+            "deploy_step_not_successful")
+    step_started = parse_time(selected[0].get("started_at"), "deploy_step_time_invalid")
+    step_ended = parse_time(selected[0].get("completed_at"), "deploy_step_time_invalid")
+    require(started <= step_started <= step_ended <= ended, "deploy_step_time_invalid")
+    return DeployedJob(started, ended, job_id, step_started, step_ended)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Keep the GitHub bearer token off the signed log-storage redirect."""
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        """Return the 302 to the caller for a tokenless second request."""
+
+        return None
+
+
+def github_job_log(repo: str, job_id: int, token: str) -> str:
+    """Privately read one bounded job log; never persist or print its content."""
+
+    request = urllib.request.Request(
+        f"{GITHUB_API}/repos/{repo}/actions/jobs/{job_id}/logs",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "amail-staging-role-acceptance",
+        },
+    )
+    try:
+        urllib.request.build_opener(NoRedirect).open(request, timeout=30)
+    except urllib.error.HTTPError as error:
+        require(error.code == 302, "deploy_log_unavailable")
+        location = error.headers.get("Location", "")
+    except (urllib.error.URLError, TimeoutError):
+        raise GateError("deploy_log_unavailable") from None
+    else:
+        raise GateError("deploy_log_redirect_missing")
+    target = urllib.parse.urlparse(location)
+    host = target.hostname or ""
+    require(target.scheme == "https" and not target.username and not target.password
+            and (host.endswith(".actions.githubusercontent.com")
+                 or host.endswith(".blob.core.windows.net")), "deploy_log_redirect_invalid")
+    try:
+        with urllib.request.urlopen(urllib.request.Request(location), timeout=30) as response:
+            status, raw = response.status, response.read(MAX_JOB_LOG + 1)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        raise GateError("deploy_log_unavailable") from None
+    require(status == 200 and len(raw) <= MAX_JOB_LOG, "deploy_log_unavailable")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise GateError("deploy_log_invalid") from None
+
+
+def logged_version(repo: str, job: DeployedJob, token: str) -> str:
+    """Extract exactly one version line emitted during the deploy step only."""
+
+    candidates: list[str] = []
+    for line in github_job_log(repo, job.job_id, token).splitlines():
+        match = VERSION_LINE.search(line)
+        if match is None:
+            continue
+        emitted = parse_time(match.group("time"), "deploy_log_time_invalid")
+        if job.step_started <= emitted <= job.step_ended:
+            candidates.append(match.group("version"))
+    require(len(candidates) == 1 and valid_uuid(candidates[0]), "deploy_log_version_ambiguous")
+    return candidates[0]
 
 
 def active_version(account: str, token: str) -> tuple[str, datetime]:
@@ -155,10 +245,12 @@ def gates() -> tuple[str, str, str, str]:
         zone, routing, account = probe.credentials(send=True)
     except Exception:
         raise GateError("provider_credentials_unavailable") from None
-    started, ended = successful_deploy_job(repo, int(raw_run), gh_token, branch)
+    job = successful_deploy_job(repo, int(raw_run), gh_token, branch)
+    emitted_version = logged_version(repo, job, gh_token)
+    require(emitted_version == expected, "deploy_log_version_not_expected")
     version, created = active_version(account, os.environ["CLOUDFLARE_API_TOKEN"])
     require(version == expected, "worker_version_not_expected")
-    require(started - timedelta(minutes=2) <= created <= ended + timedelta(minutes=2),
+    require(job.started - timedelta(minutes=2) <= created <= job.ended + timedelta(minutes=2),
             "worker_deployment_not_from_successful_job")
     try:
         probe.preflight(zone, routing, account)
