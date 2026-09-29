@@ -1,6 +1,6 @@
 # Staging Identity test principal and private verification inbox
 
-Status 2026-09-28: the private R2 bucket/lifecycle and Rust Email Worker are deployed and passed hosted build checks; one controlled provider-originated SMTP→Email Routing→private R2 probe succeeded **after a 60-second route-settle wait**, with the temporary route and test object removed. An immediate-send probe first failed with `routing_unknown_address`. Normal Identity registration and an independent external-sender test remain pending. No test principal was created by a D1 fixture or bypass.
+Status 2026-09-29: the private R2 bucket/lifecycle and Rust Email Worker are deployed and passed hosted build checks; one controlled provider-originated SMTP→Email Routing→private R2 probe succeeded **after a 60-second route-settle wait**, with the temporary route and test object removed. An immediate-send probe first failed with `routing_unknown_address`. A later normal first-party Identity registration and email verification **succeeded** for one synthetic staging account; the exact route and private object were removed. Native OAuth login remains blocked by an Identity resume-origin defect, and an independent external-sender test remains pending. No test principal was created by a D1 fixture or bypass.
 
 The precise two-phase first-party registration → verified contact → native CLI PKCE procedure is in [staging Identity flow](staging-identity-flow.md); this document owns the private inbox and route boundaries.
 
