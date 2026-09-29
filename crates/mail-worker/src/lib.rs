@@ -350,7 +350,11 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
             } else {
                 "UPDATE addresses SET state='provisioning' WHERE address=?1 AND state='pending'"
             };
-            database.prepare(query).bind(&[bind_str(&row.address)])?.run().await?;
+            database
+                .prepare(query)
+                .bind(&[bind_str(&row.address)])?
+                .run()
+                .await?;
             continue;
         }
         if !matches!(row.state.as_str(), "deleting" | "retired") {
@@ -1414,7 +1418,9 @@ async fn add_address(
                 let _ = flag_active_address(&database, &address, user).await;
                 let kind = match &error {
                     platform::RuleCreateFailure::Request => AddressDiagKind::Request,
-                    platform::RuleCreateFailure::UnexpectedResponse { .. } => AddressDiagKind::Decode,
+                    platform::RuleCreateFailure::UnexpectedResponse { .. } => {
+                        AddressDiagKind::Decode
+                    }
                     platform::RuleCreateFailure::Provider { .. } => AddressDiagKind::Provider,
                 };
                 diagnostic.fail(kind, error.provider_status(), error.provider_code());
@@ -1447,7 +1453,10 @@ async fn add_address(
         Ok(Some(row)) => row,
         _ => {
             diagnostic.fail(AddressDiagKind::D1, None, None);
-            return Err(AppError { status: 503, code: "address_provision_unknown" });
+            return Err(AppError {
+                status: 503,
+                code: "address_provision_unknown",
+            });
         }
     };
     if row.state == "active" && row.cf_rule_id.as_deref() != Some(rule_id.as_str()) {
@@ -1458,13 +1467,15 @@ async fn add_address(
     if row.state != "active" || row.cf_rule_id.as_deref() != Some(rule_id.as_str()) {
         // Provisioning and deleting are reconciled by cron. Do not destroy a
         // possibly committed route, including when the UPDATE reported zero.
-        if no_change && matches!(row.state.as_str(), "deleting" | "retired")
-        {
+        if no_change && matches!(row.state.as_str(), "deleting" | "retired") {
             diagnostic.fail(AddressDiagKind::State, None, None);
             return Err(AppError::conflict("address_state_changed"));
         }
         diagnostic.fail(AddressDiagKind::D1, None, None);
-        return Err(AppError { status: 503, code: "address_provision_unknown" });
+        return Err(AppError {
+            status: 503,
+            code: "address_provision_unknown",
+        });
     }
     diagnostic.enter(AddressDiagStage::ResponseEncode);
     let response = Response::from_json(&serde_json::json!({"address":address,"state":row.state,"created_at":iso(row.created_at),"request_id":request_id}))?.with_status(201);
