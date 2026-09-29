@@ -9,7 +9,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
+import re
 import sys
+import tomllib
 import urllib.error
 import urllib.request
 
@@ -18,6 +21,26 @@ API = "https://api.cloudflare.com/client/v4"
 ADDRESS = "amail-e2e@moesegfault.dev"
 WORKER = "amail-identity-test-inbox-staging"
 MAX_BODY = 262_144
+
+
+def allowed_addresses() -> frozenset[str]:
+    """Read only the reviewed, deployed staging inbox recipient allowlist."""
+
+    with Path(__file__).with_name("wrangler.toml").open("rb") as stream:
+        config = tomllib.load(stream)
+    raw = config.get("vars", {}).get("TEST_RECIPIENTS", "")
+    if not isinstance(raw, str):
+        return frozenset()
+    addresses = raw.split(",")
+    if (
+        not 1 <= len(addresses) <= 4
+        or addresses[0] != ADDRESS
+        or len(set(addresses)) != len(addresses)
+        or any(not re.fullmatch(r"amail-e2e(?:-[a-z0-9-]{1,21})?@moesegfault\.dev", value)
+               for value in addresses)
+    ):
+        return frozenset()
+    return frozenset(addresses)
 
 
 def call(method: str, path: str, token: str, body: dict | None = None) -> tuple[int, dict]:
@@ -81,7 +104,7 @@ def list_rules(zone: str, token: str) -> list[dict]:
     raise RuntimeError("routing pagination exceeded safe bound")
 
 
-def is_alias(rule: dict) -> bool:
+def is_alias(rule: dict, address: str = ADDRESS) -> bool:
     """Detect any literal matcher on the dedicated alias.
 
     中文：识别专用别名上的任意精确匹配规则。
@@ -91,12 +114,12 @@ def is_alias(rule: dict) -> bool:
         isinstance(matcher, dict)
         and matcher.get("type") == "literal"
         and matcher.get("field") == "to"
-        and str(matcher.get("value", "")).lower() == ADDRESS
+        and str(matcher.get("value", "")).lower() == address
         for matcher in rule.get("matchers") or []
     )
 
 
-def owned(rule: dict) -> bool:
+def owned(rule: dict, address: str = ADDRESS) -> bool:
     """Require one enabled, API-owned action to this exact staging Worker.
 
     中文：只承认指向精确预发布 Worker 的已启用 API 管理规则。
@@ -107,19 +130,21 @@ def owned(rule: dict) -> bool:
         and rule.get("source") == "api"
         and rule.get("actions") == [{"type": "worker", "value": [WORKER]}]
         and rule.get("matchers")
-        == [{"type": "literal", "field": "to", "value": ADDRESS}]
+        == [{"type": "literal", "field": "to", "value": address}]
         and isinstance(rule.get("id"), str)
     )
 
 
-def reconcile(zone: str, token: str, action: str) -> str:
+def reconcile(zone: str, token: str, action: str, address: str = ADDRESS) -> str:
     """Audit, add, or remove only our one non-conflicting rule.
 
     中文：审计、添加或删除一条不冲突的专有规则。
     """
 
-    matches = [rule for rule in list_rules(zone, token) if is_alias(rule)]
-    if len(matches) > 1 or matches and not owned(matches[0]):
+    if address not in allowed_addresses():
+        raise RuntimeError("test alias not in staging inbox allowlist")
+    matches = [rule for rule in list_rules(zone, token) if is_alias(rule, address)]
+    if len(matches) > 1 or matches and not owned(matches[0], address):
         raise RuntimeError("test alias routing conflict; no changes made")
     if action == "audit":
         return "enabled" if matches else "absent"
@@ -130,14 +155,14 @@ def reconcile(zone: str, token: str, action: str) -> str:
             "name": "amail staging Identity verification",
             "enabled": True,
             "source": "api",
-            "matchers": [{"type": "literal", "field": "to", "value": ADDRESS}],
+            "matchers": [{"type": "literal", "field": "to", "value": address}],
             "actions": [{"type": "worker", "value": [WORKER]}],
         }
         status, payload = call("POST", f"/zones/{zone}/email/routing/rules", token, body)
         if status not in (200, 201) or payload.get("success") is not True:
             raise RuntimeError(f"routing create failed: HTTP{status}")
-        readback = [rule for rule in list_rules(zone, token) if is_alias(rule)]
-        if len(readback) != 1 or not owned(readback[0]):
+        readback = [rule for rule in list_rules(zone, token) if is_alias(rule, address)]
+        if len(readback) != 1 or not owned(readback[0], address):
             raise RuntimeError("routing create readback failed")
         return "created"
     if not matches:
@@ -146,7 +171,7 @@ def reconcile(zone: str, token: str, action: str) -> str:
     status, payload = call("DELETE", f"/zones/{zone}/email/routing/rules/{rule_id}", token)
     if status != 204 and (status != 200 or payload.get("success") is not True):
         raise RuntimeError(f"routing delete failed: HTTP{status}")
-    if any(is_alias(rule) for rule in list_rules(zone, token)):
+    if any(is_alias(rule, address) for rule in list_rules(zone, token)):
         raise RuntimeError("routing delete readback failed")
     return "removed"
 
@@ -158,6 +183,7 @@ def main() -> int:
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--apply", action="store_true")
     action.add_argument("--remove", action="store_true")
+    parser.add_argument("--address", default=ADDRESS, help="exact configured staging Identity test alias")
     args = parser.parse_args()
     zone = os.environ.get("CLOUDFLARE_ZONE_ID", "")
     token = os.environ.get("CF_EMAIL_ROUTING_TOKEN", "")
@@ -166,7 +192,7 @@ def main() -> int:
         return 2
     desired = "apply" if args.apply else "remove" if args.remove else "audit"
     try:
-        print(reconcile(zone, token, desired))
+        print(reconcile(zone, token, desired, args.address))
     except RuntimeError as error:
         print(str(error), file=sys.stderr)
         return 1

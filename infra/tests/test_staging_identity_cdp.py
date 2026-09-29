@@ -59,10 +59,11 @@ class HarnessSafetyTests(unittest.TestCase):
         states = iter(["enabled", "enabled", "enabled", "absent"])
         actions: list[str | None] = []
 
-        def fake_route(action: str | None = None) -> str:
+        def fake_route(action: str | None = None, address: str = probe.ALIAS) -> str:
             """Simulate the exact helper without contacting Cloudflare. / 模拟精确助手而不联系 Cloudflare。"""
 
             actions.append(action)
+            self.assertEqual(address, probe.ALIAS)
             return "removed" if action == "--remove" else next(states)
 
         browser = Mock()
@@ -81,6 +82,41 @@ class HarnessSafetyTests(unittest.TestCase):
                 probe.registration(Path(".temp/mock-run"))
         self.assertIn("--remove", actions)
         self.assertEqual(actions[-1], None)
+
+    def test_registration_passes_selected_alias_to_every_route_operation(self) -> None:
+        """A second test contact cannot silently open or close the first route."""
+
+        second = "amail-e2e-isolation@moesegfault.dev"
+        observed: list[tuple[str | None, str]] = []
+        states = iter(["enabled", "enabled", "enabled", "absent"])
+        def fake_route(action: str | None = None, address: str = probe.ALIAS) -> str:
+            """Record only local mock calls."""
+            observed.append((action, address))
+            return "removed" if action == "--remove" else next(states)
+        browser = Mock()
+        browser.navigate.side_effect = probe.ProbeError("synthetic_registration_failure")
+        with (
+            patch.object(probe, "route", side_effect=fake_route),
+            patch.object(probe, "Browser", return_value=browser),
+            patch.object(probe, "generate_credential", return_value=("amail_e2e_synthetic", "safe-password-123456789")),
+            patch.object(probe, "store_credential") as store,
+            patch.object(probe.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(probe.ProbeError, "synthetic_registration_failure"):
+                probe.registration(Path(".temp/mock-run"), second)
+        self.assertEqual(store.call_args.args[3], second)
+        self.assertTrue(observed)
+        self.assertTrue(all(address == second for _, address in observed))
+
+    def test_encrypted_payload_supports_existing_first_principal_only(self) -> None:
+        """Legacy A blobs remain usable; B never silently falls back to A."""
+
+        payload = {"username": "amail_e2e_synthetic", "password": "safe-password-123456789"}
+        self.assertEqual(probe.decoded_credential(payload)[2], probe.ALIAS)
+        second = "amail-e2e-isolation@moesegfault.dev"
+        self.assertEqual(probe.decoded_credential({**payload, "address": second})[2], second)
+        with self.assertRaisesRegex(probe.ProbeError, "dpapi_credential_invalid"):
+            probe.decoded_credential({**payload, "address": "mail@moesegfault.dev"})
 
     def test_native_url_requires_state_nonce_and_pkce_challenge(self) -> None:
         """A syntactically plausible URL without fresh proof fields is refused.

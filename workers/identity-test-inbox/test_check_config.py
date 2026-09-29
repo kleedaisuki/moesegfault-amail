@@ -53,6 +53,23 @@ class ConfigTests(unittest.TestCase):
         candidate["r2_buckets"][0]["bucket_name"] = "moesegfault-mail-raw-staging"
         self.assertFalse(check.valid(candidate))
 
+    def test_only_reviewed_apex_recipients_are_allowed(self) -> None:
+        """Do not turn the private inbox into a broad contact or user-mail sink."""
+
+        self.assertEqual(check.recipients(self.config), frozenset({
+            "amail-e2e@moesegfault.dev", "amail-e2e-isolation@moesegfault.dev",
+        }))
+        for value in (
+            "amail-e2e@moesegfault.dev,other@moesegfault.dev",
+            "amail-e2e@moesegfault.dev,amail-e2e@mail.moesegfault.dev",
+            "amail-e2e@moesegfault.dev,amail-e2e@moesegfault.dev",
+            "amail-e2e@moesegfault.dev,amail-e2e-next@moesegfault.dev,",
+        ):
+            candidate = copy.deepcopy(self.config)
+            candidate["vars"]["TEST_RECIPIENTS"] = value
+            with self.subTest(value=value):
+                self.assertFalse(check.valid(candidate))
+
     def test_live_bucket_requires_private_surfaces_and_retention(self) -> None:
         """No public domain may remain and the expiry rule must be active.
 

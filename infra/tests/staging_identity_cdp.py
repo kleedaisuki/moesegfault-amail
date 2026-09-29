@@ -63,7 +63,7 @@ def generate_credential() -> tuple[str, str]:
     return f"amail_e2e_{secrets.token_hex(8)}", secrets.token_urlsafe(32)
 
 
-def store_credential(run_dir: Path, username: str, password: str) -> None:
+def store_credential(run_dir: Path, username: str, password: str, address: str = ALIAS) -> None:
     """Persist only a current-user DPAPI blob before registration submission.
 
     中文：提交注册前仅保存当前 Windows 用户可解密的 DPAPI 密文。
@@ -74,7 +74,7 @@ def store_credential(run_dir: Path, username: str, password: str) -> None:
     try:
         import win32crypt
 
-        plaintext = json.dumps({"username": username, "password": password}).encode("utf-8")
+        plaintext = json.dumps({"username": username, "password": password, "address": address}).encode("utf-8")
         ciphertext = win32crypt.CryptProtectData(
             plaintext, "amail staging test account", DPAPI_ENTROPY, None, None, 0
         )
@@ -85,7 +85,24 @@ def store_credential(run_dir: Path, username: str, password: str) -> None:
         raise ProbeError("dpapi_credential_write_failed") from None
 
 
-def load_credential(run_dir: Path) -> tuple[str, str]:
+def decoded_credential(value: object) -> tuple[str, str, str]:
+    """Validate a DPAPI payload while preserving pre-address legacy blobs."""
+
+    if not isinstance(value, dict):
+        raise ProbeError("dpapi_credential_invalid")
+    username, password = value.get("username"), value.get("password")
+    # Existing verified account blobs predate address parameterization.
+    address = value.get("address", ALIAS)
+    if not isinstance(username, str) or not isinstance(password, str) or not isinstance(address, str):
+        raise ProbeError("dpapi_credential_invalid")
+    if not re.fullmatch(r"[a-z0-9_]{3,32}", username) or not 15 <= len(password) <= 128:
+        raise ProbeError("dpapi_credential_invalid")
+    if not re.fullmatch(r"amail-e2e(?:-[a-z0-9-]{1,21})?@moesegfault\.dev", address):
+        raise ProbeError("dpapi_credential_invalid")
+    return username, password, address
+
+
+def load_credential(run_dir: Path) -> tuple[str, str, str]:
     """Decrypt the same-user test credential without exposing it to arguments/logs.
 
     中文：仅由同一 Windows 用户解密测试凭据，不写入命令参数或日志。
@@ -102,13 +119,7 @@ def load_credential(run_dir: Path) -> tuple[str, str]:
         _, plaintext = win32crypt.CryptUnprotectData(
             path.read_bytes(), DPAPI_ENTROPY, None, None, 0
         )
-        value = json.loads(plaintext)
-        username, password = value["username"], value["password"]
-        if not isinstance(username, str) or not isinstance(password, str):
-            raise ProbeError("dpapi_credential_invalid")
-        if not re.fullmatch(r"[a-z0-9_]{3,32}", username) or not 15 <= len(password) <= 128:
-            raise ProbeError("dpapi_credential_invalid")
-        return username, password
+        return decoded_credential(json.loads(plaintext))
     except ProbeError:
         raise
     except Exception:
@@ -165,13 +176,13 @@ def browser_environment() -> dict[str, str]:
     }
 
 
-def route(action: str | None = None) -> str:
+def route(action: str | None = None, address: str = ALIAS) -> str:
     """Audit or close the one reviewed alias without echoing provider output.
 
     中文：只审计或关闭唯一受审别名，不回显供应商输出。
     """
 
-    args = [sys.executable, str(ROUTE_HELPER)]
+    args = [sys.executable, str(ROUTE_HELPER), "--address", address]
     if action:
         args.append(action)
     result = subprocess.run(args, capture_output=True, text=True, timeout=60, check=False)
@@ -446,13 +457,13 @@ class Browser:
                 self.process.wait(timeout=5)
 
 
-def registration(run_dir: Path) -> None:
+def registration(run_dir: Path, address: str = ALIAS) -> None:
     """Complete normal first-party registration, then remove route before OTP submit.
 
     中文：完成正常第一方注册，并在提交验证码前移除路由。
     """
 
-    if route() != "enabled":
+    if route(address=address) != "enabled":
         raise ProbeError("exact_route_not_enabled")
     browser: Browser | None = None
     try:
@@ -460,10 +471,10 @@ def registration(run_dir: Path) -> None:
         # classified it as routing_unknown_address; wait for data-plane settle.
         # Rules 回读成功后立即发送仍可能 routing_unknown_address，故等待数据面稳定。
         time.sleep(60)
-        if route() != "enabled":
+        if route(address=address) != "enabled":
             raise ProbeError("exact_route_changed_during_settle")
         username, password = generate_credential()
-        store_credential(run_dir, username, password)
+        store_credential(run_dir, username, password, address)
         browser = Browser(run_dir / "registration-browser")
         browser.navigate(f"{LOGIN_ORIGIN}/register")
         browser.wait_dom('input[name="display_name"]')
@@ -471,7 +482,7 @@ def registration(run_dir: Path) -> None:
         for name, value in {
             "display_name": "amail staging test",
             "username": username,
-            "email": ALIAS,
+            "email": address,
             "password": password,
             "password_confirm": password,
         }.items():
@@ -491,7 +502,7 @@ def registration(run_dir: Path) -> None:
             raise ProbeError("otp_shape_invalid")
         if time.monotonic() - challenge_started >= 9 * 60:
             raise ProbeError("otp_window_expired_without_attempt")
-        if route("--remove") not in {"removed", "absent"} or route() != "absent":
+        if route("--remove", address) not in {"removed", "absent"} or route(address=address) != "absent":
             raise ProbeError("exact_route_cleanup_failed")
         browser.require_login_origin()
         browser.fill('form.verification-card input[name="code"]', code)
@@ -513,8 +524,8 @@ def registration(run_dir: Path) -> None:
         # A browser teardown failure must never skip exact-route cleanup.
         # 即使浏览器关闭失败，也绝不可跳过精确路由清理。
         try:
-            if route() == "enabled":
-                if route("--remove") not in {"removed", "absent"} or route() != "absent":
+            if route(address=address) == "enabled":
+                if route("--remove", address) not in {"removed", "absent"} or route(address=address) != "absent":
                     cleanup_errors.append("exact_route_cleanup_failed")
         except Exception:
             cleanup_errors.append("exact_route_cleanup_failed")
@@ -606,7 +617,7 @@ def native_login(run_dir: Path, binary: Path) -> None:
     中文：在全新浏览器内完成真实原生 PKCE，并跨进程检验 CLI 会话。
     """
 
-    username, password = load_credential(run_dir)
+    username, password, _address = load_credential(run_dir)
     attempt = secrets.token_hex(8)
     home = run_dir / f"amail-home-{attempt}"
     home.mkdir(parents=True, exist_ok=False)
@@ -699,6 +710,7 @@ def main() -> int:
     parser.add_argument("--confirm-staging", action="store_true")
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--amail")
+    parser.add_argument("--address", default=ALIAS, help="configured staging Identity contact alias for registration")
     args = parser.parse_args()
     if not args.confirm_staging:
         print("staging_confirmation_required", file=sys.stderr)
@@ -707,7 +719,7 @@ def main() -> int:
         run_dir = under_temp(args.run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
         if args.phase == "register":
-            registration(run_dir)
+            registration(run_dir, args.address)
         else:
             if not args.amail:
                 raise ProbeError("ci_built_amail_required")

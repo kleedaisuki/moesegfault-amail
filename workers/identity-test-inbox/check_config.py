@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tomllib
 import urllib.error
@@ -18,8 +19,27 @@ import urllib.request
 
 EXPECTED_BUCKET = "amail-identity-test-inbox-staging"
 EXPECTED_WORKER = "amail-identity-test-inbox-staging"
+PRIMARY_ADDRESS = "amail-e2e@moesegfault.dev"
 API = "https://api.cloudflare.com/client/v4"
 MAX_REPLY = 65_536
+
+
+def recipients(config: dict) -> frozenset[str] | None:
+    """Accept a small explicit apex-only test allowlist including the legacy alias."""
+
+    values = config.get("vars")
+    raw = values.get("TEST_RECIPIENTS") if isinstance(values, dict) else None
+    if not isinstance(raw, str) or set(values) != {"TEST_RECIPIENTS"}:
+        return None
+    parts = raw.split(",")
+    if not 1 <= len(parts) <= 4 or len(parts) != len(set(parts)):
+        return None
+    if parts[0] != PRIMARY_ADDRESS:
+        return None
+    for address in parts:
+        if not re.fullmatch(r"amail-e2e(?:-[a-z0-9-]{1,21})?@moesegfault\.dev", address):
+            return None
+    return frozenset(parts)
 
 
 def valid(config: dict) -> bool:
@@ -39,6 +59,7 @@ def valid(config: dict) -> bool:
         and "triggers" not in config
         and config.get("r2_buckets")
         == [{"binding": "PRIVATE_INBOX", "bucket_name": EXPECTED_BUCKET}]
+        and recipients(config) is not None
         and config.get("observability") == {"enabled": False}
     )
 

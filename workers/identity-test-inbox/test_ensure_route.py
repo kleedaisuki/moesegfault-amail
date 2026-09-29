@@ -18,14 +18,14 @@ route = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(route)
 
 
-def fixture(worker: str = route.WORKER, enabled: bool = True) -> dict:
+def fixture(worker: str = route.WORKER, enabled: bool = True, address: str = route.ADDRESS) -> dict:
     """Construct one exact provider-style rule. / 构造一条精确规则。"""
 
     return {
         "id": "opaque-rule",
         "source": "api",
         "enabled": enabled,
-        "matchers": [{"type": "literal", "field": "to", "value": route.ADDRESS}],
+        "matchers": [{"type": "literal", "field": "to", "value": address}],
         "actions": [{"type": "worker", "value": [worker]}],
     }
 
@@ -38,6 +38,29 @@ class RouteTests(unittest.TestCase):
 
         with patch.object(route, "list_rules", return_value=[fixture()]), patch.object(route, "call") as call:
             self.assertEqual(route.reconcile("zone", "token", "apply"), "enabled")
+            call.assert_not_called()
+
+    def test_second_configured_alias_is_exact_and_leaves_primary_untouched(self) -> None:
+        """Parameterized route creation does not capture or delete another principal's route."""
+
+        second = "amail-e2e-isolation@moesegfault.dev"
+        primary = fixture()
+        with patch.object(route, "list_rules", side_effect=[[primary], [primary, fixture(address=second)]]), patch.object(
+            route, "call", return_value=(201, {"success": True})
+        ) as call:
+            self.assertEqual(route.reconcile("zone", "token", "apply", second), "created")
+            self.assertEqual(call.call_args.args[3]["matchers"][0]["value"], second)
+        with patch.object(route, "list_rules", return_value=[primary]), patch.object(route, "call") as call:
+            self.assertEqual(route.reconcile("zone", "token", "remove", second), "absent")
+            call.assert_not_called()
+
+    def test_unconfigured_alias_fails_before_inventory_or_mutation(self) -> None:
+        """Arbitrary command-line addresses cannot be routed by this helper."""
+
+        with patch.object(route, "list_rules") as listed, patch.object(route, "call") as call:
+            with self.assertRaisesRegex(RuntimeError, "allowlist"):
+                route.reconcile("zone", "token", "apply", "other@moesegfault.dev")
+            listed.assert_not_called()
             call.assert_not_called()
 
     def test_conflicting_worker_is_not_taken_over(self) -> None:
