@@ -102,6 +102,16 @@ class StagingTraceCanaryTests(unittest.TestCase):
         with patch.object(canary, "query_page", return_value={"count": 2, "events": events()}):
             self.assertEqual(len(canary.retained_events("1" * 32, "fake", 1000, 2000)), 2)
 
+    def test_query_uses_documented_nested_view(self) -> None:
+        """Cloudflare defines the events view inside parameters, not top-level."""
+
+        payload = {"success": True, "result": {"events": {"count": 0, "events": []}}}
+        with patch.object(canary, "request_json", return_value=payload) as request:
+            self.assertEqual(canary.query_page("1" * 32, "fake", 1000, 2000, None)["count"], 0)
+        body = request.call_args.args[3]
+        self.assertEqual(body["parameters"]["view"], "events")
+        self.assertNotIn("view", body)
+
 
 if __name__ == "__main__":
     unittest.main()

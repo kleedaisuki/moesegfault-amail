@@ -203,10 +203,10 @@ def query_page(account: str, token: str, start: int, end: int, cursor: str | Non
 
     body: dict = {
         "queryId": str(uuid.uuid4()), "timeframe": {"from": start, "to": end},
-        "dry": True, "limit": MAX_PAGE, "view": "events",
+        "dry": True, "limit": MAX_PAGE,
         "parameters": {"datasets": [], "filterCombination": "and", "filters": [{
             "key": "$metadata.service", "operation": "eq", "type": "string", "value": WORKER,
-        }]},
+        }], "view": "events"},
     }
     if cursor:
         body["offset"] = cursor
