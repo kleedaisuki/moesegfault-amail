@@ -204,7 +204,8 @@ def run_probes(cli: Path, home: Path) -> tuple[int, int, tuple[str, str, str], s
     marker = uuid.uuid4().hex
     path_marker = f"amail_path_canary_{marker}"
     query_marker = f"amail_query_canary_{marker}"
-    request = Request(f"{API}/{path_marker}?probe={query_marker}", method="GET")
+    # Use a protected read route so URL denial is not confounded with unknown-path handling.
+    request = Request(f"{API}/v1/messages/{path_marker}?probe={query_marker}", method="GET")
     try:
         with urlopen(request, timeout=15) as response:
             status = response.status

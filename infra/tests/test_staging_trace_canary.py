@@ -10,6 +10,7 @@ import sys
 from types import SimpleNamespace
 import unittest
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
 
@@ -98,10 +99,17 @@ class StagingTraceCanaryTests(unittest.TestCase):
         with patch.object(canary, "journal_max", return_value=0), \
                 patch.object(canary, "journal_new", return_value=(T, C, R)), \
                 patch.object(canary.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
-                patch.object(canary, "urlopen", side_effect=denied):
+                patch.object(canary, "urlopen", side_effect=denied) as http:
             with self.assertRaisesRegex(canary.CanaryError,
                                         "^rejected_url_status_forbidden$"):
                 canary.run_probes(Path("private-cli"), Path("private-home"))
+        request = http.call_args.args[0]
+        target = urlsplit(request.full_url)
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual((target.scheme, target.netloc), ("https", "mail-staging.moesegfault.dev"))
+        self.assertRegex(target.path, r"^/v1/messages/amail_path_canary_[0-9a-f]{32}$")
+        marker = target.path.removeprefix("/v1/messages/amail_path_canary_")
+        self.assertEqual(parse_qs(target.query), {"probe": [f"amail_query_canary_{marker}"]})
 
     def test_main_does_not_query_after_rejected_url_failure(self) -> None:
         """Only a fixed child code escapes, and the query stage is skipped."""
