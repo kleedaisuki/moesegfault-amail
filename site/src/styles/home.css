@@ -47,6 +47,22 @@
 .hero-lead strong {
 	color: var(--moe-heading);
 }
+.hero-privacy {
+	max-width: 585px;
+	margin: 24px 0 0;
+	padding: 10px 14px;
+	border-left: 3px solid var(--moe-accent);
+	border-radius: 0 10px 10px 0;
+	background: var(--moe-surface-strong);
+	color: var(--moe-text-soft);
+	font-size: 13px;
+	line-height: 1.7;
+}
+.hero-privacy a {
+	color: var(--moe-accent-strong);
+	font-weight: 750;
+	text-underline-offset: 3px;
+}
 .hero-actions {
 	display: flex;
 	flex-wrap: wrap;
