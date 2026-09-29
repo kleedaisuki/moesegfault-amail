@@ -182,9 +182,15 @@ The production launch site intentionally does **not** deploy on the first
 `release-ready` job checks that the site's version has a published GitHub
 Release with all five platform archives, the agent skill ZIP, and
 `SHA256SUMS`; only then may the normal production site job deploy. The tag
-release workflow publishes those assets first, requires live mail API health,
-then launches the public site. This ordering preserves a working download path
-without blocking earlier mail API/ingress deployment and live acceptance.
+release workflow publishes those assets first, downloads all seven published
+files back from the GitHub Release into repository `.temp`, and verifies the
+exact five native archives, skill ZIP, and six matching SHA-256 digests before
+launching the public site. The public site cannot deploy if the download or
+byte check fails. Live mail API health remains a separate launch check. The
+manifest is not a cryptographic trust root by itself; tag ancestry and archive
+attestations are separate provenance controls. This ordering preserves a
+working download path without blocking earlier mail API/ingress deployment
+and live acceptance.
 The deployment token lacks Email Routing Rules Read (HTTP 403 in staging run
 36416776818), so neither Worker is deployed with it as a routing-token fallback.
 Missing dedicated routing secrets fail immediately before checkout or tool

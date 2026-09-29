@@ -187,10 +187,35 @@ jobs:
         shell: bash
         run: gh release create "${{ needs.preflight.outputs.tag }}" dist/* --verify-tag --generate-notes --title "${{ needs.preflight.outputs.tag }}"
 
+  verify-published:
+    name: Verify published Release asset bytes
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [preflight, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download every published asset into repository temp
+        shell: bash
+        run: |
+          mkdir -p .temp/release-published
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir .temp/release-published
+      - name: Require exact published names and checksum-matching bytes
+        shell: bash
+        run: python infra/release/verify_published_assets.py .temp/release-published "$RELEASE_TAG"
+
   launch-site:
     name: Launch public site after release assets
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: publish
+    needs: verify-published
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
