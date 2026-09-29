@@ -9,7 +9,47 @@ use reqwest::{
     Method, StatusCode,
 };
 use serde_json::Value;
-use std::time::{Duration, Instant};
+use std::{
+    fmt,
+    time::{Duration, Instant},
+};
+
+/// Preserve the public CLI error text while retaining a typed retry discriminator.
+#[derive(Debug)]
+struct ApiFailure {
+    status: StatusCode,
+    code: String,
+    message: String,
+}
+
+impl fmt::Display for ApiFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiFailure {}
+
+/// Retry only a fresh, cursorless list rejected by the search generation guard.
+/// One retry adds at most one 30-second HTTP timeout and a 100 ms pause.
+fn cursorless_list<F, D>(cursor: Option<&str>, mut request: F, mut delay: D) -> Result<Value>
+where
+    F: FnMut() -> Result<Value>,
+    D: FnMut(Duration),
+{
+    match request() {
+        Err(error)
+            if cursor.is_none()
+                && error.downcast_ref::<ApiFailure>().is_some_and(|failure| {
+                    failure.status == StatusCode::CONFLICT && failure.code == "search_job_stale"
+                }) =>
+        {
+            delay(Duration::from_millis(100));
+            request()
+        }
+        result => result,
+    }
+}
 
 /// Authenticated API client / 已认证的 API 客户端。
 pub struct Api<'a> {
@@ -333,7 +373,12 @@ impl<'a> Api<'a> {
             if let Some(cf_error) = cf_error {
                 prefix.push_str(&format!(", cf_error={cf_error}"));
             }
-            bail!("{prefix}");
+            return Err(ApiFailure {
+                status,
+                code: code.to_owned(),
+                message: prefix,
+            }
+            .into());
         }
         Ok((status, body))
     }
@@ -402,15 +447,15 @@ impl<'a> Api<'a> {
         if let Some(cursor) = cursor {
             url.query_pairs_mut().append_pair("cursor", cursor);
         }
-        self.json(
-            Method::GET,
-            &format!(
-                "{}{}",
-                url.path(),
-                url.query().map(|q| format!("?{q}")).unwrap_or_default()
-            ),
-            "messages.list",
-            None,
+        let path = format!(
+            "{}{}",
+            url.path(),
+            url.query().map(|q| format!("?{q}")).unwrap_or_default()
+        );
+        cursorless_list(
+            cursor,
+            || self.json(Method::GET, &path, "messages.list", None),
+            std::thread::sleep,
         )
     }
 
@@ -506,6 +551,80 @@ impl<'a> Api<'a> {
 mod tests {
     use super::*;
     use reqwest::header::{HeaderMap, HeaderValue};
+
+    fn failure(status: StatusCode, code: &str) -> anyhow::Error {
+        ApiFailure {
+            status,
+            code: code.to_owned(),
+            message: format!(
+                "mail API messages.list failed: HTTP {status}, code={code}, correlation_id=none"
+            ),
+        }
+        .into()
+    }
+
+    #[test]
+    fn cursorless_stale_list_retries_once_without_exposing_first_result() {
+        let mut calls = 0;
+        let mut delays = Vec::new();
+        let page = cursorless_list(
+            None,
+            || {
+                calls += 1;
+                if calls == 1 {
+                    Err(failure(StatusCode::CONFLICT, "search_job_stale"))
+                } else {
+                    Ok(serde_json::json!({"messages":[{"id":"m1"}],"next_cursor":null}))
+                }
+            },
+            |duration| delays.push(duration),
+        )
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(delays, [Duration::from_millis(100)]);
+        assert_eq!(page["messages"][0]["id"], "m1");
+    }
+
+    #[test]
+    fn persistent_stale_list_fails_after_one_retry() {
+        let mut calls = 0;
+        let error = cursorless_list(
+            None,
+            || {
+                calls += 1;
+                Err(failure(StatusCode::CONFLICT, "search_job_stale"))
+            },
+            |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(error.to_string().contains("code=search_job_stale"));
+    }
+
+    #[test]
+    fn list_retry_does_not_restart_cursor_or_other_failures() {
+        for (cursor, status, code) in [
+            (Some("opaque"), StatusCode::CONFLICT, "search_job_stale"),
+            (None, StatusCode::CONFLICT, "search_cursor_stale"),
+            (None, StatusCode::CONFLICT, "unrelated_conflict"),
+            (None, StatusCode::SERVICE_UNAVAILABLE, "search_job_stale"),
+        ] {
+            let mut calls = 0;
+            let mut delayed = false;
+            let error = cursorless_list(
+                cursor,
+                || {
+                    calls += 1;
+                    Err(failure(status, code))
+                },
+                |_| delayed = true,
+            )
+            .unwrap_err();
+            assert_eq!(calls, 1, "{cursor:?} {status} {code}");
+            assert!(!delayed);
+            assert!(error.to_string().contains(&format!("code={code}")));
+        }
+    }
 
     fn diagnostic_header(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();

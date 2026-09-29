@@ -202,6 +202,27 @@ class CleanupTests(unittest.TestCase):
             "semantic_search_failed_http_503_semantic_index_incomplete",
         )
 
+    def test_cli_failure_classifies_fixed_search_conflicts_without_private_text(self) -> None:
+        """Expose only reviewed consistency codes, not opaque request metadata."""
+
+        for code in (b"search_job_stale", b"search_cursor_stale"):
+            stderr = (
+                b"amail: mail API messages.list failed: HTTP 409 Conflict, code="
+                + code + b", correlation_id=private-identifier\n"
+            )
+            self.assertEqual(
+                HARNESS.cli_failure(stderr, "mail_sync_failed"),
+                "mail_sync_failed_http_409_" + code.decode("ascii"),
+            )
+        self.assertEqual(
+            HARNESS.cli_failure(
+                b"amail: mail API messages.list failed: HTTP 409 Conflict, "
+                b"code=private_mailbox_body, correlation_id=private-identifier\n",
+                "mail_sync_failed",
+            ),
+            "mail_sync_failed_http_409_unknown_code",
+        )
+
     def test_address_failure_closed_diagnostic_and_transport_contract(self) -> None:
         """Discard hostile suffixes and accept only fixed CLI diagnostic grammar."""
 

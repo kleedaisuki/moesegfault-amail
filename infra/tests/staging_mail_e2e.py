@@ -148,7 +148,7 @@ SAFE_API_CODES = frozenset({
     "address_limit", "address_provision_unknown", "address_state_changed",
     "address_deleting", "address_retired", "not_found", "service_unavailable", "send_held",
     "semantic_index_incomplete", "http_error", "unauthorized", "invalid_json",
-    "reserved_or_invalid_name",
+    "reserved_or_invalid_name", "search_job_stale", "search_cursor_stale",
 })
 DIAG_PHASES = frozenset({
     "input", "d1_lookup", "d1_allocate", "d1_claim", "routing_list",
