@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import uuid
@@ -211,27 +212,71 @@ def expected_service_filter(value: object) -> bool:
         and value.get("kind", "filter") == "filter"
 
 
+QUERY_SHAPE_FIELDS = (
+    "run_status", "dry", "timeframe", "view", "datasets",
+    "filter_combination", "service_filter", "narrowing", "events_container",
+)
+
+
+def shape_match(container: object, key: str, expected: object) -> str:
+    """Classify one echoed field without returning its provider-supplied value."""
+
+    if not isinstance(container, dict) or key not in container:
+        return "unavailable"
+    return "match" if container[key] == expected else "mismatch"
+
+
+def query_shape(result: object, start: int, end: int) -> dict[str, str]:
+    """Reduce a query response to fixed, non-sensitive echo/view categories."""
+
+    run = result.get("run") if isinstance(result, dict) else None
+    query = run.get("query") if isinstance(run, dict) else None
+    parameters = query.get("parameters") if isinstance(query, dict) else None
+    timeframe = run.get("timeframe") if isinstance(run, dict) else None
+    filters = parameters.get("filters") if isinstance(parameters, dict) else None
+    status = run.get("status") if isinstance(run, dict) else None
+    dry = run.get("dry") if isinstance(run, dict) else None
+    if not isinstance(result, dict):
+        events_container = "unavailable"
+    elif "events" not in result:
+        events_container = "absent"
+    else:
+        events_container = "present" if isinstance(result["events"], dict) else "invalid"
+    return {
+        "run_status": ("completed" if status == "COMPLETED" else "started"
+                       if status == "STARTED" else "unavailable" if status is None else "other"),
+        "dry": "true" if dry is True else "false" if dry is False else "unavailable",
+        "timeframe": ("unavailable" if not isinstance(timeframe, dict)
+                      else "match" if timeframe.get("from") == start
+                      and timeframe.get("to") == end else "mismatch"),
+        "view": shape_match(parameters, "view", "events"),
+        "datasets": shape_match(parameters, "datasets", []),
+        "filter_combination": ("unavailable" if not isinstance(parameters, dict)
+                               or "filterCombination" not in parameters
+                               else "match" if parameters["filterCombination"] in ("and", "AND")
+                               else "mismatch"),
+        "service_filter": ("unavailable" if not isinstance(filters, list)
+                           else "match" if len(filters) == 1
+                           and expected_service_filter(filters[0]) else "mismatch"),
+        "narrowing": ("unavailable" if not isinstance(parameters, dict)
+                      else "match" if all(not parameters.get(key)
+                                          for key in ("needle", "havings", "groupBys"))
+                      else "mismatch"),
+        "events_container": events_container,
+    }
+
+
 def query_echo_matches(run: dict, start: int, end: int) -> bool:
-    """Reject a returned page scoped to another window, view, or service."""
+    """Require every scoping component of the returned query to match."""
 
-    timeframe = run.get("timeframe")
-    query = run.get("query")
-    if (not isinstance(timeframe, dict) or timeframe.get("from") != start
-            or timeframe.get("to") != end or not isinstance(query, dict)):
-        return False
-    parameters = query.get("parameters")
-    if (not isinstance(parameters, dict) or parameters.get("view") != "events"
-            or parameters.get("datasets") != []
-            or parameters.get("filterCombination") not in ("and", "AND")):
-        return False
-    filters = parameters.get("filters")
-    if not isinstance(filters, list) or len(filters) != 1 or not expected_service_filter(filters[0]):
-        return False
-    # These optional clauses could silently narrow the retained window.
-    return all(not parameters.get(key) for key in ("needle", "havings", "groupBys"))
+    shape = query_shape({"run": run}, start, end)
+    return all(shape[key] == "match" for key in (
+        "timeframe", "view", "datasets", "filter_combination", "service_filter", "narrowing",
+    ))
 
 
-def query_page(account: str, token: str, start: int, end: int, cursor: str | None) -> dict:
+def query_page(account: str, token: str, start: int, end: int, cursor: str | None,
+               shape_reporter: Callable[[dict[str, str]], None] | None = None) -> dict:
     """Read one dry retained-event page, rejecting absent or unfinished views."""
 
     body: dict = {
@@ -245,6 +290,8 @@ def query_page(account: str, token: str, start: int, end: int, cursor: str | Non
         body["offset"] = cursor
         body["offsetDirection"] = "next"
     result = request_json(account, token, "query", body).get("result")
+    if shape_reporter is not None:
+        shape_reporter(query_shape(result, start, end))
     need(isinstance(result, dict), "observability_result_malformed")
     run = result.get("run")
     need(isinstance(run, dict), "observability_run_malformed")
@@ -265,7 +312,8 @@ def query_page(account: str, token: str, start: int, end: int, cursor: str | Non
     return events
 
 
-def retained_events(account: str, token: str, start: int, end: int) -> list[dict]:
+def retained_events(account: str, token: str, start: int, end: int,
+                    shape_reporter: Callable[[dict[str, str]], None] | None = None) -> list[dict]:
     """Fetch a complete bounded window or fail; truncated data is no privacy proof."""
 
     records: list[dict] = []
@@ -273,7 +321,7 @@ def retained_events(account: str, token: str, start: int, end: int) -> list[dict
     total_count: int | None = None
     seen_ids: set[str] = set()
     while True:
-        page = query_page(account, token, start, end, cursor)
+        page = query_page(account, token, start, end, cursor, shape_reporter)
         batch = page["events"]
         need(len(batch) <= MAX_PAGE, "observability_events_malformed")
         need(all(isinstance(item, dict) for item in batch), "observability_events_malformed")

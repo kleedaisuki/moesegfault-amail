@@ -11,8 +11,8 @@ import os
 import sys
 
 from staging_trace_canary import (
-    CanaryError, HEX16, HEX32, UUID, WORKER, allowlisted_event, embedded_events,
-    empty_log_payload, need, preflight, request_json, retained_events,
+    CanaryError, HEX16, HEX32, QUERY_SHAPE_FIELDS, UUID, WORKER, allowlisted_event,
+    embedded_events, empty_log_payload, need, preflight, request_json, retained_events,
 )
 
 
@@ -42,7 +42,8 @@ SAFE_FAILURES = frozenset({
     "routing_phase_missing_or_ambiguous", "routing_phase_order_inconsistent",
     "routing_list_outcome_unverified", "routing_create_outcome_unverified",
     "service_value_result_list_missing", "service_value_row_schema_invalid",
-    "service_value_unexpected_service", "service_value_explicit_empty",
+    "service_value_absent", "service_value_present_with_others",
+    "service_value_explicit_empty",
     "service_value_unverified",
 })
 
@@ -69,9 +70,24 @@ def service_value_status(account: str, token: str) -> str:
         return "row_schema_invalid"
     if not rows:
         return "explicit_empty"
-    if any(row["value"] != WORKER for row in rows):
-        return "unexpected_service"
-    return "present"
+    expected = any(row["value"] == WORKER for row in rows)
+    others = any(row["value"] != WORKER for row in rows)
+    if expected and others:
+        return "present_with_others"
+    return "present" if expected else "absent"
+
+
+def print_query_shape(reports: list[dict[str, str]]) -> None:
+    """Emit only fixed component categories, merging differing page echoes."""
+
+    for field in QUERY_SHAPE_FIELDS:
+        states = {report[field] for report in reports}
+        state = "unavailable"
+        if len(states) == 1:
+            state = states.pop()
+        elif states:
+            state = "inconsistent"
+        print(f"staging_address_query_{field}: {state}")
 
 
 def reviewed_events(records: list[dict]) -> list[dict]:
@@ -162,16 +178,21 @@ def main() -> int:
         if service_error is not None:
             cause = service_error if service_error in SAFE_FAILURES else "unexpected_failure"
             print(f"staging_address_service_cause: {cause}")
+        query_shapes: list[dict[str, str]] = []
         try:
-            records = retained_events(account, obs_token, START_MS, END_MS)
+            records = retained_events(account, obs_token, START_MS, END_MS,
+                                      shape_reporter=query_shapes.append)
         except CanaryError as error:
+            print_query_shape(query_shapes)
             label = str(error)
             cause = label if label in SAFE_FAILURES else "unexpected_failure"
             print(f"staging_address_events: UNVERIFIED ({cause})")
             raise
         except Exception:
+            print_query_shape(query_shapes)
             print("staging_address_events: UNVERIFIED (unexpected_failure)")
             raise CanaryError("unexpected_failure") from None
+        print_query_shape(query_shapes)
         print(f"staging_address_events: {'view_present' if records else 'explicit_empty'}")
         need(service_status == "present", service_error or f"service_value_{service_status}")
         label = classify(records)

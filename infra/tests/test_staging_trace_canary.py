@@ -290,6 +290,47 @@ class StagingTraceCanaryTests(unittest.TestCase):
                                                 "observability_query_echo_unverified"):
                         canary.query_page("1" * 32, "fake", 1000, 2000, None)
 
+    def test_query_shape_reports_each_echo_component_without_values(self) -> None:
+        """The diagnostic names a mismatch, not the provider-supplied value."""
+
+        run = query_run(status="STARTED", dry=False, view="traces",
+                        service="other-service", start=999)
+        parameters = run["query"]["parameters"]
+        parameters["datasets"] = ["other-dataset"]
+        parameters["filterCombination"] = "or"
+        parameters["needle"] = {"value": "private-text"}
+        shape = canary.query_shape({"run": run, "events": {}}, 1000, 2000)
+        self.assertEqual(shape, {
+            "run_status": "started", "dry": "false", "timeframe": "mismatch",
+            "view": "mismatch", "datasets": "mismatch",
+            "filter_combination": "mismatch", "service_filter": "mismatch",
+            "narrowing": "mismatch", "events_container": "present",
+        })
+        self.assertNotIn("other-service", str(shape))
+        self.assertNotIn("private-text", str(shape))
+
+    def test_query_shape_is_reported_before_strict_echo_rejection(self) -> None:
+        """A failed echo still reveals the independent event-container shape."""
+
+        payload = {"success": True, "result": {
+            "run": query_run(service="other-service"), "events": {},
+        }}
+        reports: list[dict[str, str]] = []
+        with patch.object(canary, "request_json", return_value=payload):
+            with self.assertRaisesRegex(canary.CanaryError,
+                                        "observability_query_echo_unverified"):
+                canary.query_page("1" * 32, "fake", 1000, 2000, None, reports.append)
+        self.assertEqual(reports[0]["service_filter"], "mismatch")
+        self.assertEqual(reports[0]["events_container"], "present")
+
+    def test_query_shape_distinguishes_absent_and_invalid_view(self) -> None:
+        """Neither an absent nor a malformed view is an explicit empty page."""
+
+        self.assertEqual(canary.query_shape({"run": query_run()}, 1000, 2000)[
+            "events_container"], "absent")
+        self.assertEqual(canary.query_shape({"run": query_run(), "events": []}, 1000, 2000)[
+            "events_container"], "invalid")
+
 
 if __name__ == "__main__":
     unittest.main()

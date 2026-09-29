@@ -8,7 +8,7 @@ from io import StringIO
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -108,7 +108,7 @@ class AddressFailureLogTests(unittest.TestCase):
             diagnostic.classify(rows)
 
     def test_service_values_are_exact_window_and_never_echoed(self) -> None:
-        """Only exact expected membership permits the event query to follow."""
+        """Mixed values preserve expected membership without exposing names."""
 
         row = {"dataset": "workers", "key": "$metadata.service",
                "type": "string", "value": diagnostic.WORKER}
@@ -121,11 +121,11 @@ class AddressFailureLogTests(unittest.TestCase):
         self.assertEqual(body["filters"][0]["value"], diagnostic.WORKER)
         for rows, expected in (([], "explicit_empty"),
                                ([{"dataset": "workers", "key": "$metadata.service",
-                                  "type": "string", "value": "other-service"}], "unexpected_service"),
+                                  "type": "string", "value": "other-service"}], "absent"),
                                ({"unexpected": "shape"}, "row_schema_invalid"),
                                ([{"dataset": "workers", "key": "$metadata.service",
                                   "type": "string", "value": 42}], "row_schema_invalid"),
-                               ([row, {**row, "value": "other-service"}], "unexpected_service")):
+                               ([row, {**row, "value": "other-service"}], "present_with_others")):
             with self.subTest(expected=expected):
                 with patch.object(diagnostic, "request_json", return_value={"result": rows}):
                     self.assertEqual(diagnostic.service_value_status("a" * 32, "fake"), expected)
@@ -147,9 +147,15 @@ class AddressFailureLogTests(unittest.TestCase):
                 patch.object(diagnostic, "retained_events", return_value=[]) as query, \
                 redirect_stdout(output):
             self.assertEqual(diagnostic.main(), 1)
-        query.assert_called_once_with("a" * 32, "fake", diagnostic.START_MS, diagnostic.END_MS)
-        self.assertEqual(output.getvalue().strip().splitlines(), [
-            "staging_address_service: service_value_row_schema_invalid",
+        query.assert_called_once_with("a" * 32, "fake", diagnostic.START_MS, diagnostic.END_MS,
+                                      shape_reporter=ANY)
+        lines = output.getvalue().strip().splitlines()
+        self.assertEqual(lines[0], "staging_address_service: service_value_row_schema_invalid")
+        self.assertEqual(lines[1:-2], [
+            f"staging_address_query_{field}: unavailable"
+            for field in diagnostic.QUERY_SHAPE_FIELDS
+        ])
+        self.assertEqual(lines[-2:], [
             "staging_address_events: explicit_empty",
             "staging_address_incident: UNVERIFIED (service_value_row_schema_invalid)",
         ])
@@ -170,10 +176,18 @@ class AddressFailureLogTests(unittest.TestCase):
                              side_effect=diagnostic.CanaryError("observability_events_view_absent")) as query, \
                 redirect_stdout(output):
             self.assertEqual(diagnostic.main(), 1)
-        query.assert_called_once_with("a" * 32, "fake", diagnostic.START_MS, diagnostic.END_MS)
-        self.assertEqual(output.getvalue().strip().splitlines(), [
+        query.assert_called_once_with("a" * 32, "fake", diagnostic.START_MS, diagnostic.END_MS,
+                                      shape_reporter=ANY)
+        lines = output.getvalue().strip().splitlines()
+        self.assertEqual(lines[:2], [
             "staging_address_service: service_value_unverified",
             "staging_address_service_cause: observability_permission_denied",
+        ])
+        self.assertEqual(lines[2:-2], [
+            f"staging_address_query_{field}: unavailable"
+            for field in diagnostic.QUERY_SHAPE_FIELDS
+        ])
+        self.assertEqual(lines[-2:], [
             "staging_address_events: UNVERIFIED (observability_events_view_absent)",
             "staging_address_incident: UNVERIFIED (observability_events_view_absent)",
         ])
@@ -188,16 +202,17 @@ class AddressFailureLogTests(unittest.TestCase):
                     "CF_OBSERVABILITY_TOKEN": "fake",
                     "CLOUDFLARE_API_TOKEN": "fake",
                 }), patch.object(diagnostic, "preflight"), \
-                patch.object(diagnostic, "service_value_status", return_value="unexpected_service"), \
+                patch.object(diagnostic, "service_value_status", return_value="present_with_others"), \
                 patch.object(diagnostic, "retained_events", return_value=[record(
                     event("request_exit", "server_error"))]), \
                 patch.object(diagnostic, "classify") as classify, redirect_stdout(output):
             self.assertEqual(diagnostic.main(), 1)
         classify.assert_not_called()
-        self.assertEqual(output.getvalue().strip().splitlines(), [
-            "staging_address_service: service_value_unexpected_service",
+        lines = output.getvalue().strip().splitlines()
+        self.assertEqual(lines[0], "staging_address_service: service_value_present_with_others")
+        self.assertEqual(lines[-2:], [
             "staging_address_events: view_present",
-            "staging_address_incident: UNVERIFIED (service_value_unexpected_service)",
+            "staging_address_incident: UNVERIFIED (service_value_present_with_others)",
         ])
 
 
