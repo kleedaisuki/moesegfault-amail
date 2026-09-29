@@ -121,8 +121,8 @@ async function exercise(createResponse, { failActivation = false, listedRuleIds 
     await applyMigrations(db, path.join(worker, "migrations"));
     if (failActivation) {
       // Fail only the post-provider activation, not allocation or claiming.
-      await db.exec(`CREATE TRIGGER fail_activation BEFORE UPDATE ON addresses
-        WHEN NEW.state='active' BEGIN SELECT RAISE(FAIL, 'synthetic activation failure'); END`);
+      await db.exec("CREATE TRIGGER fail_activation BEFORE UPDATE ON addresses " +
+        "WHEN NEW.state='active' BEGIN SELECT RAISE(FAIL, 'synthetic activation failure'); END;");
     }
     const response = await mf.dispatchFetch("https://mail-staging.moesegfault.dev/v1/addresses", {
       method: "POST",

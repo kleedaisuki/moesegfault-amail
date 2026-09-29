@@ -156,3 +156,22 @@ checking both the `addresses` table and the final `next_reconcile_at` column.
 That detects comment and later-schema setup failures before compiling Rust.
 The hosted post-build suite remains necessary to verify address behavior;
 none of these fixture changes establish a fix for live staging.
+
+### D1.exec is line-oriented, not a migration-script parser (run 36586091955)
+
+The next hosted run [36586091955](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36586091955)
+failed in the early all-migrations smoke on the first multiline `CREATE TABLE`:
+`D1_EXEC_ERROR ... CREATE TABLE IF NOT EXISTS addresses (: incomplete input`.
+The comment normalization worked, but D1's `exec()` splits its input on every
+newline, not on SQL statement boundaries; Cloudflare's
+[D1 implementation](https://github.com/cloudflare/workerd/blob/main/src/cloudflare/internal/d1-api.ts)
+calls this a simplifying limitation. Therefore a whole multiline migration
+cannot be passed to `exec()` even without comments.
+
+The fixture now frames this repository's migration statements, flattens each
+complete statement to one line, and calls `exec()` sequentially. Its framing
+recognizes the repository's `CREATE TRIGGER ... END;` blocks so semicolons
+inside trigger bodies do not split them. Static fixture tests check that all
+current migration files produce complete one-line statements; the early D1
+smoke applies them before Rust compilation. This is intentionally scoped to
+the known migration syntax rather than claiming to be a general SQLite parser.
