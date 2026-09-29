@@ -33,17 +33,17 @@ request throws and increments a counter that the fixture asserts is zero.
 No service binding or alternate network adapter is configured. Thus the
 Worker's global `fetch` cannot reach the live Identity or Cloudflare Routing
 API through this harness under the documented `outboundService` contract.
-The early smoke likewise installs a throwing outbound callback and starts a
+The early smoke uses an exact-match, local-only outbound callback and starts a
 synthetic Worker with local D1; it runs before the expensive Rust build and
 always disposes Miniflare in `finally`. The real test similarly disposes its
 instance after success or failure.
 
 ## Verification boundary
 
-The early smoke checks the v5 constructor, event dispatch, D1 binding, and
-teardown, **not** the Rust/Wasm bundle, outbound callback invocation, or the
-13 address assertions. The pinned `5.20260926.0-alpha` package can have
-behavior different from the current `main` API reference, so the next hosted
+The early smoke checks the constructor, event dispatch, D1 binding,
+outbound callback invocation, and teardown, **not** the Rust/Wasm bundle or the
+13 address assertions. The previously pinned `5.20260926.0-alpha` package had
+behavior different from its own README, so the next hosted
 run must prove that both the smoke and post-build tests execute. A green
 synthetic run would be a regression guard, not a reproduction or repair of
 the fourth live staging 500. No new real alias or provider route should be
@@ -51,3 +51,33 @@ created merely to validate this harness correction.
 
 No production code, deployment binding, or live routing configuration is
 changed by this focused patch.
+
+## Stable v4 pin after v5 constructor failure (run 36579868487)
+
+The next hosted run [36579868487](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36579868487)
+failed in the early smoke before any Rust build. Its installed
+`miniflare@5.20260926.0-alpha` rejected `name`, `modules`, `script`,
+`compatibilityDate`, `d1Databases`, and `outboundService` at `workers[0]` and
+required `workers[0].config`. This disproves the previous review's assumption
+that the package's bundled README describes the pinned constructor: that README
+still documents the v4 option shape, while the package's actual TypeScript
+declarations define a v5 `{ workers: [{ config, dev }] }` schema.
+
+The v5 package exports `convertV4MiniflareOptions`, but its implementation
+explicitly rejects `modulesRules`, which the Rust/Wasm fixture needs to load
+the generated binary. Reimplementing generated module discovery just for this
+test would be fragile. Instead, pin the last published stable v4 release,
+`miniflare@4.20260730.0`, whose Worker options include `modulesRules`, D1,
+and `outboundService`. This is also the last v4 version in the npm version
+list as of this review. The stable package depends on `undici@7.28.0`, inside
+the [reported advisory range](https://github.com/cloudflare/workers-sdk/issues/15007),
+so the pnpm workspace overrides that transitive dependency to patched
+`undici@7.29.0` within the same major version. The lockfile records the exact
+resolved versions.
+
+The smoke dispatches an external-looking request through a local-only callback
+and checks exactly one callback invocation, guarding the no-live-egress path
+before a Rust build. It uses the fixture's `2026-09-25` compatibility date,
+but cannot prove the generated Rust/Wasm module graph loads: that remains for
+hosted post-build tests. This is a fixture compatibility fix, not evidence that
+the Rust Worker boundary cases pass or that staging HTTP 500 is resolved.

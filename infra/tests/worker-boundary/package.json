@@ -6,6 +6,6 @@
     "test": "node --test address-add.test.mjs"
   },
   "devDependencies": {
-    "miniflare": "5.20260926.0-alpha"
+    "miniflare": "4.20260730.0"
   }
 }
