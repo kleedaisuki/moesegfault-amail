@@ -48,14 +48,17 @@ def fetch(account: str, token: str, suffix: str) -> dict:
     return result
 
 
-def serving_version(result: dict) -> str | None:
-    """Use Cloudflare's first (actively serving) deployment, rejecting splits."""
+def serving_deployment(result: dict) -> tuple[str, str] | None:
+    """Use the first active deployment, rejecting split traffic or missing IDs."""
 
     deployments = result.get("deployments")
     if not isinstance(deployments, list) or not deployments:
         return None
     latest = deployments[0]
     if not isinstance(latest, dict) or latest.get("strategy") != "percentage":
+        return None
+    deployment_id = latest.get("id")
+    if not isinstance(deployment_id, str) or not UUID.fullmatch(deployment_id):
         return None
     versions = latest.get("versions")
     if not isinstance(versions, list) or len(versions) != 1:
@@ -66,7 +69,7 @@ def serving_version(result: dict) -> str | None:
     version_id = version.get("version_id")
     if version.get("percentage") != 100 or not isinstance(version_id, str) or not UUID.fullmatch(version_id):
         return None
-    return version_id
+    return deployment_id, version_id
 
 
 def expected_bindings() -> dict[str, tuple[str, str | None]]:
@@ -86,10 +89,13 @@ def expected_bindings() -> dict[str, tuple[str, str | None]]:
     }
 
 
-def bindings_match(settings: dict) -> bool:
-    """Check exact binding names, kinds, and non-secret target values."""
+def bindings_match(version: dict, expected_version: str) -> bool:
+    """Check exact resource bindings on the identified serving version."""
 
-    actual = settings.get("bindings")
+    resources = version.get("resources")
+    if version.get("id") != expected_version or not isinstance(resources, dict):
+        return False
+    actual = resources.get("bindings")
     expected = expected_bindings()
     if not isinstance(actual, list) or len(actual) != len(expected):
         return False
@@ -120,19 +126,20 @@ def run(account: str, token: str, expected: str) -> str:
 
     from check_observability import safe_settings  # Imported after test path setup.
 
-    first = serving_version(fetch(account, token, "deployments?per_page=1&page=1"))
+    first = serving_deployment(fetch(account, token, "deployments?per_page=1&page=1"))
     if first is None:
         return "deployment_unverified"
-    if first != expected:
+    if first[1] != expected:
         return "version_mismatch"
+    version = fetch(account, token, f"versions/{expected}")
     settings = fetch(account, token, "settings")
     script_settings = fetch(account, token, "script-settings")
     if not safe_settings(settings) or not safe_settings(script_settings):
         return "privacy_unverified"
-    if not bindings_match(settings):
+    if not bindings_match(version, expected):
         return "bindings_mismatch"
-    second = serving_version(fetch(account, token, "deployments?per_page=1&page=1"))
-    return "match" if second == expected else "deployment_changed"
+    second = serving_deployment(fetch(account, token, "deployments?per_page=1&page=1"))
+    return "match" if second == first else "deployment_changed"
 
 
 def main() -> int:

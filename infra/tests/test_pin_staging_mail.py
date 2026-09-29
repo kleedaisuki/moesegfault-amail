@@ -17,18 +17,19 @@ VERSION = "988a2f02-da5d-406d-9f60-2723e19c2398"
 OTHER = "12345678-1234-1234-1234-123456789abc"
 
 
-def deployment(version: str = VERSION, percentage: int = 100) -> dict:
+def deployment(version: str = VERSION, percentage: int = 100,
+               deployment_id: str = OTHER) -> dict:
     """Create a provider-shaped current deployment."""
 
-    return {"deployments": [{"strategy": "percentage", "versions": [
+    return {"deployments": [{"id": deployment_id, "strategy": "percentage", "versions": [
         {"version_id": version, "percentage": percentage}
     ]}]}
 
 
-def settings() -> dict:
-    """Build the minimal accepted settings and exact staged bindings."""
+def bindings() -> list[dict]:
+    """Build exact staged bindings from the reviewed Wrangler config."""
 
-    bindings = []
+    result = []
     for name, (kind, value) in pin.expected_bindings().items():
         item = {"name": name, "type": kind}
         if kind == "d1":
@@ -37,8 +38,14 @@ def settings() -> dict:
             item["bucket_name"] = value
         elif kind == "plain_text":
             item["text"] = value
-        bindings.append(item)
-    return {"bindings": bindings, "observability": {
+        result.append(item)
+    return result
+
+
+def settings() -> dict:
+    """Build the minimal accepted privacy settings."""
+
+    return {"observability": {
         "enabled": True, "head_sampling_rate": 1.0, "redact_query_string": True,
         "logs": {"enabled": True, "invocation_logs": False},
         "traces": {"enabled": False},
@@ -51,37 +58,42 @@ class PinTests(unittest.TestCase):
     def test_exact_serving_version(self) -> None:
         """Only a single 100-percent version is a pin."""
 
-        self.assertEqual(pin.serving_version(deployment()), VERSION)
-        self.assertIsNone(pin.serving_version(deployment(percentage=99)))
+        self.assertEqual(pin.serving_deployment(deployment()), (OTHER, VERSION))
+        self.assertIsNone(pin.serving_deployment(deployment(percentage=99)))
         split = deployment()
         split["deployments"][0]["versions"].append({"version_id": OTHER, "percentage": 10})
-        self.assertIsNone(pin.serving_version(split))
-        self.assertIsNone(pin.serving_version({"deployments": []}))
+        self.assertIsNone(pin.serving_deployment(split))
+        self.assertIsNone(pin.serving_deployment({"deployments": []}))
 
     def test_binding_targets_and_secrets(self) -> None:
         """Production resource drift and unexpected bindings fail closed."""
 
-        good = settings()
-        self.assertTrue(pin.bindings_match(good))
-        wrong = settings()
-        next(item for item in wrong["bindings"] if item["name"] == "MAIL_DB")["database_id"] = OTHER
-        self.assertFalse(pin.bindings_match(wrong))
-        wrong = settings()
-        next(item for item in wrong["bindings"] if item["name"] == "INGRESS_SECRET")["type"] = "plain_text"
-        self.assertFalse(pin.bindings_match(wrong))
-        wrong = settings()
-        wrong["bindings"].append({"name": "UNREVIEWED", "type": "secret_text"})
-        self.assertFalse(pin.bindings_match(wrong))
+        good = {"id": VERSION, "resources": {"bindings": bindings()}}
+        self.assertTrue(pin.bindings_match(good, VERSION))
+        wrong = {"id": VERSION, "resources": {"bindings": bindings()}}
+        next(item for item in wrong["resources"]["bindings"] if item["name"] == "MAIL_DB")["database_id"] = OTHER
+        self.assertFalse(pin.bindings_match(wrong, VERSION))
+        wrong = {"id": VERSION, "resources": {"bindings": bindings()}}
+        next(item for item in wrong["resources"]["bindings"] if item["name"] == "INGRESS_SECRET")["type"] = "plain_text"
+        self.assertFalse(pin.bindings_match(wrong, VERSION))
+        wrong = {"id": VERSION, "resources": {"bindings": bindings()}}
+        wrong["resources"]["bindings"].append({"name": "UNREVIEWED", "type": "secret_text"})
+        self.assertFalse(pin.bindings_match(wrong, VERSION))
+        self.assertFalse(pin.bindings_match({"id": VERSION, "resources": {"bindings": {}}}, VERSION))
 
     @patch.object(pin, "fetch")
     def test_readback_is_bookended_by_deployment(self, fetch) -> None:
         """A rollout between initial and final GET cannot yield a match."""
 
         safe = settings()
-        fetch.side_effect = [deployment(), safe, safe, deployment()]
+        version = {"id": VERSION, "resources": {"bindings": bindings()}}
+        fetch.side_effect = [deployment(), version, safe, safe, deployment()]
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "match")
-        self.assertEqual(fetch.call_count, 4)
-        fetch.side_effect = [deployment(), safe, safe, deployment(OTHER)]
+        self.assertEqual(fetch.call_count, 5)
+        fetch.side_effect = [deployment(), version, safe, safe, deployment(OTHER)]
+        self.assertEqual(pin.run("a" * 32, "private", VERSION), "deployment_changed")
+        fetch.side_effect = [deployment(), version, safe, safe,
+                             deployment(deployment_id=VERSION)]
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "deployment_changed")
         fetch.side_effect = [deployment(OTHER)]
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "version_mismatch")
@@ -92,7 +104,8 @@ class PinTests(unittest.TestCase):
 
         bad = settings()
         bad["observability"]["traces"]["enabled"] = True
-        fetch.side_effect = [deployment(), bad, settings()]
+        version = {"id": VERSION, "resources": {"bindings": bindings()}}
+        fetch.side_effect = [deployment(), version, bad, settings()]
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "privacy_unverified")
 
 
