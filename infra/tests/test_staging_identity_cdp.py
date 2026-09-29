@@ -19,7 +19,11 @@ from urllib.parse import urlencode
 # CI's infrastructure job need not install websocket-client just to import
 # these pure/mock checks. The real harness requires the installed package.
 # CI 基础设施任务无需为纯模拟测试安装 websocket-client；实际工具仍要求已安装。
-sys.modules.setdefault("websocket", types.ModuleType("websocket"))
+if "websocket" not in sys.modules:
+    websocket_stub = types.ModuleType("websocket")
+    websocket_stub.WebSocketException = type("WebSocketException", (Exception,), {})
+    websocket_stub.create_connection = Mock()
+    sys.modules["websocket"] = websocket_stub
 SPEC = importlib.util.spec_from_file_location(
     "staging_identity_cdp", Path(__file__).with_name("staging_identity_cdp.py")
 )
