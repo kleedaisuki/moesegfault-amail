@@ -2,6 +2,16 @@
 name: Staging retained-log trace canary
 
 on:
+  workflow_call:
+    inputs:
+      mode:
+        description: Preflight only, or run the synthetic retained-log canary
+        required: true
+        type: string
+      confirm:
+        description: Explicit confirmation required only for canary mode
+        required: false
+        type: string
   workflow_dispatch:
     inputs:
       mode:

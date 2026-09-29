@@ -12,11 +12,17 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-routing-policy, production]
+        options: [staging, staging-e2e, staging-routing-policy, staging-trace-canary, production]
       confirm:
-        description: For staging-e2e only, enter RUN_STAGING_E2E after Identity staging is fixed
+        description: For staging-e2e enter RUN_STAGING_E2E; for trace canary enter RUN_STAGING_TRACE_CANARY
         required: false
         type: string
+      trace_mode:
+        description: For staging-trace-canary only; preflight does not log in
+        required: false
+        default: preflight
+        type: choice
+        options: [preflight, canary]
 
 permissions:
   contents: read
@@ -126,6 +132,18 @@ jobs:
           python-version: '3.12'
       - name: Inspect only token verification and details GETs
         run: python infra/provider/probe_routing_write.py
+
+  staging-trace-canary:
+    name: Reuse branch-local staging retained-log trace canary
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-trace-canary' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    uses: ./.github/workflows/staging-trace-canary.yml
+    with:
+      mode: ${{ inputs.trace_mode }}
+      confirm: ${{ inputs.confirm }}
+    secrets: inherit
 
   worker:
     name: Rust Worker (Wasm)
