@@ -39,6 +39,8 @@ TEMP = (ROOT / ".temp").resolve()
 API = "https://api.cloudflare.com/client/v4"
 DOMAIN = "mail-staging.moesegfault.dev"
 INGRESS = "amail-inbound-staging"
+ACCOUNT_ADDRESS_LIMIT = 10
+DOMAIN_LITERAL_RULE_LIMIT = 200
 SENDING_TAG = "176c49089bf54e7e91e3e537eadcc140"
 SENDER = "probe@mail-staging.moesegfault.dev"
 PNG = bytes.fromhex(
@@ -172,9 +174,10 @@ def amail_not_found(binary: Path, env: dict[str, str], *args: str) -> None:
 
 
 def cf_rules(zone: str, token: str) -> list[dict]:
-    """Read all Cloudflare routing pages; no silent first-page pass. / 遍历所有规则页。"""
+    """Read a complete, count-consistent Cloudflare routing inventory."""
 
     rules: list[dict] = []
+    total_count: int | None = None
     for page in range(1, 201):
         path = f"/zones/{zone}/email/routing/rules?per_page=50&page={page}"
         req = urllib.request.Request(
@@ -191,18 +194,45 @@ def cf_rules(zone: str, token: str) -> list[dict]:
             value = json.loads(raw)
         except (ValueError, UnicodeDecodeError):
             raise ProbeFailure("routing_response_invalid") from None
-        batch = value.get("result")
-        check(value.get("success") is True and isinstance(batch, list), "routing_response_invalid")
+        batch, total_count, pages = validated_rule_page(value, page, total_count)
         rules.extend(batch)
-        info = value.get("result_info") or {}
-        pages = info.get("total_pages")
-        if pages is not None:
-            check(type(pages) is int and page <= pages <= 200, "routing_pages_invalid")
-            if page == pages:
-                return rules
-        elif len(batch) < 50:
+        if page == pages:
             return rules
     raise ProbeFailure("routing_page_bound")
+
+
+def validated_rule_page(value: object, page: int, prior_total: int | None) -> tuple[list[dict], int, int]:
+    """Require provider pagination counts before treating a short page as final.
+
+    The live API may omit `total_pages`, but it reports page, per_page, count,
+    and total_count. A truncated inventory must never greenlight a mutation.
+    """
+
+    check(isinstance(value, dict) and value.get("success") is True, "routing_response_invalid")
+    batch, info = value.get("result"), value.get("result_info")
+    check(isinstance(batch, list) and all(isinstance(rule, dict) for rule in batch), "routing_response_invalid")
+    check(isinstance(info, dict), "routing_pages_invalid")
+    available = info.get("total_count")
+    check(
+        type(info.get("page")) is int and info["page"] == page
+        and type(info.get("per_page")) is int and info["per_page"] == 50
+        and type(info.get("count")) is int and info["count"] == len(batch)
+        and type(available) is int and 0 <= available <= 10_000
+        and (prior_total is None or prior_total == available),
+        "routing_pages_invalid",
+    )
+    pages = max(1, (available + 49) // 50)
+    reported = info.get("total_pages")
+    check(
+        reported is None or type(reported) is int
+        and (reported == pages or available == 0 and reported == 0),
+        "routing_pages_invalid",
+    )
+    check(
+        page <= pages and len(batch) == min(50, max(0, available - (page - 1) * 50)),
+        "routing_pages_invalid",
+    )
+    return batch, available, pages
 
 
 def assert_staging_sender(zone: str, token: str) -> None:
@@ -246,6 +276,45 @@ def route_for(rules: list[dict], address: str) -> list[dict]:
             for m in rule.get("matchers") or []
         )
     ]
+
+
+def assert_address_creation_preflight(owned: list[dict], rules: list[dict], address: str) -> None:
+    """Fail before mutation if the owned alias or provider domain is already full.
+
+    The compact CLI intentionally emits address rows, not the API's D1-wide
+    capacity object. This check cannot prove global D1 capacity or Rules Write;
+    it only rejects known per-account and provider-inventory conflicts. The
+    Worker/provider remain authoritative at creation time.
+    """
+
+    seen: set[str] = set()
+    for row in owned:
+        candidate = row.get("address")
+        check(isinstance(candidate, str) and bool(candidate), "address_preflight_shape")
+        check(row.get("state") in ("active", "pending", "deleting"), "address_preflight_shape")
+        normalized = candidate.lower()
+        check(normalized not in seen, "address_preflight_shape")
+        seen.add(normalized)
+    check(address.lower() not in seen, "address_preflight_candidate_owned")
+    check(len(seen) < ACCOUNT_ADDRESS_LIMIT, "address_preflight_account_full")
+
+    domain_rules = 0
+    for rule in rules:
+        check(isinstance(rule, dict), "routing_inventory_shape")
+        matchers = rule.get("matchers")
+        check(isinstance(matchers, list), "routing_inventory_shape")
+        check(all(isinstance(matcher, dict) for matcher in matchers), "routing_inventory_shape")
+        if rule.get("name") == f"amail {address}" or route_for([rule], address):
+            raise ProbeFailure("address_preflight_candidate_routed")
+        if any(
+            matcher.get("type") == "literal"
+            and matcher.get("field") == "to"
+            and isinstance(matcher.get("value"), str)
+            and matcher["value"].lower().endswith("@" + DOMAIN)
+            for matcher in matchers
+        ):
+            domain_rules += 1
+    check(domain_rules < DOMAIN_LITERAL_RULE_LIMIT, "address_preflight_domain_full")
 
 
 def assert_route(zone: str, token: str, address: str, present: bool) -> None:
@@ -537,8 +606,6 @@ def main() -> int:
     env = cli_env(home)
     status = amail(binary, env, "auth", "status", failure="auth_status_failed")
     check(len(status) == 1 and status[0].get("authenticated") is True, "not_authenticated")
-    amail(binary, env, "address", "list", failure="address_preflight_failed")
-
     # A hosted run may crash before cleanup. The protected synthetic password
     # plus run ID/attempt can reconstruct only its alias for exact-rule
     # reconciliation, without publishing the address; local probes stay random.
@@ -546,7 +613,8 @@ def main() -> int:
     nonce = run_nonce()
     address = f"e2e-{nonce}@{DOMAIN}"
     part = f"e2e-{nonce}"
-    assert_route(zone, routing_token, address, False)
+    owned = amail(binary, env, "address", "list", failure="address_preflight_failed")
+    assert_address_creation_preflight(owned, cf_rules(zone, routing_token), address)
     creation_attempted = False
     primary_error: ProbeFailure | None = None
     cleanup_error: ProbeFailure | None = None

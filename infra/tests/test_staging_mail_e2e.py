@@ -26,6 +26,115 @@ SPEC.loader.exec_module(HARNESS)
 class CleanupTests(unittest.TestCase):
     """Guarantee timeout does not skip alias retirement. / 保证超时不跳过别名退役。"""
 
+    def test_address_creation_preflight_rejects_known_account_conflicts(self) -> None:
+        """A candidate already owned or a full account must not enter add."""
+
+        address = "e2e-test@" + HARNESS.DOMAIN
+        owned = [{"address": address, "state": "pending"}]
+        with self.assertRaises(HARNESS.ProbeFailure) as caught:
+            HARNESS.assert_address_creation_preflight(owned, [], address)
+        self.assertEqual(str(caught.exception), "address_preflight_candidate_owned")
+
+        owned = [
+            {"address": f"owned-{n}@{HARNESS.DOMAIN}", "state": "active"}
+            for n in range(10)
+        ]
+        with self.assertRaises(HARNESS.ProbeFailure) as caught:
+            HARNESS.assert_address_creation_preflight(owned, [], address)
+        self.assertEqual(str(caught.exception), "address_preflight_account_full")
+        with self.assertRaises(HARNESS.ProbeFailure) as caught:
+            HARNESS.assert_address_creation_preflight(
+                [{"address": "duplicate@example.test", "state": "active"}] * 2,
+                [], address,
+            )
+        self.assertEqual(str(caught.exception), "address_preflight_shape")
+
+    def test_address_creation_preflight_checks_domain_inventory(self) -> None:
+        """Count one rule per staging-domain literal matcher, not apex routes."""
+
+        address = "e2e-test@" + HARNESS.DOMAIN
+
+        def literal(n: int, domain: str) -> dict:
+            return {"name": f"rule-{n}", "matchers": [
+                {"type": "literal", "field": "to", "value": f"test-{n}@{domain}"}
+            ]}
+
+        staging = [literal(n, HARNESS.DOMAIN) for n in range(200)]
+        apex = literal(201, "moesegfault.dev")
+        HARNESS.assert_address_creation_preflight([], staging[:199] + [apex], address)
+        with self.assertRaises(HARNESS.ProbeFailure) as caught:
+            HARNESS.assert_address_creation_preflight([], staging + [apex], address)
+        self.assertEqual(str(caught.exception), "address_preflight_domain_full")
+        with self.assertRaises(HARNESS.ProbeFailure) as caught:
+            HARNESS.assert_address_creation_preflight([], [literal(1, HARNESS.DOMAIN), {
+                "name": "amail " + address,
+                "matchers": [{"type": "literal", "field": "to", "value": "other@example.test"}],
+            }], address)
+        self.assertEqual(str(caught.exception), "address_preflight_candidate_routed")
+        with self.assertRaises(HARNESS.ProbeFailure) as caught:
+            HARNESS.assert_address_creation_preflight([], [{"matchers": "private"}], address)
+        self.assertEqual(str(caught.exception), "routing_inventory_shape")
+
+    def test_rule_inventory_rejects_truncated_or_inconsistent_pages(self) -> None:
+        """Missing total_pages is allowed; missing rows despite total_count is not."""
+
+        complete = {
+            "success": True, "result": [{"matchers": []}],
+            "result_info": {"page": 1, "per_page": 50, "count": 1, "total_count": 1},
+        }
+        self.assertEqual(HARNESS.validated_rule_page(complete, 1, None)[1:], (1, 1))
+        truncated = {**complete, "result_info": {**complete["result_info"], "total_count": 2}}
+        with self.assertRaises(HARNESS.ProbeFailure) as caught:
+            HARNESS.validated_rule_page(truncated, 1, None)
+        self.assertEqual(str(caught.exception), "routing_pages_invalid")
+        contradictory = {**complete, "result_info": {**complete["result_info"], "total_pages": 2}}
+        with self.assertRaises(HARNESS.ProbeFailure) as caught:
+            HARNESS.validated_rule_page(contradictory, 1, None)
+        self.assertEqual(str(caught.exception), "routing_pages_invalid")
+        with self.assertRaises(HARNESS.ProbeFailure) as caught:
+            HARNESS.validated_rule_page(complete, 1, 2)
+        self.assertEqual(str(caught.exception), "routing_pages_invalid")
+
+    def test_address_preflight_stops_before_add_and_cleanup(self) -> None:
+        """A known full account cannot cause any mutation or cleanup call."""
+
+        HARNESS.TEMP.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=HARNESS.TEMP) as directory:
+            root = Path(directory)
+            home = root / "home"
+            home.mkdir()
+            binary = root / "amail.exe"
+            binary.touch()
+            calls = []
+
+            def fake_amail(_binary, _env, *args, failure):
+                calls.append(args)
+                if args == ("auth", "status"):
+                    return [{"authenticated": True}]
+                if args == ("address", "list"):
+                    return [
+                        {"address": f"owned-{n}@{HARNESS.DOMAIN}", "state": "active"}
+                        for n in range(10)
+                    ]
+                raise AssertionError("unexpected CLI mutation")
+
+            env = {
+                "CLOUDFLARE_ZONE_ID": "a" * 32,
+                "CF_EMAIL_ROUTING_TOKEN": "routing",
+                "AMAIL_TEST_SMTP_TOKEN": "sending",
+            }
+            argv = ["probe", "--confirm-staging", "--home", str(home), "--amail", str(binary)]
+            with patch.dict(os.environ, env), patch.object(sys, "argv", argv), patch.object(
+                HARNESS, "amail", side_effect=fake_amail
+            ), patch.object(HARNESS, "cf_rules", return_value=[]), patch.object(
+                HARNESS, "assert_staging_sender"
+            ), patch.object(HARNESS, "cleanup_run") as cleanup:
+                with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                    HARNESS.main()
+            self.assertEqual(str(caught.exception), "address_preflight_account_full")
+            self.assertEqual(calls, [("auth", "status"), ("address", "list")])
+            cleanup.assert_not_called()
+
     def test_cli_failure_keeps_only_allowlisted_public_code(self) -> None:
         """Preserve a useful status while dropping correlation and private text."""
 
