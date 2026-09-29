@@ -2,7 +2,6 @@
   "name": "amail-worker-boundary-tests",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.6.0",
   "scripts": {
     "test": "node --test address-add.test.mjs"
   },
