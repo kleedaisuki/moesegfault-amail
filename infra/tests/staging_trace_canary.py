@@ -324,16 +324,23 @@ def assess(records: list[dict], ids: tuple[str, str, str], denied_id: str,
         metadata = record.get("$metadata")
         need(isinstance(metadata, dict) and metadata.get("service") == WORKER,
              "service_filter_not_enforced")
-        source_events = embedded_events(record.get("source"))
-        recognized = source_events or embedded_events(metadata.get("message"))
+        source = record.get("source")
+        message = metadata.get("message")
+        source_events = embedded_events(source)
+        message_events = embedded_events(message)
+        recognized = source_events or message_events
         # A custom console line with no reviewed schema is not silently safe.
         # Platform-generated event/error rows still receive whole-record canary
         # scanning, but are outside the application-event schema verdict.
-        need(metadata.get("type") != "cf-worker-log" or bool(recognized),
-             "unreviewed_custom_log")
+        if metadata.get("type") == "cf-worker-log":
+            need(bool(recognized), "unreviewed_custom_log")
+            need(source in (None, "", {}) or bool(source_events),
+                 "unreviewed_custom_log")
+            need(message in (None, "") or bool(message_events),
+                 "unreviewed_custom_log")
+        need(all(allowlisted_event(event) for event in source_events + message_events),
+             "application_event_schema_unallowlisted")
         safe_events.extend(recognized)
-    need(all(allowlisted_event(event) for event in safe_events),
-         "application_event_schema_unallowlisted")
     for event in safe_events:
         if event.get("request_id") == denied_id and event.get("phase") == "request_exit":
             denied_seen = (event.get("http_status_class") == 4

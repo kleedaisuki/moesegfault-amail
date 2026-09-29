@@ -89,6 +89,25 @@ class StagingTraceCanaryTests(unittest.TestCase):
         with self.assertRaisesRegex(canary.CanaryError, "unreviewed_custom_log"):
             canary.assess(records, (T, C, R), D, MARKERS)
 
+    def test_indexed_message_cannot_mask_unreviewed_source(self) -> None:
+        """A valid metadata echo cannot certify arbitrary custom source text."""
+
+        records = events()
+        records[0]["$metadata"]["message"] = records[0]["source"]
+        records[0]["source"] = "unreviewed custom text"
+        with self.assertRaisesRegex(canary.CanaryError, "unreviewed_custom_log"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
+    def test_unallowlisted_indexed_message_fails(self) -> None:
+        """A safe source cannot mask a second JSON shape in indexed metadata."""
+
+        records = events()
+        indexed = json.loads(records[0]["source"])
+        indexed["address"] = "synthetic@example.invalid"
+        records[0]["$metadata"]["message"] = json.dumps(indexed)
+        with self.assertRaisesRegex(canary.CanaryError, "application_event_schema_unallowlisted"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
     def test_routing_numeric_phase_is_allowlisted(self) -> None:
         """Current Rust routing diagnostics use fixed numeric provider facts."""
 
