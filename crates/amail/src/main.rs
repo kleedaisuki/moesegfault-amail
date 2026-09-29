@@ -344,11 +344,8 @@ fn metadata(args: &SearchArgs) -> Result<BTreeMap<String, String>> {
         ensure!(!key.is_empty(), "metadata key cannot be empty");
         // The API represents metadata as a map, so another value for this key
         // cannot express conjunction and must never silently replace a filter.
-        ensure!(
-            !map.contains_key(key),
-            "duplicate --meta key: {}",
-            key.escape_debug()
-        );
+        // Never echo caller-supplied metadata into stderr or Agent logs.
+        ensure!(!map.contains_key(key), "duplicate --meta key");
         map.insert(key.to_owned(), value.to_owned());
     }
     Ok(map)
@@ -718,7 +715,27 @@ mod tests {
             panic!("expected search command");
         };
         let error = search_request(&args).unwrap_err().to_string();
-        assert_eq!(error, "duplicate --meta key: attachment_name");
+        assert_eq!(error, "duplicate --meta key");
+    }
+
+    #[test]
+    fn duplicate_metadata_error_does_not_echo_key() {
+        let cli = Cli::try_parse_from([
+            "amail",
+            "search",
+            "--meta",
+            "private-address@example.org=x",
+            "--meta",
+            "private-address@example.org=y",
+        ])
+        .unwrap();
+        let Command::Search(args) = cli.command else {
+            panic!("expected search command");
+        };
+        assert_eq!(
+            search_request(&args).unwrap_err().to_string(),
+            "duplicate --meta key"
+        );
     }
 
     #[test]
