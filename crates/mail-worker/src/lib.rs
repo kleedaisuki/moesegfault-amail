@@ -434,6 +434,10 @@ fn embedding_failure_policy(error: platform::EmbeddingFailure, attempts: i64) ->
 /// D1 supplies work durability; Cron is only a wake-up, never the work ledger.
 /// The due query transfers IDs, not content. Each lease holder reads one active
 /// message immediately before the provider call and commits only under that lease.
+/// Cloudflare's scheduled invocation has a 15-minute maximum wall time, so the
+/// lease must outlive that invocation to prevent an overlapping Cron transfer.
+const EMBEDDING_LEASE_MS: i64 = 20 * 60_000;
+
 async fn reindex(env: &Env) -> Result<()> {
     #[derive(Deserialize)]
     struct Due {
@@ -471,7 +475,7 @@ async fn reindex(env: &Env) -> Result<()> {
         let token = uuid::Uuid::new_v4().to_string();
         let claimed_at = now();
         let claim = database.prepare("UPDATE embedding_work SET lease_until=?1,lease_token=?2 WHERE message_id=?3 AND state='pending' AND next_attempt_at<=?4 AND lease_until<=?4 AND EXISTS (SELECT 1 FROM messages WHERE id=?3 AND deleted_at IS NULL AND embedding_json IS NULL)")
-            .bind(&[bind_num(claimed_at+120_000),bind_str(&token),bind_str(&item.message_id),bind_num(claimed_at)])?.run().await?;
+            .bind(&[bind_num(claimed_at+EMBEDDING_LEASE_MS),bind_str(&token),bind_str(&item.message_id),bind_num(claimed_at)])?.run().await?;
         if claim.meta()?.and_then(|meta| meta.changes).unwrap_or(0) != 1 {
             continue;
         }
@@ -2369,9 +2373,9 @@ mod tests {
             .unwrap(),
             0
         );
-        let claim = "UPDATE embedding_work SET lease_until=120000,lease_token='one' WHERE message_id='new' AND state='pending' AND next_attempt_at<=0 AND lease_until<=0 AND EXISTS (SELECT 1 FROM messages WHERE id='new' AND deleted_at IS NULL AND embedding_json IS NULL)";
-        assert_eq!(db.execute(claim, []).unwrap(), 1);
-        assert_eq!(db.execute(claim, []).unwrap(), 0);
+        let claim = format!("UPDATE embedding_work SET lease_until={EMBEDDING_LEASE_MS},lease_token='one' WHERE message_id='new' AND state='pending' AND next_attempt_at<=0 AND lease_until<=0 AND EXISTS (SELECT 1 FROM messages WHERE id='new' AND deleted_at IS NULL AND embedding_json IS NULL)");
+        assert_eq!(db.execute(&claim, []).unwrap(), 1);
+        assert_eq!(db.execute(&claim, []).unwrap(), 0);
         db.execute("UPDATE messages SET deleted_at=1 WHERE id='new'", [])
             .unwrap();
         assert_eq!(db.execute("UPDATE messages SET embedding_json='[1]' WHERE id='new' AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM embedding_work WHERE message_id='new' AND lease_token='one')",[]).unwrap(),0);
@@ -2381,6 +2385,7 @@ mod tests {
     /// never implicitly treated as a permanent content defect.
     #[test]
     fn embedding_backoff_is_bounded() {
+        assert!(EMBEDDING_LEASE_MS > 15 * 60_000);
         assert!(embedding_retry_delay(1, "a") >= 5 * 60_000);
         assert!(embedding_retry_delay(2, "a") >= 15 * 60_000);
         assert!(embedding_retry_delay(3, "a") >= 60 * 60_000);
