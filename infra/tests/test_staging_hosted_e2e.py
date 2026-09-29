@@ -26,6 +26,13 @@ SPEC.loader.exec_module(HARNESS)
 class HostedHarnessSafetyTests(unittest.TestCase):
     """Exercise private recoverability and fixed-label failure semantics."""
 
+    def test_branch_pr_cannot_cancel_push_deploy(self) -> None:
+        """A skipped branch PR must not cancel the actual push deployment gate."""
+
+        workflow = (HARNESS.ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        concurrency = workflow.split("\nconcurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+        self.assertIn("github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0'", concurrency)
+
     def test_semantic_probe_requires_explicit_boolean_switch(self) -> None:
         """The first inbound run remains independent of provider indexing."""
 

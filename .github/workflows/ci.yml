@@ -46,7 +46,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # The branch PR skips deploy jobs; it must not cancel its push deployment run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0' }}
 
 jobs:
   cli:
