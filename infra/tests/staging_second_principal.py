@@ -296,8 +296,18 @@ def inspect_state(username: str, password: str) -> tuple[str, str, dict, set[str
     require(deployed.returncode == 0, "private_inbox_deployment_unverified")
     require(route(address=ADDRESS) == "absent" and route(address=FIRST) == "absent",
             "verification_route_preexisting")
-    contacts = identity_contacts(account, token)
-    baseline = object_inventory(account, token)
+    try:
+        contacts = identity_contacts(account, token)
+    except ProvisionFailure as error:
+        if str(error).startswith("cloudflare_"):
+            raise ProvisionFailure("identity_d1_read_failed") from None
+        raise
+    try:
+        baseline = object_inventory(account, token)
+    except ProvisionFailure as error:
+        if str(error).startswith("cloudflare_"):
+            raise ProvisionFailure("private_r2_list_failed") from None
+        raise
     require(len(baseline) <= 1000, "r2_inventory_too_large")
     return account, token, contacts, baseline
 

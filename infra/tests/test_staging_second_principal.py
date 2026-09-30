@@ -158,6 +158,33 @@ class SecondPrincipalTests(unittest.TestCase):
         self.assertEqual(args[-2:], ["--live", "--deployed"])
         self.assertTrue(str(args[1]).endswith("check_config.py"))
 
+    def test_read_only_permission_failures_identify_d1_or_r2_phase(self) -> None:
+        """A denied preflight must identify the capability to repair, not leak replies."""
+
+        stub = types.ModuleType("staging_identity_cdp")
+        stub.decoded_credential = lambda value: None
+        stub.route = lambda action=None, address=None: "absent"
+        provider_env = {
+            "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+            "CLOUDFLARE_API_TOKEN": "private-token",
+            "CF_EMAIL_ROUTING_TOKEN": "private-route-token",
+        }
+        for failed_phase, expected in (("d1", "identity_d1_read_failed"),
+                                       ("r2", "private_r2_list_failed")):
+            d1 = MODULE.ProvisionFailure("cloudflare_request_failed") if failed_phase == "d1" else {}
+            r2 = MODULE.ProvisionFailure("cloudflare_request_failed") if failed_phase == "r2" else set()
+            with self.subTest(phase=failed_phase), \
+                    patch.dict(sys.modules, {"staging_identity_cdp": stub}), \
+                    patch.dict(os.environ, provider_env, clear=True), \
+                    patch.object(MODULE.subprocess, "run", return_value=types.SimpleNamespace(returncode=0)), \
+                    patch.object(MODULE, "identity_contacts", side_effect=d1 if isinstance(d1, Exception) else None,
+                                 return_value=d1 if not isinstance(d1, Exception) else None), \
+                    patch.object(MODULE, "object_inventory", side_effect=r2 if isinstance(r2, Exception) else None,
+                                 return_value=r2 if not isinstance(r2, Exception) else None):
+                with self.assertRaises(MODULE.ProvisionFailure) as caught:
+                    MODULE.inspect_state("b_username", "protected-password")
+            self.assertEqual(str(caught.exception), expected)
+
     def test_recovery_refuses_absent_verified_and_wrong_owner(self) -> None:
         """Recovery must never register a replacement for an ambiguous B."""
 
