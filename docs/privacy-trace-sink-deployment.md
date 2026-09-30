@@ -17,7 +17,7 @@ attach a diagnostic HTTP-pull consumer: it changes the reviewed ownership and
 creates a second payload access path.
 
 `infra/deploy/ensure_trace_queues.py --target staging --phase queues` inventories
-all bounded provider pages, creates only absent queues, and verifies retention.
+the bounded unfiltered single-page Queue endpoint, creates only absent queues, and verifies retention.
 Existing drift fails; it never updates, purges or deletes resources. Preexisting
 resources additionally require exact reviewed project variables
 `AMAIL_TRACE_QUEUE_ID_STAGING`/`AMAIL_TRACE_DLQ_ID_STAGING` (or `_PRODUCTION`).
@@ -90,6 +90,7 @@ Cloudflare official contracts consulted on 2026-09-30:
 - [Queue configuration](https://developers.cloudflare.com/queues/configuration/configure-queues/)
 - [List Queues](https://developers.cloudflare.com/api/resources/queues/methods/list/)
 - [Create Queue](https://developers.cloudflare.com/api/resources/queues/methods/create/)
+- [Official Queue SDK (SyncSinglePage, no paging query)](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/resources/queues/queues.py)
 - [Queue consumer schema](https://developers.cloudflare.com/api/resources/queues/subresources/consumers/)
 - [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)
 

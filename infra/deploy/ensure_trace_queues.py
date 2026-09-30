@@ -36,45 +36,39 @@ def request(account: str, token: str, path: str, body: dict | None = None):
 
 
 def inventory(account: str, token: str) -> list[dict]:
-    """Require cursor-complete bounded queue inventory before deciding absence."""
-    queues: list[dict] = []
-    expected_total: tuple[int, int] | None = None
+    """Read the documented unfiltered SyncSinglePage endpoint with bounded completeness guards."""
+    payload = request(account, token, "queues")
+    rows = payload.get("result")
+    if not isinstance(rows, list) or len(rows) > 10000 or not all(isinstance(row, dict) for row in rows):
+        raise ValueError("inventory_shape")
+    info = payload.get("result_info")
+    if info is not None:
+        if not isinstance(info, dict):
+            raise ValueError("inventory_shape")
+        for field, expected in (("page", 1), ("count", len(rows)), ("total_count", len(rows))):
+            if field in info and (type(info[field]) is not int or info[field] != expected):
+                raise ValueError("inventory_incomplete")
+        if "total_pages" in info and (type(info["total_pages"]) is not int
+                or info["total_pages"] not in ({0, 1} if not rows else {1})):
+            raise ValueError("inventory_incomplete")
+        if "per_page" in info and (type(info["per_page"]) is not int
+                or not max(1, len(rows)) <= info["per_page"] <= 10000):
+            raise ValueError("inventory_incomplete")
+        if any(info.get(key) not in (None, "", False) for key in ("cursor", "next_cursor", "next_page", "has_more")):
+            raise ValueError("inventory_incomplete")
+    if payload.get("truncated") not in (None, False):
+        raise ValueError("inventory_incomplete")
     ids: set[str] = set()
     names: set[str] = set()
-    for page in range(1, 101):
-        payload = request(account, token, f"queues?page={page}&per_page=100")
-        rows, info = payload.get("result"), payload.get("result_info")
-        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-            raise ValueError("inventory_shape")
-        if not isinstance(info, dict) or any(type(info.get(field)) is not int for field in (
-                "page", "per_page", "count", "total_count", "total_pages")):
-            raise ValueError("inventory_shape")
-        total, total_pages = info["total_count"], info["total_pages"]
-        if (info["page"] != page or info["per_page"] != 100 or info["count"] != len(rows)
-                or not 0 <= total <= 10000 or len(rows) > 100
-                or total_pages not in ({0, 1} if total == 0 else {(total + 99) // 100})):
-            raise ValueError("inventory_shape")
-        shape = (total, total_pages)
-        if expected_total is not None and shape != expected_total:
-            raise ValueError("inventory_changed")
-        expected_total = shape
-        last_page = max(1, total_pages)
-        if page > last_page or len(rows) != (100 if page < last_page else total - 100 * (page - 1)):
-            raise ValueError("inventory_incomplete")
-        for row in rows:
-            queue_id, name = row.get("queue_id"), row.get("queue_name")
-            if (not isinstance(queue_id, str) or not re.fullmatch(r"[0-9a-f]{32}", queue_id)
-                    or not isinstance(name, str) or not 1 <= len(name) <= 255
-                    or queue_id in ids or name in names):
-                raise ValueError("inventory_identity")
-            ids.add(queue_id)
-            names.add(name)
-        queues.extend(rows)
-        if page == last_page:
-            if len(queues) != total:
-                raise ValueError("inventory_incomplete")
-            return queues
-    raise ValueError("inventory_incomplete")
+    for row in rows:
+        queue_id, name = row.get("queue_id"), row.get("queue_name")
+        if (not isinstance(queue_id, str) or not re.fullmatch(r"[0-9a-f]{32}", queue_id)
+                or not isinstance(name, str) or not 1 <= len(name) <= 255
+                or queue_id in ids or name in names):
+            raise ValueError("inventory_identity")
+        ids.add(queue_id)
+        names.add(name)
+    return rows
 
 
 def exact_queue(rows: list[dict], name: str) -> dict | None:

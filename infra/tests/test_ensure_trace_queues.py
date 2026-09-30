@@ -34,17 +34,16 @@ class TraceQueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "queue_ambiguous"):
             MODULE.exact_queue([queue("x"), queue("x")], "x")
 
-    def test_inventory_requires_complete_pages(self):
-        """Absence is meaningful only after all declared pages were read."""
-        first = [queue(f"q{i}") for i in range(100)]
-        replies = [{"result": first, "result_info": {"page": 1, "per_page": 100, "count": 100, "total_count": 101, "total_pages": 2}},
-                   {"result": [queue("last")], "result_info": {"page": 2, "per_page": 100, "count": 1, "total_count": 101, "total_pages": 2}}]
-        with patch.object(MODULE, "request", side_effect=replies) as call:
-            self.assertEqual(len(MODULE.inventory("a", "t")), 101)
-            self.assertEqual(call.call_count, 2)
-        with patch.object(MODULE, "request", return_value={"result": [], "result_info": {"page": 1}}):
-            with self.assertRaisesRegex(ValueError, "inventory_shape"):
-                MODULE.inventory("a", "t")
+    def test_inventory_documented_single_page(self):
+        """The endpoint has no page/per_page parameters and optional response metadata."""
+        for info in (None, {}, {"page": 1, "per_page": 20, "count": 2, "total_count": 2, "total_pages": 1}):
+            reply = {"result": [queue("a"), queue("b")]}
+            if info is not None:
+                reply["result_info"] = info
+            with self.subTest(info=info), patch.object(MODULE, "request", return_value=reply) as call:
+                self.assertEqual(len(MODULE.inventory("a", "t")), 2)
+                self.assertEqual(call.call_args.args[2], "queues")
+                self.assertEqual(call.call_count, 1)
 
     def test_inventory_denies_counts_and_duplicate_identity(self):
         """No count mismatch, omitted page or duplicate queue can attest exclusivity."""
