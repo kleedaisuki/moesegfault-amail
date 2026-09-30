@@ -54,12 +54,13 @@ class ExactCosineTests(unittest.TestCase):
              "next_cursor": None},
         ]
 
-    def verify(self, pages=None, vectors=None, snapshots=None):
+    def verify(self, pages=None, vectors=None, snapshots=None, generations=None):
         """Run the real pure oracle with only deterministic external adapters."""
 
         pages = self.pages if pages is None else pages
         vectors = [self.query, self.query] if vectors is None else vectors
         snapshots = [self.documents, self.documents] if snapshots is None else snapshots
+        generations = [7, 7] if generations is None else generations
 
         def read(_, __, sql, params):
             """Return only the owner identity; snapshot/count are mocked below."""
@@ -69,7 +70,7 @@ class ExactCosineTests(unittest.TestCase):
             return [{"owner_iss": OWNER[0], "owner_sub": OWNER[1]}]
 
         with patch.object(oracle, "d1_rows", side_effect=read), \
-             patch.object(oracle, "generation", side_effect=[7, 7]), \
+             patch.object(oracle, "generation", side_effect=generations), \
              patch.object(oracle, "snapshot", side_effect=snapshots), \
              patch.object(oracle, "origin_vector", side_effect=vectors) as origin, \
              patch.object(oracle, "cli_page", side_effect=pages) as cli:
@@ -120,6 +121,70 @@ class ExactCosineTests(unittest.TestCase):
         for pages in (bad_score, missing):
             with self.subTest(pages=len(pages[1]["messages"])), self.assertRaises(oracle.OracleError):
                 self.verify(pages=pages)
+
+    def test_provider_drift_cannot_be_mistaken_for_origin_vector_scoring(self) -> None:
+        """A second-page score computed from orthogonal q2 fails against D1 q1."""
+
+        # The live oracle does not call the provider. Its independent reference
+        # is the f32 vector retained by the first completed search job.
+        q2_score = 1.0
+        page_two = dict(self.pages[1], messages=[dict(
+            self.pages[1]["messages"][0], score=q2_score)])
+        with self.assertRaisesRegex(oracle.OracleError, "^semantic_cosine_mismatch$"):
+            self.verify(pages=[self.pages[0], page_two])
+
+    def test_generation_change_rejects_a_cross_epoch_comparison(self) -> None:
+        """A concurrent mailbox mutation invalidates even otherwise exact pages."""
+
+        with self.assertRaisesRegex(oracle.OracleError, "^oracle_snapshot_changed$"):
+            self.verify(generations=[7, 8])
+
+    def test_exact_ties_use_time_then_id_not_provider_arrival_order(self) -> None:
+        """The shared independent rank checker requires deterministic tie order."""
+
+        query = self.query
+        docs = {
+            "older": {"vector": query, "received_at": "2026-09-30T00:00:00.000Z",
+                      "embedding_model": oracle.MODEL, "embedding_dimensions": 256},
+            "newer-a": {"vector": query, "received_at": "2026-09-30T00:00:01.000Z",
+                        "embedding_model": oracle.MODEL, "embedding_dimensions": 256},
+            "newer-b": {"vector": query, "received_at": "2026-09-30T00:00:01.000Z",
+                        "embedding_model": oracle.MODEL, "embedding_dimensions": 256},
+        }
+        order = ["newer-b", "newer-a", "older"]
+        pages = [{"messages": [{"id": ident, "score": 1.0,
+                                 "received_at": docs[ident]["received_at"]}],
+                  "next_cursor": f"opaque-{number}" if number < 2 else None}
+                 for number, ident in enumerate(order)]
+        oracle.check_exact_pages(pages, query, docs)
+        inverted = [pages[1], pages[0], pages[2]]
+        with self.assertRaisesRegex(oracle.SemanticProbeError, "^semantic_rank_mismatch$"):
+            oracle.check_exact_pages(inverted, query, docs)
+
+    def test_near_tie_uses_exact_score_before_newer_timestamp(self) -> None:
+        """A score gap below display tolerance still controls cursor rank order."""
+
+        almost = [1.0, oracle.f32(0.001)] + [0.0] * 254
+        docs = {
+            "best-older": {"vector": self.query,
+                           "received_at": "2026-09-30T00:00:00.000Z",
+                           "embedding_model": oracle.MODEL, "embedding_dimensions": 256},
+            "almost-newer": {"vector": almost,
+                             "received_at": "2026-09-30T00:00:01.000Z",
+                             "embedding_model": oracle.MODEL, "embedding_dimensions": 256},
+        }
+        gap = 1.0 - oracle.cosine(self.query, almost)
+        self.assertGreater(gap, 0)
+        self.assertLess(gap, oracle.SCORE_TOLERANCE)
+        pages = [{"messages": [{"id": ident,
+                                 "score": oracle.cosine(self.query, docs[ident]["vector"]),
+                                 "received_at": docs[ident]["received_at"]}],
+                  "next_cursor": "opaque" if index == 0 else None}
+                 for index, ident in enumerate(("best-older", "almost-newer"))]
+        oracle.check_exact_pages(pages, self.query, docs)
+        with self.assertRaisesRegex(oracle.SemanticProbeError, "^semantic_rank_mismatch$"):
+            oracle.check_exact_pages([pages[1] | {"next_cursor": "opaque"},
+                                      pages[0] | {"next_cursor": None}], self.query, docs)
 
     def test_generation_or_vector_mutation_fails(self) -> None:
         """A changed D1 vector after search invalidates the entire comparison."""
@@ -184,11 +249,30 @@ class ExactCosineTests(unittest.TestCase):
             self.assertEqual(oracle.origin_vector("f" * 32, "private", OWNER,
                                                   origin_id, digest), self.query)
         for changed in ({"state": "running"}, {"is_origin": 0},
-                        {"query_model": "other"}, {"query_vector_json": "[]"}):
+                        {"query_model": "other"}, {"query_input_version": 2},
+                        {"expires_at": 0}, {"query_vector_json": "[]"}):
             with self.subTest(changed=changed), patch.object(
                     oracle, "d1_rows", return_value=[dict(row, **changed)]):
                 with self.assertRaises(oracle.OracleError):
                     oracle.origin_vector("f" * 32, "private", OWNER, origin_id, digest)
+
+    def test_missing_foreign_origin_is_not_a_vector_oracle(self) -> None:
+        """The owner-scoped D1 read fails closed when it returns no origin row."""
+
+        origin_id, digest = oracle.cursor_origin(self.cursor, oracle.query_hash(
+            OWNER, ADDRESS, NONCE), 7)
+        foreign_owner = (OWNER[0], "different-account")
+
+        def read(_, __, sql, params):
+            """Model D1 enforcing the exact owner predicate for a foreign user."""
+
+            self.assertEqual(sql, oracle.ORIGIN_SQL)
+            self.assertEqual(params, [origin_id, *foreign_owner])
+            return []
+
+        with patch.object(oracle, "d1_rows", side_effect=read):
+            with self.assertRaisesRegex(oracle.OracleError, "^oracle_vector_unavailable$"):
+                oracle.origin_vector("f" * 32, "private", foreign_owner, origin_id, digest)
 
     def test_native_cli_cursor_record_is_captured_privately(self) -> None:
         """A JSONL cursor record is part of the native product contract."""
