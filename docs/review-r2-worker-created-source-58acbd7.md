@@ -153,3 +153,52 @@ definite-denial label/state on the conditional retry as well, and add a
 whole-probe ambiguous-then-403 call-order test.
 
 Finding 4 remains pending. **Overall NO-GO is unchanged.**
+
+## Final source follow-up: `e290a48`
+
+**GO for nondeploying hosted CI of the source and synthetic tests. NO-GO for
+live dispatch until workflow wiring is reviewed and hosted checks pass.**
+No local tests, provider calls, workflow dispatch, or push were performed by
+this reviewer. Earlier findings remain in this document as historical review
+evidence, not an assertion that the resolved paths are still present.
+
+- Findings 1 and 3 remain source-resolved as described above.
+- Finding 2 is now source-resolved for both first-DELETE-403 and
+  ambiguous-first-DELETE/conditional-retry-403. `CleanupState.may_delete` is
+  shared with the outer `finally` and becomes irreversibly false for either
+  denial. `reconcile()` then only performs read-only reconciliation. The new
+  whole-probe test expects exactly two DELETE calls in the latter sequence,
+  never a third after definite denial.
+- Finding 4's unbounded-count exposure is removed: short-window inventory
+  allows at most two requests, rejects a second key immediately, and requires
+  an explicit empty lexicographic page for a singleton. Each route action gets
+  a 45-second POSIX alarm and diminishing request timeout; its timer covers
+  create/readback scans. The open clock starts before creation, the mutation
+  window is now 420 seconds, and polling reserves 90 seconds for independent
+  route closure. Tests exercise expired pre-send budget and an expired nested
+  route request without making provider calls. These source changes are
+  sufficient to enter nondeploying hosted verification.
+
+### Required live-wiring checks, not established by this source review
+
+1. The exact `PROBE_STEP_NAME` must be used; immutable reviewed source and hosted
+   test evidence must precede the secret-bearing mutation step. Branch,
+   environment, first-attempt confirmation, concurrency and capacity guards
+   remain separate obligations.
+2. Pin the probe/recovery job to POSIX/Linux if relying on `setitimer`; the
+   fallback on platforms without it only bounds socket/request behavior.
+3. Size the workflow timeout to include preflight, the 420-second mutation
+   budget, independent closure, post-close MIME/object reconciliation and
+   settle, with reserve. Do not cancel mutation runs to make newer CI faster.
+4. Do not overstate the timer guarantee: the hard alarm currently covers route
+   actions, not inventory/send reads. `urllib` socket timeouts are not a strict
+   total-response wall-clock limit if a response continuously trickles bytes.
+   A literal hard 420-second guarantee across all route-open I/O would require
+   an encompassing deadline/timer, preserving independent cleanup when it
+   expires. The finite request counts and nominal timeouts should be described
+   accurately until that stronger contract is added.
+
+Hosted CI success would establish synthetic behavior, not current grants,
+live Worker-created object read/delete capability, successful cleanup, or B
+provisioning readiness. The narrowly gated live harness and its originating-run
+recovery require a separate integration review before execution.
