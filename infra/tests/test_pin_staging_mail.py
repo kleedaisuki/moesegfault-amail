@@ -55,6 +55,16 @@ def settings() -> dict:
 class PinTests(unittest.TestCase):
     """Reject drift and unverified data without printing provider response bodies."""
 
+    def setUp(self) -> None:
+        """Mock only the new current-resource transport for every pin assertion."""
+        observation = settings()["observability"]
+        observation["issues"] = {"enabled": False}
+        mock = patch.object(pin, "fetch_worker", return_value={
+            "id": OTHER, "name": pin.SCRIPT, "logpush": False,
+            "tail_consumers": [], "observability": observation})
+        self.worker = mock.start()
+        self.addCleanup(mock.stop)
+
     def test_exact_serving_version(self) -> None:
         """Only a single 100-percent version is a pin."""
 
@@ -124,6 +134,14 @@ class PinTests(unittest.TestCase):
         bad["observability"]["traces"]["enabled"] = True
         version = {"id": VERSION, "resources": {"bindings": bindings()}}
         fetch.side_effect = [deployment(), version, bad, settings()]
+        self.assertEqual(pin.run("a" * 32, "private", VERSION), "privacy_unverified")
+
+    @patch.object(pin, "fetch")
+    def test_current_resource_issues_required(self, fetch) -> None:
+        """Legacy intent cannot mask missing independent Issues capture evidence."""
+        version = {"id": VERSION, "resources": {"bindings": bindings()}}
+        del self.worker.return_value["observability"]["issues"]
+        fetch.side_effect = [deployment(), version, {}, {"observability": None}]
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "privacy_unverified")
 
 

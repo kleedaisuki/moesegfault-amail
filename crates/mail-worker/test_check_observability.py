@@ -71,17 +71,131 @@ class ObservabilityGateTests(unittest.TestCase):
             self.assertTrue(gate.verify("staging", "account", "token", sink=True))
             self.assertEqual(verify.call_args.args[:4],("account","token","staging","amail-trace-sink-staging"))
 
-    def test_both_readbacks_are_required(self) -> None:
-        """A safe script setting cannot mask an unsafe deployed version."""
 
-        safe = gate.local_settings("staging")
-        unsafe = {"observability": {**safe["observability"], "redact_query_string": False}}
-        with patch.object(gate, "readback", side_effect=[unsafe, safe]) as fetch:
+class EffectiveApiTests(unittest.TestCase):
+    """Positive current-resource evidence and stable serving replace legacy defaults."""
+    VERSION = "00000000-0000-4000-8000-000000000001"
+    DEPLOYMENT = "00000000-0000-4000-8000-000000000002"
+
+    def worker(self, realm="staging"):
+        """Match live inactive preferences, requiring independent Issues off."""
+        return {"id": self.VERSION, "name": gate.SCRIPT[realm], "logpush": False,
+                "tail_consumers": [], "observability": {
+                    "enabled": False, "head_sampling_rate": 1,
+                    "redact_query_string": False,
+                    "logs": {"enabled": False, "invocation_logs": True,
+                             "persist": True, "head_sampling_rate": 1,
+                             "destinations": []},
+                    "traces": {"enabled": False, "persist": True,
+                               "head_sampling_rate": 1, "destinations": []},
+                    "issues": {"enabled": False}}}
+
+    def deployment(self):
+        """Return exactly one active version with an immutable deployment identity."""
+        return {"deployments": [{"id": self.DEPLOYMENT, "strategy": "percentage",
+            "versions": [{"version_id": self.VERSION, "percentage": 100}]}]}
+
+    def test_explicit_off_accepts_inactive_preferences_and_unsupported_legacy(self):
+        """Missing/null old observability cannot mask explicit current capture-off."""
+        for realm in gate.SCRIPT:
+            self.assertTrue(gate.effective_api_settings(self.worker(realm), gate.SCRIPT[realm],
+                {}, {"observability": None, "logpush": False, "tail_consumers": []}))
+        self.assertFalse(gate.effective_api_settings({}, gate.SCRIPT["staging"], {}, {}))
+
+    def test_independent_capture_fields_are_required(self):
+        """Issues and every capture switch need literal false, never absent/null/coerced."""
+        for section in (None, "logs", "traces", "issues"):
+            for bad in (None, True, 0, "false", []):
+                worker = self.worker()
+                obs = worker["observability"]
+                container = obs if section is None else obs[section]
+                container["enabled"] = bad
+                self.assertFalse(gate.effective_api_settings(worker, gate.SCRIPT["staging"]))
+                del container["enabled"]
+                self.assertFalse(gate.effective_api_settings(worker, gate.SCRIPT["staging"]))
+        worker = self.worker()
+        del worker["observability"]["issues"]
+        self.assertFalse(gate.effective_api_settings(worker, gate.SCRIPT["staging"]))
+
+    def test_identity_exports_and_malformed_preferences_fail(self):
+        """Current resource identity, exports and optional shapes are never inferred."""
+        for key, bad in (("name", "another-worker"), ("id", None), ("id", ""),
+                         ("logpush", None), ("logpush", True),
+                         ("tail_consumers", None), ("tail_consumers", [{}]),
+                         ("streaming_tail_consumers", [{}])):
+            worker = self.worker(); worker[key] = bad
+            self.assertFalse(gate.effective_api_settings(worker, gate.SCRIPT["staging"]))
+        for section, key, bad in (("logs", "destinations", ["external"]),
+                ("traces", "destinations", None), ("logs", "persist", 1),
+                ("logs", "invocation_logs", None), ("traces", "head_sampling_rate", True),
+                ("logs", "head_sampling_rate", float("nan")),
+                ("issues", "unreviewed", False)):
+            worker = self.worker(); worker["observability"][section][key] = bad
+            self.assertFalse(gate.effective_api_settings(worker, gate.SCRIPT["staging"]))
+
+    def test_explicit_legacy_conflicts_are_rejected(self):
+        """An enabled legacy field or export cannot be dismissed as unsupported."""
+        for legacy in ({"observability": True}, {"logpush": True},
+                {"tail_consumers": [{}]}, {"tail_consumers": None},
+                {"streaming_tail_consumers": [{}]},
+                {"observability": {"enabled": True}},
+                {"observability": {"logs": {"enabled": True}}},
+                {"observability": {"issues": {"enabled": True}}},
+                {"observability": {"traces": {"destinations": ["external"]}}}):
+            self.assertFalse(gate.effective_api_settings(self.worker(), gate.SCRIPT["staging"], legacy))
+
+    def test_stable_single100_resource_readback_is_required(self):
+        """Both realms bracket current/legacy readback and reject changed serving."""
+        for realm in gate.SCRIPT:
+            with patch.object(gate, "readback", side_effect=[self.deployment(), {},
+                    {"observability": None}, self.deployment()]) as fetch, \
+                 patch.object(gate, "worker_readback", return_value=self.worker(realm)), \
+                 patch.dict(os.environ, {}, clear=True):
+                self.assertTrue(gate.verify(realm, "account", "token"))
+                self.assertEqual(fetch.call_count, 4)
+        changed = self.deployment(); changed["deployments"][0]["id"] = self.VERSION
+        for final in (changed, {"deployments": []}):
+            with patch.object(gate, "readback", side_effect=[self.deployment(), {}, {}, final]), \
+                 patch.object(gate, "worker_readback", return_value=self.worker()), \
+                 patch.dict(os.environ, {}, clear=True):
+                self.assertFalse(gate.verify("staging", "account", "token"))
+        with patch.object(gate, "readback", side_effect=ValueError("unavailable")):
+            with self.assertRaises(ValueError):
+                gate.verify("staging", "account", "token")
+
+    def test_expected_version_and_split_deployment_fail_closed(self):
+        """Optional caller pin is enforced and partial traffic never establishes safety."""
+        split = self.deployment()
+        split["deployments"][0]["versions"][0]["percentage"] = 99
+        for first in (split, {"deployments": []}):
+            with patch.object(gate, "readback", return_value=first), \
+                 patch.object(gate, "worker_readback") as worker:
+                self.assertFalse(gate.verify("staging", "account", "token"))
+                worker.assert_not_called()
+        with patch.object(gate, "readback", return_value=self.deployment()), \
+             patch.dict(os.environ, {"AMAIL_EXPECTED_WORKER_VERSION": self.DEPLOYMENT}):
             self.assertFalse(gate.verify("staging", "account", "token"))
-            self.assertEqual(fetch.call_count, 1)
-        with patch.object(gate, "readback", side_effect=[safe, unsafe]) as fetch:
-            self.assertFalse(gate.verify("staging", "account", "token"))
-            self.assertEqual(fetch.call_count, 2)
+
+    def test_current_resource_transport_is_exact_and_fail_closed(self):
+        """Bounded successful envelopes only; denial/null result never become off."""
+        from unittest.mock import MagicMock
+        import json
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps({"success": True, "result": self.worker()}).encode()
+        with patch.object(gate, "urlopen", return_value=response) as fetch:
+            self.assertEqual(gate.worker_readback("account", "token", "amail-mail-staging"), self.worker())
+            self.assertEqual(fetch.call_args.args[0].full_url,
+                "https://api.cloudflare.com/client/v4/accounts/account/workers/workers/amail-mail-staging")
+            self.assertEqual(fetch.call_args.kwargs["timeout"], 15)
+            response.read.assert_called_with(262_145)
+        for payload in (b"null", b"[]", b"invalid", b'{"success":true,"result":null}',
+                        b'{"success":false,"result":{}}', b"x" * 262_145):
+            response.read.return_value = payload
+            with patch.object(gate, "urlopen", return_value=response), self.assertRaises(ValueError):
+                gate.worker_readback("account", "token", "amail-mail-staging")
+        with patch.object(gate, "urlopen", side_effect=gate.URLError("private")), self.assertRaises(ValueError):
+            gate.worker_readback("account", "token", "amail-mail-staging")
 
 
 class SinkIsolationTests(unittest.TestCase):

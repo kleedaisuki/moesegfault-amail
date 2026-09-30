@@ -126,6 +126,12 @@ def bindings_match(version: dict, expected_version: str) -> bool:
     return seen == set(expected)
 
 
+def fetch_worker(account: str, token: str) -> dict:
+    """Read the current exact-name resource through the shared bounded reader."""
+    from check_observability import worker_readback
+    return worker_readback(account, token, SCRIPT)
+
+
 def run(account: str, token: str, expected: str) -> str:
     """Check serving version twice around settings to detect concurrent rollout."""
 
@@ -134,7 +140,7 @@ def run(account: str, token: str, expected: str) -> str:
     module_dir = str(CONFIG.parent)
     if module_dir not in sys.path:
         sys.path.insert(0, module_dir)
-    from check_observability import safe_settings
+    from check_observability import effective_api_settings
 
     first = serving_deployment(fetch(account, token, "deployments?per_page=1&page=1"))
     if first is None:
@@ -144,7 +150,8 @@ def run(account: str, token: str, expected: str) -> str:
     version = fetch(account, token, f"versions/{expected}")
     settings = fetch(account, token, "settings")
     script_settings = fetch(account, token, "script-settings")
-    if not safe_settings(settings) or not safe_settings(script_settings):
+    worker = fetch_worker(account, token)
+    if not effective_api_settings(worker, SCRIPT, settings, script_settings):
         return "privacy_unverified"
     if not bindings_match(version, expected):
         return "bindings_mismatch"

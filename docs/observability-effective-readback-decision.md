@@ -316,3 +316,39 @@ support separate configuration/serving/runtime evidence, not a server
 normalization guarantee. No external benchmark or log-leakage paper can attest
 this account's effective setting; existing privacy research motivates the
 whole-record check but is not used to override missing provider evidence.
+
+
+## Full-boundary checker implementation (source only)
+
+`crates/mail-worker/check_observability.py` now separates strict local/sink
+configuration policy from effective Mail API readback. API verification reads
+latest single-100 deployment, both legacy settings representations, and the
+exact current Worker resource, then rechecks the identical deployment/version
+pair. A supplied `AMAIL_EXPECTED_WORKER_VERSION` is additionally enforced.
+`infra/deploy/pin_staging_mail.py` uses the same effective-resource policy while
+retaining its own expected-version and exact-binding checks.
+
+The full-boundary policy requires literal `false` for parent, Logs, native
+traces **and Issues** capture, literal false Logpush, a typed empty tail list,
+and no configured streaming-tail consumer. Missing/null legacy observability
+is unsupported compatibility readback, not evidence of disabled capture; any
+explicit legacy capture/export conflict rejects acceptance. Exact-name current
+resource and nonempty bounded typed immutable identity are required; preview
+configuration is never substituted. Optional inactive preferences may differ
+from source, but malformed values and unreviewed observability members fail
+closed. The enabled private Queue sink retains the unchanged stricter isolation
+policy; no sink capability is relaxed by this API-specific change.
+
+In particular, the live `36736823997` category `worker_issues_shape=missing`
+does **not** pass this full-boundary gate, even when Logs/native traces are
+explicitly disabled. This resolves the old endpoint mismatch without inventing
+an Issues-off default or relabeling a narrower observation as rollout safety.
+Positive Issues-off evidence or a separately reviewed equivalent empirical
+boundary is still needed before containment acceptance.
+
+Focused synthetic coverage adds current-resource identity/transport, inactive
+preferences, required capture fields (including missing Issues), legacy
+conflicts, export/malformed rejection, optional expected-version enforcement,
+and deployment drift. Source AST and whitespace checks were performed only;
+unit tests are reserved for hosted CI. No live API request, deployment, local
+build/test, setting mutation, or push was performed by this implementation.
