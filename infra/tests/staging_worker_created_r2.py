@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
+from enum import Enum
 from email import policy
 from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
@@ -25,7 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from staging_r2_object_capability import (OPENER, ProbeFailure as R2ProbeFailure,
+from staging_r2_object_capability import (API, MAX_REPLY, OPENER, ProbeFailure as R2ProbeFailure,
                                           audit, call, object_path)
 from staging_second_principal import (ADDRESS, BUCKET, FIRST, KEY, ProvisionFailure,
                                       identity_contacts, json_result, object_inventory, request)
@@ -47,11 +48,21 @@ class ProbeFailure(Exception):
     """Carry only a fixed source-owned stage label to Actions output."""
 
 
+class Submission(Enum):
+    """Separate fixed provider-submission evidence from object observation."""
+
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    UNVERIFIED = "unverified"
+
+
 @dataclass
 class CleanupState:
     """Make a definite DELETE denial an irreversible read-only cleanup mode."""
 
     may_delete: bool = True
+    # Cleanup can settle after an uncertain DELETE without proving its acceptance.
+    delete_unverified: bool = False
 
 
 def require(condition: bool, label: str) -> None:
@@ -253,25 +264,84 @@ def synthetic_mail(raw: bytes, value: str, attempt: str,
         return False
 
 
-def send_once(account: str, token: str, value: str, attempt: str) -> bool:
-    """Submit one synthetic message; never retry an uncertain provider result."""
+def submission_result(status: int, raw: bytes) -> Submission:
+    """Recognize exact recipient evidence; unknown errors remain uncertain.
+
+    Only documented schema/auth/request rejection codes are definite rejection.
+    Server errors and throttling never establish that no submission occurred.
+    No provider strings are returned or emitted.
+    """
+
+    try:
+        envelope = json.loads(raw)
+    except (ValueError, UnicodeError):
+        return Submission.UNVERIFIED
+    if not isinstance(envelope, dict):
+        return Submission.UNVERIFIED
+    result = envelope.get("result")
+    if status == 200 and envelope.get("success") is True and isinstance(result, dict):
+        groups = [result.get(name, []) for name in
+                  ("delivered", "queued", "permanent_bounces", "suppressed_recipients")]
+        if not all(isinstance(group, list) and all(isinstance(item, str) for item in group)
+                   for group in groups):
+            return Submission.UNVERIFIED
+        delivered, queued, bounced, suppressed = groups
+        accepted = FIRST in delivered + queued
+        rejected = FIRST in bounced + suppressed
+        if accepted and not bounced and not suppressed:
+            return Submission.ACCEPTED
+        if rejected and not delivered and not queued:
+            return Submission.REJECTED
+        return Submission.UNVERIFIED
+    errors = envelope.get("errors")
+    rejection_codes = {400: {10001, 10200, 10201, 10202},
+                       401: {10101, 10103}, 403: {10102, 10105, 10203}, 404: {10000}}
+    if (envelope.get("success") is False and envelope.get("result") is None
+            and isinstance(errors, list) and errors
+            and all(isinstance(error, dict) and type(error.get("code")) is int
+                    and error["code"] in rejection_codes.get(status, set())
+                    for error in errors)):
+        return Submission.REJECTED
+    return Submission.UNVERIFIED
+
+
+def send_request(account: str, token: str, payload: bytes) -> tuple[int, bytes]:
+    """Read bounded send-only error envelopes privately, without redirect/retry.
+
+    The shared R2 reader deliberately discards HTTP error bodies. Submission
+    classification needs documented numeric rejection codes, so preserve bytes
+    only in this synchronous call and never emit or persist them.
+    """
+
+    request = urllib.request.Request(
+        API + f"/accounts/{account}/email/sending/send", data=payload, method="POST",
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    try:
+        try:
+            response = OPENER.open(request, timeout=25)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            raw = response.read(MAX_REPLY + 1)
+            if len(raw) > MAX_REPLY:
+                raise R2ProbeFailure("send_response_unverified")
+            return response.code, raw
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise R2ProbeFailure("send_outcome_unverified") from None
+
+
+def send_once(account: str, token: str, value: str, attempt: str) -> Submission:
+    """Submit once, retaining acceptance/rejection/uncertainty without retry."""
 
     nonce = marker(value, attempt)
     content = TEMPLATE + nonce
     payload = json.dumps({"to": FIRST, "from": SENDER, "subject": content,
                           "text": content}, separators=(",", ":")).encode()
     try:
-        status, raw = call("POST", f"/accounts/{account}/email/sending/send", token,
-                           payload, "application/json")
-        value_json = json.loads(raw) if status == 200 else {}
-        result = value_json.get("result")
-        accepted = (status == 200 and value_json.get("success") is True
-                    and isinstance(result, dict)
-                    and FIRST in (result.get("delivered") or []) + (result.get("queued") or [])
-                    and not result.get("permanent_bounces") and not result.get("suppressed_recipients"))
-        return bool(accepted)
-    except (ValueError, TypeError, AttributeError, R2ProbeFailure):
-        return False
+        status, raw = send_request(account, token, payload)
+        return submission_result(status, raw)
+    except R2ProbeFailure:
+        return Submission.UNVERIFIED
 
 
 def sender_ready() -> None:
@@ -380,6 +450,7 @@ def delete_owned(key: str, value: str, attempt: str,
     try:
         delete(account, key, token)
     except R2ProbeFailure as error:
+        cleanup.delete_unverified = True
         if str(error) == "r2_delete_denied":
             cleanup.may_delete = False
             raise ProbeFailure("object_delete_denied") from None
@@ -453,6 +524,9 @@ def probe() -> None:
     failure: ProbeFailure | None = None
     cleanup = CleanupState()
     proved = False
+    submission = Submission.UNVERIFIED
+    late_observed = False
+    candidate = None
     try:
         require(route("apply") == "created" and route("audit") == "enabled",
                 "route_create_unverified")
@@ -460,7 +534,7 @@ def probe() -> None:
         require(route("audit") == "enabled", "route_settle_unverified")
         require(time.monotonic() + 70 < open_deadline, "route_window_expired")
         send_possible = True
-        accepted = send_once(account, token, value, attempt)
+        submission = send_once(account, token, value, attempt)
         deadline = min(open_deadline - 90, time.monotonic() + 150)
         candidate = None
         while candidate is None and time.monotonic() + 50 < deadline:
@@ -473,7 +547,9 @@ def probe() -> None:
         window = (started, datetime.now(timezone.utc) + timedelta(minutes=2))
         delete_owned(candidate, value, attempt, window, cleanup)
         proved = True
-        require(accepted, "synthetic_send_unverified")
+        require(submission is Submission.ACCEPTED,
+                "synthetic_send_rejected" if submission is Submission.REJECTED
+                else "synthetic_send_unverified")
     except ProbeFailure as error:
         failure = error
     except Exception:
@@ -491,6 +567,7 @@ def probe() -> None:
                     late = reconcile(value, attempt,
                                      (started, datetime.now(timezone.utc) + timedelta(minutes=10)),
                                      settle=True, cleanup=cleanup)
+                    late_observed = late
                     if proved and late:
                         failure = ProbeFailure("late_delivery_unverified")
                 else:
@@ -500,6 +577,9 @@ def probe() -> None:
                          if not cleanup.may_delete
                          else "private_object_cleanup_unverified")
                 failure = ProbeFailure(label)
+    if send_possible:
+        print("synthetic_submission=" + submission.value +
+              " object_candidate=" + ("observed" if candidate is not None or late_observed else "not_observed"))
     if failure:
         raise failure
     require(proved, "object_capability_unverified")
@@ -514,9 +594,12 @@ def recover() -> None:
     close_route()
     require(attempt == "1", "prior_run_attempt_invalid")
     window = prior_window(value, attempt)
-    reconcile(value, attempt, window, settle=True)
+    cleanup = CleanupState()
+    observed = reconcile(value, attempt, window, settle=True, cleanup=cleanup)
     require(one_key() is None and route("audit") == "absent", "recovery_unverified")
+    require(not cleanup.delete_unverified, "object_delete_unverified")
     print("staging_worker_created_r2_recovered_absent")
+    print("existing_object_get_delete=" + ("verified" if observed else "not_observed"))
 
 
 def execute() -> None:

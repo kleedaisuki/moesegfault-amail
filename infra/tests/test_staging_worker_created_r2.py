@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import format_datetime
 import importlib.util
-from io import StringIO
+import json
+from io import BytesIO, StringIO
 import os
 from pathlib import Path
 import re
@@ -65,6 +66,153 @@ class WorkerCreatedR2Tests(unittest.TestCase):
         message["Date"] = format_datetime(datetime.now(timezone.utc))
         message.set_content(MODULE.TEMPLATE + nonce)
         return message.as_bytes()
+
+    def test_send_http_error_body_is_bounded_private_and_not_retried(self) -> None:
+        """Exercise real urllib HTTPError handling rather than mocking classification."""
+
+        body = b'{"success":false,"errors":[{"code":10102}],"result":null}'
+        for raw, expected in ((body, MODULE.Submission.REJECTED),
+                              (b"x" * (MODULE.MAX_REPLY + 1), MODULE.Submission.UNVERIFIED)):
+            error = MODULE.urllib.error.HTTPError("https://example.test", 403,
+                                                   "private prose", {}, BytesIO(raw))
+            with patch.object(MODULE.OPENER, "open", side_effect=error) as opened, \
+                    redirect_stdout(StringIO()) as output:
+                self.assertIs(MODULE.send_once("a" * 32, "private-token", "123", "1"), expected)
+            opened.assert_called_once()
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(opened.call_args.kwargs, {"timeout": 25})
+
+    def test_recovery_ambiguous_delete_absence_is_cleanup_not_proof(self) -> None:
+        """Settled absence after an uncertain DELETE cannot emit verification."""
+
+        env = {"AMAIL_WORKER_R2_PRIOR_RUN_ID": "123", "AMAIL_WORKER_R2_PRIOR_RUN_ATTEMPT": "1",
+               "CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "private-token"}
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(MODULE, "close_route"), \
+                patch.object(MODULE, "prior_window", return_value=self.window()), \
+                patch.object(MODULE, "one_key", side_effect=["owned-key", None, None]), \
+                patch.object(MODULE, "get_owned", side_effect=["present", "absent", "absent"]), \
+                patch.object(R2, "delete", side_effect=R2.ProbeFailure("r2_delete_ambiguous")) as delete, \
+                patch.object(MODULE, "object_inventory", return_value=set()), \
+                patch.object(MODULE, "route", return_value="absent"), \
+                patch.object(MODULE.time, "sleep"), redirect_stdout(StringIO()) as output:
+            with self.assertRaises(MODULE.ProbeFailure) as caught:
+                MODULE.recover()
+        self.assertEqual(str(caught.exception), "object_delete_unverified")
+        self.assertEqual(output.getvalue(), "")
+        delete.assert_called_once()
+
+    def test_submission_categories_are_strict_and_send_is_once(self) -> None:
+        """Malformed envelopes and unknown failures never become rejection."""
+
+        cases = [
+            (200, {"success": True, "result": {"queued": [MODULE.FIRST]}}, "accepted"),
+            (200, {"success": True, "result": {"permanent_bounces": [MODULE.FIRST]}}, "rejected"),
+            (403, {"success": False, "errors": [{"code": 10102}], "result": None}, "rejected"),
+            (503, {"success": False, "errors": [{"code": 10100}]}, "unverified"),
+            (429, {"success": False, "errors": [{"code": 10004}]}, "unverified"),
+            (403, {"success": False, "errors": [{"code": 99999}]}, "unverified"),
+            (200, {"success": True, "result": {"queued": MODULE.FIRST}}, "unverified"),
+            (200, {"success": True, "result": {"queued": [MODULE.FIRST],
+                   "permanent_bounces": [MODULE.FIRST]}}, "unverified"),
+            (200, {"success": True, "result": {"queued": ["foreign@example.test"]}}, "unverified"),
+            (200, [], "unverified"),
+        ]
+        for status, envelope, expected in cases:
+            with self.subTest(status=status, envelope=envelope), patch.object(
+                    MODULE, "send_request", return_value=(status, json.dumps(envelope).encode())) as send:
+                self.assertEqual(MODULE.send_once("a" * 32, "private-token", "123", "1").value,
+                                 expected)
+                send.assert_called_once()
+        with patch.object(MODULE, "send_request", return_value=(200, b"private invalid JSON")) as send:
+            self.assertIs(MODULE.send_once("a" * 32, "private-token", "123", "1"),
+                          MODULE.Submission.UNVERIFIED)
+            send.assert_called_once()
+
+    def test_probe_submission_and_candidate_are_independent(self) -> None:
+        """Every submitted branch closes first and reconciles without resending."""
+
+        env = {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+               "CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "private-token",
+               "AMAIL_SENDING_GRANT_ATTEST": "ATTEST_ONE_SYNTHETIC_APEX_SEND"}
+        contacts = {MODULE.FIRST: ("principal-a", "subject-a", "verified", "a_username")}
+        for submission, candidate, late, cleanup_failed in (
+                (MODULE.Submission.ACCEPTED, None, False, False),
+                (MODULE.Submission.REJECTED, None, False, False),
+                (MODULE.Submission.UNVERIFIED, None, True, False),
+                (MODULE.Submission.ACCEPTED, "owned-key", False, True),
+                (MODULE.Submission.REJECTED, "owned-key", False, False)):
+            with self.subTest(submission=submission, candidate=candidate, late=late), ExitStack() as stack:
+                actions = []
+
+                def fake_route(action):
+                    """Model exact route closure, not an independent provider call."""
+                    actions.append(action)
+                    return {"apply": "created", "remove": "removed",
+                            "audit": "absent" if "remove" in actions else "enabled"}[action]
+
+                def cleanup(*_args, **_kwargs):
+                    """Require route-first cleanup even after uncertain submission."""
+                    self.assertEqual(actions[-2:], ["remove", "audit"])
+                    if cleanup_failed:
+                        raise MODULE.ProbeFailure("late_delivery_unverified")
+                    return late
+
+                stack.enter_context(patch.dict(os.environ, env, clear=True))
+                for name, kwargs in (
+                        ("audit", {}), ("identity_contacts", {"return_value": contacts}),
+                        ("sender_ready", {}), ("route", {"side_effect": fake_route}),
+                        ("one_key", {"side_effect": [None, candidate]}),
+                        ("delete_owned", {}), ("reconcile", {"side_effect": cleanup})):
+                    stack.enter_context(patch.object(MODULE, name, **kwargs))
+                send = stack.enter_context(patch.object(MODULE, "send_once", return_value=submission))
+                stack.enter_context(patch.object(MODULE.time, "sleep"))
+                # One poll opportunity, then terminate the bounded loop without real waiting.
+                stack.enter_context(patch.object(MODULE.time, "monotonic", side_effect=[0, 0, 0, 0, 999]))
+                output = stack.enter_context(redirect_stdout(StringIO()))
+                with self.assertRaises(MODULE.ProbeFailure):
+                    MODULE.probe()
+                send.assert_called_once()
+                self.assertIn("synthetic_submission=" + submission.value, output.getvalue())
+                expected = "observed" if candidate is not None or late else "not_observed"
+                self.assertIn("object_candidate=" + expected, output.getvalue())
+                self.assertNotIn("staging_worker_created_r2_get_delete_verified", output.getvalue())
+
+    def test_recovery_evidence_requires_all_final_gates(self) -> None:
+        """Empty cleanup is not capability proof; failures emit neither success line."""
+
+        env = {"AMAIL_WORKER_R2_PRIOR_RUN_ID": "123", "AMAIL_WORKER_R2_PRIOR_RUN_ATTEMPT": "1"}
+        for observed, remaining, route_state, failed in (
+                (False, None, "absent", False), (True, None, "absent", False),
+                (True, "late-key", "absent", False), (True, None, "enabled", False),
+                (True, None, "absent", True)):
+            with self.subTest(observed=observed, remaining=remaining, route=route_state), ExitStack() as stack:
+                stack.enter_context(patch.dict(os.environ, env, clear=True))
+                stack.enter_context(patch.object(MODULE, "close_route"))
+                stack.enter_context(patch.object(MODULE, "prior_window", return_value=self.window()))
+                stack.enter_context(patch.object(MODULE, "reconcile", return_value=observed,
+                    side_effect=MODULE.ProbeFailure("late_delivery_unverified") if failed else None))
+                stack.enter_context(patch.object(MODULE, "one_key", return_value=remaining))
+                stack.enter_context(patch.object(MODULE, "route", return_value=route_state))
+                output = stack.enter_context(redirect_stdout(StringIO()))
+                if failed or remaining or route_state != "absent":
+                    with self.assertRaises(MODULE.ProbeFailure):
+                        MODULE.recover()
+                    self.assertEqual(output.getvalue(), "")
+                else:
+                    MODULE.recover()
+                    self.assertEqual(output.getvalue().splitlines(), [
+                        "staging_worker_created_r2_recovered_absent",
+                        "existing_object_get_delete=" + ("verified" if observed else "not_observed")])
+
+    def test_absent_reconcile_cannot_verify_existing_object(self) -> None:
+        """Two empty inventories through settlement never issue GET or DELETE."""
+
+        with patch.object(MODULE, "one_key", return_value=None), \
+                patch.object(MODULE, "delete_owned") as delete, \
+                patch.object(MODULE.time, "sleep"):
+            self.assertFalse(MODULE.reconcile("123", "1", self.window(), settle=True))
+        delete.assert_not_called()
 
     def test_strict_mime_accepts_only_exact_run_and_recipient(self) -> None:
         """A foreign or changed object is never an automatic DELETE target."""
@@ -152,7 +300,7 @@ class WorkerCreatedR2Tests(unittest.TestCase):
                 patch.object(MODULE, "sender_ready"), \
                 patch.object(MODULE, "one_key", side_effect=[None, "verification/12345678-1234-4123-8123-123456789abc.eml"]), \
                 patch.object(MODULE, "route", side_effect=fake_route), \
-                patch.object(MODULE, "send_once", return_value=True), \
+                patch.object(MODULE, "send_once", return_value=MODULE.Submission.ACCEPTED), \
                 patch.object(MODULE, "delete_owned", side_effect=fake_delete) as deleted, \
                 patch.object(MODULE, "reconcile", return_value=False), \
                 patch.object(MODULE.time, "sleep"), redirect_stdout(StringIO()) as output:
@@ -195,7 +343,7 @@ class WorkerCreatedR2Tests(unittest.TestCase):
                 patch.object(MODULE, "sender_ready"), \
                 patch.object(MODULE, "one_key", side_effect=[None, "verification/12345678-1234-4123-8123-123456789abc.eml"]), \
                 patch.object(MODULE, "route", side_effect=route_failed), \
-                patch.object(MODULE, "send_once", return_value=True), \
+                patch.object(MODULE, "send_once", return_value=MODULE.Submission.ACCEPTED), \
                 patch.object(MODULE, "delete_owned") as delete, \
                 patch.object(MODULE.time, "sleep"):
             with self.assertRaises(MODULE.ProbeFailure) as caught:
@@ -325,7 +473,7 @@ class WorkerCreatedR2Tests(unittest.TestCase):
                 patch.object(MODULE, "sender_ready"), \
                 patch.object(MODULE, "one_key", side_effect=[None, key, key]), \
                 patch.object(MODULE, "route", side_effect=fake_route), \
-                patch.object(MODULE, "send_once", return_value=True), \
+                patch.object(MODULE, "send_once", return_value=MODULE.Submission.ACCEPTED), \
                 patch.object(MODULE, "get_owned", return_value="present"), \
                 patch.object(R2, "delete", side_effect=R2.ProbeFailure("r2_delete_denied")) as delete, \
                 patch.object(MODULE.time, "sleep"):
@@ -362,7 +510,7 @@ class WorkerCreatedR2Tests(unittest.TestCase):
                 patch.object(MODULE, "sender_ready"), \
                 patch.object(MODULE, "one_key", side_effect=[None, key, key]), \
                 patch.object(MODULE, "route", side_effect=route_action), \
-                patch.object(MODULE, "send_once", return_value=True), \
+                patch.object(MODULE, "send_once", return_value=MODULE.Submission.ACCEPTED), \
                 patch.object(MODULE, "get_owned", return_value="present"), \
                 patch.object(R2, "delete", side_effect=[
                     R2.ProbeFailure("r2_outcome_ambiguous"),
@@ -376,11 +524,13 @@ class WorkerCreatedR2Tests(unittest.TestCase):
     def test_failed_send_is_one_request_and_multiple_objects_fail_closed(self) -> None:
         """A lost sending response cannot trigger a second synthetic message."""
 
-        with patch.object(MODULE, "call", side_effect=R2.ProbeFailure("r2_outcome_ambiguous")) as send:
-            self.assertFalse(MODULE.send_once("a" * 32, "private-token", "123", "1"))
+        with patch.object(MODULE, "send_request", side_effect=R2.ProbeFailure("r2_outcome_ambiguous")) as send:
+            self.assertIs(MODULE.send_once("a" * 32, "private-token", "123", "1"),
+                          MODULE.Submission.UNVERIFIED)
         send.assert_called_once()
-        with patch.object(MODULE, "call", return_value=(503, b"provider-private-body")) as send:
-            self.assertFalse(MODULE.send_once("a" * 32, "private-token", "123", "1"))
+        with patch.object(MODULE, "send_request", return_value=(503, b"provider-private-body")) as send:
+            self.assertIs(MODULE.send_once("a" * 32, "private-token", "123", "1"),
+                          MODULE.Submission.UNVERIFIED)
         send.assert_called_once()
         with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a" * 32,
                                       "CLOUDFLARE_API_TOKEN": "private-token"}, clear=True), \
