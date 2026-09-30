@@ -36,6 +36,11 @@ VERSION_LINE = re.compile(
     r"(?:^|\t)(?P<time>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) "
     r"Current Version ID: (?P<version>[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\s*$"
 )
+SAFE_VERSION_LINE = re.compile(
+    r"(?:^|\t)(?P<time>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) "
+    r"staging_role_deployment=version_captured version="
+    r"(?P<version>[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\s*$"
+)
 
 
 class GateError(Exception):
@@ -185,13 +190,24 @@ def github_job_log(repo: str, job_id: int, token: str) -> str:
 
 
 def logged_version(repo: str, job: DeployedJob, token: str) -> str:
-    """Extract exactly one version line emitted during the deploy step only."""
+    """Accept one exact private-deploy marker or the legacy raw deployment form.
 
+    New deployment suppresses Wrangler output. Its safe marker is globally
+    unique, cannot be mixed with the legacy form, and must fall inside the
+    successful exact deploy step. Legacy runs retain their historical step-only
+    selection without loosening the timestamp or version identity contract.
+    """
+
+    lines = github_job_log(repo, job.job_id, token).splitlines()
+    legacy = [match for line in lines if (match := VERSION_LINE.search(line)) is not None]
+    safe = [match for line in lines if (match := SAFE_VERSION_LINE.search(line)) is not None]
+    safe_mentions = sum(line.count("staging_role_deployment=") for line in lines)
+    if safe_mentions:
+        require(safe_mentions == 1 and len(safe) == 1 and not legacy,
+                "deploy_log_version_ambiguous")
+    matches = safe if safe_mentions else legacy
     candidates: list[str] = []
-    for line in github_job_log(repo, job.job_id, token).splitlines():
-        match = VERSION_LINE.search(line)
-        if match is None:
-            continue
+    for match in matches:
         emitted = parse_time(match.group("time"), "deploy_log_time_invalid")
         # Actions step API times are second-resolution while log lines include
         # fractions; a terminal line at 00.839 belongs to a step ending 00Z.

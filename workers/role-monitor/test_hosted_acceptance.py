@@ -90,6 +90,21 @@ class HostedRoleAcceptanceTests(unittest.TestCase):
         self.assertEqual(storage.call_args.args[0].full_url, url)
         self.assertNotIn("Authorization", storage.call_args.args[0].headers)
 
+    def test_private_deploy_marker_is_exact_unique_and_step_scoped(self) -> None:
+        """New suppressed-Wrangler deployments remain usable, without mixed evidence."""
+        job = hosted.DeployedJob(NOW, NOW.replace(minute=10), 77,
+                                  NOW.replace(minute=4), NOW.replace(minute=5))
+        safe = f"2026-09-29T05:05:00.8395859Z staging_role_deployment=version_captured version={VERSION}\n"
+        with patch.object(hosted, "github_job_log", return_value=safe):
+            self.assertEqual(hosted.logged_version("repo", job, "token"), VERSION)
+        for bad in (safe + safe, safe + f"2026-09-29T05:05:00Z Current Version ID: {VERSION}\n",
+                    safe.replace("05:05:00", "05:01:00"),
+                    safe.replace("version_captured", "UNVERIFIED"),
+                    safe.replace(VERSION, "not-a-version")):
+            with self.subTest(log=bad), patch.object(hosted, "github_job_log", return_value=bad):
+                with self.assertRaisesRegex(hosted.GateError, "deploy_log_version_ambiguous"):
+                    hosted.logged_version("repo", job, "token")
+
     def test_github_json_redirect_never_forwards_bearer(self) -> None:
         """Only signed job logs may be fetched tokenlessly after a redirect."""
 
