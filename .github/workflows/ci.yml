@@ -1379,8 +1379,6 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
-      AMAIL_TRACE_CONTAINMENT_RUN: ${{ inputs.trace_containment_run }}
-      AMAIL_TRACE_CONTAINMENT_VERSION: ${{ inputs.expected_worker_version }}
         shell: bash
         run: |
           version=$(python -c 'import json; print(json.load(open("site/package.json"))["version"])')
