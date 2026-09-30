@@ -113,18 +113,14 @@ class ProvenanceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 attest.format_attestation(*changes)
 
-    def test_phase2_workflow_is_manual_and_markers_follow_their_oracles(self) -> None:
-        """No push/general staging deployment introduces role; preflight has no privacy marker."""
+    def test_phase2_is_dormant_and_markers_follow_their_oracles(self) -> None:
+        """The selected direct-only release has no role deploy; privacy markers stay distinct."""
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        role = job_block(workflow, "staging-role-monitor")
-        self.assertIn("inputs.target == 'staging-role-queue-rollout'", role)
-        self.assertIn("github.event_name == 'workflow_dispatch'", role)
-        self.assertIn("RUN_STAGING_ROLE_TRACE_ROLLOUT", role)
-        self.assertNotIn("inputs.target == 'staging'", role)
-        self.assertIn("AMAIL_ROLE_SINK_CANARY_RUN: ${{ inputs.trace_sink_canary_run }}", role)
-        self.assertLess(role.index("require_role_trace_phase1.py"), role.index("wrangler d1 migrations apply"))
-        self.assertLess(role.index("check_role_trace_rollout.py --phase before"), role.index("deploy_staging_role_monitor.py"))
-        self.assertLess(role.index("deploy_staging_role_monitor.py"), role.index("check_role_trace_rollout.py --phase after"))
+        with self.assertRaises(ValueError):
+            job_block(workflow, "staging-role-monitor")
+        self.assertNotIn('staging-role-queue-rollout', workflow)
+        self.assertNotIn('deploy_staging_role_monitor.py', workflow)
+        self.assertNotIn('check_role_trace_rollout.py', workflow)
         sink = job_block(workflow, "staging-trace-sink")
         self.assertLess(sink.index("--mode sink"), sink.index("trace_rollout_attestation.py --kind sink-deploy"))
         canary = (ROOT / ".github/workflows/staging-trace-sink-canary.yml").read_text(encoding="utf-8")

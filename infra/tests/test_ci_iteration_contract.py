@@ -43,7 +43,7 @@ class IterationContractTests(unittest.TestCase):
         self.assertIn("cancel-in-progress: ${{ " + selector + " }}", header)
         self.assertIn("format('ci-{0}{1}',", header)
         self.assertIn("github.ref)", header)
-        self.assertIn("inputs.target == 'production-api-role-maintenance'", header)
+        self.assertIn("inputs.target == 'production-api-only-maintenance'", header)
         self.assertIn("'amail-production-graph-writer'", header)
 
     def test_protected_jobs_require_manual_invocation(self) -> None:

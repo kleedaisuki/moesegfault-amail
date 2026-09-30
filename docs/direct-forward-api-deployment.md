@@ -114,10 +114,10 @@ production promotion: `prepare_production_graph.py` rejects
 `api-role-maintenance` and its old confirmation. The production role-rollout
 workflow must also be disabled, not simply hidden from the default dispatch.
 
-### Required CI integration (separate ownership)
+### Coordinated CI integration contract
 
-At source authoring time the workflow is being independently changed; this list
-defines the coordinated handoff rather than authorizing a dispatch:
+The following contract is wired by the separate CI integration change described
+below. It defines source acceptance requirements, not authorization to dispatch:
 
 1. Replace every active `production-api-role-maintenance` target/condition with
    `production-api-only-maintenance`, including build dependencies and shared
@@ -138,16 +138,17 @@ defines the coordinated handoff rather than authorizing a dispatch:
    or deploy a role producer as part of either current path. Emit the existing
    exact `production_trace_graph_attestation=api-only-v1` marker after successful
    full graph readback, preserving evidence-consumer meaning for either path.
-5. Disable the executable production role rollout in
-   `deploy-role-monitor-production.yml`; preserve its history/source without
-   leaving a dispatch capable of attaching the future role producer. Staging
-   research is outside this promotion, not implicitly accepted by it.
+5. Remove the executable production role rollout workflow
+   `deploy-role-monitor-production.yml` and the `staging-role-monitor` deploy job
+   from active CI. Preserve historical code, documentation and Git history, not
+   a selectable disabled second product mode. Staging research is outside this
+   promotion, not implicitly accepted by it.
 6. Update `infra/tests/test_production_role_workflow.py`: replace the old target
    assertion with `production-api-only-maintenance`; replace required
    `--phase readback --topology api-role` with strict `api-only`; assert all
    current graph checks use `--phase api-only` and no role D1 migration/producer
    occurs. Replace old executable production-role ordering assertions with a
-   fail-closed dormant-job assertion. Preserve writer-lock, dispatch-limit,
+   fail-closed workflow/job-absence assertion. Preserve writer-lock, dispatch-limit,
    no-routing-write, and independent evidence assertions.
 
 `infra/tests/test_production_api_only_graph.py` contains synthetic behavioral
@@ -158,6 +159,86 @@ Queue drift, failed role-absence proof, hold failure, deployment/forward changes
 and independent API/sink privacy failure. These tests were authored but **not
 run locally**; hosted execution and independent review are required before any
 operational adoption. No provider mutation, deployment or send was performed.
+
+## CI source integration and operational boundary
+
+The coordinated workflow change consumes graph commit `f62a1d9`, direct-contact
+gate/hold readback commit `a93fe58`, and realm-safe deployment wrapper commit
+`d3f8eba`. It changes no user-facing CLI command or wire protocol.
+
+| Surface | Integrated source behavior | What it does not establish |
+| --- | --- | --- |
+| Production maintenance | One `production-api-only-maintenance` target; explicit `api-only-maintenance` preparation; strict readback preserves configured Queue/DLQ IDs; old/new sink and API use the same `--phase api-only` gate | No queue recreation, role lease, role D1 migration, direct-contact adoption, or public-send allow |
+| Production bootstrap | Explicit existing bootstrap target; bootstrap-only Queue provisioning; postdeploy exact graph marker follows the API/sink/bindings/capture/hold/four-forward guard | No retained-record privacy acceptance or truthful human operational attestation from configuration alone |
+| Staging promotion | Existing confirmation/containment gates; global hold before Queue, provider or schema changes; redacted exact new Mail version capture; `queue-api` immutable binding pin with step-linked Queue ID; exact API-only Queue ownership and independently pinned sink privacy; final held readback | No staging role deployment, synthetic receipt replay, contact policy adoption, or permission to send publicly |
+| Separate staging pin | `staging-serving-pin` now explicitly requests `--phase queue-api` and the reviewed staging Queue ID | No acceptance of historical `pre-queue` as the current active API-only graph |
+| Dormant role rollout | Production workflow file and staging deploy job/target removed; historical helpers, source suites and docs remain | No migration/deletion of role storage or authority to retire existing remote research resources |
+
+The active CI has **24** workflow-dispatch inputs after removing the role-rollout
+only sink-canary input, below the existing inclusive limit of 25. Source checks
+still run the complete infrastructure suite and preserve independent privacy
+evidence checks. Workflow-coupled historical tests now assert absence of the
+removed deploy paths; the known missing-`fi` Bash regression remains a synthetic
+positive/negative fixture instead of depending on an active role deployment.
+
+GitHub's default-branch workflow registration and previously queued/running
+workflows are external state: removing a file from this source revision does
+not retroactively cancel old runs. Do not dispatch or reuse historical role
+rollout runs. Independently confirm the reviewed default-branch revision and
+no in-flight/external graph writer before any separately authorized held rollout.
+No workflow in this change repairs or recreates the four operational forwards.
+
+Validation performed for this integration is limited to Python AST syntax,
+non-executing YAML validation (including duplicate keys and dispatch limits),
+and scoped diff whitespace checks. No project test, build, provider operation,
+deployment or send was run locally. The YAML guard reported 17 workflow files
+and zero failures at authoring time; concurrent unrelated workflow additions
+may change that inventory count. Authored source assertions still require an
+independent review and successful GitHub-hosted full CI plus the independent
+workflow syntax lane at the immutable integrated revision before any live use.
+
+Missing continuing direct-contact health scheduling, owner Inbox/Junk and
+24-hour-response adoption, fresh accepted health, independent release evidence,
+or truthful human attestation remains a public-release blocker. Successful
+held deployment/configuration checks satisfy none of those responsibilities.
+
+### Same-repository staging resource exclusion
+
+The quota campaign/recovery job, active CI staging Mail/sink/ingress/events and
+private Identity inbox deployments, capture-off settings corrections, and the
+standalone private-inbox deployment now share the exact non-canceling
+`staging-native-mail-acceptance` resource group. CI holds this lock at job level,
+not also at workflow level; the standalone inbox workflow holds it only at
+workflow level. A parent workflow and its dependent job must not wait on the
+same lock owned by that parent.
+
+Within one staging promotion the shared-resource mutator dependency chain is
+sink -> Mail -> ingress -> events -> private inbox; source checks and unrelated
+site deployment remain parallel. This avoids otherwise runnable same-run
+mutators replacing each other's pending slots. Existing native mutation probes
+already sharing the group keep their same exclusion.
+
+GitHub concurrency groups are scoped to a repository, not to a Cloudflare
+account or sibling repository. This lock does **not** freeze Identity/Login
+deployments from other repositories, dashboard writes or other external tools.
+Quota acceptance still requires the independently verified three-service
+version pins and an externally enforced deployment/settings freeze for those
+writers. No cross-repository exclusion is inferred from a shared string.
+
+The default queue permits one running and one pending member; a newer pending
+member can replace an older pending member even when `cancel-in-progress` is
+false. Thus the lock protects an executing campaign, not a guarantee that every
+queued request eventually runs or dispatch-order FIFO. The newly documented
+`queue: max` could support multiple pending members, but adopting that option
+across this shared group is outside this bounded change. Source review and
+hosted parser acceptance precede any future policy change. See the
+[official GitHub concurrency contract](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+
+`infra/tests/test_staging_mutation_lock.py` checks the exact shared groups,
+non-canceling policy, no reentrant workflow/job ownership, and the serial CI
+dependency chain. It is authored for hosted execution only. Strong cancellation,
+an interrupted process, or a provider/D1 ambiguity still requires the separately
+reviewed same-artifact recovery procedure; locking cannot undo a completed write.
 
 ## Same-run staging deployment pin
 

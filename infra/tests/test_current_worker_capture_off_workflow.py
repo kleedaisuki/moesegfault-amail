@@ -42,7 +42,7 @@ class CurrentWorkerWorkflowTests(unittest.TestCase):
             "github.event_name == 'workflow_dispatch' &&",
             f"inputs.target == '{TARGET}' &&",
             "github.ref == 'refs/heads/codex/amail-v0.1.0'",
-            "    environment: staging\n", "      group: deploy-mail-staging\n",
+            "    environment: staging\n", "      group: staging-native-mail-acceptance\n",
             "      cancel-in-progress: false\n", "    timeout-minutes: 5\n",
         ):
             self.assertIn(requirement, self.block)

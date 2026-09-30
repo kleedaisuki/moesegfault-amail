@@ -1,4 +1,4 @@
-"""Catch malformed Bash in the staging role-monitor post-deploy safety gate."""
+"""Preserve a historical Bash regression without an active role deployment."""
 
 from __future__ import annotations
 
@@ -10,6 +10,14 @@ import unittest
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
 STEP = "      - name: Confirm deploy did not open the synthetic SMTP route"
+HISTORICAL_GATE = STEP + '''
+        shell: bash
+        run: |
+          state=$(python workers/role-monitor/staging_route.py)
+          if [ "$state" != absent ]; then
+            exit 1
+          fi
+'''
 
 
 def final_route_script(source: str) -> str:
@@ -33,12 +41,19 @@ def final_route_script(source: str) -> str:
 
 
 class RoleMonitorWorkflowShellTests(unittest.TestCase):
-    """Validate the exact shell command before provider deployment is attempted."""
+    """The old syntax fixtures remain useful, but their deployment was removed."""
+
+    def test_active_role_deployment_gate_is_removed(self) -> None:
+        """Dormant historical code is not a selectable second v0.1 product mode."""
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn('  staging-role-monitor:', source)
+        self.assertNotIn(STEP, source)
+        self.assertNotIn('deploy_staging_role_monitor.py', source)
 
     def test_post_deploy_gate_is_parseable_bash(self) -> None:
         """The original missing `fi` fails Bash parsing before any route audit runs."""
 
-        script = final_route_script(WORKFLOW.read_text(encoding="utf-8"))
+        script = final_route_script(HISTORICAL_GATE)
         bash = shutil.which("bash")
         if not bash:
             self.skipTest("Bash syntax check requires the hosted Linux runner")
