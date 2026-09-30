@@ -187,8 +187,8 @@ def prior_window(value: str, attempt: str) -> tuple[datetime, datetime]:
             and run.get("head_branch") == BRANCH
             and run.get("head_sha") == source_sha
             and run.get("path") in (
-                ".github/workflows/ci.yml",
-                ".github/workflows/ci.yml@refs/heads/" + BRANCH,
+                ".github/workflows/staging-worker-r2-capability.yml",
+                ".github/workflows/staging-worker-r2-capability.yml@refs/heads/" + BRANCH,
             )
             and start <= end <= now + timedelta(minutes=2)
             and now - start <= timedelta(hours=24), "prior_run_metadata_invalid")

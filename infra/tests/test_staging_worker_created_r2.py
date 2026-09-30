@@ -10,6 +10,7 @@ import importlib.util
 from io import StringIO
 import os
 from pathlib import Path
+import re
 import sys
 import types
 import unittest
@@ -453,7 +454,7 @@ class WorkerCreatedR2Tests(unittest.TestCase):
         run = {"id": 123, "run_attempt": 1, "event": "workflow_dispatch",
                "status": "completed", "conclusion": "failure", "head_branch": MODULE.BRANCH,
                "head_sha": "a" * 40,
-               "path": ".github/workflows/ci.yml",
+               "path": ".github/workflows/staging-worker-r2-capability.yml",
                "created_at": start.isoformat(), "updated_at": end.isoformat()}
         valid_job = {"name": MODULE.JOB_NAME, "run_id": 123, "head_sha": "a" * 40,
                      "status": "completed", "conclusion": "failure",
@@ -471,7 +472,7 @@ class WorkerCreatedR2Tests(unittest.TestCase):
             window = MODULE.prior_window("123", "1")
         self.assertEqual(window[0], start)
         self.assertEqual(window[1], end + timedelta(minutes=10))
-        qualified = {**run, "path": ".github/workflows/ci.yml@refs/heads/" + MODULE.BRANCH}
+        qualified = {**run, "path": ".github/workflows/staging-worker-r2-capability.yml@refs/heads/" + MODULE.BRANCH}
         with patch.dict(os.environ, env, clear=True), \
                 patch.object(MODULE, "github_json", side_effect=[qualified, jobs]):
             self.assertEqual(MODULE.prior_window("123", "1")[0], start)
@@ -541,11 +542,14 @@ class WorkerCreatedR2Tests(unittest.TestCase):
     def test_manual_workflow_is_guarded_and_tests_before_secrets(self) -> None:
         """Probe and recovery stay dormant, serialized and source-name aligned."""
 
-        workflow = (MODULE.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        workflow = (MODULE.ROOT / ".github/workflows/staging-worker-r2-capability.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("on:\n  workflow_dispatch:", workflow)
+        self.assertNotIn("\n  push:", workflow)
+        self.assertNotIn("\n  pull_request:", workflow)
         probe = workflow.split("  staging-worker-r2-probe:\n", 1)[1].split(
             "\n  staging-worker-r2-recover:", 1)[0]
-        recovery = workflow.split("  staging-worker-r2-recover:\n", 1)[1].split(
-            "\n  staging-second-principal-preflight:", 1)[0]
+        recovery = workflow.split("  staging-worker-r2-recover:\n", 1)[1]
         self.assertIn("staging-worker-r2-get-delete", workflow)
         self.assertIn("staging-worker-r2-recover", workflow)
         for job, target, mode in ((probe, "staging-worker-r2-get-delete", "probe"),
@@ -575,6 +579,21 @@ class WorkerCreatedR2Tests(unittest.TestCase):
         self.assertIn("GITHUB_TOKEN: ${{ github.token }}", recovery)
         self.assertIn("AMAIL_WORKER_R2_PRIOR_SHA: ${{ inputs.worker_r2_prior_sha }}", recovery)
         self.assertNotIn("AMAIL_SENDING_GRANT_ATTEST", recovery)
+
+    def test_dispatch_input_count_stays_within_github_limit(self) -> None:
+        """A 26th top-level input invalidates the entire workflow before jobs."""
+
+        for filename, expected in (("ci.yml", 23),
+                                   ("staging-worker-r2-capability.yml", 6)):
+            with self.subTest(filename=filename):
+                workflow = (MODULE.ROOT / ".github/workflows" / filename).read_text(
+                    encoding="utf-8")
+                dispatch = workflow.split("  workflow_dispatch:\n", 1)[1].split(
+                    "\npermissions:", 1)[0]
+                names = re.findall(r"^      ([a-z][a-z0-9_]*):$", dispatch, re.MULTILINE)
+                self.assertEqual(len(names), expected)
+                self.assertEqual(len(names), len(set(names)))
+                self.assertLessEqual(len(names), 25)
 
 
 if __name__ == "__main__":
