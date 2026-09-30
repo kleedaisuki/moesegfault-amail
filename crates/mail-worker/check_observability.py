@@ -79,10 +79,10 @@ def capture_disabled(value: object, *, complete: bool = True) -> bool:
     if set(value) - {"enabled", "head_sampling_rate", "redact_query_string",
                      "logs", "traces", "issues"}:
         return False
-    if (complete or "enabled" in value) and value.get("enabled") is not False:
+    if (complete or value.get("enabled") is not None) and value.get("enabled") is not False:
         return False
     for name in ("logs", "traces", "issues"):
-        if name not in value and not complete:
+        if value.get(name) is None and not complete:
             continue
         section = value.get(name)
         if not isinstance(section, dict):
@@ -94,14 +94,14 @@ def capture_disabled(value: object, *, complete: bool = True) -> bool:
             "propagation_policy"}
         if set(section) - allowed:
             return False
-        if (complete or "enabled" in section) and section.get("enabled") is not False:
+        if (complete or section.get("enabled") is not None) and section.get("enabled") is not False:
             return False
-        if "destinations" in section and not (
+        if section.get("destinations") is not None and not (
                 isinstance(section["destinations"], list)
                 and all(x == "cloudflare" for x in section["destinations"])):
             return False
         for key in ("persist", "invocation_logs"):
-            if key in section and type(section[key]) is not bool:
+            if section.get(key) is not None and type(section[key]) is not bool:
                 return False
         if "propagation_policy" in section and section["propagation_policy"] not in (
                 None, "authenticated", "accept"):
@@ -109,26 +109,27 @@ def capture_disabled(value: object, *, complete: bool = True) -> bool:
         if not valid_sampling(section):
             return False
     return (valid_sampling(value) and ("redact_query_string" not in value
+            or value["redact_query_string"] is None
             or type(value["redact_query_string"]) is bool))
 
 
 def valid_sampling(value: dict) -> bool:
     """Accept optional finite numeric preferences only within the documented range."""
-    if "head_sampling_rate" not in value:
+    if value.get("head_sampling_rate") is None:
         return True
     rate = value["head_sampling_rate"]
-    return type(rate) in (int, float) and math.isfinite(rate) and 0 <= rate <= 1
+    return type(rate) in (int, float) and 0 <= rate <= 1 and math.isfinite(rate)
 
 
 def legacy_noncontradictory(value: object) -> bool:
     """Missing/null legacy observability is unsupported, never positive evidence."""
     if not isinstance(value, dict):
         return False
-    if "logpush" in value and value["logpush"] is not False:
+    if value.get("logpush") is not None and value["logpush"] is not False:
         return False
-    if "tail_consumers" in value and value["tail_consumers"] != []:
+    if value.get("tail_consumers") is not None and value["tail_consumers"] != []:
         return False
-    if "streaming_tail_consumers" in value and value["streaming_tail_consumers"] != []:
+    if value.get("streaming_tail_consumers") is not None and value["streaming_tail_consumers"] != []:
         return False
     obs = value.get("observability")
     return obs is None or capture_disabled(obs, complete=False)

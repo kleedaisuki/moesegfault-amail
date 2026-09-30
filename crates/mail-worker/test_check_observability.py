@@ -110,7 +110,7 @@ class EffectiveApiTests(unittest.TestCase):
         """Missing/null old observability cannot mask explicit current capture-off."""
         for realm in gate.SCRIPT:
             self.assertTrue(gate.effective_api_settings(self.worker(realm), gate.SCRIPT[realm],
-                {}, {"observability": None, "logpush": False, "tail_consumers": []}))
+                {}, {"observability": None, "logpush": None, "tail_consumers": None}))
         self.assertFalse(gate.effective_api_settings({}, gate.SCRIPT["staging"], {}, {}))
 
     def test_independent_capture_fields_are_required(self):
@@ -137,17 +137,30 @@ class EffectiveApiTests(unittest.TestCase):
             worker = self.worker(); worker[key] = bad
             self.assertFalse(gate.effective_api_settings(worker, gate.SCRIPT["staging"]))
         for section, key, bad in (("logs", "destinations", ["external"]),
-                ("traces", "destinations", None), ("logs", "persist", 1),
-                ("logs", "invocation_logs", None), ("traces", "head_sampling_rate", True),
+                ("traces", "destinations", "malformed"), ("logs", "persist", 1),
+                ("logs", "invocation_logs", "malformed"), ("traces", "head_sampling_rate", True),
                 ("logs", "head_sampling_rate", float("nan")),
                 ("issues", "unreviewed", False)):
             worker = self.worker(); worker["observability"][section][key] = bad
             self.assertFalse(gate.effective_api_settings(worker, gate.SCRIPT["staging"]))
 
+    def test_null_legacy_children_are_unsupported_not_positive_evidence(self):
+        """Only the strict current resource supplies capture-off for null old fields."""
+        legacy = {"logpush": None, "tail_consumers": None,
+                  "streaming_tail_consumers": None,
+                  "observability": {"enabled": None, "logs": None,
+                                    "traces": {"enabled": None, "destinations": None},
+                                    "issues": None}}
+        self.assertTrue(gate.effective_api_settings(self.worker(), gate.SCRIPT["staging"], legacy))
+        worker = self.worker(); worker["observability"]["issues"] = None
+        self.assertFalse(gate.effective_api_settings(worker, gate.SCRIPT["staging"], legacy))
+        self.assertFalse(gate.effective_api_settings({"name": gate.SCRIPT["staging"]},
+                                                   gate.SCRIPT["staging"], legacy))
+
     def test_explicit_legacy_conflicts_are_rejected(self):
         """An enabled legacy field or export cannot be dismissed as unsupported."""
         for legacy in ({"observability": True}, {"logpush": True},
-                {"tail_consumers": [{}]}, {"tail_consumers": None},
+                {"tail_consumers": [{}]}, {"tail_consumers": "malformed"},
                 {"streaming_tail_consumers": [{}]},
                 {"observability": {"enabled": True}},
                 {"observability": {"logs": {"enabled": True}}},

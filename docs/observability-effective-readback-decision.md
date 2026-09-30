@@ -362,3 +362,15 @@ confirm Issues off. See the official
 [Workers Issues setup](https://developers.cloudflare.com/workers/observability/issues/)
 and [investigation documentation](https://developers.cloudflare.com/workers/observability/issues/investigate/),
 which treats issue detection separately from Workers Logs/native traces.
+
+
+Review correction: legacy nullable `logpush`, `tail_consumers`,
+`streaming_tail_consumers`, optional capture children and dormant preferences are
+unsupported representations, not contradictory non-null values. They are
+accepted only alongside the strict positive current-resource predicate; current
+Worker capture flags, Logpush and tails retain explicit typed false/empty
+requirements. This covers the observed legacy `/script-settings` null tail
+representation without fabricating disabled legacy data. Non-null malformed or
+enabled/export values still reject. Optional inactive null preferences do not
+alter capture evidence. Sampling validation range-checks before float conversion
+to reject arbitrarily large JSON integers without overflow.
