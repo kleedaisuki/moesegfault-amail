@@ -167,17 +167,20 @@ class SinkIsolationTests(unittest.TestCase):
         """Real shared inventory validation rejects an omitted third Queue before detail reads."""
         _,rows=self.fixture()
         metadata={"page":1,"per_page":100,"count":2,"total_count":2,"total_pages":1}
-        for field,bad in [("count",1),("total_count",3),("per_page",20),("page",True),("total_pages",2)]:
+        for field,bad in [("count",1),("total_count",3),("per_page",1),("page",True),("total_pages",2)]:
             info={**metadata,field:bad}
             with patch.dict(os.environ,{"AMAIL_TRACE_QUEUE_ID":self.QUEUE,"AMAIL_TRACE_DLQ_ID":self.DLQ}), \
                  patch.object(isolation.queues,"request",return_value={"success":True,"result":rows,"result_info":info}) as request, \
                  self.assertRaises(ValueError):
                 isolation.queue_trigger_exact(self.ACCOUNT,"token","staging","amail-trace-sink-staging")
             self.assertEqual(request.call_count,1)
-        with patch.dict(os.environ,{"AMAIL_TRACE_QUEUE_ID":self.QUEUE,"AMAIL_TRACE_DLQ_ID":self.DLQ}), \
-             patch.object(isolation.queues,"request",return_value={"success":True,"result":rows}):
-            with self.assertRaises(ValueError):
-                isolation.queue_trigger_exact(self.ACCOUNT,"token","staging","amail-trace-sink-staging")
+        for optional_info in (None, {}, {"count":2,"total_count":2,"page":1,"total_pages":1,"per_page":20}):
+            payload={"success":True,"result":rows}
+            if optional_info is not None:payload["result_info"]=optional_info
+            with patch.dict(os.environ,{"AMAIL_TRACE_QUEUE_ID":self.QUEUE,"AMAIL_TRACE_DLQ_ID":self.DLQ}), \
+                 patch.object(isolation.queues,"request",side_effect=[payload,{"result":rows[0]},{"result":rows[1]}]) as request:
+                self.assertTrue(isolation.queue_trigger_exact(self.ACCOUNT,"token","staging","amail-trace-sink-staging"))
+                self.assertEqual(request.call_args_list[0].args[2],"queues")
 
     def test_unpinned_split_or_changed_serving_fails(self):
         """No implicit latest version can replace explicit reviewed 100% serving provenance."""
@@ -223,6 +226,15 @@ class SinkIsolationTests(unittest.TestCase):
         with patch.object(isolation,"envelope",return_value={"success":True,"result":[row,{**row,"id":"e"*32}],"result_info":{"per_page":1}}),self.assertRaises(ValueError):
             isolation.worker_domains(self.ACCOUNT,"token")
         with patch.object(isolation,"envelope",return_value={"success":True,"result":[row,row]}),self.assertRaises(ValueError):
+            isolation.worker_domains(self.ACCOUNT,"token")
+
+    def test_domains_unknown_completeness_claims_are_rejected(self):
+        """Closed transport metadata rejects explicit truncation/cursors without alias guessing."""
+        for field,value in (("next_cursor","opaque"),("truncated",True),("has_more",True)):
+            payload={"success":True,"result":[],field:value}
+            with patch.object(isolation,"envelope",return_value=payload),self.assertRaises(ValueError):
+                isolation.worker_domains(self.ACCOUNT,"token")
+        with patch.object(isolation,"envelope",return_value={"success":True,"result":[],"result_info":{"cursors":{"after":"opaque"}}}),self.assertRaises(ValueError):
             isolation.worker_domains(self.ACCOUNT,"token")
 
     def test_account_routes_and_domains_are_read_not_assumed(self):

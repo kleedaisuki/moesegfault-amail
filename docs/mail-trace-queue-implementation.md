@@ -109,9 +109,20 @@ example's pagination metadata is not a license to invent pagination for this
 endpoint. Denial tests require optional metadata to agree with the unfiltered
 array, and reject explicit missing rows, later pages, cursors or duplicate IDs.
 
-The Queue subscription proof reuses the strengthened complete inventory helper:
-integer page/per_page/count/total_count/total_pages, requested page size, exact
-per-page cardinality, coherent/stable totals, unique Queue IDs/names and complete
-accumulated count. An integration denial test calls that actual helper through
+The Queue subscription proof also uses the official SDK's unfiltered SinglePage
+contract rather than inventing page/per_page arguments. Its shared helper validates
+bounded unique IDs/names and any optional count/page/per_page metadata against
+the complete array. Supplied contradictory totals or more-pages claims fail
+closed. An integration denial test calls the actual helper through
 `queue_trigger_exact`; a response omitting a third Queue while claiming more
 results fails before any consumer-detail read can falsely attest exclusivity.
+Absent metadata and a coherent optional per_page20 response remain valid.
+The [official Queue SDK](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/resources/queues/queues.py)
+uses `SyncSinglePage` with no page/per_page list request arguments.
+
+Account zone pagination uses the actual SDK's `page`/`per_page` support and
+explicitly requests all four documented zone types (`full,partial,secondary,internal`):
+[official Zone SDK](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/resources/zones/zones.py).
+Its default excludes internal zones, so an account-wide assertion must not rely
+on that default. Domain and Queue SinglePage contracts remain distinct from this
+Zone pagination contract.

@@ -24,6 +24,7 @@ API = "https://api.cloudflare.com/client/v4"
 ID = re.compile(r"[0-9a-f]{32}\Z")
 UUID = re.compile(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\Z")
 LIMIT = 262144
+ENVELOPE_FIELDS = {"success", "errors", "messages", "result", "result_info"}
 
 
 def envelope(token: str, path: str) -> dict:
@@ -37,7 +38,8 @@ def envelope(token: str, path: str) -> dict:
         value = json.loads(raw)
     except (HTTPError, URLError, TimeoutError, ValueError) as error:
         raise ValueError("sink_readback_unavailable") from error
-    if not isinstance(value, dict) or value.get("success") is not True:
+    if (not isinstance(value, dict) or value.get("success") is not True
+            or set(value) - ENVELOPE_FIELDS):
         raise ValueError("sink_readback_unavailable")
     return value
 
@@ -81,6 +83,8 @@ def worker_domains(account: str, token: str) -> list[dict]:
     with the complete array and cannot claim another page or missing rows.
     """
     value = envelope(token, f"/accounts/{account}/workers/domains")
+    if not isinstance(value, dict) or set(value) - ENVELOPE_FIELDS:
+        raise ValueError("sink_domains_unverified")
     rows, info = value.get("result"), value.get("result_info")
     if not isinstance(rows, list) or len(rows) > 1000:
         raise ValueError("sink_domains_unverified")
@@ -132,7 +136,7 @@ def surfaces_private(account: str, token: str, script: str, readback) -> bool:
     domains=worker_domains(account,token)
     if any(not isinstance(row.get("service"),str) or row["service"] == script for row in domains):
         return False
-    zones=inventory(token,f"/zones?account.id={account}")
+    zones=inventory(token,f"/zones?account.id={account}&type=full,partial,secondary,internal")
     if not zones or len(zones) > 20:
         return False
     for zone in zones:
