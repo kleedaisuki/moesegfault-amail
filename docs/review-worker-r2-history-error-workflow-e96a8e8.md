@@ -1,7 +1,7 @@
 # Historical Email error-class workflow review
 
-Reviewed 2026-10-01 at `6da112caa7d83822b81e93b6914b780f97aa5436`, net changes
-`1dcf7a6..6da112c`. Source helper review is separately recorded in
+Reviewed 2026-10-01 at `e96a8e8`, net changes
+`1dcf7a6..e96a8e8`. Source helper review is separately recorded in
 `review-worker-r2-history-error-6c34c43.md`. No local tests, live requests,
 mail sends, routing/R2 operations or production edits were performed.
 Concurrent uncommitted production workflow changes are excluded.
@@ -13,12 +13,9 @@ final committed workflow wiring.** After those checks pass, the reviewed lane
 can perform its separately authorized single content-free historical query.
 This is not delivery acceptance, R2 capability acceptance or release approval.
 
-The initially requested intermediate `cdb57f5` contains only documentation and
-tests, not the job; it is not a deployable/dispatchable wiring revision. The
-additional `e47cfa6` supplies the lane and `6da112c` normalizes its committed
-workflow line endings. Review approval applies to the final revision, not that
-incomplete intermediate commit. Ignoring line-ending differences, the final
-normalization introduces no semantic changes.
+The reviewed coherent commit replaces the unpublished split wiring revisions.
+Its net diff is identical to the previously inspected final split revision;
+the workflow line-ending normalization has no semantic effect.
 
 ## Contract trace
 
@@ -41,3 +38,4 @@ The full uncommitted working tree is not covered: future additional dispatch
 inputs must still satisfy the shared 25-input/uniqueness contract and receive
 separate review. No result here changes the existing B-account NO-GO or public
 sending/privacy hold.
+
