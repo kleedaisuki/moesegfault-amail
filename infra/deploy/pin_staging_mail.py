@@ -26,6 +26,27 @@ LIMIT = 262_144
 PHASES = ("pre-queue", "queue-api")
 
 
+def mail_resources(stage: dict) -> tuple[str, str]:
+    """Require the sole reviewed Mail database and body bucket by binding name.
+
+    Direct-only Mail cannot acquire a role database through config drift. Never
+    use array position as a resource identity: duplicate, renamed or additional
+    entries fail closed before provider access.
+    """
+    databases = stage.get("d1_databases")
+    buckets = stage.get("r2_buckets")
+    if (not isinstance(databases, list) or len(databases) != 1
+            or not isinstance(databases[0], dict) or databases[0].get("binding") != "MAIL_DB"
+            or not isinstance(buckets, list) or len(buckets) != 1
+            or not isinstance(buckets[0], dict) or buckets[0].get("binding") != "MAIL_BODIES"):
+        raise ValueError("mail_resources_unreviewed")
+    database, bucket = databases[0].get("database_id"), buckets[0].get("bucket_name")
+    if (not isinstance(database, str) or UUID.fullmatch(database) is None
+            or not isinstance(bucket, str) or not bucket):
+        raise ValueError("mail_resources_unreviewed")
+    return database, bucket
+
+
 def fetch(account: str, token: str, suffix: str) -> dict:
     """Read one bounded Cloudflare response without exposing its body on failure."""
 
@@ -75,7 +96,7 @@ def serving_deployment(result: dict) -> tuple[str, str] | None:
 
 
 def expected_bindings(phase: str = "pre-queue", queue_id: str = "", *, realm: str = "staging") -> dict[str, tuple[str, str | None]]:
-    """Derive staging resource values from reviewed config, not copied IDs."""
+    """Derive the exact direct-only Mail contract from reviewed realm config."""
 
     if phase not in PHASES:
         raise ValueError("pin_phase_unreviewed")
@@ -85,10 +106,10 @@ def expected_bindings(phase: str = "pre-queue", queue_id: str = "", *, realm: st
     with CONFIG.open("rb") as source:
         config = tomllib.load(source)
         stage = config["env"]["staging"] if realm == "staging" else config
+    database, bucket = mail_resources(stage)
     expected = {
-        "MAIL_DB": ("d1", stage["d1_databases"][0]["database_id"]),
-        "ROLE_MONITOR": ("d1", stage["d1_databases"][1]["database_id"]),
-        "MAIL_BODIES": ("r2_bucket", stage["r2_buckets"][0]["bucket_name"]),
+        "MAIL_DB": ("d1", database),
+        "MAIL_BODIES": ("r2_bucket", bucket),
         "EMAIL": ("send_email", None),
         "OPENROUTER_API_KEY": ("secret_text", None),
         "CF_EMAIL_ROUTING_TOKEN": ("secret_text", None),

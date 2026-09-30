@@ -1,8 +1,10 @@
-"""Read-only production trace graph and unrouted role storage lifecycle gates.
+"""Read-only direct-only production graph and historical role research gates.
 
 Queue ownership, serving deployments, independent capture switches and four
 forwards are bracketed. Absence is a complete successful script inventory, never
 a failed GET. No function mutates routing, storage, settings or sending policy.
+The active v0.1 phase is api-only. Historical role phases are not release
+authorization and must not be called by the current production promotion.
 """
 from __future__ import annotations
 import argparse
@@ -216,7 +218,12 @@ def role_capabilities(account: str, token: str, version: str, queue: str, *, att
 
 
 def verify(phase: str, lifecycle: str, *, migrated: bool = False) -> None:
-    """Attest P1->P2 only; maintenance uses strict api-role and never bootstraps Queues."""
+    """Attest the active direct graph or separately scoped historical role research."""
+    if phase == "api-only":
+        if migrated or lifecycle != "replacement":
+            raise ValueError("direct_phase_unreviewed")
+        verify_api_only()
+        return
     if migrated and (phase != "before" or lifecycle != "first-bootstrap"):
         raise ValueError("migration_phase_unverified")
     account, token = os.getenv("CLOUDFLARE_ACCOUNT_ID", ""), os.getenv("CLOUDFLARE_API_TOKEN", "")
@@ -264,10 +271,45 @@ def verify(phase: str, lifecycle: str, *, migrated: bool = False) -> None:
         raise ValueError("graph_changed")
 
 
+def verify_api_only() -> None:
+    """Bracket exact API/sink pins, sole API producer, privacy and four forwards.
+
+    Bootstrap post-deploy and later replacements use this same contract. Role
+    storage and leases are deliberately not read; an attached role producer or
+    live role Worker is instead rejected without changing or deleting it.
+    Configuration proof is not retained-record privacy acceptance or permission
+    to allow public sending.
+    """
+    account, token = os.getenv("CLOUDFLARE_ACCOUNT_ID", ""), os.getenv("CLOUDFLARE_API_TOKEN", "")
+    queue, dlq = os.getenv("AMAIL_TRACE_QUEUE_ID", ""), os.getenv("AMAIL_TRACE_DLQ_ID", "")
+    pins = {API: os.getenv("AMAIL_EXPECTED_WORKER_VERSION", ""), SINK: os.getenv("AMAIL_EXPECTED_TRACE_SINK_VERSION", "")}
+    if (ID.fullmatch(account) is None or not token or ID.fullmatch(queue) is None
+            or ID.fullmatch(dlq) is None or queue == dlq or os.getenv("AMAIL_TRACE_TOPOLOGY") != "api-only"
+            or any(UUID.fullmatch(value) is None for value in pins.values())
+            or os.getenv("AMAIL_EXPECTED_ROLE_WORKER_VERSION", "")
+            or os.getenv("AMAIL_ROLE_ROUTED_COUNT", "") not in ("", "0")):
+        raise ValueError("direct_pins_unverified")
+    held_send()
+    before = serving(account, token, pins)
+    snapshot = forward_snapshot(account)
+    queues.reconcile(account, token, "production", "readback", "api-only")
+    role_absent(account, token)
+    if not bindings_match(capture.readback(account, token, API, f"versions/{pins[API]}"), pins[API],
+                          phase="queue-api", queue_id=queue, realm="production"):
+        raise ValueError("api_bindings_unverified")
+    if not capture.verify("production", account, token) or not capture.verify("production", account, token, sink=True):
+        raise ValueError("privacy_unverified")
+    queues.reconcile(account, token, "production", "readback", "api-only")
+    role_absent(account, token)
+    held_send()
+    if serving(account, token, pins) != before or forward_snapshot(account) != snapshot:
+        raise ValueError("graph_changed")
+
+
 def main() -> int:
     """Print fixed verdicts only, never destination, MIME, ledger or provider bodies."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=("before", "after", "maintenance"), required=True)
+    parser.add_argument("--phase", choices=("api-only", "before", "after", "maintenance"), required=True)
     parser.add_argument("--lifecycle", choices=("first-bootstrap", "replacement"), default="replacement")
     parser.add_argument("--migrated", action="store_true")
     args = parser.parse_args()
