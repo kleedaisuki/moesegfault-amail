@@ -106,7 +106,11 @@ class Provider:
             require(self.schema(prefix) == schema_objects(prefix), "d1_proof_schema_unverified")
 
     def provenance(self) -> tuple[str, str]:
-        """Pin DB UUID/name and sole actual MAIL_DB binding between stable deployments."""
+        """Pin DB and the exact frozen c3f predecessor contract between stable deployments.
+
+        This D1-only mechanics proof selects historical binding provenance, not
+        the current direct-only deployment policy or privacy/send permission.
+        """
         def get(path):
             """Fetch one fixed metadata path; private provider errors never escape."""
             try:
@@ -122,13 +126,7 @@ class Provider:
         first = mail_pin.serving_deployment(get(base + "deployments?per_page=1&page=1"))
         require(first is not None, "d1_proof_worker_unverified")
         version = get(base + "versions/" + first[1])
-        resources = version.get("resources")
-        bindings = resources.get("bindings") if isinstance(resources, dict) else None
-        require(version.get("id") == first[1] and isinstance(bindings, list)
-                and all(isinstance(binding, dict) for binding in bindings), "d1_proof_binding_unverified")
-        databases = [binding for binding in bindings if binding.get("type") == "d1"]
-        require(len(databases) == 1 and databases[0].get("name") == "MAIL_DB"
-                and databases[0].get("id") == escrow.DB, "d1_proof_binding_unverified")
+        require(mail_pin.containment_bindings_match(version, first[1]), "d1_proof_binding_unverified")
         require(mail_pin.serving_deployment(get(base + "deployments?per_page=1&page=1")) == first,
                 "d1_proof_worker_changed")
         require(self.query(HELD_SQL).rows == [{"state": "held"}], "d1_proof_sending_not_held")

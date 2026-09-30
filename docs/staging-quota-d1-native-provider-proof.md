@@ -59,10 +59,16 @@ Every mode requires all of:
 6. Native DB GET returns UUID `74f35f95-42ce-482c-86e6-dffbdd35cbbe` and name
    `moesegfault-mail-staging`. This pins the target even though account ID comes
    from an existing protected Secret and the token itself is not table-scoped.
-7. `amail-mail-staging` has one 100%-serving deployment; its exact version has
-   exactly one D1 binding, `MAIL_DB`, with the fixed DB UUID. Repeat deployment
-   GET brackets the version, and complete provenance is repeated after the
-   phase, rejecting changed deployment/version or a non-held sending singleton.
+7. `amail-mail-staging` has one 100%-serving deployment of exactly the frozen
+   historical version `c3f6401a-1e84-4f51-91df-ae77d90683e9`. Its complete
+   14-binding inventory must pass existing `mail_pin.containment_bindings_match`:
+   fixed MAIL_DB plus historical ROLE_MONITOR, staging body bucket, approved
+   scalar/secret names and Email binding. D1 targets use native `database_id`.
+   No current-policy/other-version/optional-role fallback is accepted. Repeat
+   deployment GET brackets the version; complete provenance is repeated after
+   the phase, rejecting changed deployment/version or non-held sending state.
+   This is historical binding provenance only, never effective privacy or
+   sending acceptance. Every SQL operation still targets only fixed MAIL_DB.
 
 All proof modes share `staging-native-mail-acceptance` concurrency, with
 `cancel-in-progress: false`. This serializes participating workflows, not
@@ -170,7 +176,8 @@ below actual HTTP JSON encoding/parsing rather than replacing `Escrow._query`:
 - Native lost arm/terminal ACK, missing counters/Boolean ACK, failed/multiple
   query batches, malformed result rows and fixed capability rejection.
 - Manual-only/first-attempt/confirmation guard and workflow Secret boundary.
-- Exact native DB UUID/name and Worker D1 binding fixtures.
+- Exact native DB UUID/name and frozen c3f complete Worker binding fixtures,
+  including wrong role/mail DB, missing/extra/duplicate bindings and wrong version.
 - Controller write/read-terminal orchestration with independent original-run
   completion requirement, original plaintext binding and unchanged envelope
   digest across separate fixture invocations.
@@ -254,7 +261,7 @@ printed. Provider responses and raw namespaced DDL stay in memory.
 | `source` | Six successful actual source jobs + real crypto step at new exact SHA | Stop; no provider calls |
 | `capability` | Protected account/token structural presence | Stop without rendering values |
 | `database` | Exact DB UUID and staging name | Stop before SQL |
-| `worker` / `binding` | Actual single 100% serving version; sole exact MAIL_DB; no duplicate MAIL_DB | Stop before SQL |
+| `worker` / `binding` | Single 100% serving exact c3f version; complete frozen 14-binding match (including fixed MAIL_DB and historical ROLE_MONITOR) | Stop before SQL |
 | `held` | Exact global singleton `held` | Stop before schema observation |
 | `formal_schema` / `mirror_schema` | Complete expected tables/indexes/triggers, not existence-only | Separately `absent`, `exact`, `partial_or_drift`, or `unverified` |
 | `worker_recheck` / `held_recheck` / `schema_recheck` | Stable serving tuple, still-held singleton, unchanged schema observations | Stop; prior observations do not become current acceptance |
@@ -335,3 +342,78 @@ External grounding reuses the original API/SQL/RIFL references above plus
 default-branch registration and selected execution `--ref` are distinct. The
 engineering lesson of recorded operation results still applies: later schema
 readback cannot manufacture an earlier missing mutation acknowledgement.
+
+## Narrow c3f binding correction after inspect 36788755759
+
+Parent-supplied categorical evidence from the read-only run
+[36788755759](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36788755759)
+at source `48f960b44da454140aa7140870267be5f0ceda7d` reports verified guard,
+checkout, current/historical GitHub relations, source, capability, database and
+worker, then `binding=unverified`. Held/formal/mirror schema were `not_checked`.
+This implementation workstream did not retrieve provider/account data or logs.
+That diagnostic stopped before schema SELECTs; it does **not** establish schema
+absence, current mutation state or historical failure phase on its own.
+
+The source defect is concrete: the former proof and inspector demanded one D1
+binding with `id`, whereas the already reviewed historical c3f contract contains
+both MAIL_DB and ROLE_MONITOR and matches native D1 fields via `database_id`.
+The correction explicitly selects **only** the existing historical comparator
+in both `Provider.provenance()` and `ReadOnlyProvider.binding()`. It does not
+accept an arbitrary serving version or apply current TOML to old runtime.
+See [frozen predecessor provenance](historical-containment-binding-contract-2026-10-01.md).
+No change to that literal contract, current direct-only matcher, runtime,
+workflow permissions, fixed SQL target, held gate or mutation confirmation is
+introduced. The role binding is observed only as metadata; no role DB capability
+or role SQL endpoint is added.
+
+### Checkable no-DDL implication in immutable original source
+
+Inspecting `242b5abfee461d04188757e8b365d387d46fcdf9` yields this ordering:
+
+```text
+execute('apply-schema')
+  -> guard / checkout / dispatch / successful_source
+  -> Provider(...)                          # construction only
+  -> Provider.provenance()
+       -> DB GET / deployment GET / version GET
+       -> require(len(D1 bindings) == 1,
+                  name == MAIL_DB, id == fixed DB)
+       -> deployment GET / held SELECT     # only if old binding gate passed
+  -> Provider.apply()                      # schema SELECT / CREATE only here
+```
+
+The frozen c3f inventory has two D1 bindings, so **if that inventory was observed
+by the original run's provenance read**, the old predicate necessarily failed
+before even its held SELECT; `Provider.apply()` and every schema query/CREATE
+were unreachable. The same source rejects native MAIL_DB using `database_id`
+in place of its expected `id`. This is a source/control-flow implication, not
+an invented successful/no-op mutation acknowledgement.
+
+The parent historical evidence establishes c3f's reviewed inventory; the later
+inspect establishes its own binding stop. Neither the original generic fixed
+failure label nor the later read alone independently timestamps the original
+version response. Therefore do not claim unconditional historical no-DDL from
+those two markers, infer absence from the failed inspect, or disregard changes
+by another actor. Where the original run's c3f-serving relation is independently
+retained, the source implication proves **that run** could not reach DDL; it
+still says nothing about schemas created by other actors.
+
+### Test-source and next-step boundary
+
+Both synthetic provider metadata fixtures now consume the existing independent
+literal `historical_containment_fixture.historical_version()` rather than
+manufacturing a one-binding success response. New/extended source assertions
+reject missing ROLE_MONITOR, wrong role/mail DB, duplicate/extra bindings and an
+otherwise matching inventory attached to another version. Inspect failure at
+binding must leave held/schema phases unobserved and SQL call list empty.
+The prior read-only, dual-parameter and stability tests continue unchanged in
+semantics. Tests are authored and source-traced only; no local unittest/build.
+
+The correction enables a future authorized, exact-source-tested **inspect** to
+proceed through the documented c3f contract into held/schema classification.
+It does not establish that those gates will pass, correct params or DDL, or
+authorize rerunning either failed operation. Do **not** repeat apply-schema.
+The earlier inspect run is evidence already collected, not a passing schema
+proof. A subsequent read-only observation requires separate authorization and
+successful source CI at the new exact feature SHA; no provider/dispatch/push
+operation occurred during this correction.

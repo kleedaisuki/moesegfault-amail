@@ -77,18 +77,13 @@ class ReadOnlyProvider:
         return pin
 
     def binding(self, pin: tuple[str, str]) -> None:
-        """Require the serving version's sole D1 binding and no duplicate MAIL_DB."""
+        """Require only the exact frozen 14-binding c3f predecessor; no fallback.
+
+        ROLE_MONITOR is historical provenance only. All SELECTs still target
+        fixed staging MAIL_DB; this facade cannot read either role DB or mail.
+        """
         value = self.metadata(WORKER + "versions/" + pin[1])
-        resources = value.get("resources")
-        bindings = resources.get("bindings") if isinstance(resources, dict) else None
-        require(value.get("id") == pin[1] and isinstance(bindings, list)
-                and all(isinstance(item, dict) and isinstance(item.get("name"), str) for item in bindings),
-                "d1_inspect_binding_unverified")
-        databases = [item for item in bindings if item.get("type") == "d1"]
-        require(len(databases) == 1 and databases[0].get("name") == "MAIL_DB"
-                and databases[0].get("id") == escrow.DB
-                and sum(item.get("name") == "MAIL_DB" for item in bindings) == 1,
-                "d1_inspect_binding_unverified")
+        require(proof.mail_pin.containment_bindings_match(value, pin[1]), "d1_inspect_binding_unverified")
 
     def held(self) -> None:
         """Require exactly one held global singleton; missing/extra states stop."""

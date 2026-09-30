@@ -44,3 +44,18 @@ review and `git diff --check` are the available local verification; hosted
 synthetic execution is still required before integration acceptance. No provider
 operation, mail operation, PATCH retry, push or deployment was performed or
 authorized. The immutable containment-evidence gap remains blocking rollout.
+
+## Explicit D1-only mechanics proof / read-only inspection caller
+
+A later narrow source correction selects the same exact c3f comparator in
+`staging_ten_address_d1_proof.Provider.provenance()` and
+`staging_ten_address_d1_inspect.ReadOnlyProvider.binding()`. Their earlier sole-D1
+predicate was incompatible with the frozen 14-binding predecessor. This is an
+additional explicit historical caller, not current deployment-policy fallback:
+other versions/direct-only inventories remain rejected, complete exact historical
+bindings remain required, and SQL still targets only fixed staging MAIL_DB.
+Historical ROLE_MONITOR is not given a role-query or mail-send capability.
+Privacy/current rollout acceptance remains unchanged. See
+[incident binding correction](staging-quota-d1-native-provider-proof.md#narrow-c3f-binding-correction-after-inspect-36788755759)
+for the source-based pre-DDL implication and its original-serving-snapshot caveat.
+No migration/operation retry is authorized by this caller addition.

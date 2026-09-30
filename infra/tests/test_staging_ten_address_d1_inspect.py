@@ -14,11 +14,11 @@ import staging_ten_address_d1_proof as proof
 import staging_ten_address_escrow as escrow
 import staging_ten_address_manifest as manifest
 from test_staging_ten_address_d1_proof import NativeShape
+from historical_containment_fixture import VERSION, historical_version
 
 RUN = "1234567"
 SHA = "a" * 40
 DEPLOYMENT = "00000000-0000-0000-0000-000000000004"
-VERSION = "00000000-0000-0000-0000-000000000005"
 
 
 def environment() -> dict:
@@ -44,8 +44,7 @@ class InspectionTests(unittest.TestCase):
         self.serving = {"deployments": [{"id": DEPLOYMENT, "strategy": "percentage",
                                        "versions": [{"version_id": VERSION, "percentage": 100}]}]}
         self.database = {"uuid": escrow.DB, "name": "moesegfault-mail-staging"}
-        self.version = {"id": VERSION, "resources": {"bindings": [
-            {"type": "d1", "name": "MAIL_DB", "id": escrow.DB}]}}
+        self.version = historical_version()
         self.github = {"id": int(inspect.FAILED_RUN), "run_attempt": 1, "event": "workflow_dispatch",
                        "head_branch": manifest.BRANCH.removeprefix("refs/heads/"), "path": proof.WORKFLOW,
                        "repository": {"full_name": manifest.REPOSITORY}, "head_sha": inspect.FAILED_SHA,
@@ -189,6 +188,31 @@ class InspectionTests(unittest.TestCase):
         result, _ = self.execute()
         self.assertEqual(result["stages"]["held"], "unverified")
         self.assertEqual(result["stages"]["formal_schema"], "not_checked")
+
+    def test_exact_c3f_contract_has_no_other_version_or_binding_fallback(self):
+        """Reject direct-only, wrong/extra/missing/duplicate resources before held/schema."""
+        mutations = (
+            lambda value: value["resources"]["bindings"].pop(1),
+            lambda value: value["resources"]["bindings"][1].update(database_id="wrong-role"),
+            lambda value: value["resources"]["bindings"][0].update(database_id="wrong-mail"),
+            lambda value: value["resources"]["bindings"].append(value["resources"]["bindings"][0].copy()),
+            lambda value: value["resources"]["bindings"].append({"name": "TRACE_EVENTS", "type": "queue"}),
+        )
+        for mutate in mutations:
+            self.version = historical_version()
+            mutate(self.version)
+            with self.subTest(mutate=mutate):
+                result, _ = self.execute()
+            self.assertEqual(result["stages"]["binding"], "unverified")
+            self.assertEqual(result["stages"]["held"], "not_checked")
+            self.assertEqual(self.world.calls, [])
+        provider = inspect.ReadOnlyProvider("a" * 32, "synthetic-private-token")
+        other = "00000000-0000-0000-0000-000000000005"
+        value = historical_version()
+        value["id"] = other
+        with mock.patch.object(provider, "metadata", return_value=value):
+            with self.assertRaises(manifest.ContractFailure):
+                provider.binding((DEPLOYMENT, other))
 
     def test_readonly_facade_rejects_all_write_and_arbitrary_read_paths(self):
         """No migration flag or synthetic/real data query can escape the two SELECTs."""

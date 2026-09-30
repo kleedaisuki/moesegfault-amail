@@ -11,6 +11,7 @@ import staging_ten_address_d1_proof as target
 import staging_ten_address_escrow as escrow
 import staging_ten_address_manifest as manifest
 from test_staging_ten_address_manifest import SyntheticAEAD
+from historical_containment_fixture import VERSION, historical_version
 
 RUN = "1234567"
 SHA = "a" * 40
@@ -207,13 +208,14 @@ class ProofTests(unittest.TestCase):
         self.assertEqual(self.world.calls, [])
 
     def test_exact_native_database_binding_and_deployment_relation(self):
-        """Require independently read DB UUID/name, one D1 binding and stable deployment."""
+        """Require exact DB, frozen c3f 14-binding contract and stable deployment."""
         deployment = "00000000-0000-0000-0000-000000000004"
-        version = "00000000-0000-0000-0000-000000000005"
+        version = VERSION
         serving = {"deployments": [{"id": deployment, "strategy": "percentage",
                                     "versions": [{"version_id": version, "percentage": 100}]}]}
         # The existing serving parser requires the provider's real deployments shape.
-        state = {"uuid": escrow.DB, "name": "moesegfault-mail-staging", "binding": escrow.DB}
+        state = {"uuid": escrow.DB, "name": "moesegfault-mail-staging", "binding": escrow.DB,
+                 "version": historical_version()}
         def metadata(method, path, token, data=None, limit=65_536):
             """Encode only fixed native metadata observations and a held singleton."""
             if method == "POST":
@@ -225,8 +227,9 @@ class ProofTests(unittest.TestCase):
             elif path.endswith("/deployments?per_page=1&page=1"):
                 result = serving
             elif path.endswith("/versions/" + version):
-                result = {"id": version, "resources": {"bindings": [
-                    {"type": "d1", "name": "MAIL_DB", "id": state["binding"]}]}}
+                result = {**state["version"], "resources": {"bindings": [
+                    item.copy() for item in state["version"]["resources"]["bindings"]]}}
+                result["resources"]["bindings"][0]["database_id"] = state["binding"]
             else:
                 raise AssertionError("unreviewed metadata path")
             return json.dumps({"success": True, "result": result}).encode()
@@ -239,6 +242,23 @@ class ProofTests(unittest.TestCase):
                 with self.assertRaises(manifest.ContractFailure):
                     self.provider.provenance()
                 state[key] = old
+            for mutate in (lambda items: items.pop(1),
+                           lambda items: items[1].update(database_id="wrong-role"),
+                           lambda items: items.append(items[0].copy()),
+                           lambda items: items.append({"name": "TRACE_EVENTS", "type": "queue"})):
+                state["version"] = historical_version()
+                mutate(state["version"]["resources"]["bindings"])
+                with self.subTest(mutate=mutate):
+                    with self.assertRaises(manifest.ContractFailure):
+                        self.provider.provenance()
+            state["version"] = historical_version()
+            other = "00000000-0000-0000-0000-000000000005"
+            version = other
+            state["version"]["id"] = other
+            serving["deployments"][0]["versions"][0]["version_id"] = other
+            with self.assertRaises(manifest.ContractFailure):
+                self.provider.provenance()
+
 
     def test_guard_rejects_local_retry_wrong_confirmation_and_foreign_prior(self):
         """Dispatch validation precedes capability reads and all provider requests."""
