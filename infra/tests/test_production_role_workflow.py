@@ -18,7 +18,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('amail-production-graph-writer',source.split('jobs:')[0])
         self.assertIn('amail-production-graph-writer',role.split('jobs:')[0])
         inputs = source.split('permissions:')[0]
-        self.assertLessEqual(len(re.findall(r'^      [a-z_]+:$',inputs,re.M)),25)
+        self.assertLessEqual(len(re.findall(r'^      [a-z0-9_]+:$',inputs,re.M)),25)
         self.assertNotIn('production_graph_phase:',inputs)
         self.assertIn('production-api-role-maintenance',inputs)
         self.assertLess(role.index('require_production_role_phase1.py'),role.index('migrate_production_role.py'))
