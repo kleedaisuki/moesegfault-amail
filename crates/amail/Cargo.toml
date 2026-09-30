@@ -2,6 +2,8 @@
 name = "amail"
 version = "0.1.0"
 edition = "2021"
+# Preserve `cargo run -p amail` after adding optional diagnostic binaries.
+default-run = "amail"
 description = "Agent-first mail CLI for moeSegFault"
 license = "GPL-3.0-only"
 
