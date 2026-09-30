@@ -1,7 +1,7 @@
 """Dormant, side-effect-free ten-address manifest and recovery contracts.
 
 There is no live entry point or Cloudflare/CLI adapter. A future hosted wrapper
-must attest normal B login, prior isolation and serving provenance independently.
+must attest one normal synthetic login and serving provenance independently.
 Only authenticated ciphertext may leave repository .temp. The optional crypto
 dependency is loaded only when sealing/opening; ordinary CI tests use synthetic
 AEAD fixtures, not a substitute production cipher.
@@ -147,7 +147,7 @@ class Snapshot:
 
 
 def preflight(snapshot: Snapshot, owner: str, allowed: list[str]) -> None:
-    """Separate global D1 headroom from provider rule headroom and B slots."""
+    """Separate global D1 headroom from provider rule headroom and owner slots."""
 
     snapshot.validate()
     require(isinstance(owner, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,256}", owner) is not None,
@@ -163,7 +163,7 @@ def preflight(snapshot: Snapshot, owner: str, allowed: list[str]) -> None:
 
 
 def build(secret: str, run: str, key_generation: str, owner: str,
-          checkout: str, mail_version: str, now_ms: int, snapshot: Snapshot) -> dict:
+          checkout: str, mail_version: str, now_ms: int, snapshot: Snapshot, provenance: dict) -> dict:
     """Build a private complete plan, not authorization to invoke a mutator."""
 
     allowed = candidates(secret, run)
@@ -172,12 +172,19 @@ def build(secret: str, run: str, key_generation: str, owner: str,
             and isinstance(checkout, str) and re.fullmatch(r"[a-f0-9]{40}", checkout) is not None
             and isinstance(mail_version, str) and re.fullmatch(r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}", mail_version) is not None
             and type(now_ms) is int and now_ms > 0, "provenance_shape_invalid")
+    require(isinstance(provenance, dict) and set(provenance) == {
+        "identity_revision", "login_revision", "verified_username", "client_id",
+    } and all(isinstance(value, str) for value in provenance.values())
+        and all(re.fullmatch(r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}", provenance[field])
+                is not None for field in ("identity_revision", "login_revision"))
+        and re.fullmatch(r"[a-z0-9_]{3,32}", provenance["verified_username"]) is not None
+        and provenance["client_id"] == "amail-cli-staging", "identity_provenance_invalid")
     resources = sorted(set(allowed) | {f"{part.lower()}@{DOMAIN}" for part in submissions()})
-    return {"schema": 1, "repository": REPOSITORY, "run": run, "attempt": "1",
+    return {"schema": 2, "repository": REPOSITORY, "run": run, "attempt": "1",
             "key_generation": key_generation, "owner_iss": ISSUER, "owner_sub": owner,
             "checkout": checkout, "mail_version": mail_version, "created_at": now_ms,
             "allowed": allowed, "submissions": submissions(), "resources": resources,
-            "baseline": snapshot.value()}
+            "baseline": snapshot.value(), "provenance": dict(provenance)}
 
 
 def validate(plan: dict, secret: str, run: str, generation: str) -> Snapshot:
@@ -185,9 +192,9 @@ def validate(plan: dict, secret: str, run: str, generation: str) -> Snapshot:
 
     require(isinstance(plan, dict) and set(plan) == {
         "schema", "repository", "run", "attempt", "key_generation", "owner_iss", "owner_sub",
-        "checkout", "mail_version", "created_at", "allowed", "submissions", "resources", "baseline",
+        "checkout", "mail_version", "created_at", "allowed", "submissions", "resources", "baseline", "provenance",
     }, "manifest_shape_invalid")
-    require(plan["schema"] == 1 and type(plan["schema"]) is int
+    require(plan["schema"] == 2 and type(plan["schema"]) is int
             and plan["repository"] == REPOSITORY and plan["run"] == run
             and plan["attempt"] == "1" and plan["key_generation"] == generation
             and plan["owner_iss"] == ISSUER, "manifest_binding_invalid")
@@ -196,7 +203,7 @@ def validate(plan: dict, secret: str, run: str, generation: str) -> Snapshot:
             "manifest_shape_invalid")
     snapshot = Snapshot(**baseline)
     expected = build(secret, run, generation, plan["owner_sub"], plan["checkout"],
-                     plan["mail_version"], plan["created_at"], snapshot)
+                     plan["mail_version"], plan["created_at"], snapshot, plan["provenance"])
     require(canonical(expected) == canonical(plan), "manifest_plan_invalid")
     return snapshot
 
@@ -206,7 +213,7 @@ def _cipher(key: bytes):
 
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        derived = hmac.new(key, b"amail-ten-address/aead-key/v1", hashlib.sha256).digest()
+        derived = hmac.new(key, b"amail-ten-address/aead-key/v2", hashlib.sha256).digest()
         return AESGCM(derived)
     except Exception:
         raise ContractFailure("crypto_unavailable") from None
@@ -218,7 +225,7 @@ def associated(run: str, generation: str) -> bytes:
     coordinates(run, "1")
     require(isinstance(generation, str) and re.fullmatch(r"[a-z0-9-]{1,40}", generation) is not None,
             "key_generation_invalid")
-    return canonical([REPOSITORY, run, "1", 1, generation])
+    return canonical([REPOSITORY, run, "1", 2, generation])
 
 
 def seal(plan: dict, secret: str, run: str, generation: str) -> bytes:
@@ -229,7 +236,7 @@ def seal(plan: dict, secret: str, run: str, generation: str) -> bytes:
     try:
         nonce = os.urandom(12)
         encrypted = _cipher(key_bytes(secret)).encrypt(nonce, canonical(plan), aad)
-        return b"AMAIL-TEN-V1\x00" + nonce + encrypted
+        return b"AMAIL-TEN-V2\x00" + nonce + encrypted
     except ContractFailure:
         raise
     except Exception:
@@ -240,8 +247,8 @@ def open_manifest(blob: bytes, secret: str, run: str, generation: str) -> dict:
     """Reject malformed/tampered ciphertext; raw decode errors never escape."""
 
     require(isinstance(blob, bytes) and 40 <= len(blob) <= LIMIT + 256
-            and blob.startswith(b"AMAIL-TEN-V1\x00"), "manifest_envelope_invalid")
-    prefix = len(b"AMAIL-TEN-V1\x00")
+            and blob.startswith(b"AMAIL-TEN-V2\x00"), "manifest_envelope_invalid")
+    prefix = len(b"AMAIL-TEN-V2\x00")
     try:
         raw = _cipher(key_bytes(secret)).decrypt(blob[prefix:prefix + 12], blob[prefix + 12:],
                                                 associated(run, generation))
@@ -283,7 +290,7 @@ def recovery_actions(plan: dict, current: Snapshot, verified_owner: str,
     """Return exact eligible deletes, without executing any CLI/provider mutation.
 
     A foreign row/rule or changed operational baseline rejects the entire plan
-    before any deletion. Caller must freshly attest normal B login/serving pins
+    before any deletion. Caller must freshly attest normal owner login/serving pins
     and re-audit each candidate immediately before any later CLI DELETE.
     """
 

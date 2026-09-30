@@ -39,7 +39,14 @@ def plan(snapshot=None):
 
     return target.build(KEY, RUN, GEN, OWNER, "a" * 40,
                         "00000000-0000-0000-0000-000000000001", 1000,
-                        snapshot or target.Snapshot({}, [], 0))
+                        snapshot or target.Snapshot({}, [], 0), provenance())
+
+
+def provenance():
+    """Represent synthetic immutable service revisions and verified username."""
+    return {"identity_revision": "00000000-0000-0000-0000-000000000002",
+            "login_revision": "00000000-0000-0000-0000-000000000003",
+            "verified_username": "synthetic_username", "client_id": "amail-cli-staging"}
 
 
 class SyntheticAEAD:
@@ -67,6 +74,30 @@ class SyntheticAEAD:
 
 class ManifestTests(unittest.TestCase):
     """Exercise fail-closed private plan and exact recovery without side effects."""
+
+    def test_identity_provenance_is_authenticated_and_complete(self):
+        """Missing revisions, username, native client or old schema never open."""
+        for field in provenance():
+            value = plan()
+            del value["provenance"][field]
+            with self.assertRaises(target.ContractFailure):
+                target.validate(value, KEY, RUN, GEN)
+        for field, invalid in (("identity_revision", "unknown"), ("login_revision", ""),
+                               ("verified_username", "foreign@email.test"),
+                               ("client_id", "amail-cli")):
+            value = plan()
+            value["provenance"][field] = invalid
+            with self.assertRaisesRegex(target.ContractFailure, "identity_provenance_invalid"):
+                target.validate(value, KEY, RUN, GEN)
+        value = plan()
+        value["schema"] = 1
+        with self.assertRaises(target.ContractFailure):
+            target.validate(value, KEY, RUN, GEN)
+        with mock.patch.object(target, "_cipher", SyntheticAEAD):
+            blob = target.seal(plan(), KEY, RUN, GEN)
+            self.assertTrue(blob.startswith(b"AMAIL-TEN-V2\x00"))
+            with self.assertRaisesRegex(target.ContractFailure, "manifest_envelope_invalid"):
+                target.open_manifest(blob.replace(b"AMAIL-TEN-V2", b"AMAIL-TEN-V1", 1), KEY, RUN, GEN)
 
     def test_names_fit_worker_and_reconstruct(self):
         """128-bit base32 identities fit even the eleventh prefix."""

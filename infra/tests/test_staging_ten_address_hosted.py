@@ -8,7 +8,7 @@ from unittest import mock
 
 import staging_ten_address_hosted as target
 import staging_ten_address_manifest as manifest
-from test_staging_ten_address_manifest import KEY, RUN, GEN, OWNER, plan, row, rule, SyntheticAEAD
+from test_staging_ten_address_manifest import KEY, RUN, GEN, OWNER, plan, row, rule, SyntheticAEAD, provenance
 
 VERSION = "00000000-0000-0000-0000-000000000001"
 
@@ -17,9 +17,9 @@ def evidence():
     """Construct explicit synthetic reviewed-wrapper observations."""
     return target.Evidence("workflow_dispatch", manifest.BRANCH, manifest.REPOSITORY,
                            "staging", "RUN_STAGING_TEN_ADDRESSES", RUN, "1", "a" * 40,
-                           "a" * 40, "success", "b" * 40, "success", "synthetic-a", OWNER,
-                           "synthetic-username", "synthetic-username", OWNER, VERSION, VERSION,
-                           "synthetic-identity", "synthetic-login",
+                           "a" * 40, "success", OWNER, "synthetic_username",
+                           "synthetic_username", OWNER, VERSION,
+                           provenance()["identity_revision"], provenance()["login_revision"],
                            ("amail-mail-staging", "amail-inbound-staging", manifest.DOMAIN,
                             manifest.ISSUER), "held")
 
@@ -114,13 +114,11 @@ class HostedTests(unittest.TestCase):
         self.assertTrue(all(r["state"] == "retired" for r in world.snapshot.rows.values()))
 
     def test_execution_and_provenance_gates_no_mutation(self):
-        """Missing evidence, same subject and retried campaigns never reach add."""
+        """Missing evidence, wrong subject and retried campaigns never reach add."""
         changes = [dict(event="push"), dict(branch="refs/heads/main"), dict(attempt="2"),
                    dict(environment="production"), dict(confirm=""),
                    dict(source_ci_sha="b" * 40), dict(source_ci_conclusion="failure"),
-                   dict(isolation_sha=""), dict(isolation_conclusion="failure"),
-                   dict(isolation_mail_version="foreign"), dict(owner_a=OWNER),
-                   dict(pkce_owner="foreign"), dict(verified_b_username="foreign"),
+                   dict(owner=""), dict(pkce_owner="foreign"), dict(verified_username="foreign"),
                    dict(identity_revision=""), dict(bindings=()), dict(sending_state="open")]
         for change in changes:
             with self.subTest(change=change):
@@ -128,6 +126,24 @@ class HostedTests(unittest.TestCase):
                 with self.assertRaises(manifest.ContractFailure):
                     self.run_campaign(world, **change)
                 self.assertEqual(world.calls, [])
+
+    def test_single_account_needs_no_second_owner_or_isolation_run(self):
+        """Quota and reserved boundaries cannot be mistaken for isolation proof."""
+        value = evidence()
+        value.validate()
+        self.assertNotIn("isolation_sha", vars(value))
+        self.assertNotIn("owner_b", vars(value))
+        self.assertEqual(value.provenance(), provenance())
+
+    def test_changed_authenticated_username_or_revisions_prevents_mutation(self):
+        """Even individually valid observations must match uploaded ciphertext."""
+        for change in (dict(identity_revision="00000000-0000-0000-0000-000000000009"),
+                       dict(login_revision="00000000-0000-0000-0000-000000000009"),
+                       dict(verified_username="another_username", expected_username="another_username")):
+            world = World()
+            with self.assertRaisesRegex(manifest.ContractFailure, "campaign_manifest_mismatch"):
+                self.run_campaign(world, **change)
+            self.assertEqual(world.calls, [])
 
     def test_exact_negative_oracle(self):
         """Status, stdout, typed code, and one diagnostic line are all material."""

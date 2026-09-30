@@ -1,7 +1,7 @@
-"""Dormant B-only hosted quota controller, with no live command entry point.
+"""Dormant single-account hosted quota controller, with no live command entry point.
 
 Adapters must independently establish complete snapshots, normal PKCE identity,
-immutable artifact readback and prior hosted isolation provenance. This module
+immutable artifact readback and service provenance. This module
 contains no network, subprocess, account creation or SMTP implementation. It
 never treats a caller boolean as deployment evidence; wiring remains gated.
 """
@@ -24,9 +24,10 @@ RETIREMENT_TIMEOUT_SECONDS = 360
 class Evidence:
     """Reviewed-wrapper observations, not user-supplied workflow overrides.
 
-    Source CI and earlier isolation must be independently read from successful
-    GitHub runs. Both subjects come from current verified Identity readback;
-    the B username binding and fresh native PKCE must be established upstream.
+    Source CI must be independently read from a successful GitHub run. The
+    one subject comes from current verified synthetic Identity readback; its
+    username binding and fresh native PKCE must be established upstream.
+    Cross-owner isolation is a separate acceptance, not a quota prerequisite.
     Serving and binding validation must inspect actual Cloudflare resources.
     The dormant controller cannot establish those facts by itself.
     """
@@ -41,15 +42,11 @@ class Evidence:
     checkout: str
     source_ci_sha: str
     source_ci_conclusion: str
-    isolation_sha: str
-    isolation_conclusion: str
-    owner_a: str
-    owner_b: str
-    verified_b_username: str
-    expected_b_username: str
+    owner: str
+    verified_username: str
+    expected_username: str
     pkce_owner: str
     mail_version: str
-    isolation_mail_version: str
     identity_revision: str
     login_revision: str
     bindings: tuple[str, ...]
@@ -67,18 +64,26 @@ class Evidence:
         require(re.fullmatch(r"[a-f0-9]{40}", self.checkout) is not None
                 and self.source_ci_sha == self.checkout and self.source_ci_conclusion == "success",
                 "source_ci_unverified")
-        require(re.fullmatch(r"[a-f0-9]{40}", self.isolation_sha) is not None
-                and self.isolation_conclusion == "success"
-                and self.isolation_mail_version == self.mail_version,
-                "prior_isolation_unverified")
-        require(bool(self.owner_a) and bool(self.owner_b) and self.owner_a != self.owner_b
-                and self.pkce_owner == self.owner_b and bool(self.expected_b_username)
-                and self.verified_b_username == self.expected_b_username,
+        require(bool(self.owner) and self.pkce_owner == self.owner
+                and bool(self.expected_username)
+                and self.verified_username == self.expected_username,
                 "verified_identity_unverified")
         require(bool(self.identity_revision) and bool(self.login_revision)
                 and self.bindings == ("amail-mail-staging", "amail-inbound-staging",
                                       manifest.DOMAIN, manifest.ISSUER)
                 and self.sending_state == "held", "staging_provenance_unverified")
+        self.provenance()
+
+    def provenance(self) -> dict:
+        """Return authenticated manifest bindings, not plaintext log fields."""
+        value = {"identity_revision": self.identity_revision, "login_revision": self.login_revision,
+                 "verified_username": self.verified_username, "client_id": "amail-cli-staging"}
+        require(all(isinstance(field, str) for field in value.values())
+                and all(re.fullmatch(r"[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}", value[field])
+                        is not None for field in ("identity_revision", "login_revision"))
+                and re.fullmatch(r"[a-z0-9_]{3,32}", self.verified_username) is not None,
+                "identity_provenance_invalid")
+        return value
 
 
 @dataclass(frozen=True, repr=False)
@@ -133,10 +138,10 @@ class Adapter:
     """Explicit capabilities supplied only by a reviewed hosted wrapper.
 
     read must return a complete validated global snapshot; list_owned must
-    contain every live B alias without filtering. settled performs read-only
+    contain every live owner alias without filtering. settled performs read-only
     bounded polling, never another add. storage_empty independently verifies
     no messages/objects for all candidates. pin checks single 100% serving
-    version and staging-only bindings. add/delete invoke only the B CLI.
+    version and staging-only bindings. add/delete invoke only the owner CLI.
     No exception text is allowed to escape through the controller.
     """
 
@@ -170,8 +175,8 @@ def prepare(evidence: Evidence, secret: str, generation: str, now_ms: int,
     try:
         evidence.validate()
         require(adapter.pin() == evidence.mail_version, "serving_pin_changed")
-        plan = manifest.build(secret, evidence.run, generation, evidence.owner_b,
-                              evidence.checkout, evidence.mail_version, now_ms, adapter.read())
+        plan = manifest.build(secret, evidence.run, generation, evidence.owner,
+                              evidence.checkout, evidence.mail_version, now_ms, adapter.read(), evidence.provenance())
         _observe(adapter, plan, 0, secret, evidence.run, generation)
         return plan, manifest.seal(plan, secret, evidence.run, generation)
     except manifest.ContractFailure:
@@ -191,8 +196,9 @@ def campaign(evidence: Evidence, local: bytes, downloaded: bytes, artifact_id: s
     evidence.validate()
     plan = manifest.artifact_readback(local, downloaded, artifact_id, secret,
                                       evidence.run, generation)
-    require(plan["checkout"] == evidence.checkout and plan["owner_sub"] == evidence.owner_b
-            and plan["mail_version"] == evidence.mail_version, "campaign_manifest_mismatch")
+    require(plan["checkout"] == evidence.checkout and plan["owner_sub"] == evidence.owner
+            and plan["mail_version"] == evidence.mail_version
+            and plan["provenance"] == evidence.provenance(), "campaign_manifest_mismatch")
     require(type(now_ms) is int and 0 <= now_ms - plan["created_at"] <= 86_400_000,
             "campaign_manifest_stale")
     primary = False
@@ -216,7 +222,7 @@ def campaign(evidence: Evidence, local: bytes, downloaded: bytes, artifact_id: s
         primary = False
     finally:
         try:
-            recover(plan, secret, generation, evidence.owner_b, adapter)
+            recover(plan, secret, generation, evidence.owner, adapter)
         except Exception:
             raise manifest.ContractFailure("ten_address_cleanup_required") from None
     require(primary, "ten_address_mutation_ambiguous")
@@ -228,7 +234,7 @@ def recover(plan: dict, secret: str, generation: str, verified_owner: str,
             adapter: Adapter) -> None:
     """Reconcile same authenticated plan, never resend add or delete blindly.
 
-    Upstream recovery must freshly authenticate B and validate source/bindings.
+    Upstream recovery must freshly authenticate the sealed owner and validate source/bindings.
     Age beyond 24 hours escalates operationally, but never abandons cleanup or
     authorizes a new campaign; this routine deliberately has no expiry delete.
     """

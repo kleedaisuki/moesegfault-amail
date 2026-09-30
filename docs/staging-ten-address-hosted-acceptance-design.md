@@ -1,11 +1,29 @@
-# B-only hosted ten-address and reserved-name acceptance
+# Single-account hosted ten-address and reserved-name acceptance
 
-Status (2026-09-30): **design plus dormant manifest/recovery source;
-NO-GO for live dispatch**. This document
-does not create a workflow, account, alias, provider rule, or acceptance result.
-The assignment's safe-design fallback is used because B has not yet completed
-normal verification and the hosted two-principal isolation acceptance has not
-passed. No input boolean can substitute for either fact.
+Status (2026-10-01): **single-account source increment; NO-GO for live dispatch**.
+The quota/reserved-name campaign is independent of two-principal mailbox
+isolation. A single already verified synthetic staging account can prove ten
+simultaneous owned allocations, exact reserved-name rejection, the eleventh
+owner-limit rejection and route cleanup. It cannot prove cross-owner access
+control. Requiring B or an earlier isolation run here unnecessarily serialized
+an orthogonal boundary behind B's verification-inbox/R2 capability blocker.
+
+The current intended principal is existing synthetic **A**, authenticated afresh
+through normal native PKCE and independently bound to its verified contact,
+protected username and Identity pairwise subject. This is not the user's account.
+No account is created or contact-verification transport exercised by this job.
+An account with any non-retired address fails preflight; do not delete unrelated
+data to obtain an empty test account. Earlier one-principal SMTP acceptance is
+reused as evidence of the native flow, not as a quota or isolation pass.
+
+Manifest schema/envelope **v2** authenticates Identity and Login immutable
+revision IDs, the verified username and exact native client ID alongside Mail
+version, owner, checkout and full baseline. Dormant v1 source never uploaded
+live recovery artifacts, so no deployed recovery contract is migrated. V1
+ciphertext is rejected rather than silently supplied incomplete provenance.
+Independent review and hosted source tests remain prerequisites. No local
+execution, live alias, provider mutation, SMTP or deployment is performed by
+this source change.
 
 Source increment (2026-10-01): `staging_ten_address_hosted.py` implements the
 dormant campaign controller: structured execution/provenance gate contracts,
@@ -30,12 +48,11 @@ execution; only static AST parsing and diff whitespace checks were performed
 locally. Synthetic AEAD remains deliberately authentication-only.
 
 There is still **no live entry point, complete Cloudflare/D1 adapter, normal
-PKCE wrapper, trusted prior-isolation attestation reader, artifact uploader/
+PKCE wrapper, artifact uploader/
 downloader or workflow dispatch target**. `Evidence` describes observations
 that a reviewed wrapper must independently obtain, not authorization for an
-operator to supply booleans or arbitrary provenance. The manifest currently
-seals the Mail pin but not Identity/Login revisions or username: extending the
-authenticated provenance contract is required before exposing mutation.
+operator to supply booleans or arbitrary provenance. The v2 manifest seals Mail, Identity/Login revisions and verified username;
+the wrapper must obtain these observations independently before exposing mutation.
 The wrapper must also validate a CI-built Windows binary, staging bindings,
 full provider matcher/action inventory and independent message/R2 absence.
 Pinned `cryptography` installation and real AES-GCM integration tests remain
@@ -68,7 +85,7 @@ exact supported-delete recovery controller. Its synthetic contracts are in
 infra unittest job. No Cloudflare adapter, browser wrapper, campaign mutator
 or workflow target is exposed. The normalized snapshot input must eventually
 come from a complete source-reviewed adapter, not a filtered caller-provided
-inventory. Prior-isolation/provenance verification, service-version checks,
+inventory. Independent identity/provenance verification, service-version checks,
 message/storage absence, deadline/key retention enforcement and artifact
 upload/download orchestration remain **unimplemented integration gates**.
 
@@ -94,23 +111,24 @@ these count-preserving drift cases.
 
 ## Scope and source evidence
 
-Use the already designated synthetic principal B, after the prerequisites in
-[second-principal provisioning](staging-second-principal.md) and
-[two-principal mailbox isolation](staging-two-principal-mail-isolation.md).
-Do not create another principal, use the owner account, repeat SMTP fixtures,
-or turn the existing `staging_address_isolation_e2e.execute` into the default
-acceptance path. That older harness mixes A's quota, B ownership, SMTP and
-retirement transport behavior. This narrower test uses **B only, ten temporary
-literal routes, zero SMTP submissions and zero mail messages**.
+Use the already verified synthetic principal A with its current protected
+credentials. Keep [second-principal provisioning](staging-second-principal.md)
+and [two-principal mailbox isolation](staging-two-principal-mail-isolation.md)
+as separate acceptance paths: neither their pass nor a user-supplied override
+is required or claimed by quota acceptance. Do not create another principal,
+use the owner account, repeat SMTP fixtures, or turn the mixed
+`staging_address_isolation_e2e.execute` into the default acceptance path.
+This narrower test uses **one account, ten temporary literal routes, zero SMTP
+submissions and zero mail messages**.
 
 The reviewed source observations motivating a separate path are:
 
 * `staging_address_isolation_e2e.execute` puts ten aliases on A, requires SMTP,
   and records mutation intent only in a process-local dictionary. Cancellation
   loses that dictionary and its reserved-name baseline.
-* `staging_hosted_e2e.execute` already implements normal B PKCE and restricted
-  Identity readback binding each verified contact to its protected username
-  and distinct principal/pairwise subject. Reuse this contract, not auth-store
+* `staging_hosted_e2e.execute` already implements normal synthetic PKCE and restricted
+  Identity readback binding verified contacts to protected usernames
+  and their pairwise subjects; only the selected account is required here. Reuse this contract, not auth-store
   copying or a fabricated verified D1 row.
 * `staging_mail_e2e.cf_rules` exhausts bounded count-consistent pages and rejects
   duplicate rule IDs; `assert_route` verifies the exact enabled API-owned rule
@@ -131,14 +149,13 @@ mock tests remain useful but do not prove the stronger hosted contract here.
 | --- | --- |
 | Execution boundary | `workflow_dispatch` only; exact branch `refs/heads/codex/amail-v0.1.0`; staging Environment; literal `RUN_STAGING_TEN_ADDRESSES`; attempt 1 only; no push/schedule/reusable unconfirmed call |
 | Hosted source | Green hosted CI for the exact checkout SHA, including synthetic denial/recovery contracts; CI-built Windows `amail.exe`; no local test/build |
-| B readiness | Normal verified B contact, username binding, distinct A/B principal and pairwise subject via current Identity readback; fresh B native PKCE in this run; no account provision/recovery in quota job |
-| Earlier isolation | A separately completed, successful guarded two-principal SMTP isolation run with checkout SHA and serving-version provenance recorded in `docs/validation.md`; fail closed until a source-reviewed machine-readable attestation exists, or keep dispatch unwired for an explicit parent/operator evidence review |
+| Account readiness | Normal verified synthetic A contact, username/pairwise-subject binding via current Identity readback; fresh native PKCE in this run; no account provision/recovery in quota job |
 | Service provenance | Single 100% serving Mail version matches expected pin, staged Identity/Login revisions recorded; no concurrent staging deployment; recheck Mail serving pin before mutation and after cleanup |
-| Empty B | API `address list` empty, owner-scoped D1 non-retired count zero, no preexisting provisioning/deleting/reconciliation row; do not delete data to make the precondition true |
+| Empty account | API `address list` empty, owner-scoped D1 non-retired count zero, no preexisting provisioning/deleting/reconciliation row; do not delete data to make the precondition true |
 | Global application capacity | Complete staging D1 global `state!='retired'` baseline count **at most 187**, across every owner and all pending/provisioning/active/deleting states; complete canonical non-retired row baseline sealed before mutation; unknown schema, incomplete inventory or count disagreement fails closed |
 | Provider capacity | Complete rule inventory, configured domain confirmed as `mail-staging.moesegfault.dev`, at least 12 free rule slots (10 planned + 2 reserve); no truncated/unknown matcher inventory |
 | Global hold | Public sending remains held; staging-only resource bindings independently checked; no SMTP credential passed to this job |
-| Recovery readiness | All candidate D1/provider baseline and exact B owner captured and durably sealed before mutation; protected recovery key available; upload confirmation established; same-run recovery procedure source-reviewed |
+| Recovery readiness | All candidate D1/provider baseline and exact authenticated owner captured and durably sealed before mutation; protected recovery key available; upload confirmation established; same-run recovery procedure source-reviewed |
 
 [Cloudflare's current limits](https://developers.cloudflare.com/email-service/platform/limits/)
 document 200 routing rules per domain. Conservatively gate on **both** the
@@ -289,14 +306,14 @@ output, credentials or token claims are interpolated.
 ## Cancellation-safe reconciliation and ambiguity policy
 
 Recovery loads and authenticates the exact original manifest and obtains a
-fresh **normal B login**, with the same current verified owner binding. It
+fresh **normal selected owner login**, with the same current verified owner binding. It
 does not register an account, send SMTP, add an alias, or replay the failed
 request. The source and staging bindings must still match the recovery
 contract; a newer deployed revision needs deliberate review, not a wildcard
 override of the pin.
 
 For each candidate absent from both baseline D1 and provider rules, delete
-through the supported B CLI only if current D1 proves the exact B owner,
+through the supported B CLI only if current D1 proves the exact authenticated owner,
 creation time not before the manifest's preflight, and current rule is either
 absent or the expected exact API-owned staging ingress rule bound by D1. A
 foreign owner, altered provider action, inconsistent rule ID or unowned orphan
