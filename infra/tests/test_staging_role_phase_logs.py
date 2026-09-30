@@ -9,12 +9,12 @@ from infra.tests import staging_role_phase_logs as probe
 
 
 def row(label: str, request: str = "request-12345678", trigger: str = "scheduled",
-        version: str = probe.VERSION) -> dict:
+        version: str = probe.VERSION, kind: str = "cf-worker-log") -> dict:
     """Construct a synthetic Cloudflare application-log envelope."""
 
     return {
         "timestamp": probe.START + 1,
-        "$metadata": {"service": probe.SERVICE, "requestId": request,
+        "$metadata": {"service": probe.SERVICE, "requestId": request, "type": kind,
                       "message": {"message": label}},
         "$workers": {"eventType": trigger, "scriptName": probe.SERVICE,
                      "requestId": request,
@@ -68,8 +68,31 @@ class RolePhaseLogTests(unittest.TestCase):
     def test_unknown_scheduled_text_fails_closed(self) -> None:
         """Never silently treat an unreviewed Cron payload as harmless."""
 
-        with self.assertRaisesRegex(probe.ProbeError, "scheduled_payload_unreviewed"):
+        with self.assertRaisesRegex(probe.ProbeError, "scheduled_text_unreviewed"):
             probe.classify([row("private destination: do not print")])
+
+    def test_provider_invocation_event_is_not_an_app_log(self) -> None:
+        """Skip only Cloudflare's typed Cron invocation summary."""
+
+        records = [row("opaque provider Cron summary", kind="cf-worker-event"),
+                   row("role alert digest accepted groups=1")]
+        self.assertEqual(probe.classify(records), "digest_only_inconclusive")
+        unknown = row("opaque provider Cron summary")
+        unknown["$metadata"].pop("type")
+        with self.assertRaisesRegex(probe.ProbeError, "scheduled_kind_unverified"):
+            probe.classify([unknown])
+
+    def test_wrapper_shape_and_unknown_text_have_distinct_safe_codes(self) -> None:
+        """Do not print a payload when the provider wrapper differs."""
+
+        bad_source = row("role monitor healthy pending=0")
+        bad_source["source"] = {"unreviewed": "private text"}
+        with self.assertRaisesRegex(probe.ProbeError, "scheduled_source_shape_unreviewed"):
+            probe.classify([bad_source])
+        bad_message = row("role monitor healthy pending=0")
+        bad_message["$metadata"]["message"] = {"unreviewed": "private text"}
+        with self.assertRaisesRegex(probe.ProbeError, "scheduled_message_shape_unreviewed"):
+            probe.classify([bad_message])
 
     def test_version_and_scope_fail_closed(self) -> None:
         """A log from another revision or service cannot be attributed."""

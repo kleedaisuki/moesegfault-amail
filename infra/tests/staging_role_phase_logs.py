@@ -226,20 +226,27 @@ def classify(records: list[dict]) -> str:
              and (not metadata.get("requestId") or not worker.get("requestId")
                   or metadata["requestId"] == worker["requestId"]),
              "invocation_id_unverified")
+        # Cloudflare emits one provider-owned invocation event for every Cron.
+        # Its payload is the schedule/outcome, not an application phase log.
+        # Only the provider's indexed type permits skipping that payload.
+        kind = metadata.get("type")
+        if kind == "cf-worker-event":
+            continue
+        need(kind == "cf-worker-log", "scheduled_kind_unverified")
         source = text_payload(record.get("source"))
         message = text_payload(metadata.get("message"))
         need(record.get("source") in (None, "", {}, []) or source is not None,
-             "scheduled_payload_unreviewed")
+             "scheduled_source_shape_unreviewed")
         need(metadata.get("message") in (None, "", {}, []) or message is not None,
-             "scheduled_payload_unreviewed")
+             "scheduled_message_shape_unreviewed")
         need(source is None or message is None or source == message,
              "log_echo_disagrees")
         payload = source or message
-        need(payload is not None, "scheduled_payload_unreviewed")
+        need(payload is not None, "scheduled_payload_missing")
         digest = DIGEST.fullmatch(payload)
         phase = ("digest_accepted" if digest else "healthy" if HEALTHY.fullmatch(payload)
                  else PHASES.get(payload))
-        need(phase is not None, "scheduled_payload_unreviewed")
+        need(phase is not None, "scheduled_text_unreviewed")
         invocations.setdefault(request_id, set()).add(phase)
     if not invocations:
         return "no_reviewed_invocation"
