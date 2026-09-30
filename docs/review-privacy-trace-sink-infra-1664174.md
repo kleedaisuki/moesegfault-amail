@@ -123,3 +123,63 @@ non-retention, sink marker exclusion and retained causal trace evidence.
 The Queue Get documentation fetch failed repeatedly; no invented Get-specific
 schema guarantee is asserted. Ownership totals are documented on Queue list,
 and implementation must attest completeness using a supported provider shape.
+
+## Narrow correction review (`71e6036`, `c9f698d`, `96a6181`)
+
+Reviewed 2026-09-30 against the committed integrated tree at `96a6181`.
+No local tests/builds, live calls, deployment or push. This addendum updates
+rather than reopens the findings above.
+
+| Finding | Current source status |
+| --- | --- |
+| P1 stable 100%-serving containment and successful deployment provenance | Open: prerequisite remains `check_observability.py` settings-only; no deployment/run/SHA/version pin. |
+| P1 private sink trigger/capability attestation | Open: `96a6181` makes `--mode sink` executable, but still checks only settings/script-settings. |
+| P2 owner-array completeness and detail identity | Resolved in source by `71e6036`: integer totals must equal arrays, queue ID/name must match detail. New fixtures deny mismatched ID/count. Hosted result remains unverified. |
+| P2 no false resource adoption | Partially resolved: preexisting queue in `--phase queues` requires exact project-variable ID. Remaining identity/lifecycle issues below. |
+
+### Remaining resource identity/lifecycle correction
+
+`ensure_trace_queues.py::reconcile` discards the successful create result, then
+freshly selects by name. It does not bind readback to the ID of the actual
+created object. Also `--phase readback` does not check either reviewed ID.
+Thus a name-preserving resource replacement can pass final ownership/settings
+checks without the reviewed identity; this is conditional on replacement, not
+an allegation of existing drift. Pin IDs obtained from successful creates
+through that operation, and require reviewed IDs in subsequent readback.
+Do not automatically save an unverified name-selected ID as creation evidence.
+
+The first pass also creates an absent DLQ before inspecting a conflicting
+preexisting main queue. Trigger: DLQ absent, main queue present but its reviewed
+ID missing/wrong. A POST occurs before the predictable provenance denial.
+Validate **all existing target resources before any POST**, then create only
+missing resources. Add hosted fixtures for this mixed absent/conflicting case
+and created-ID replacement. This is a P2 bounded mutation/recovery correction,
+not a request for purge or a new general provisioning framework.
+
+### Guarded canary wiring
+
+`c9f698d` adds only the explicit manual `staging-trace-sink-canary` dispatch on
+the exact development branch. The reusable job repeats the branch restriction,
+checks a closed mode set and both UUID pins, requires exact confirmation for
+synthetic canary mode, runs synthetic contracts before final secret-bearing
+step, and provides login credentials only for canary mode. No new substantive
+wiring issue found in this narrow review. The harness's correctness is delegated
+to its independent review; this is not a live privacy approval.
+
+However, the rollout jobs introduced in `1664174` still have the branch-push
+condition. `c9f698d` does **not** disable automatic sink/API deployment on push.
+A source CI push is therefore still a rollout attempt. Until the prerequisite
+is a real immutable successful-run/SHA/version plus stable 100% serving check,
+use a non-deploying hosted path or explicitly disable deployment. Merely writing
+the provenance contract in documentation is not the gate.
+
+### Updated decision
+
+**GO for non-deploying hosted source CI on the integrated tree; NO-GO for live
+Queue creation or automatic staging rollout.** Required live gates remain:
+immutable successful containment deployment evidence, stable 100%-serving API
+pin before mutation, complete private sink exposure/trigger/binding attestation,
+and the remaining Queue provenance/lifecycle corrections. Production has no
+prior API deployment, but still requires private sink verification and ordered
+first safe API deployment. Whole-record synthetic acceptance is required after
+rollout; settings green alone cannot establish privacy.
