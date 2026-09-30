@@ -51,3 +51,9 @@ Reviewed `bb91d98d6ce8ab63c48132f3ff4c70eb086e4184` without executing local test
 ```
 
 The first line is `- if:`, not `if:`. It therefore bypasses the condition detector; GitHub's implicit condition expression has no `${{ }}` for the later expression validator and no uppercase `GITHUB_*` token. The conditional build setup remains cacheable by the same direct control-flow reasoning. Reject step-first conditions (and any unsupported condition layout) before projection, retaining only the exact named-step orchestration forms. Add an implicit branch condition and bracket-input variant in that standard step-first layout. Hosted source checks are still permitted, but dynamic fail-closed contract GO remains withheld until corrected.
+
+## Final correction follow-up: e18734a
+
+Reviewed `e18734a08c1a06ea336a9b71d0cb50ee1c2cc4d7` statically. The helper now rejects step-first layouts other than the current literal name/uses-first forms, and recognizes ordinary, quoted and spaced conditional keys including the sequence-first `- if:` form. Recognized conditions are accepted only for the exact three known named cache/tool orchestration steps, with their exact guard strings and expected operation. Both reported branch-dependent setup paths therefore fail closed; the focused fixtures cover implicit GitHub conditions and quoted/spaced keys, while the current-workflow fixture preserves cacheability.
+
+**Reported P2 resolved. GO for hosted source push/checks of the corrected change.** No new substantive defect found in the inspected current recipe and supported layout. This is a bounded source review, not verification of all possible YAML encodings or arbitrary build-script runtime inputs. All required hosted follow-up and cache/acceptance limitations above still apply. No local executable tests were run, and no cache, deployment or provider mutation was performed by this reviewer.
