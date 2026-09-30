@@ -3,6 +3,34 @@
 
 use serde::{Deserialize, Serialize};
 
+mod role;
+pub use role::{RoleCode, RoleEvent, RoleKind};
+
+/// Closed union of reviewed producers; existing Mail events retain their wire shape.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Record {
+    /// Existing Mail API/CLI correlation contract, unchanged on the wire.
+    Mail(Event),
+    /// Content-free Email/Cron monitor diagnostics without HTTP field semantics.
+    Role(RoleEvent),
+}
+
+impl Record {
+    /// Reject malformed, oversized or semantically invalid payloads before reconstruction.
+    pub fn from_value(value: serde_json::Value) -> Option<Self> {
+        if serde_json::to_vec(&value).ok()?.len() > 1024 {
+            return None;
+        }
+        let record: Self = serde_json::from_value(value).ok()?;
+        let valid = match &record {
+            Self::Mail(event) => event.valid(),
+            Self::Role(event) => event.valid(),
+        };
+        valid.then_some(record)
+    }
+}
+
 /// Closed operation vocabulary; never deserialize arbitrary labels.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -346,6 +374,8 @@ mod tests {
     /// Sink reconstruction preserves causal and producer identities exactly across retries.
     #[test]
     fn roundtrip_preserves_identity() {
+        let record = Record::from_value(fixture()).unwrap();
+        assert_eq!(serde_json::to_value(record).unwrap(), fixture());
         let first = Event::from_value(fixture()).unwrap();
         let encoded = serde_json::to_value(&first).unwrap();
         assert_eq!(encoded, fixture());

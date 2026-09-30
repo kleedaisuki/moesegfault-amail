@@ -44,18 +44,31 @@ class RoleMonitorConfigTests(unittest.TestCase):
             self.assertNotIn("allowed_destination_addresses", binding)
 
     def test_private_observability_is_explicit_in_both_realms(self) -> None:
-        """No automatic Email spans or invocation metadata are retained. / 两个环境均不留存自动邮件跨度或调用元数据。"""
+        """Source disables original-context capture; live full-record acceptance is separate."""
 
         config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
         for observability in (
             config["observability"],
             config["env"]["staging"]["observability"],
         ):
-            self.assertTrue(observability["enabled"])
+            self.assertFalse(observability["enabled"])
             self.assertEqual(observability["head_sampling_rate"], 1.0)
-            self.assertTrue(observability["logs"]["enabled"])
+            self.assertFalse(observability["logs"]["enabled"])
             self.assertFalse(observability["logs"]["invocation_logs"])
+            self.assertFalse(observability["logs"]["persist"])
             self.assertFalse(observability["traces"]["enabled"])
+            self.assertFalse(observability["traces"]["persist"])
+            self.assertFalse(observability["issues"]["enabled"])
+
+    def test_typed_queue_binding_is_realm_isolated(self) -> None:
+        """Only the reviewed private telemetry Queue is added to each role realm."""
+
+        config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+        for realm, suffix in ((config, ""), (config["env"]["staging"], "-staging")):
+            self.assertEqual(realm["queues"]["producers"], [{
+                "binding": "ROLE_TRACE_EVENTS", "queue": "amail-trace-events" + suffix,
+            }])
+            self.assertNotIn("consumers", realm["queues"])
 
 
 if __name__ == "__main__":

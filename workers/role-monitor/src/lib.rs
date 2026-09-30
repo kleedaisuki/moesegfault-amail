@@ -5,14 +5,18 @@
 //! 仅接受精确角色信封。原始 MIME 只经过 Cloudflare 并抵达已验证转发地址；
 //! 独立 D1 仅记录不透明的到达事件。
 
+use amail_trace_schema::{RoleCode, RoleKind};
 use js_sys::Date;
 use serde::Deserialize;
 use uuid::Uuid;
 use wasm_bindgen::JsValue;
 use worker::{
-    console_log, console_warn, event, Env, Error, Fetch, ForwardableEmailMessage, Headers, Method,
-    Request, RequestInit, Result, ScheduledEvent, SendEmailBuilder,
+    event, Env, Error, Fetch, ForwardableEmailMessage, Headers, Method, Request, RequestInit,
+    Result, ScheduledEvent, SendEmailBuilder,
 };
+
+mod diagnostics;
+use diagnostics::Diagnostics;
 
 /// A lease spans several Cron periods but never substitutes for owner attention.
 /// 租约覆盖多个 Cron 周期，但绝不代替所有者实际处理。
@@ -31,6 +35,8 @@ const OFFICIAL_FROM: &str = "mail@moesegfault.dev";
 struct Role {
     address: &'static str,
     label: &'static str,
+    /// A closed diagnostic category; never serialize the envelope address.
+    kind: RoleKind,
 }
 
 /// The public production roles are separate from a single staging-only canary.
@@ -39,23 +45,28 @@ const PRODUCTION_ROLES: [Role; 4] = [
     Role {
         address: "abuse@moesegfault.dev",
         label: "apex_abuse",
+        kind: RoleKind::ApexAbuse,
     },
     Role {
         address: "postmaster@moesegfault.dev",
         label: "apex_postmaster",
+        kind: RoleKind::ApexPostmaster,
     },
     Role {
         address: "abuse@mail.moesegfault.dev",
         label: "mail_abuse",
+        kind: RoleKind::MailAbuse,
     },
     Role {
         address: "postmaster@mail.moesegfault.dev",
         label: "mail_postmaster",
+        kind: RoleKind::MailPostmaster,
     },
 ];
 const STAGING_ROLES: [Role; 1] = [Role {
     address: "amail-role-e2e@moesegfault.dev",
     label: "staging_probe",
+    kind: RoleKind::StagingProbe,
 }];
 
 /// Read a fixed realm; do not let a deploy variable invent new public recipients.
@@ -71,19 +82,26 @@ fn roles(realm: &str) -> Option<&'static [Role]> {
 /// The Email handler intentionally has no HTTP companion or raw-body parser.
 /// Email 处理器刻意不提供 HTTP 入口或原始正文解析器。
 #[event(email)]
-pub async fn email(
-    message: ForwardableEmailMessage,
-    env: Env,
-    _ctx: worker::Context,
-) -> Result<()> {
-    handle_email(message, &env)
-        .await
+pub async fn email(message: ForwardableEmailMessage, env: Env, ctx: worker::Context) -> Result<()> {
+    let diagnostics = Diagnostics::new();
+    let result = handle_email(message, &env).await;
+    let (code, role) = match &result {
+        Ok(Some(role)) => (RoleCode::EmailAccepted, Some(*role)),
+        Ok(None) => (RoleCode::EmailRejected, None),
+        Err(_) => (RoleCode::EmailFailed, None),
+    };
+    let events = diagnostics.finish(code, role, None);
+    if let Ok(queue) = env.queue("ROLE_TRACE_EVENTS") {
+        ctx.wait_until(diagnostics::flush(queue, events));
+    }
+    result
+        .map(|_| ())
         .map_err(|_| Error::RustError("role mail handling unavailable".into()))
 }
 
 /// Persist a random arrival before a single forward; unknown outcomes remain visible.
 /// 先持久化随机到达 ID，再调用一次转发；未知结果保持可见。
-async fn handle_email(message: ForwardableEmailMessage, env: &Env) -> Result<()> {
+async fn handle_email(message: ForwardableEmailMessage, env: &Env) -> Result<Option<RoleKind>> {
     let realm = env.var("ROLE_REALM")?.to_string();
     let role = roles(&realm).and_then(|set| {
         set.iter()
@@ -91,7 +109,7 @@ async fn handle_email(message: ForwardableEmailMessage, env: &Env) -> Result<()>
     });
     let Some(role) = role else {
         message.set_reject("Recipient unavailable");
-        return Ok(());
+        return Ok(None);
     };
     let destination = env.secret("ROLE_FORWARD_DESTINATION")?.to_string();
     if !valid_destination(&destination) {
@@ -125,16 +143,25 @@ async fn handle_email(message: ForwardableEmailMessage, env: &Env) -> Result<()>
         .bind(&[JsValue::from_str(&id), JsValue::from_f64(now() as f64)])?
         .run()
         .await?;
-    console_log!("role arrival accepted role={} ref={}", role.label, id);
-    Ok(())
+    Ok(Some(role.kind))
 }
 
 /// A Cron failure leaves the old lease to expire; never renew from a partial run.
 /// Cron 失败时让旧租约到期；部分成功绝不续租。
 #[event(scheduled)]
 pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: worker::ScheduleContext) {
-    if run_monitor(&env).await.is_err() {
-        console_warn!("role monitor health check failed");
+    let mut diagnostics = Diagnostics::new();
+    let result = run_monitor(&env, &mut diagnostics).await;
+    let (code, count) = match &result {
+        Ok(pending) => (RoleCode::MonitorHealthy, Some((*pending).max(0) as u64)),
+        Err(_) => (RoleCode::MonitorFailed, None),
+    };
+    let events = diagnostics.finish(code, None, count);
+    if let Ok(queue) = env.queue("ROLE_TRACE_EVENTS") {
+        // Await before the static failure panic: diagnostics do not determine lease renewal.
+        diagnostics::flush(queue, events).await;
+    }
+    if result.is_err() {
         // workers-rs 0.8.7's scheduled wrapper discards a returned Result.
         // A static panic is therefore required for Cron Past Events to record failure.
         // workers-rs 0.8.7 的 scheduled 包装层会丢弃返回的 Result；
@@ -145,7 +172,7 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: worker::ScheduleC
 
 /// Drain the notification outbox, audit all exact rules, then renew the send lease.
 /// 清空通知发件箱、审计全部精确规则，然后续租发信闸门。
-async fn run_monitor(env: &Env) -> Result<()> {
+async fn run_monitor(env: &Env, diagnostics: &mut Diagnostics) -> Result<i64> {
     let realm = env.var("ROLE_REALM")?.to_string();
     let expected = roles(&realm).ok_or_else(|| Error::RustError("role realm invalid".into()))?;
     let destination = env.secret("ROLE_FORWARD_DESTINATION")?.to_string();
@@ -153,22 +180,29 @@ async fn run_monitor(env: &Env) -> Result<()> {
         return Err(Error::RustError("role destination invalid".into()));
     }
     let db = env.d1("ROLE_MONITOR")?;
+    let digest = flush_alerts(env, &db, expected, &destination, diagnostics).await;
+    phase(diagnostics, RoleCode::DigestFailed, digest)?;
     phase(
-        "digest",
-        flush_alerts(env, &db, expected, &destination).await,
+        diagnostics,
+        RoleCode::DestinationFailed,
+        audit_destination(env, &destination).await,
     )?;
-    phase("destination", audit_destination(env, &destination).await)?;
-    phase("routes", audit_rules(env, expected).await)?;
-    let pending = phase("lease", check_and_renew(&db).await)?;
-    console_log!("role monitor healthy pending={}", pending);
-    Ok(())
+    phase(
+        diagnostics,
+        RoleCode::RoutesFailed,
+        audit_rules(env, expected).await,
+    )?;
+    phase(
+        diagnostics,
+        RoleCode::LeaseFailed,
+        check_and_renew(&db).await,
+    )
 }
 
-/// Log only a fixed phase name; provider/D1 error details may contain private data.
-/// 只记录固定阶段名；供应商或 D1 错误详情可能包含隐私数据。
-fn phase<T>(name: &'static str, result: Result<T>) -> Result<T> {
+/// Preserve fixed phase failures only; provider/D1 errors never enter the diagnostic buffer.
+fn phase<T>(diagnostics: &mut Diagnostics, code: RoleCode, result: Result<T>) -> Result<T> {
     if result.is_err() {
-        console_warn!("role monitor phase={} failed", name);
+        diagnostics.phase(code, None);
     }
     result
 }
@@ -180,6 +214,7 @@ async fn flush_alerts(
     db: &worker::D1Database,
     expected: &[Role],
     destination: &str,
+    diagnostics: &mut Diagnostics,
 ) -> Result<()> {
     let cutoff = now() - 1_000;
     // A sequence high-water mark freezes membership independently of handler
@@ -221,7 +256,7 @@ async fn flush_alerts(
         ])?
         .run()
         .await?;
-        console_log!("role alert digest accepted groups={}", groups.len());
+        diagnostics.phase(RoleCode::DigestAccepted, Some(groups.len() as u64));
     }
     Ok(())
 }
@@ -615,6 +650,24 @@ fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Safe diagnostics must propagate the original dependency failure, not replace it.
+    #[test]
+    fn phase_diagnostics_preserve_health_result() {
+        let mut diagnostics = Diagnostics::new();
+        let failed: Result<()> = Err(Error::RustError("synthetic dependency".into()));
+        assert!(phase(&mut diagnostics, RoleCode::RoutesFailed, failed).is_err());
+        assert_eq!(
+            phase(&mut diagnostics, RoleCode::LeaseFailed, Ok(7)).unwrap(),
+            7
+        );
+        let events = diagnostics.finish(RoleCode::MonitorFailed, None, None);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].code, RoleCode::RoutesFailed);
+        assert_eq!(events[1].code, RoleCode::MonitorFailed);
+        let payload = serde_json::to_string(&events).unwrap();
+        assert!(!payload.contains("synthetic dependency"));
+    }
 
     /// Fixed roles prevent staging messages from entering production monitoring.
     /// 固定角色表防止预发布邮件流入生产监控。

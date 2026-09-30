@@ -129,3 +129,136 @@ others. Source and hosted tests may authorize a staging experiment; only the
 pinned deployed experiment can justify production privacy/cutover. Reverting to
 direct forwarding is the production availability rollback; do not re-enable
 original-context Logs as a telemetry rollback.
+
+## Typed Queue remediation source contract (2026-09-30)
+
+Status: **implemented in source; independent review, hosted compilation/tests,
+coordinated rollout and live privacy/operations acceptance are pending**. No
+local build/test, live read, route mutation, deployment or push was performed
+for this change. Offline Cargo lockfile generation changed only the role
+package's references to already-locked schema/JSON crates. Rust formatting and
+static diff checks are not acceptance evidence. Earlier custom-log findings
+above remain historical; they do not describe the new source configuration.
+
+### Data boundary and causal model
+
+The role monitor now shares the existing Mail trace Queue/sink, rather than
+introducing a second collector, but uses a **distinct closed `RoleEvent` schema**
+in `crates/trace-schema/src/role.rs`. The existing Mail `Event` wire fields and
+semantics remain unchanged. The sink decodes the untagged closed `Record` union,
+validates it, and serializes the typed variant without adding a wrapper. Unknown
+fields, arbitrary labels, malformed identifiers, oversized records and invalid
+field combinations are dropped/acked without formatting the rejected body.
+
+| Role field | Invariant | Purpose |
+| --- | --- | --- |
+| `schema_version`, `service` | Version 1, only `role_monitor` | Distinguish the reviewed producer without dynamic labels. |
+| `event_id` | Canonical server UUIDv4 | Stable retained identity on Queue redelivery. |
+| `trace_id`, `span_id` | Fresh lower-case nonzero W3C-shaped IDs | One causal root per Email or Cron invocation; no incoming Email parent accepted. |
+| `parent_span_id` | Present only on fixed phase events, distinct from child | Correlate phase failures/digest success to the original Cron root, not Queue transport. |
+| `code` | Closed Email accepted/rejected/failed, monitor healthy/failed, digest accepted/failed, destination/routes/lease failed vocabulary | Preserve useful diagnostics without raw SDK/provider errors. |
+| `role` | Present only for accepted Email; one of five fixed categories | Locate the affected public category without retaining an address. |
+| `count_bucket` | Only healthy monitor/digest success; powers of two ≤2^32; digest ≤8 | Bounded aggregate pending/group evidence, not precise arrival content. |
+
+No report ID, sender, Subject, raw MIME/body, header, confidential destination,
+provider URL/response/error, token, D1 binding or incoming context crosses the
+handoff. A fresh trace root is independent of the random D1 arrival reference.
+There is no need to retain report references merely to diagnose system phases.
+The new schema does not pretend Email/Cron operations are HTTP status classes.
+
+`workers/role-monitor/src/diagnostics.rs` owns at most **eight** events per
+invocation, reserving the last slot for the root result. Each serialized record
+must be ≤**1,024 bytes** before Queue publication. A single bounded batch is
+therefore below provider count and batch-size limits. Counts are coarsened and
+clamped before rounding; callers cannot inject dynamic metadata. Both producer
+and sink independently validate the contract. All optional phase events share
+the invocation trace and point to its original root span.
+
+The Email wrapper preserves existing acceptance/rejection/error behavior and
+attaches only an owned Queue handle plus safe event vector to `ctx.waitUntil`;
+neither `Env` nor the Email message is captured. Missing binding/send failures
+produce no fallback console record and do not turn an accepted forward into a
+mail failure. Cron records fixed failed phases, awaits its bounded handoff, then
+preserves the existing static panic on failed monitor work because workers-rs
+0.8.7 discards a returned scheduled `Result`. A Queue send failure neither
+renews a failed lease nor invalidates already successful business work. D1
+arrival/outbox and lease logic remains the correctness mechanism; telemetry is
+best-effort, can duplicate or be lost, and must never certify delivery/attention.
+
+### Capture-off configuration and readback
+
+Both role realms explicitly disable `observability.enabled`, Logs capture,
+invocation Logs, retained Logs preference, native traces and retained traces
+preference, and `observability.issues.enabled`; query redaction is set as defense
+in depth, not an exemption to enable capture. Issues has an independent switch:
+Cloudflare documents failure occurrences with invocation context, and supports
+its Wrangler configuration from 4.134.0 onward. Parent and nested collector
+switches must be read back; TOML intent alone is insufficient.
+
+The role-only readback verifier reuses the reviewed pure
+`effective_api_settings` policy in `crates/mail-worker/check_observability.py`.
+It requires the exact Worker name and positive current-resource Logs/traces/
+Issues-off, Logpush off and no tail consumer, with no contradictory legacy
+settings. Missing/null legacy observability may be unsupported, but is never
+positive evidence. The verifier additionally requires an exact private Queue
+binding ID and brackets readback with the same expected **single-100%** serving
+deployment/version. New non-secret required inputs are
+`AMAIL_EXPECTED_ROLE_WORKER_VERSION` and `AMAIL_EXPECTED_TRACE_QUEUE_ID`. Old
+deployment jobs without these pins now fail closed rather than accept the old
+custom-log model; workflow integration is deliberately a separate owned change.
+
+### Coordinated rollout proposal (not performed here)
+
+1. Source review and hosted tests compile role/schema/sink and test strict union,
+   backward Mail wire shape, phase/root parentage, buffer bounds, source capture
+   flags and positive/negative role readback. Keep role routes direct-forward.
+2. Deploy/review the shared sink with this decoder while only the existing
+   reviewed Mail API producer is admitted. Preserve the original Queue/DLQ IDs,
+   bounded retention/retries and sole queue-only consumer restrictions. Never
+   weaken the topology into an arbitrary producer list.
+3. Extend `ensure_trace_queues.py` topology policy through an explicit **role
+   rollout phase**, admitting exactly `amail-mail[-staging]` and
+   `amail-role-monitor[-staging]` after role binding deployment, and rejecting
+   duplicates, other Worker names and cross-realm resources. Existing pre-role
+   phases must continue to attest their original sole producer; do not make
+   absence of either post-role producer look like full post-role readiness.
+4. The guarded role deployment lane must obtain the exact version pin without
+   printing unrelated provider/secret output, supply the approved Queue ID,
+   attest no synthetic SMTP route before/after replacement, and run the
+   positive Worker-resource readback. No workflow changes are included here.
+5. Inspect a bounded complete retained-record Email/Cron canary with separate
+   synthetic sender, Subject/body/headers and secret/destination-like markers;
+   require positive role sink events and absence of source-service records,
+   inspect every retained record field and Queue/DLQ payload, and suppress raw
+   artifacts. Include existing before-insert/forward/alert failures, real Cron
+   failure outcome, provider/D1 failures and Queue-unavailable cases.
+6. Separately close original-forward, official-digest **Inbox**, response-path,
+   fail-closed lease and finally-block synthetic-route cleanup evidence. Only
+   then consider one-by-one production role cutover and public-send attestation.
+
+The source binding is not authorization to auto-roll out the second producer;
+the existing strict single-producer topology checker will deliberately reject
+it until the coordinated policy is implemented. **No production privacy,
+monitor health, Inbox notice or public-send readiness is claimed.** Availability
+rollback remains exact direct-forward actions plus held sending; a telemetry
+incident must never re-enable original-context Logs/traces/Issues. Removing the
+role Queue binding is a reviewed topology transition, not a shape-only retry.
+
+### External grounding and limits
+
+- [Cloudflare Workers production practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/)
+  support request-local state, native bindings and tracked async work rather than
+  floating promises; this Rust implementation uses the locked 0.8.7 Queue and
+  Context APIs, not a JavaScript wrapper or unpinned SDK assumption.
+- [Queue batching/retry behavior](https://developers.cloudflare.com/queues/configuration/batching-retries/)
+  makes duplicates and finite retry/DLQ retention part of the contract, not an
+  exactly-once business delivery guarantee.
+- [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)
+  separates custom/invocation collectors; [Issues](https://developers.cloudflare.com/workers/observability/issues/)
+  independently detects failures. Neither document proves complete Email context
+  exclusion just because application arguments are static.
+- [Lyons et al., USENIX Security 2023](https://www.usenix.org/conference/usenixsecurity23/presentation/lyons)
+  studies sensitive logging in Android, a different runtime. It motivates
+  checking collector boundaries and retained records, but provides **no**
+  Cloudflare leak evidence or Queue confidentiality guarantee. The decisive
+  evidence remains the pinned deployed full-record canary, not analogy.

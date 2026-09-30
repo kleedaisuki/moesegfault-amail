@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -17,10 +18,18 @@ import urllib.request
 
 API = "https://api.cloudflare.com/client/v4"
 ROOT = Path(__file__).resolve().parents[2]
+# Reuse the reviewed pure no-capture policy; do not copy or soften missing/null semantics.
+sys.path.insert(0, str(ROOT / "crates/mail-worker"))
+sys.path.insert(0, str(Path(__file__).parent))
+from check_observability import effective_api_settings
+from pin_staging_mail import serving_deployment
+
 WORKER = "amail-role-monitor-staging"
 ZONE = "6edff81c6ed02f412e70868076411a5e"
 DATABASE = "272e024c-453a-461b-bea0-c37a62c89d24"
 MAX_RESPONSE = 262_144
+UUID = re.compile(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\Z")
+QUEUE_ID = re.compile(r"(?:[0-9a-f]{32}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\Z")
 
 
 class RejectRedirect(urllib.request.HTTPRedirectHandler):
@@ -68,7 +77,7 @@ def require(condition: bool, label: str) -> None:
         raise RuntimeError(label)
 
 
-def inspect_bindings(settings: object) -> None:
+def inspect_bindings(settings: object, queue_id: str) -> None:
     """Check effective D1 and sending bindings, without showing secrets."""
 
     require(isinstance(settings, dict), "Worker settings unavailable")
@@ -78,6 +87,7 @@ def inspect_bindings(settings: object) -> None:
     allowed = {
         ("d1", "ROLE_MONITOR"),
         ("send_email", "ROLE_ALERT"),
+        ("queue", "ROLE_TRACE_EVENTS"),
         ("plain_text", "ROLE_REALM"),
         ("plain_text", "CF_ZONE_ID"),
         ("secret_text", "ROLE_FORWARD_DESTINATION"),
@@ -95,6 +105,13 @@ def inspect_bindings(settings: object) -> None:
     # Cloudflare's API may use `id` or `database_id` for a D1 binding.
     require(d1[0].get("database_id", d1[0].get("id")) == DATABASE, "D1 database differs")
     require(len(send) == 1 and send[0].get("name") == "ROLE_ALERT", "send binding differs")
+    queue = [binding for binding in bindings if binding.get("type") == "queue"]
+    require(QUEUE_ID.fullmatch(queue_id) is not None, "reviewed Queue pin unavailable")
+    require(
+        len(queue) == 1 and queue[0].get("name") == "ROLE_TRACE_EVENTS"
+        and queue[0].get("queue_id", queue[0].get("id")) == queue_id,
+        "Queue binding differs",
+    )
     if "allowed_sender_addresses" in send[0]:
         require(send[0]["allowed_sender_addresses"] == ["mail@moesegfault.dev"], "send binding sender differs")
     require(
@@ -117,21 +134,13 @@ def inspect_bindings(settings: object) -> None:
     )
 
 
-def inspect_observability(script: object, version: object) -> None:
-    """Check effective settings rather than trusting source Wrangler config."""
+def inspect_observability(script: object, version: object, worker: object) -> None:
+    """Require exact Worker-level Logs/traces/Issues-off, not legacy omission or source intent."""
 
-    candidates = []
-    for settings in (script, version):
-        if isinstance(settings, dict) and "observability" in settings:
-            candidates.append(settings["observability"])
-    require(bool(candidates), "effective observability unavailable")
-    for obs in candidates:
-        require(isinstance(obs, dict), "effective observability malformed")
-        logs = obs.get("logs")
-        traces = obs.get("traces")
-        require(isinstance(logs, dict) and logs.get("invocation_logs") is False, "invocation logs not disabled")
-        require(isinstance(traces, dict) and traces.get("enabled") is False, "automatic traces not disabled")
-        require(logs.get("enabled") is True, "reviewed application logs not enabled")
+    require(
+        effective_api_settings(worker, WORKER, script, version),
+        "effective original-context capture not disabled",
+    )
 
 
 def inspect_surfaces(subdomain: object, routes: object, domains: object) -> None:
@@ -212,15 +221,28 @@ def audit() -> None:
     token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
     zone = os.environ.get("CF_ZONE_ID", ZONE)
     require(len(account) == 32 and bool(token) and zone == ZONE, "scoped credentials unavailable")
+    expected_version = os.environ.get("AMAIL_EXPECTED_ROLE_WORKER_VERSION", "")
+    expected_queue = os.environ.get("AMAIL_EXPECTED_TRACE_QUEUE_ID", "")
+    require(UUID.fullmatch(expected_version) is not None, "reviewed serving pin unavailable")
+    require(QUEUE_ID.fullmatch(expected_queue) is not None, "reviewed Queue pin unavailable")
     base = f"/accounts/{account}/workers/scripts/{WORKER}"
+    first = api_get(f"{base}/deployments?per_page=1&page=1", token)
+    require(isinstance(first, dict), "serving deployment unavailable")
+    before = serving_deployment(first)
+    require(before is not None and before[1] == expected_version, "serving version differs")
     version = api_get(f"{base}/settings", token)
     script = api_get(f"{base}/script-settings", token)
+    worker = api_get(f"/accounts/{account}/workers/workers/{WORKER}", token)
     subdomain = api_get(f"{base}/subdomain", token)
     routes = api_get(f"/zones/{zone}/workers/routes", token)
     domains = api_get(f"/accounts/{account}/workers/domains?service={WORKER}", token)
-    inspect_bindings(version)
-    inspect_observability(script, version)
+    inspect_bindings(version, expected_queue)
+    inspect_observability(script, version, worker)
     inspect_surfaces(subdomain, routes, domains)
+    last = api_get(f"{base}/deployments?per_page=1&page=1", token)
+    require(isinstance(last, dict), "serving deployment unavailable")
+    after = serving_deployment(last)
+    require(before == after, "serving version changed during readback")
 
     # The reviewed helper paginates all Email Routing rules and rejects conflict.
     route = subprocess.run(
@@ -241,8 +263,8 @@ def main() -> int:
 
     try:
         audit()
-    except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
-        print(f"staging role monitor audit failed: {error}", file=sys.stderr)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+        print("staging_role_monitor_audit=UNVERIFIED", file=sys.stderr)
         return 1
     print("staging role monitor: private Worker, isolated empty D1, expired lease, synthetic route absent")
     return 0

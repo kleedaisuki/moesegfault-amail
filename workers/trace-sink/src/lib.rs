@@ -1,7 +1,7 @@
 //! Private Queue-only application trace sink. No fetch, scheduled or mail entrypoint.
 //! Never log Queue envelopes, deserialization errors, request context or unchecked values.
 
-use amail_trace_schema::Event;
+use amail_trace_schema::Record;
 use worker::{event, Env, MessageBatch, MessageExt, Result};
 
 /// Validate each message independently; malformed payloads are dropped, not replayed into DLQ.
@@ -22,7 +22,7 @@ pub async fn queue(
                 continue;
             }
         };
-        let Some(event) = Event::from_value(body) else {
+        let Some(event) = Record::from_value(body) else {
             raw.ack();
             continue;
         };

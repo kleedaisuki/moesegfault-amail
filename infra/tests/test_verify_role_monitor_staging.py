@@ -16,6 +16,7 @@ SPEC = importlib.util.spec_from_file_location("verify_role_monitor_staging", PAT
 assert SPEC and SPEC.loader
 audit = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit)
+QUEUE_ID = "00000000000000000000000000000001"
 
 
 class RoleMonitorLiveAuditTests(unittest.TestCase):
@@ -27,6 +28,7 @@ class RoleMonitorLiveAuditTests(unittest.TestCase):
         return {"bindings": [
             {"type": "d1", "name": "ROLE_MONITOR", "database_id": audit.DATABASE},
             {"type": "send_email", "name": "ROLE_ALERT"},
+            {"type": "queue", "name": "ROLE_TRACE_EVENTS", "queue_id": QUEUE_ID},
             {"type": "plain_text", "name": "ROLE_REALM", "text": "staging"},
             {"type": "plain_text", "name": "CF_ZONE_ID", "text": audit.ZONE},
             {"type": "secret_text", "name": "ROLE_FORWARD_DESTINATION"},
@@ -49,10 +51,10 @@ class RoleMonitorLiveAuditTests(unittest.TestCase):
         """A correctly named binding must still target the isolated staging ID."""
 
         settings = self.bindings()
-        audit.inspect_bindings(settings)
+        audit.inspect_bindings(settings, QUEUE_ID)
         settings["bindings"][0]["database_id"] = "production-db-id"
         with self.assertRaisesRegex(RuntimeError, "D1 database differs"):
-            audit.inspect_bindings(settings)
+            audit.inspect_bindings(settings, QUEUE_ID)
 
     def test_bindings_reject_extra_storage_capability(self) -> None:
         """An unrelated storage binding broadens the private Worker's reach."""
@@ -60,21 +62,38 @@ class RoleMonitorLiveAuditTests(unittest.TestCase):
         settings = self.bindings()
         settings["bindings"].append({"type": "r2_bucket", "name": "RAW_MAIL"})
         with self.assertRaisesRegex(RuntimeError, "unexpected capability binding"):
-            audit.inspect_bindings(settings)
+            audit.inspect_bindings(settings, QUEUE_ID)
 
     def test_effective_observability_rejects_automatic_capture(self) -> None:
-        """Either deployment-level setting can expose untrusted email envelopes."""
+        """Current Worker settings must explicitly disable every independent collector."""
 
-        obs = {"logs": {"enabled": True, "invocation_logs": False}, "traces": {"enabled": False}}
-        audit.inspect_observability({"observability": obs}, {})
-        for key, value in (("traces", True), ("invocation_logs", True)):
-            changed = {"logs": dict(obs["logs"]), "traces": dict(obs["traces"])}
-            if key == "traces":
-                changed["traces"]["enabled"] = value
-            else:
-                changed["logs"][key] = value
+        obs = {"enabled": False, "logs": {"enabled": False},
+               "traces": {"enabled": False}, "issues": {"enabled": False}}
+        worker = {"name": audit.WORKER, "id": "synthetic-worker",
+                  "logpush": False, "tail_consumers": [], "observability": obs}
+        audit.inspect_observability({"observability": None}, {}, worker)
+        for key in ("logs", "traces", "issues"):
+            changed = {**obs, key: {"enabled": True}}
             with self.subTest(key=key), self.assertRaises(RuntimeError):
-                audit.inspect_observability({"observability": obs}, {"observability": changed})
+                audit.inspect_observability({}, {}, {**worker, "observability": changed})
+        for missing in ({}, {"observability": obs}, {**worker, "observability": None}):
+            with self.assertRaises(RuntimeError):
+                audit.inspect_observability({}, {}, missing)
+        missing_issues = {key: value for key, value in obs.items() if key != "issues"}
+        with self.assertRaises(RuntimeError):
+            audit.inspect_observability({}, {}, {**worker, "observability": missing_issues})
+        with self.assertRaises(RuntimeError):
+            audit.inspect_observability({"observability": {"logs": {"enabled": True}}}, {}, worker)
+
+    def test_bindings_require_reviewed_queue_id_not_name(self) -> None:
+        """A renamed or cross-realm Queue cannot satisfy the producer capability pin."""
+
+        settings = self.bindings()
+        audit.inspect_bindings(settings, QUEUE_ID)
+        for changed in ("another-queue", "00000000000000000000000000000002"):
+            settings["bindings"][2]["queue_id"] = changed
+            with self.assertRaisesRegex(RuntimeError, "Queue binding differs"):
+                audit.inspect_bindings(settings, QUEUE_ID)
 
     def test_http_surface_rejects_each_exposure(self) -> None:
         """An Email/Cron-only Worker must be inaccessible through HTTP."""

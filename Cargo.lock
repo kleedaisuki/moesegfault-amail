@@ -113,8 +113,10 @@ dependencies = [
 name = "amail-role-monitor"
 version = "0.1.0"
 dependencies = [
+ "amail-trace-schema",
  "js-sys",
  "serde",
+ "serde_json",
  "uuid",
  "wasm-bindgen",
  "worker",

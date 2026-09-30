@@ -26,19 +26,29 @@ remote = true
 [triggers]
 crons = ["*/5 * * * *"]
 
-[observability]
-enabled = true
-head_sampling_rate = 1.0
+[[queues.producers]]
+binding = "ROLE_TRACE_EVENTS"
+queue = "amail-trace-events"
 
-# 中文：仅保留经代码审查的应用日志；自动调用日志可能包含邮件信封。
-# English: Keep reviewed application logs; automatic invocation logs may contain envelope data.
+# Retain diagnostics only through the isolated typed Queue sink, never Email/Cron context.
+[observability]
+enabled = false
+head_sampling_rate = 1.0
+redact_query_string = true
+
+# Original-context custom and invocation logs are both disabled; use the typed Queue sink.
 [observability.logs]
-enabled = true
+enabled = false
 invocation_logs = false
+persist = false
 
 # 中文：自动 Email 根跨度包含举报者信封发件人，禁止留存。
 # English: Automatic Email root spans include the reporter envelope sender; do not retain them.
 [observability.traces]
+enabled = false
+persist = false
+
+[observability.issues]
 enabled = false
 
 [env.staging]
@@ -64,15 +74,25 @@ remote = true
 [env.staging.triggers]
 crons = ["*/5 * * * *"]
 
+[[env.staging.queues.producers]]
+binding = "ROLE_TRACE_EVENTS"
+queue = "amail-trace-events-staging"
+
 # 中文：环境观测配置显式隔离，不能假定继承生产隐私设置。
 # English: Set staging observability explicitly; never assume privacy settings inherit.
 [env.staging.observability]
-enabled = true
+enabled = false
 head_sampling_rate = 1.0
+redact_query_string = true
 
 [env.staging.observability.logs]
-enabled = true
+enabled = false
 invocation_logs = false
+persist = false
 
 [env.staging.observability.traces]
+enabled = false
+persist = false
+
+[env.staging.observability.issues]
 enabled = false
