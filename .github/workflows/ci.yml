@@ -174,7 +174,6 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           AMAIL_TEST_SMTP_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
-          OPENROUTER_API_KEY: ${{ inputs.exact_cosine && secrets.OPENROUTER_API_KEY || '' }}
           CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_hosted_e2e.py

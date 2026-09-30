@@ -1,7 +1,7 @@
 # Protected staging oracle for exact semantic scores
 
-Status (2026-09-30): **v4 cursor source implemented; hosted tests, review, and
-live exact-cosine attestation pending**. A guarded live attempt at
+Status (2026-09-30): **v5 origin-vector oracle source revised; hosted tests,
+review, and live exact-cosine attestation pending**. A guarded v4 live attempt at
 [`11127a8`, run 36699356379](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36699356379)
 aborted with fixed label `query_vector_unstable`: its two independent
 OpenRouter query embeddings differed in rounded `f32` bits, before the first
@@ -12,7 +12,7 @@ ZIP retrieval, and the basic two-message semantic check passed in that run;
 the exact route was retired and cleanup reported `none`. Do not repeat those
 passed stages merely to turn this aborted oracle green.
 
-The implementation commits to the 256 rounded `f32` coordinates with the
+The historical v4 implementation commits to the 256 rounded `f32` coordinates with the
 exact byte stream specified below,
 rejects vector drift with `search_cursor_vector_changed` (409) before any row
 scan, and retains only the digest in a completed job. No deployed result is
@@ -24,6 +24,38 @@ cleanup. It did **not** capture the query vector actually used for scoring,
 independently prove cosine, or exercise a cursor. The earlier
 [failed semantic run](staging-semantic-live-failure-36677506793.md) remains a
 separate historical observation. No new live probe is authorized by this note.
+
+## Current v5 protected oracle
+
+The [v5 origin-vector decision](semantic-pagination-vector-snapshot-decision.md)
+supersedes the v4 operator procedure below. After the first authenticated
+`limit=1` CLI page, the operator parses the v5 cursor privately and reads the
+actual first-page normalized query vector from its completed origin job. The
+fixed D1 `SELECT` is constrained by exact origin UUID and owner issuer/subject;
+it extracts only `query_vector`, model, input version, commitment, and origin
+state metadata from `state_json`. It **does not select the per-origin MAC key**
+or make an independent OpenRouter request. The operator recomputes the v4
+vector commitment over the actual origin vector and owner/request binding,
+then requests page 2 with the unmodified cursor. A successful second page
+shows the Worker accepted the cursor MAC; synthetic hosted tamper tests, not
+this restricted operator, exercise MAC rejection directly.
+
+The complete two-document, owner-scoped vector snapshot and generation are
+read before page 1 and checked again after page 2. Both public scores are
+recomputed from the first-page origin vector and the stored document vectors,
+with absolute tolerance `1e-5`, exact page union, filter, score order, and
+nonmutation checks. The origin vector is also re-read at the end. Missing or
+malformed origin state fails closed as `oracle_vector_unavailable`; a changed
+origin or document snapshot fails closed. This is a two-document exact-score
+attestation, not a large-corpus performance claim. The outcome no longer says
+`provider_repeatable`: cross-request bitwise repeatability was never a
+necessary condition for v5 pagination. The Actions execution step no longer
+receives a separate OpenRouter key for this oracle; the Worker still uses its
+own provider secret on the first page. Real v5 deployment and a fresh guarded
+run remain necessary before any live exactness claim.
+
+The following v4 design and run history is retained for provenance, **not**
+as the current execution procedure.
 
 ## State and provenance: the limiting fact
 

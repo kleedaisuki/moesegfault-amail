@@ -76,7 +76,7 @@ def semantic_requested() -> bool:
 
 
 def exact_cosine_requested(semantic: bool) -> bool:
-    """Gate the private D1/provider oracle behind a separate manual opt-in."""
+    """Gate the private owner-scoped D1 oracle behind a separate opt-in."""
 
     value = os.environ.get("AMAIL_STAGING_EXACT_COSINE_E2E", "0")
     if value not in ("0", "1"):
@@ -84,8 +84,6 @@ def exact_cosine_requested(semantic: bool) -> bool:
     if value == "1" and (not semantic or os.environ.get("AMAIL_STAGING_EXACT_COSINE_CONFIRM")
                          != "RUN_STAGING_EXACT_COSINE"):
         raise HostedProbeError("exact_cosine_confirmation_missing")
-    if value == "1" and not os.environ.get("OPENROUTER_API_KEY"):
-        raise HostedProbeError("exact_cosine_provider_secret_missing")
     return value == "1"
 
 

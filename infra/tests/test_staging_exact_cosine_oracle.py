@@ -21,7 +21,7 @@ IDS = ("signal", "distractor")
 
 
 class ExactCosineTests(unittest.TestCase):
-    """Reject malformed snapshots, drift, cursor substitution and wrong scores."""
+    """Reject malformed snapshots, cursor substitution and wrong scores."""
 
     def setUp(self) -> None:
         """Build an orthogonal two-vector fixture with discriminating scores."""
@@ -36,8 +36,10 @@ class ExactCosineTests(unittest.TestCase):
         }
         binding = oracle.query_hash(OWNER, ADDRESS, NONCE)
         self.cursor = base64.urlsafe_b64encode(json.dumps({
-            "version": 4, "hash": binding, "generation": 7,
+            "version": 5, "hash": binding, "generation": 7,
             "vector_commitment": oracle.commitment(binding, self.query),
+            "origin_job_id": "12345678-1234-1234-1234-123456789abc",
+            "cursor_mac": "a" * 64,
         }).encode()).decode().rstrip("=")
         self.pages = [
             {"messages": [{"id": IDS[0], "score": 1.0, "read": False,
@@ -69,10 +71,11 @@ class ExactCosineTests(unittest.TestCase):
         with patch.object(oracle, "d1_rows", side_effect=read), \
              patch.object(oracle, "generation", side_effect=[7, 7]), \
              patch.object(oracle, "snapshot", side_effect=snapshots), \
-             patch.object(oracle, "provider_vector", side_effect=vectors), \
+             patch.object(oracle, "origin_vector", side_effect=vectors) as origin, \
              patch.object(oracle, "cli_page", side_effect=pages) as cli:
-            error = oracle.verify("f" * 32, "private", "private", "amail", {}, ADDRESS, NONCE, IDS)
+            error = oracle.verify("f" * 32, "private", "amail", {}, ADDRESS, NONCE, IDS)
             self.assertEqual(cli.call_count, 2)
+            self.assertEqual(origin.call_count, 2)
             self.assertIsNone(cli.call_args_list[0].args[-1])
             self.assertEqual(cli.call_args_list[1].args[-1], self.cursor)
             return error
@@ -82,23 +85,24 @@ class ExactCosineTests(unittest.TestCase):
 
         self.assertEqual(self.verify(), 0.0)
 
-    def test_changed_provider_vector_never_scores(self) -> None:
-        """A single changed rounded coordinate is not a score tolerance."""
+    def test_changed_origin_vector_invalidates_snapshot(self) -> None:
+        """The origin vector cannot change while two pages are checked."""
 
         changed = self.query.copy()
         changed[1] = oracle.f32(0.1)
-        with self.assertRaisesRegex(oracle.OracleError, "^query_vector_unstable$"):
+        with self.assertRaisesRegex(oracle.OracleError, "^oracle_snapshot_changed$"):
             self.verify(vectors=[self.query, changed])
         signed_zero = self.query.copy()
         signed_zero[1] = -0.0
-        with self.assertRaisesRegex(oracle.OracleError, "^query_vector_unstable$"):
+        with self.assertRaisesRegex(oracle.OracleError, "^oracle_snapshot_changed$"):
             self.verify(vectors=[self.query, signed_zero])
 
     def test_cursor_binds_actual_vector_generation_and_filter(self) -> None:
         """Tampered commitments, generation and filter hash fail before page two."""
 
         for field, replacement in (("vector_commitment", "0" * 64), ("generation", 8),
-                                   ("hash", "0" * 64)):
+                                   ("hash", "0" * 64), ("origin_job_id", "invalid"),
+                                   ("cursor_mac", "invalid")):
             with self.subTest(field=field):
                 raw = json.loads(base64.urlsafe_b64decode(self.cursor + "=" * (-len(self.cursor) % 4)))
                 raw[field] = replacement
@@ -156,6 +160,35 @@ class ExactCosineTests(unittest.TestCase):
                           [{"n": 2}] if sql == oracle.COUNT_SQL else [base, wrong]):
             with self.assertRaisesRegex(oracle.OracleError, "^oracle_vector_metadata$"):
                 oracle.snapshot("f" * 32, "private", OWNER, ADDRESS, IDS)
+
+    def test_origin_read_selects_vector_without_signing_key(self) -> None:
+        """The restricted SELECT never exposes a reusable cursor MAC key."""
+
+        origin_id, digest = oracle.cursor_origin(self.cursor, oracle.query_hash(
+            OWNER, ADDRESS, NONCE), 7)
+        row = {"id": origin_id, "state": "done", "expires_at": 4_000_000_000_000,
+               "origin_job_id": origin_id,
+               "is_origin": 1, "query_input_version": 1,
+               "query_model": oracle.MODEL, "vector_commitment": digest,
+               "query_vector_json": json.dumps(self.query)}
+
+        def read(_, __, sql, params):
+            """Assert the real query projection and owner predicate."""
+
+            self.assertEqual(sql, oracle.ORIGIN_SQL)
+            self.assertEqual(params, [origin_id, *OWNER])
+            self.assertNotIn("cursor_key", sql)
+            return [row]
+
+        with patch.object(oracle, "d1_rows", side_effect=read):
+            self.assertEqual(oracle.origin_vector("f" * 32, "private", OWNER,
+                                                  origin_id, digest), self.query)
+        for changed in ({"state": "running"}, {"is_origin": 0},
+                        {"query_model": "other"}, {"query_vector_json": "[]"}):
+            with self.subTest(changed=changed), patch.object(
+                    oracle, "d1_rows", return_value=[dict(row, **changed)]):
+                with self.assertRaises(oracle.OracleError):
+                    oracle.origin_vector("f" * 32, "private", OWNER, origin_id, digest)
 
     def test_native_cli_cursor_record_is_captured_privately(self) -> None:
         """A JSONL cursor record is part of the native product contract."""

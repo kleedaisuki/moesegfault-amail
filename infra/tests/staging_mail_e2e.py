@@ -1178,11 +1178,11 @@ def main() -> int:
             check(set(cleanup_inventory(binary, env, None)) == {target, distractor_id},
                   "oracle_owner_inventory_changed")
             try:
-                error = verify(account, api_token, os.environ.get("OPENROUTER_API_KEY", ""),
-                               binary, env, address, nonce, (target, distractor_id))
+                error = verify(account, api_token, binary, env, address, nonce,
+                               (target, distractor_id))
             except OracleError as failure:
                 raise ProbeFailure(str(failure)) from None
-            print(f"semantic_exact_cosine_verified:max_abs_error={error:.8f}:count=2:order=true:provider_repeatable=true")
+            print(f"semantic_exact_cosine_verified:max_abs_error={error:.8f}:count=2:order=true:origin_vector=true")
         amail(binary, env, "mark", target, "--read", failure="mark_read_failed")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--read", failure="read_search_failed"), rich_oracle["subject"], 1, "read_search_count")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--unread", failure="unread_search_failed"), rich_oracle["subject"], 0, "unread_search_count")

@@ -1,4 +1,4 @@
-"""Protected, two-document staging oracle for same-vector semantic pagination.
+"""Protected, two-document staging oracle for v5 semantic pagination.
 
 The caller owns the native PKCE session and the two SMTP fixtures. This module
 never sends mail or mutates D1; all private responses remain process-local.
@@ -16,6 +16,7 @@ import math
 import re
 import struct
 import subprocess
+import time
 import urllib.request
 
 from staging_semantic_e2e import DIMENSIONS, MODEL, SCORE_TOLERANCE, SemanticProbeError, check_exact_pages, cosine, require
@@ -31,6 +32,14 @@ COUNT_SQL = "SELECT COUNT(*) AS n FROM messages WHERE owner_iss=?1 AND owner_sub
 VECTOR_SQL = ("SELECT id,address,direction,received_at,is_read,embedding_json,embedding_model,"
               "embedding_dimensions,embedding_input_version FROM messages WHERE owner_iss=?1 "
               "AND owner_sub=?2 AND address=?3 AND deleted_at IS NULL AND id IN (?4,?5)")
+ORIGIN_SQL = ("SELECT id,state,expires_at,"
+              "json_extract(state_json,'$.origin_job_id') AS origin_job_id,"
+              "json_extract(state_json,'$.is_origin') AS is_origin,"
+              "json_extract(state_json,'$.query_input_version') AS query_input_version,"
+              "json_extract(state_json,'$.query_vector') AS query_vector_json,"
+              "json_extract(state_json,'$.query_model') AS query_model,"
+              "json_extract(state_json,'$.vector_commitment') AS vector_commitment "
+              "FROM search_jobs WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3")
 
 
 class OracleError(Exception):
@@ -76,7 +85,7 @@ def bounded_json(req: urllib.request.Request, label: str, limit: int = 262_144) 
 def d1_rows(account: str, token: str, sql: str, params: list[object]) -> list[dict]:
     """Execute only embedded, parameterized SELECT templates against staging D1."""
 
-    guard(sql in (OWNER_SQL, COUNT_SQL, VECTOR_SQL, GENERATION_SQL), "oracle_sql_denied")
+    guard(sql in (OWNER_SQL, COUNT_SQL, VECTOR_SQL, GENERATION_SQL, ORIGIN_SQL), "oracle_sql_denied")
     guard(bool(re.fullmatch(r"[a-f0-9]{32}", account)) and bool(token), "oracle_d1_config")
     req = urllib.request.Request(
         f"{API}/accounts/{account}/d1/database/{DATABASE}/query",
@@ -112,34 +121,6 @@ def validate_vector(values: object) -> list[float]:
     vector = [f32(value) for value in values]
     guard(sum(value * value for value in vector) > 0, "oracle_vector_invalid")
     return vector
-
-
-def provider_vector(key: str) -> list[float]:
-    """Mirror the Worker's ZDR, uncached search-query embedding request."""
-
-    guard(bool(key), "oracle_provider_config")
-    payload = {"model": MODEL, "dimensions": DIMENSIONS, "input": QUERY,
-               "input_type": "search_query", "provider": {"zdr": True, "data_collection": "deny"}}
-    req = urllib.request.Request(
-        "https://openrouter.ai/api/v1/embeddings",
-        data=json.dumps(payload, separators=(",", ":")).encode(),
-        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json",
-                 "HTTP-Referer": "https://amail.moesegfault.dev", "X-Title": "amail",
-                 "X-OpenRouter-Cache": "false"}, method="POST",
-    )
-    data = bounded_json(req, "oracle_provider_unavailable", 2_000_000)
-    entries = data.get("data")
-    guard(isinstance(entries, list) and bool(entries) and isinstance(entries[0], dict), "oracle_provider_shape")
-    values = entries[0].get("embedding")
-    guard(isinstance(values, list) and len(values) == DIMENSIONS, "oracle_provider_shape")
-    try:
-        guard(all(type(x) in (float, int) and math.isfinite(float(x)) for x in values),
-              "oracle_provider_shape")
-        norm = math.sqrt(sum(float(x) * float(x) for x in values))
-    except (OverflowError, ValueError):
-        raise OracleError("oracle_provider_shape") from None
-    guard(math.isfinite(norm) and norm > 1e-12, "oracle_provider_shape")
-    return validate_vector([float(x) / norm for x in values])
 
 
 def generation(account: str, token: str, owner: tuple[str, str]) -> int:
@@ -201,26 +182,46 @@ def commitment(hash_value: str, query: list[float]) -> str:
     return hashlib.sha256(preimage).hexdigest()
 
 
-def vector_bits(values: list[float]) -> bytes:
-    """Compare normalized provider vectors by exact IEEE-f32 coordinates."""
-
-    return b"".join(struct.pack("<f", value) for value in validate_vector(values))
-
-
-def cursor_commitment(cursor: str, expected_hash: str, expected_generation: int) -> str:
-    """Inspect the private v4 cursor without logging or persisting it."""
+def cursor_origin(cursor: str, expected_hash: str, expected_generation: int) -> tuple[str, str]:
+    """Inspect the private v5 cursor without reading its signing key."""
 
     guard(isinstance(cursor, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]{1,4096}", cursor)), "oracle_cursor_shape")
     try:
         value = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
     except (ValueError, TypeError, binascii.Error):
         raise OracleError("oracle_cursor_shape") from None
-    guard(isinstance(value, dict) and value.get("version") == 4
+    guard(isinstance(value, dict) and value.get("version") == 5
           and value.get("hash") == expected_hash
           and value.get("generation") == expected_generation, "oracle_cursor_binding")
     digest = value.get("vector_commitment")
-    guard(isinstance(digest, str) and bool(re.fullmatch(r"[a-f0-9]{64}", digest)), "oracle_cursor_binding")
-    return digest
+    origin_id, mac = value.get("origin_job_id"), value.get("cursor_mac")
+    guard(isinstance(digest, str) and bool(re.fullmatch(r"[a-f0-9]{64}", digest))
+          and isinstance(origin_id, str) and bool(re.fullmatch(
+              r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", origin_id))
+          and isinstance(mac, str) and bool(re.fullmatch(r"[a-f0-9]{64}", mac)),
+          "oracle_cursor_binding")
+    return origin_id, digest
+
+
+def origin_vector(account: str, token: str, owner: tuple[str, str], origin_id: str,
+                  expected_digest: str) -> list[float]:
+    """Read only origin vector metadata, never the per-origin cursor MAC key."""
+
+    rows = d1_rows(account, token, ORIGIN_SQL, [origin_id, *owner])
+    guard(len(rows) == 1, "oracle_vector_unavailable")
+    row = rows[0]
+    guard(row.get("id") == origin_id and row.get("state") == "done"
+          and type(row.get("expires_at")) is int and row["expires_at"] > int(time.time() * 1000)
+          and row.get("origin_job_id") == origin_id and row.get("is_origin") == 1
+          and row.get("query_input_version") == 1 and row.get("query_model") == MODEL
+          and row.get("vector_commitment") == expected_digest,
+          "oracle_vector_unavailable")
+    value = row.get("query_vector_json")
+    guard(isinstance(value, str), "oracle_vector_unavailable")
+    try:
+        return validate_vector(json.loads(value))
+    except (ValueError, TypeError, OracleError):
+        raise OracleError("oracle_vector_unavailable") from None
 
 
 def cli_page(binary, env: dict[str, str], address: str, nonce: str, cursor: str | None) -> dict:
@@ -248,9 +249,9 @@ def cli_page(binary, env: dict[str, str], address: str, nonce: str, cursor: str 
     return {"messages": [lines[0]], "next_cursor": marker["next_cursor"] if marker else None}
 
 
-def verify(account: str, d1_token: str, openrouter_key: str, binary, env: dict[str, str],
+def verify(account: str, d1_token: str, binary, env: dict[str, str],
            address: str, nonce: str, ids: tuple[str, str]) -> float:
-    """Attest one complete owner snapshot, two same-vector pages, and exact cosine."""
+    """Attest two pages against the actual first-page origin query vector."""
 
     guard(len(ids) == 2 and ids[0] != ids[1], "oracle_fixture_ids")
     owners = d1_rows(account, d1_token, OWNER_SQL, [address])
@@ -260,14 +261,14 @@ def verify(account: str, d1_token: str, openrouter_key: str, binary, env: dict[s
     owner = (owners[0]["owner_iss"], owners[0]["owner_sub"])
     before_generation = generation(account, d1_token, owner)
     documents = snapshot(account, d1_token, owner, address, ids)
-    first_query, second_query = provider_vector(openrouter_key), provider_vector(openrouter_key)
-    guard(vector_bits(first_query) == vector_bits(second_query), "query_vector_unstable")
     first = cli_page(binary, env, address, nonce, None)
     cursor = first["next_cursor"]
     guard(cursor is not None, "oracle_cursor_missing")
     binding = query_hash(owner, address, nonce)
+    origin_id, cursor_digest = cursor_origin(cursor, binding, before_generation)
+    first_query = origin_vector(account, d1_token, owner, origin_id, cursor_digest)
     digest = commitment(binding, first_query)
-    guard(cursor_commitment(cursor, binding, before_generation) == digest,
+    guard(cursor_digest == digest,
           "oracle_query_commitment_mismatch")
     second = cli_page(binary, env, address, nonce, cursor)
     guard(second["next_cursor"] is None, "oracle_extra_page")
@@ -288,5 +289,9 @@ def verify(account: str, d1_token: str, openrouter_key: str, binary, env: dict[s
     after_generation = generation(account, d1_token, owner)
     after = snapshot(account, d1_token, owner, address, ids)
     guard(after_generation == before_generation and after == documents, "oracle_snapshot_changed")
+    final_query = origin_vector(account, d1_token, owner, origin_id, cursor_digest)
+    guard(b"".join(struct.pack("<f", value) for value in final_query)
+          == b"".join(struct.pack("<f", value) for value in first_query),
+          "oracle_snapshot_changed")
     return max(abs(row["score"] - cosine(first_query, documents[row["id"]]["vector"]))
                for page in pages for row in page["messages"])
