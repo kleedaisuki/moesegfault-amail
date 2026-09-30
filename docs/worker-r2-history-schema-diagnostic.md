@@ -178,3 +178,81 @@ only closed schema bins; even a successful diagnostic retains
 `delivery=UNVERIFIED`. Source review and hosted checks are prerequisites, not
 proof of live authorization or successful provider shape diagnosis. This change
 has not dispatched a live query.
+
+## First reduced query: provider errors, not row-shape evidence
+
+The reviewed [shape-only run 36761635973](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36761635973)
+at source daaab1f returned the owner's fixed observation:
+SHAPE_DIAGNOSED, delivery UNVERIFIED, exact envelope, GraphQL errors,
+unscoped error path, and invalid zones/row bins. This proves the minimal query
+received an error-bearing provider object. It is not a successful event read;
+there are no row nullability or terminal-flag observations to interpret.
+Do not repeat that unchanged query or conclude the historical probe failed to
+reach Routing. This also does not retroactively establish the first richer
+query's exact failure.
+
+**Correction to the path interpretation:** unscoped is not necessarily a
+root-level error. The official [GraphQL error reference](https://developers.cloudflare.com/analytics/graphql-api/errors/)
+(page dated April 23, 2026; consulted October 1, 2026) shows an error path whose
+zone index is the string zero, while error_bins() recognizes only integer zero.
+The reference also uses canonical dataset names; the helper recognizes only its
+aliases. Missing/root paths, string indices or canonical paths can therefore
+all become unscoped. Fixing this diagnostic interpretation must not turn errors
+into accepted data. No raw path, body or error message was retrieved here.
+
+That reference describes errors inside HTTP 200 responses and distinguishes
+authentication/access failures, parsing failures, dataset/plan limits,
+rate/resource limits, service unavailability and internal errors. The reduced
+helper's fetch() admitted HTTP 200, so the observed result did not come through
+its non-200 rejection branch. HTTP 200 does **not** eliminate auth/access errors.
+There is no demonstrated field or filter typo. Separately, the official
+[account-based rate-limit reference](https://developers.cloudflare.com/analytics/graphql-api/account-based-rate-limiting/)
+documents extension code budget; this is useful positive rate-limit evidence,
+not a general code mapping for authentication or schema errors.
+
+### One proposed next discriminator: error category, content-free selection
+
+**Design only, pending owner coordination, independent review and hosted
+checks.** Keep unchanged authenticated original-run provenance and precisely
+the same start/end timestamps. Issue one distinct GraphQL query selecting
+only the standard __typename field from each of the two original event
+datasets, with fresh source-owned aliases and limit 1 for each dataset.
+Keep the same filter expressions, Time variables and orderBy expression so
+the new query still exercises those potentially rejected boundaries.
+This narrows the row cap from 100 to 1 and requests no event datetime, status,
+identity, error detail or content. There is no broader historical window and
+no attempt to send, route or read R2. A clean response means only that this
+reduced dataset query is currently executable, not that the older query was.
+
+The new helper should inspect **bounded error messages in memory** against
+a reviewed allowlist of anchored public error templates, then emit only:
+authentication, authorization_or_dataset_access, schema_or_field,
+arguments_or_filter, query_invalid, dataset_limit, rate_or_resource,
+service_unavailable, internal, unclassified, mixed, or no_errors.
+It must never print a matched message, suffix, arbitrary provider code,
+field name, token, zone/account identifier, URL, path or timestamp.
+Unknown/malformed messages remain unclassified/invalid, never guessed.
+Limit errors to 100, each message to 2048 characters, and the entire JSON body
+to the existing 128 KiB cap; duplicate keys remain rejected.
+Allow only the documented extension value budget as positive rate evidence.
+Recognize documented access phrases without treating dataset/plan entitlement
+as proof of a missing token grant. Parse HTTP failures through a bounded
+JSON reader if needed, but report only source-owned HTTP categories and error
+bins, never raw bytes or exception text. Do not retry an HTTP or GraphQL error.
+
+The path output, if retained, should classify canonical source-owned
+dataset names or aliases at the documented path position and recognize
+both integer zero and exact string zero. It is still just a scope hint;
+a parser error with no path remains unscoped. This avoids repeating the
+unsupported root-error inference.
+
+A single category across all bounded errors gives a diagnostic category;
+different categories produce mixed rather than discarding a contradictory
+error. Matching must be case/anchor conscious and covered by synthetic
+lookalike, embedded-private-suffix, unknown-message, malformed/oversized
+and conflicting-error tests. All results retain delivery UNVERIFIED and
+authorize no token widening or code change by themselves. A clean query or
+unclassified error leaves the older rejection unresolved; do not add another
+request automatically. This is a deliberate trade-off: privacy retains
+actionable public error categories while withholding identifying details,
+rather than making every provider failure indistinguishable.
