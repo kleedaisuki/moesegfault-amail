@@ -9,11 +9,12 @@ wrapper. No local tests, live requests, provider mutations or production fixes
 were performed. The reviewed module files remain unchanged at review time.
 
 **GO for hosted source checks, not for live dispatch.** No new substantive
-executable defect was found in this increment. A contradictory design-document
-requirement below should be corrected before implementing the live wrapper.
+executable defect was found in this increment. The contradictory design-document
+requirement identified below was corrected by `58b0fe6`; that focused follow-up
+was also reviewed.
 This is not a quota, encryption, deployed provenance or recovery acceptance.
 
-## P2: remaining design requirements reinstate the removed B/isolation gate
+## Resolved P2: remaining design requirements reinstated the removed B/isolation gate
 
 Location: `docs/staging-ten-address-hosted-acceptance-design.md:356-357` and
 `:389-390` (at 9835b76).
@@ -38,6 +39,12 @@ mail isolation explicitly separate and unclaimed by this campaign.
 Confidence: high; demonstrated contradictory written requirements. Impact is
 integration direction, not an exposed runtime security defect. Source-only CI
 need not be held for this wording, but it should not survive into live wiring.
+
+Resolution: `58b0fe6cefab4bb2ac2d97d921f0734ca69b00b0` replaces the stale
+B operational labels with A, replaces prior-isolation prerequisites with hosted
+source/native identity provenance, and explicitly keeps B/isolation separate.
+Focused static review found the contradiction resolved without broadening live
+authority. No open substantive finding remains in this reviewed increment.
 
 ## Positive contract checks
 
@@ -75,8 +82,9 @@ need not be held for this wording, but it should not survive into live wiring.
 
 ## Required next evidence
 
-Correct the contradictory design requirements, run the existing hosted source
+With the documented correction applied, run the existing hosted source
 suite at the reviewed source SHA, then separately review the missing live adapter,
 real pinned encryption dependency, durable artifact orchestration, fresh native
 PKCE/Identity revision readback and full Cloudflare/D1/R2 inventory. The quota
 live path remains **NO-GO** until those contracts are implemented and verified.
+
