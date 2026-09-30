@@ -6,10 +6,11 @@ and the independently reviewed dormant source through `f9f67bc`. Reused
 
 ## Decision and execution boundary
 
-**NO-GO for accepting this terminal slice as ready for hosted source validation
-until the P2 below is corrected and independently re-reviewed. Live remains
-NO-GO regardless of that correction.** This decision does not prohibit a
-separately authorized diagnostic hosted test, but no such dispatch was made.
+**Current decision after correction `63f9d11`: GO for the bounded dormant
+source slice and hosted synthetic/source validation; live remains NO-GO.**
+The initial `5d3eb63` assessment was NO-GO pending the P2 below. The independent
+follow-up at the end resolves that finding without erasing its failure mechanism.
+No diagnostic or hosted dispatch was made by this review.
 
 Inspected the complete four-file diff, full adapter/DDL, synthetic fixture and
 test additions, manifest/transport contracts, and call-site search. No local
@@ -131,3 +132,47 @@ acknowledgement/freshness gates, exact staging provenance/migration/schema,
 permission/latency evidence and all existing owner/service/hold/capture-off and
 immutable artifact admission gates are complete. No key retirement, age purge,
 schema rollback/drop, admission bypass or unknown Mail DELETE replay is authorized.
+
+## Independent correction review: `63f9d11`
+
+Inspected the complete three-file correction diff and exact resulting receipt
+SQL/parameter tuple against the original finding. **P2 resolved. GO for hosted
+dormant source validation. No additional substantive defect was found in this
+bounded correction. Live remains NO-GO.** No local test/build, provider request,
+migration, key access, or workflow dispatch occurred; new fixtures were inspected,
+not executed.
+
+The single UPDATE now compares observed state (`?8`), artifact relation with
+`IS ?9`, arm timestamp with `IS ?10`, and immutable creation time (`?11`), in
+addition to original run/digest, null receipt, admissible state and the server-
+time window. `_finalize` binds these parameters directly from the same
+authenticated parent used to compute the receipt. SQLite's
+[IS operator](https://www.sqlite.org/lang_expr.html) supplies null-safe equality,
+so an initially null artifact or arm time is actually compared rather than
+turning the condition into SQL unknown.
+
+The attach fixture inserts/seals without an artifact, attaches `123` through a
+second real adapter after the finalizer read and just before its receipt UPDATE,
+and requires acknowledgement failure with unchanged sealed ciphertext and no
+receipt hash/verifier run. The arm fixture starts with attached sealed data,
+arms through a second adapter in the same boundary, and requires acknowledgement
+failure with intact armed ciphertext and absent receipt hash/terminal timestamp.
+Neither fixture fabricates a query success result: the SQLite UPDATE must match
+zero rows. The corrected predicate therefore prevents the durable invalid receipt
+before write, rather than relying on post-write detection. Existing successful,
+lost-response and competing-terminal cases retain their original semantics.
+
+The API reference currently types REST parameters as strings, while this existing
+adapter sends JSON integers and the corrected nullable comparisons additionally
+send JSON null for observed null fields. No real-D1 transport acceptance is
+proved by in-memory SQLite or by broad SQL compatibility documentation. Include
+these exact nonnull/null parameter shapes in the already separately authorized
+provider roundtrip gate before operational use; do not infer that a source GO is
+REST/provider evidence. If necessary, use fixed string encodings and explicit
+SQL conversion/null comparison without weakening the exact lifecycle predicate.
+This is a concrete provider-verification boundary, not a demonstrated failure
+of the dormant source path.
+
+The correction does not add the absent executed read-only/native-teardown
+coordinator, authorize terminal writes from campaign success, or change the
+existing no-live/no-migration/no-key boundary. Those obligations stay open.
