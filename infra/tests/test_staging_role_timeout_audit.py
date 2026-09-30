@@ -7,6 +7,7 @@ from io import BytesIO, StringIO
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import unittest
 import urllib.error
@@ -25,6 +26,14 @@ def row(**changes: object) -> dict:
     value.update(checked_at=0, lease_until=0)
     value.update(changes)
     return value
+
+
+def workflow_job(workflow: str, name: str) -> str:
+    """Extract one top-level job regardless of which job follows it."""
+
+    remainder = workflow.split(f"  {name}:\n", 1)[1]
+    next_job = re.search(r"(?m)^  [a-z][a-z0-9-]*:$", remainder)
+    return remainder[:next_job.start()] if next_job else remainder
 
 
 class Response:
@@ -132,8 +141,7 @@ class RoleTimeoutAuditTests(unittest.TestCase):
         """The manual target cannot accidentally run on push or leak credentials early."""
 
         workflow = (HERE.parents[1] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        job = workflow.split("  staging-role-timeout-audit:\n", 1)[1].split(
-            "\n  staging-trace-canary:", 1)[0]
+        job = workflow_job(workflow, "staging-role-timeout-audit")
         self.assertIn("inputs.target == 'staging-role-timeout-audit'", job)
         self.assertIn("READ_FIRST_ROLE_SMTP_AGGREGATES", job)
         self.assertIn("36603362864", job)
@@ -143,6 +151,20 @@ class RoleTimeoutAuditTests(unittest.TestCase):
         self.assertEqual(job.count("secrets.CLOUDFLARE_API_TOKEN"), 1)
         self.assertEqual(job.count("secrets.CF_EMAIL_ROUTING_TOKEN"), 1)
         self.assertNotIn("wrangler", job.lower())
+
+    def test_token_probe_scopes_secrets_to_final_step(self) -> None:
+        """The adjacent read-only probe also keeps credentials out of preflight."""
+
+        workflow = (HERE.parents[1] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = workflow_job(workflow, "staging-role-token-phase-probe")
+        self.assertIn("inputs.target == 'staging-role-token-phase-probe'", job)
+        self.assertIn("READ_FIRST_ROLE_TOKEN_PERMISSIONS", job)
+        self.assertNotIn("\n    env:", job)
+        self.assertNotIn("secrets.", job.split(
+            "      - name: Read bounded provider inventories without disclosing destination", 1)[0])
+        for secret in ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
+                       "CF_EMAIL_ROUTING_TOKEN", "ROLE_FORWARD_DESTINATION"):
+            self.assertEqual(job.count(f"secrets.{secret}"), 1)
 
 
 if __name__ == "__main__":
