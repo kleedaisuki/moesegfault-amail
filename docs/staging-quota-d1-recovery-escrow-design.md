@@ -332,3 +332,45 @@ its failed write or supplies alias authority. An explicitly separate matching
 preparation can finish durability work; it cannot recover a lost arm ACK.
 These are dormant source tests pending hosted execution, not provider behavior
 or live mutation permission.
+
+## Dormant private terminal SQL slice
+
+The next source slice extends the still-unapplied create-once staging schema
+with immutable public verifier run/SHA/check-set fields. A terminal receipt
+binds all original coordinates, artifact relation, ciphertext digest/length,
+creation/arm times, verifier coordinates, source-owned check-set and a server-
+observed timestamp. A fixed SELECT obtains D1's Unix time; the single conditional
+state+receipt UPDATE accepts only that observation within a 30-second server
+window and after original creation. This avoids inventing a client clock or
+claiming a digest can be generated from an unknown future write timestamp.
+Receipt fields and the original arm time become immutable. No deployed schema
+exists to upgrade; the dormant additive migration is amended before first use.
+
+`Escrow._finalize` is a **private, unwired low-level SQL boundary**, not an
+attestation implementation. It has no `passed=true`, generic success token,
+workflow flag or alias capability. Only the separately reviewed concrete
+coordinator may call it after independently authenticated read-only recovery,
+all baseline/owner/provider/storage/service/privacy checks and native/session/
+binary-scratch teardown. Campaign success, issue acknowledgement, receipt
+existence or a caller's invented verifier coordinates is not that evidence.
+The first receipt must obtain changes=1 and complete unchanged authenticated
+readback; ambiguous/zero-change transitions stop with ciphertext retained.
+
+`Escrow._purge` is likewise private and may only follow that independent
+verification. It verifies the exact original authenticated blob plus immutable
+receipt, then removes each present matching chunk once via index/hash/ciphertext
+and receipt relation, independently checks absence, and exhausts a typed zero
+aggregate. It never removes the parent receipt. A lost DELETE response stops
+without another attempt; a separately authorized recovery must redo all external
+checks before resuming, and observes an already absent chunk without resending.
+An incomplete writing escrow whose original full ciphertext cannot be recovered
+is not terminally fabricated: it conservatively blocks admission and needs
+restricted reconciliation. No age/acknowledgement-based abandonment is added.
+
+Synthetic contracts cover immutable/permanent receipts, exact one-write receipt
+transition, competing verifier/zero-change loser, persisted-but-lost terminal
+response with no purge, rejected receipt/foreign ciphertext, retained pending
+chunks, and partial 31-chunk purge after committed-but-lost response. These test
+the private SQL semantics only; no synthetic fixture is real cleanup attestation.
+Concrete coordinator, watchdog/intake, hosted provider behavior and live gates
+remain pending. Existing 30-day artifact semantics are unchanged.

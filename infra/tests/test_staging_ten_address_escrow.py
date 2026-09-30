@@ -252,6 +252,102 @@ class EscrowTests(unittest.TestCase):
                 self.client.put(self.blob,key,run,generation)
         self.assertFalse(any(sql == target.SQL["create"] for sql, params in self.world.calls))
 
+    def terminal(self):
+        """Model only the private SQL contract, NOT real independent recovery attestation."""
+        self.prepare()
+        self.client.arm(RUN,KEY,GEN,"123",self.blob)
+        return self.client._finalize(RUN,KEY,GEN,"7654321","b"*40,self.blob)
+
+    def test_terminal_receipt_is_atomic_bound_immutable_and_purge_only(self):
+        """Full public receipt and state commit together; permanent parent survives purge."""
+        receipt = self.terminal()
+        self.assertEqual(receipt["state"],"cleanup_verified")
+        self.assertEqual(receipt["cleanup_receipt_sha"],self.client._receipt(receipt))
+        self.assertEqual(receipt["cleanup_verifier_run"],"7654321")
+        self.assertEqual(receipt["cleanup_check_set"],target.CHECK_SET)
+        self.assertEqual(self.client.read(RUN,KEY,GEN)[1],self.blob)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.world.db.execute(f"UPDATE {target.PARENT} SET cleanup_verifier_sha=? WHERE original_run=?",("c"*40,RUN))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.world.db.execute(f"UPDATE {target.PARENT} SET armed_at=armed_at+1 WHERE original_run=?",(RUN,))
+        self.client._purge(RUN,KEY,GEN,self.blob)
+        self.assertEqual(self.world.query(target.SQL["aggregate"],(RUN,)).rows,[{"n":0,"bytes":0}])
+        self.assertEqual(self.client.parent(RUN),receipt)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.world.db.execute(f"DELETE FROM {target.PARENT} WHERE original_run=?",(RUN,))
+        with self.assertRaisesRegex(manifest.ContractFailure,"escrow_state_not_preparable"):
+            self.client.put(self.blob,KEY,RUN,GEN)
+
+    def test_lost_terminal_response_keeps_ciphertext_and_never_purges(self):
+        """A persisted receipt does not turn lost acknowledgement into an automatic purge."""
+        self.prepare()
+        self.world.ambiguous = target.SQL["receipt"]
+        with self.assertRaisesRegex(manifest.ContractFailure,"escrow_query_unverified"):
+            self.client._finalize(RUN,KEY,GEN,"7654321","b"*40,self.blob)
+        row,blob = self.client.read(RUN,KEY,GEN)
+        self.assertEqual(row["state"],"cleanup_verified")
+        self.assertEqual(blob,self.blob)
+        self.assertFalse(any(sql == target.SQL["purge"] for sql,params in self.world.calls))
+        with self.assertRaisesRegex(manifest.ContractFailure,"escrow_receipt_not_available"):
+            self.client._finalize(RUN,KEY,GEN,"7654321","b"*40,self.blob)
+        self.assertEqual(sum(sql == target.SQL["receipt"] for sql,params in self.world.calls),1)
+
+    def test_competing_terminal_receipt_loser_cannot_purge_or_replace(self):
+        """Only the current known winner returns a terminal response; a loser stops."""
+        self.prepare()
+        winner = []
+        competitor = target.Escrow("a"*32,"synthetic-token",query=self.world.query)
+        original = self.client._query
+        def competing(sql,params):
+            if sql == target.SQL["receipt"] and not winner:
+                winner.append(competitor._finalize(RUN,KEY,GEN,"8765432","c"*40,self.blob))
+            return original(sql,params)
+        self.client._query = competing
+        with self.assertRaisesRegex(manifest.ContractFailure,"escrow_receipt_ack_unverified"):
+            self.client._finalize(RUN,KEY,GEN,"7654321","b"*40,self.blob)
+        self.assertEqual(self.client.parent(RUN)["cleanup_verifier_run"],"8765432")
+        self.assertEqual(len(winner),1)
+        self.assertEqual(self.client.read(RUN,KEY,GEN)[1],self.blob)
+        self.assertFalse(any(sql == target.SQL["purge"] for sql,params in self.world.calls))
+
+    def test_purge_requires_receipt_and_stops_on_ambiguous_chunk_delete(self):
+        """Partial logical purge resumes only as an explicit separate private invocation."""
+        blob = manifest.seal(maximum_plan(),KEY,RUN,GEN)
+        self.client.put(blob,KEY,RUN,GEN)
+        self.client.attach(RUN,KEY,GEN,"123",blob)
+        with self.assertRaisesRegex(manifest.ContractFailure,"escrow_receipt_unverified"):
+            self.client._purge(RUN,KEY,GEN,blob)
+        self.client._finalize(RUN,KEY,GEN,"7654321","b"*40,blob)
+        self.world.ambiguous = target.SQL["purge"]
+        with self.assertRaisesRegex(manifest.ContractFailure,"escrow_query_unverified"):
+            self.client._purge(RUN,KEY,GEN,blob)
+        self.assertEqual(sum(sql == target.SQL["purge"] for sql,params in self.world.calls),1)
+        self.assertEqual(self.world.query(target.SQL["aggregate"],(RUN,)).rows[0]["n"],30)
+        receipt = self.client.parent(RUN)
+        self.client._purge(RUN,KEY,GEN,blob)
+        self.assertEqual(self.client.parent(RUN),receipt)
+        self.assertEqual(self.world.query(target.SQL["aggregate"],(RUN,)).rows,[{"n":0,"bytes":0}])
+        # The committed-but-lost index is observed absent, never DELETE-replayed.
+        indexes = [params[1] for sql,params in self.world.calls if sql == target.SQL["purge"]]
+        self.assertEqual(indexes,list(range(31)))
+
+    def test_unverified_receipt_or_foreign_blob_preserves_ciphertext(self):
+        """A changed verifier relation or envelope cannot grant even private purge."""
+        self.terminal()
+        different = manifest.seal(plan(),KEY,RUN,GEN)
+        with self.assertRaisesRegex(manifest.ContractFailure,"escrow_binding_mismatch"):
+            self.client._purge(RUN,KEY,GEN,different)
+        original = self.client._query
+        def forged(sql,params):
+            result = original(sql,params)
+            if sql == target.SQL["parent"]:
+                result.rows[0]["cleanup_receipt_sha"] = "a"*64
+            return result
+        self.client._query = forged
+        with self.assertRaisesRegex(manifest.ContractFailure,"escrow_receipt_unverified"):
+            self.client._purge(RUN,KEY,GEN,self.blob)
+        self.assertFalse(any(sql == target.SQL["purge"] for sql,params in self.world.calls))
+
 
 class BoundaryTests(unittest.TestCase):
     """Exercise exact maximum sizes/budget using synthetic bounded bytes/DDL only."""
@@ -297,7 +393,7 @@ class BoundaryTests(unittest.TestCase):
             world.query(target.SQL["create"], values)
             raw = b"x" * target.CHUNK
             world.query(target.SQL["part_create"], (run,0,len(raw),target.hash_bytes(raw),base64.b64encode(raw).decode()))
-            world.db.execute(f"UPDATE {target.PARENT} SET state='cleanup_verified',cleanup_verified_at=unixepoch(),cleanup_receipt_sha=? WHERE original_run=?", ("c"*64,run))
+            world.db.execute(f"UPDATE {target.PARENT} SET state='cleanup_verified',cleanup_verified_at=unixepoch(),cleanup_receipt_sha=?,cleanup_verifier_run='123',cleanup_verifier_sha=?,cleanup_check_set=? WHERE original_run=?", ("c"*64,"d"*40,target.CHECK_SET,run))
             world.db.commit()
         with self.assertRaises(sqlite3.IntegrityError):
             world.query(target.SQL["create"], ("7",1,manifest.REPOSITORY,target.RECOVERY_WORKFLOW,"a"*40,2,GEN,"b"*64,size,count,reserved))

@@ -18,9 +18,13 @@ CREATE TABLE staging_acceptance_escrows (
     armed_at INTEGER CHECK(armed_at IS NULL OR armed_at>=created_at),
     cleanup_verified_at INTEGER CHECK(cleanup_verified_at IS NULL OR cleanup_verified_at>=created_at),
     cleanup_receipt_sha TEXT CHECK(cleanup_receipt_sha IS NULL OR length(cleanup_receipt_sha)=64 AND cleanup_receipt_sha NOT GLOB '*[^a-f0-9]*'),
+    cleanup_verifier_run TEXT CHECK(cleanup_verifier_run IS NULL OR length(cleanup_verifier_run) BETWEEN 1 AND 20 AND cleanup_verifier_run NOT GLOB '*[^0-9]*' AND substr(cleanup_verifier_run,1,1)!='0'),
+    cleanup_verifier_sha TEXT CHECK(cleanup_verifier_sha IS NULL OR length(cleanup_verifier_sha)=40 AND cleanup_verifier_sha NOT GLOB '*[^a-f0-9]*'),
+    cleanup_check_set TEXT CHECK(cleanup_check_set IS NULL OR cleanup_check_set='quota-readonly-native-teardown-v1'),
     issue_number INTEGER CHECK(issue_number IS NULL OR issue_number>0),
     CHECK(state!='armed' OR armed_at IS NOT NULL),
-    CHECK(state!='cleanup_verified' OR cleanup_verified_at IS NOT NULL AND cleanup_receipt_sha IS NOT NULL)
+    CHECK(state!='cleanup_verified' OR cleanup_verified_at IS NOT NULL AND cleanup_receipt_sha IS NOT NULL
+        AND cleanup_verifier_run IS NOT NULL AND cleanup_verifier_sha IS NOT NULL AND cleanup_check_set IS NOT NULL)
 );
 
 CREATE TABLE staging_acceptance_escrow_chunks (
@@ -36,6 +40,7 @@ CREATE TABLE staging_acceptance_escrow_chunks (
 CREATE TRIGGER staging_acceptance_initial_state BEFORE INSERT ON staging_acceptance_escrows
 WHEN NEW.state!='writing' OR NEW.artifact_id IS NOT NULL OR NEW.armed_at IS NOT NULL
     OR NEW.cleanup_verified_at IS NOT NULL OR NEW.cleanup_receipt_sha IS NOT NULL
+    OR NEW.cleanup_verifier_run IS NOT NULL OR NEW.cleanup_verifier_sha IS NOT NULL OR NEW.cleanup_check_set IS NOT NULL
 BEGIN SELECT RAISE(ABORT,'escrow_initial_state_invalid'); END;
 
 -- One outstanding envelope is enforced atomically, including incomplete preparation.
@@ -68,6 +73,16 @@ BEGIN SELECT RAISE(ABORT,'escrow_binding_immutable'); END;
 CREATE TRIGGER staging_acceptance_artifact_immutable BEFORE UPDATE OF artifact_id ON staging_acceptance_escrows
 WHEN OLD.artifact_id IS NOT NULL AND NEW.artifact_id IS NOT OLD.artifact_id
 BEGIN SELECT RAISE(ABORT,'escrow_artifact_immutable'); END;
+
+-- A terminal receipt cannot be rewritten, acknowledged away or turned into another run.
+CREATE TRIGGER staging_acceptance_receipt_immutable
+BEFORE UPDATE OF cleanup_verified_at,cleanup_receipt_sha,cleanup_verifier_run,cleanup_verifier_sha,cleanup_check_set
+ON staging_acceptance_escrows WHEN OLD.state='cleanup_verified'
+BEGIN SELECT RAISE(ABORT,'escrow_receipt_immutable'); END;
+
+CREATE TRIGGER staging_acceptance_arm_immutable BEFORE UPDATE OF armed_at ON staging_acceptance_escrows
+WHEN OLD.armed_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT,'escrow_arm_immutable'); END;
 
 -- No backward transition can turn an ambiguous armed invocation into a new permission.
 CREATE TRIGGER staging_acceptance_state_transition BEFORE UPDATE OF state ON staging_acceptance_escrows

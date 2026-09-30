@@ -26,12 +26,14 @@ CHUNK = 65_536
 MAX_CHUNKS = 31
 MAX_RESPONSE = 131_072
 MAX_ENVELOPE = manifest.LIMIT + 256
+CHECK_SET = "quota-readonly-native-teardown-v1"
 MIGRATION = Path(__file__).resolve().parents[1] / "deploy/staging-acceptance-migrations/0001_quota_escrow.sql"
 PARENT = "staging_acceptance_escrows"
 PARTS = "staging_acceptance_escrow_chunks"
 FIELDS = ("original_run", "attempt", "repository", "workflow", "source_sha", "schema_version",
           "key_generation", "envelope_sha", "envelope_bytes", "chunk_count", "reserved_bytes",
-          "artifact_id", "state", "created_at", "armed_at", "cleanup_verified_at", "cleanup_receipt_sha", "issue_number")
+          "artifact_id", "state", "created_at", "armed_at", "cleanup_verified_at", "cleanup_receipt_sha",
+          "cleanup_verifier_run", "cleanup_verifier_sha", "cleanup_check_set", "issue_number")
 BOUND = FIELDS[:11]
 SQL = {
     "schema": "SELECT name,type,sql FROM sqlite_master WHERE name LIKE 'staging_acceptance_%' AND sql IS NOT NULL ORDER BY name",
@@ -43,6 +45,9 @@ SQL = {
     "seal": f"UPDATE {PARENT} SET state='sealed' WHERE original_run=?1 AND envelope_sha=?2 AND state='writing' AND (SELECT COUNT(*) FROM {PARTS} WHERE original_run=?1)=chunk_count",
     "artifact": f"UPDATE {PARENT} SET artifact_id=?3 WHERE original_run=?1 AND envelope_sha=?2 AND state='sealed' AND artifact_id IS NULL",
     "arm": f"UPDATE {PARENT} SET state='armed',armed_at=unixepoch() WHERE original_run=?1 AND envelope_sha=?2 AND artifact_id=?3 AND state='sealed' AND armed_at IS NULL",
+    "clock": "SELECT unixepoch() AS now",
+    "receipt": f"UPDATE {PARENT} SET state='cleanup_verified',cleanup_verified_at=?3,cleanup_receipt_sha=?4,cleanup_verifier_run=?5,cleanup_verifier_sha=?6,cleanup_check_set=?7 WHERE original_run=?1 AND envelope_sha=?2 AND state IN ('writing','sealed','armed') AND cleanup_receipt_sha IS NULL AND ?3>=created_at AND ?3 BETWEEN unixepoch()-30 AND unixepoch()",
+    "purge": f"DELETE FROM {PARTS} WHERE original_run=?1 AND chunk_index=?2 AND chunk_sha=?3 AND ciphertext_b64=?4 AND EXISTS(SELECT 1 FROM {PARENT} WHERE original_run=?1 AND state='cleanup_verified' AND cleanup_receipt_sha=?5)",
 }
 
 
@@ -112,7 +117,13 @@ class Arm:
 
 
 class Escrow:
-    """Fixed staging operations capabilities; no ciphertext purge or terminal receipt yet."""
+    """Fixed staging operations; private receipt/purge requires a reviewed coordinator.
+
+    Receipt and purge helpers cannot prove external cleanup themselves. They are
+    deliberately private and unwired: only a concrete independently reviewed
+    read-only recovery coordinator may call them after all checks and teardown.
+    A public passed flag or caller-created success token is never accepted.
+    """
 
     def __init__(self, account: str, token: str, *, query: Callable | None = None):
         """Admit exact account shape and protected existing D1 token, never DB selectors."""
@@ -180,7 +191,12 @@ class Escrow:
                         for field in ("armed_at", "cleanup_verified_at"))
                 and (value["issue_number"] is None or type(value["issue_number"]) is int and value["issue_number"] > 0)
                 and (value["artifact_id"] is None or isinstance(value["artifact_id"], str)
-                     and re.fullmatch(r"[1-9][0-9]{0,19}", value["artifact_id"]) is not None),
+                     and re.fullmatch(r"[1-9][0-9]{0,19}", value["artifact_id"]) is not None)
+                and (value["cleanup_verifier_run"] is None or isinstance(value["cleanup_verifier_run"], str)
+                     and re.fullmatch(r"[1-9][0-9]{0,19}", value["cleanup_verifier_run"]) is not None)
+                and (value["cleanup_verifier_sha"] is None or isinstance(value["cleanup_verifier_sha"], str)
+                     and re.fullmatch(r"[a-f0-9]{40}", value["cleanup_verifier_sha"]) is not None)
+                and value["cleanup_check_set"] in (None,CHECK_SET),
                 "escrow_parent_unverified")
         return value
 
@@ -282,3 +298,79 @@ class Escrow:
                 and type(armed["armed_at"]) is int and armed["armed_at"] >= row["created_at"],
                 "escrow_arm_readback_unverified")
         return Arm(run,row["envelope_sha"],artifact_id,armed["armed_at"])
+
+    @staticmethod
+    def _receipt(row: dict) -> str:
+        """Bind only public original/verifier coordinates, check-set and observed server time."""
+        fields = BOUND + ("artifact_id", "created_at", "armed_at", "cleanup_verified_at",
+                          "cleanup_verifier_run", "cleanup_verifier_sha", "cleanup_check_set")
+        return hash_bytes(manifest.canonical({name: row[name] for name in fields}))
+
+    def _terminal(self, row: dict, values: tuple) -> dict:
+        """Validate an immutable receipt as metadata, never as independent cleanup proof."""
+        self._same(row,values)
+        require(row["state"] == "cleanup_verified" and type(row["cleanup_verified_at"]) is int
+                and row["cleanup_verified_at"] >= row["created_at"]
+                and isinstance(row["cleanup_verifier_run"],str)
+                and isinstance(row["cleanup_verifier_sha"],str) and row["cleanup_check_set"] == CHECK_SET
+                and self._receipt(row) == row["cleanup_receipt_sha"], "escrow_receipt_unverified")
+        return row
+
+    def _finalize(self, run: str, key: str, generation: str, verifier_run: str,
+                  verifier_sha: str, expected_blob: bytes) -> dict:
+        """Persist receipt once AFTER concrete independent recovery and native teardown.
+
+        This private SQL boundary does not execute those checks. The forthcoming
+        concrete coordinator owns that obligation; this helper has no entrypoint
+        and must never be called from campaign-success or a passed=true switch.
+        Lost/zero-change response fails without purge or readback-as-ACK repair.
+        """
+        manifest.coordinates(verifier_run,"1")
+        require(isinstance(verifier_sha,str) and re.fullmatch(r"[a-f0-9]{40}",verifier_sha) is not None,
+                "escrow_verifier_unverified")
+        row,blob = self.read(run,key,generation)
+        require(blob == expected_blob and row["state"] in ("writing","sealed","armed")
+                and row["cleanup_receipt_sha"] is None, "escrow_receipt_not_available")
+        clock = self._run("clock").rows
+        require(len(clock) == 1 and set(clock[0]) == {"now"} and type(clock[0]["now"]) is int
+                and clock[0]["now"] >= row["created_at"], "escrow_clock_unverified")
+        expected = {**row,"state":"cleanup_verified","cleanup_verified_at":clock[0]["now"],
+                    "cleanup_verifier_run":verifier_run,"cleanup_verifier_sha":verifier_sha,
+                    "cleanup_check_set":CHECK_SET}
+        expected["cleanup_receipt_sha"] = self._receipt(expected)
+        require(self._run("receipt",(run,row["envelope_sha"],clock[0]["now"],
+                    expected["cleanup_receipt_sha"],verifier_run,verifier_sha,CHECK_SET)).changes == 1,
+                "escrow_receipt_ack_unverified")
+        terminal,actual = self.read(run,key,generation)
+        _,values = binding(blob,key,run,generation)
+        self._terminal(terminal,values)
+        require(terminal == expected and actual == blob, "escrow_receipt_readback_unverified")
+        return terminal
+
+    def _purge(self, run: str, key: str, generation: str, expected_blob: bytes) -> None:
+        """Remove exact ciphertext only AFTER independently verified terminal cleanup.
+
+        This private helper never removes the permanent public receipt. Separate
+        recovery must repeat all external checks before resuming a partial purge.
+        A receipt is necessary metadata, not a substitute for that attestation.
+        Any ambiguous chunk DELETE stops immediately; no automatic retry occurs.
+        Logical removal does not erase provider backups or the retained artifact.
+        """
+        self.schema()
+        _,values = binding(expected_blob,key,run,generation)
+        row = self._terminal(self.parent(run),values)
+        for index in range(row["chunk_count"]):
+            parts = self._run("part",(run,index)).rows
+            require(len(parts) <= 1, "escrow_chunk_unverified")
+            if not parts:
+                continue
+            expected = expected_blob[index*CHUNK:(index+1)*CHUNK]
+            require(decode_part(parts[0],index,len(expected)) == expected, "escrow_chunk_collision")
+            require(self._run("purge",(run,index,parts[0]["chunk_sha"],parts[0]["ciphertext_b64"],
+                                      row["cleanup_receipt_sha"])).changes == 1, "escrow_purge_ack_unverified")
+            require(self._run("part",(run,index)).rows == [], "escrow_purge_readback_unverified")
+        total = self._run("aggregate",(run,)).rows
+        require(len(total) == 1 and set(total[0]) == {"n","bytes"}
+                and type(total[0]["n"]) is int and type(total[0]["bytes"]) is int
+                and total == [{"n":0,"bytes":0}] and self.parent(run) == row,
+                "escrow_purge_readback_unverified")
