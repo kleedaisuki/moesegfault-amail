@@ -23,6 +23,13 @@ The build yields `dist/`; `wrangler.jsonc` deploys it as the `amail-release-site
 
 The static asset `_headers` rule matches **only** the staging hostname and sends `X-Robots-Tag: noindex, nofollow`. The shared `robots.txt` remains crawlable so search engines can actually see the noindex header; production gets no such header. CI should smoke-check the staging response header after deploy. See [Cloudflare Workers Static Assets headers](https://developers.cloudflare.com/workers/static-assets/headers/).
 
+`node scripts/check-release-state.mjs candidate|published` checks each rendered
+route's own release copy, links, navigation, and HTML indexability, plus the
+staging-only `_headers` rule. `node --test scripts/check-release-state.test.mjs`
+exercises missing status/link regressions without building or deploying. These
+source checks do not establish live response headers or published asset bytes;
+the deploy smoke and Release checksum gate remain necessary.
+
 ## Appending a release
 
 Add **one** Markdown file named `src/content/releases/vX.Y.Z.md` with `version`, UTC `date`, and `summary` frontmatter. Keep the body reader-focused. The content collection validates versions and automatically sorts entries newest-first; its table of contents uses stable version anchors. Update the main-page download link and manual installation link when the latest public version changes. Do not publish a changelog claim ahead of release/smoke gates.
