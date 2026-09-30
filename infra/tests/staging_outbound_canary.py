@@ -20,7 +20,8 @@ import re
 import sys
 import time
 import urllib.request
-import uuid
+
+from staging_canary_recovery import RecoveryError, hosted_material
 
 from staging_mail_e2e import PNG, TEMP, ProbeFailure, SENDING_TAG, amail, cli_env, inside_temp
 
@@ -141,25 +142,44 @@ def inbox_ready(values: dict[str, str]) -> None:
         raise ProbeFailure("canary_external_inbox_unavailable") from None
 
 
-def preflight(values: dict[str, str], sender: str) -> None:
-    """Require a held switch, exact unused grant, owned sender, and time margin."""
+def preflight_controls(values: dict[str, str], sender: str) -> None:
+    """Require a held global switch and active sender owned by this principal."""
 
     state = one(d1(values, "SELECT state FROM send_policy WHERE scope='global' AND owner_iss='*' AND owner_sub='*'", []), "canary_policy_shape")
     if state.get("state") != "held":
         raise ProbeFailure("canary_global_not_held")
-    grant = one(d1(values, "SELECT canary_owner_iss,canary_owner_sub,canary_recipient_sha256,canary_expires_at,canary_used_by,unixepoch() AS now FROM send_release_gates WHERE id=1", []), "canary_grant_shape")
-    digest = hashlib.sha256(values["AMAIL_CANARY_RECIPIENT"].encode()).hexdigest()
-    if (grant.get("canary_owner_iss") != ISSUER or
-            grant.get("canary_owner_sub") != values["STAGING_E2E_OWNER_SUB"] or
-            grant.get("canary_recipient_sha256") != digest or
-            grant.get("canary_used_by") is not None or
-            type(grant.get("canary_expires_at")) is not int or
-            type(grant.get("now")) is not int or
-            grant["canary_expires_at"] - grant["now"] < 120):
-        raise ProbeFailure("canary_grant_not_ready")
     owned = d1(values, "SELECT state FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3", [sender, ISSUER, values["STAGING_E2E_OWNER_SUB"]])
     if one(owned, "canary_sender_not_owned").get("state") != "active":
         raise ProbeFailure("canary_sender_not_active")
+
+
+def grant_ready(values: dict[str, str], *, after: int | None = None) -> bool:
+    """Check exact unused grant with at least 120 seconds remaining.
+
+    A hosted rendezvous additionally requires the grant's D1 update timestamp
+    to follow the post-login D1 server-time watermark. The standalone canary
+    still fails closed on absent, wrong, used, or nearly expired grants.
+    """
+
+    grant = one(d1(values, "SELECT canary_owner_iss,canary_owner_sub,canary_recipient_sha256,canary_expires_at,canary_used_by,updated_at,unixepoch() AS now FROM send_release_gates WHERE id=1", []), "canary_grant_shape")
+    digest = hashlib.sha256(values["AMAIL_CANARY_RECIPIENT"].encode()).hexdigest()
+    return (grant.get("canary_owner_iss") == ISSUER and
+            grant.get("canary_owner_sub") == values["STAGING_E2E_OWNER_SUB"] and
+            grant.get("canary_recipient_sha256") == digest and
+            grant.get("canary_used_by") is None and
+            type(grant.get("canary_expires_at")) is int and
+            type(grant.get("now")) is int and
+            grant["canary_expires_at"] - grant["now"] >= 120 and
+            (after is None or
+             (type(grant.get("updated_at")) is int and grant["updated_at"] > after)))
+
+
+def preflight(values: dict[str, str], sender: str) -> None:
+    """Reject a held-policy violation, wrong sender, or ineligible grant."""
+
+    preflight_controls(values, sender)
+    if not grant_ready(values):
+        raise ProbeFailure("canary_grant_not_ready")
 
 
 def make_draft(run_dir: Path, sender: str, recipient: str, nonce: str) -> tuple[Path, str]:
@@ -320,16 +340,19 @@ def execute(args: argparse.Namespace) -> None:
     privacy_ready(values)
     inbox_ready(values)
     preflight(values, sender)
+    try:
+        key, nonce = hosted_material()
+    except RecoveryError:
+        raise ProbeFailure("canary_recovery_material_invalid") from None
     run_dir = create_run_dir(args.run_dir)
-    nonce = uuid.uuid4().hex
     draft, _ = make_draft(run_dir, sender, values["AMAIL_CANARY_RECIPIENT"], nonce)
     archive = run_dir / "canary.zip"
     packed = amail(binary, env, "pack", str(draft), "-o", str(archive), failure="canary_pack_failed")
     if len(packed) != 1 or packed[0].get("packed") is not True:
         raise ProbeFailure("canary_pack_invalid")
-    key = str(uuid.uuid4())
     # A timeout or 5xx may mean the provider already accepted the request.
-    # Never retry with a new key, and do not automatically retry even this key.
+    # The dedicated protected key and GitHub run coordinates recover this exact
+    # idempotency key after runner cleanup; never automatically replay it.
     sent = amail(binary, env, "send", str(archive), "--idempotency-key", key, failure="canary_send_uncertain")
     if len(sent) != 1 or sent[0].get("state") != "accepted" or not isinstance(sent[0].get("id"), str):
         raise ProbeFailure("canary_not_accepted")

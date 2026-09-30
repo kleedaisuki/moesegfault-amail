@@ -68,19 +68,35 @@ class CanaryTests(unittest.TestCase):
             "canary_used_by": None,
             "now": 700,
         }
-        responses = [[{"state": "held"}], [grant], [{"state": "active"}]]
+        responses = [[{"state": "held"}], [{"state": "active"}], [grant]]
         with patch.object(MODULE, "d1", side_effect=responses):
             MODULE.preflight(config, "probe@mail-staging.moesegfault.dev")
         for change in ({"canary_used_by": "old"}, {"canary_recipient_sha256": "0" * 64},
                        {"canary_expires_at": 800}):
             with self.subTest(change=change), patch.object(MODULE, "d1", side_effect=[
-                [{"state": "held"}], [{**grant, **change}],
+                [{"state": "held"}], [{"state": "active"}], [{**grant, **change}],
             ]):
                 with self.assertRaisesRegex(MODULE.ProbeFailure, "canary_grant_not_ready"):
                     MODULE.preflight(config, "probe@mail-staging.moesegfault.dev")
         with patch.object(MODULE, "d1", return_value=[{"state": "allowed"}]):
             with self.assertRaisesRegex(MODULE.ProbeFailure, "canary_global_not_held"):
                 MODULE.preflight(config, "probe@mail-staging.moesegfault.dev")
+
+    def test_hosted_rendezvous_needs_grant_after_login_watermark(self) -> None:
+        """A previously issued grant cannot silently authorize the hosted run."""
+
+        grant = {
+            "canary_owner_iss": MODULE.ISSUER,
+            "canary_owner_sub": "synthetic-owner",
+            "canary_recipient_sha256": MODULE.hashlib.sha256(b"probe@example.net").hexdigest(),
+            "canary_expires_at": 2000,
+            "canary_used_by": None,
+            "updated_at": 1000,
+            "now": 1050,
+        }
+        with patch.object(MODULE, "d1", return_value=[grant]):
+            self.assertFalse(MODULE.grant_ready(values(), after=1000))
+            self.assertTrue(MODULE.grant_ready(values(), after=999))
 
     def test_provider_202_alone_never_verifies_delivery(self) -> None:
         """An uncorrelated event or a non-delivered outcome is insufficient."""

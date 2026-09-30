@@ -14,9 +14,14 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
 
 from staging_hosted_e2e import BUILT_BINARY, ROOT, TEMP, safe_stage_code, unique_auth_home
-from staging_outbound_canary import ProbeFailure, config, execute as canary_execute
+from staging_canary_recovery import RecoveryError, hosted_material
+from staging_outbound_canary import (
+    ProbeFailure, config, d1, execute as canary_execute, grant_ready, inbox_ready,
+    one, preflight_controls, privacy_ready,
+)
 
 
 CONFIRM = "RUN_STAGING_OUTBOUND_CANARY"
@@ -25,6 +30,26 @@ SENDER = re.compile(r"[a-z0-9._+-]+@mail-staging\.moesegfault\.dev\Z")
 
 class HostedOutboundError(Exception):
     """A source-owned, bounded failure label safe for the public job log."""
+
+
+def await_operator_grant(sender: str) -> None:
+    """Wait for a post-login, exact one-use grant without ever creating one."""
+
+    values = config()
+    privacy_ready(values)
+    inbox_ready(values)
+    preflight_controls(values, sender)
+    watermark = one(d1(values, "SELECT unixepoch() AS now", []), "canary_clock_shape").get("now")
+    if type(watermark) is not int:
+        raise HostedOutboundError("canary_clock_invalid")
+    print("staging_outbound_ready_for_one_use_grant")
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
+        preflight_controls(values, sender)
+        if grant_ready(values, after=watermark):
+            return
+        time.sleep(5)
+    raise HostedOutboundError("fresh_one_use_grant_timeout")
 
 
 def validate() -> tuple[str, str, str]:
@@ -43,6 +68,10 @@ def validate() -> tuple[str, str, str]:
         config()
     except ProbeFailure as error:
         raise HostedOutboundError("capability_" + safe_stage_code(error)) from None
+    try:
+        hosted_material()
+    except RecoveryError:
+        raise HostedOutboundError("recovery_material_invalid") from None
     username = os.environ.pop("STAGING_E2E_USERNAME", "")
     password = os.environ.pop("STAGING_E2E_PASSWORD", "")
     if not re.fullmatch(r"[a-z0-9_]{3,32}", username) or not 15 <= len(password) <= 128:
@@ -71,6 +100,10 @@ def run() -> None:
             native_login(run_dir, binary)
         except IdentityError as error:
             raise HostedOutboundError("identity_" + safe_stage_code(error)) from None
+        try:
+            await_operator_grant(sender)
+        except ProbeFailure as error:
+            raise HostedOutboundError("rendezvous_" + safe_stage_code(error)) from None
         args = argparse.Namespace(
             confirm_staging=True,
             home=str(unique_auth_home(run_dir)),

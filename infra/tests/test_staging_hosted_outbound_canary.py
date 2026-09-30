@@ -6,6 +6,8 @@ Run in GitHub CI; tests never perform login, grant a release gate, or send mail.
 from __future__ import annotations
 
 import importlib.util
+from contextlib import redirect_stdout
+from io import StringIO
 import os
 from pathlib import Path
 import sys
@@ -48,7 +50,7 @@ class HostedOutboundWorkflowTests(unittest.TestCase):
         source = (ROOT / ".github/workflows/staging-outbound-canary.yml").read_text(encoding="utf-8")
         prefix, final = source.split("      - name: Native PKCE and one guarded outbound canary\n", 1)
         self.assertNotIn("${{ secrets.", prefix)
-        self.assertEqual(final.count("${{ secrets."), 11)
+        self.assertEqual(final.count("${{ secrets."), 12)
         self.assertEqual(final.count("        run:"), 1)
         self.assertIn("run: python infra/tests/staging_hosted_outbound_canary.py", final)
         self.assertNotIn("--sender", source)
@@ -58,9 +60,13 @@ class HostedOutboundWorkflowTests(unittest.TestCase):
             "AMAIL_CANARY_SENDER", "AMAIL_CANARY_RECIPIENT", "AMAIL_CANARY_IMAP_HOST",
             "AMAIL_CANARY_IMAP_USER", "AMAIL_CANARY_IMAP_PASSWORD",
             "AMAIL_CANARY_AUTHSERV_ID", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
+            "AMAIL_STAGING_CANARY_RECOVERY_KEY",
         ):
             self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", final)
         self.assertNotIn("secrets: inherit", source)
+        self.assertIn("test_staging_canary_recovery.py", prefix)
+        self.assertIn("test_staging_hosted_outbound_canary.py", prefix)
+        self.assertIn("test_staging_outbound_canary.py", prefix)
 
     def test_confirmation_and_hosted_windows_precede_capability_read(self) -> None:
         """The Python entry point independently denies an accidental local run."""
@@ -77,6 +83,30 @@ class HostedOutboundWorkflowTests(unittest.TestCase):
                 with self.assertRaisesRegex(HOSTED.HostedOutboundError, "explicit_staging_confirmation_required"):
                     HOSTED.validate()
                 config.assert_not_called()
+
+    def test_post_login_wait_requires_fresh_exact_grant(self) -> None:
+        """A ready marker follows controls; polling reads but cannot grant."""
+
+        output = StringIO()
+        with patch.object(HOSTED, "config", return_value={}) as config, \
+                patch.object(HOSTED, "privacy_ready") as privacy, \
+                patch.object(HOSTED, "inbox_ready") as inbox, \
+                patch.object(HOSTED, "preflight_controls") as controls, \
+                patch.object(HOSTED, "d1", return_value=[{"now": 100}]) as d1, \
+                patch.object(HOSTED, "grant_ready", side_effect=[False, True]) as grant, \
+                patch.object(HOSTED.time, "sleep") as sleep, \
+                patch.object(HOSTED.time, "monotonic", side_effect=[0, 1, 2]), \
+                redirect_stdout(output):
+            HOSTED.await_operator_grant("probe@mail-staging.moesegfault.dev")
+        self.assertEqual(output.getvalue(), "staging_outbound_ready_for_one_use_grant\n")
+        config.assert_called_once()
+        privacy.assert_called_once()
+        inbox.assert_called_once()
+        self.assertEqual(controls.call_count, 3)
+        self.assertEqual(d1.call_args.args[1], "SELECT unixepoch() AS now")
+        self.assertEqual(grant.call_count, 2)
+        self.assertTrue(all(call.kwargs == {"after": 100} for call in grant.call_args_list))
+        sleep.assert_called_once_with(5)
 
 
 if __name__ == "__main__":
