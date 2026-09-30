@@ -1,13 +1,87 @@
 # Conditional remediation: retained URL markers (2026-09-30)
 
-Status: **conditional architecture; first historical result is insufficient to
-select remediation; not an implementation or privacy attestation**.
+Status: **second historical result justifies a reviewed staging Queue-sink
+containment experiment; not an implementation or privacy attestation**.
 This extends [the privacy decision](mail-trace-privacy-decision.md) and the
 [historical discriminator](staging-trace-canary.md). No deployed setting, private
 record, secret, live query, build, or test was accessed for this interpretation.
 The positive failure in hosted run `36703733769` establishes marker retention,
-not the offending field or producer. The first classifier result below narrows
-the evidence, but does not yet select the responsible producer or sink change.
+not the offending field or producer. The second structural result below locates
+the marker in known request-context carriers and supports sink separation,
+without claiming definitive producer identity or a privacy pass.
+
+## Second historical result: request-context retention located
+
+[Read-only run `36723490687`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36723490687),
+classifier source `d8b9631`, queried the **same staging service and 2026-09-30
+10:42:00–10:42:37 UTC window**, returning only:
+
+```text
+carrier=metadata_context+workers_event_request carriers=2_plus leaves=2_plus metadata_type=unrecognized wrapper_type=wrapper_absent trigger=fetch source_shape=allowlisted_application component=path_only records=1
+```
+
+`d8b9631` identifies the historical-query workflow source, not a new serving
+version for the original 10:42 request. No new request or configuration mutation
+was part of this classifier operation.
+
+| Fixed finding | Bounded interpretation |
+| --- | --- |
+| `metadata_context+workers_event_request` | The recognized path marker appeared in at least one of the three exact indexed context fields (`trigger`, `spanName`, `transactionName`) and below `$workers.event.request`. The set contains exactly these two carrier categories, not source, message/error, URL, wrapper or unknown remainder. The exact leaf names and values remain private. |
+| `leaves=2_plus`, `records=1` | At least two matching string leaves belonged to one matching returned record. This may be one request-derived value copied into two places; it is not evidence of two independent defects or two events. |
+| `source_shape=allowlisted_application` | This matching record's source parsed and validated under the existing reviewed application-event schema. No inspected marker hit was in `source`. This does not attest every other record's payload or every exception/emitter path. |
+| `metadata_type=unrecognized`, `wrapper_type=wrapper_absent` | Indexed type is present as a string but is not either recognized exact literal; the exact `$cloudflare` wrapper is absent. Invocation-versus-custom classification remains unknown. The earlier wrapper hypothesis is not supported for this matching record. |
+| `trigger=fetch`, `component=path_only` | This matching record's reviewed top-level Worker eventType is `fetch`; the complete returned window contained recognized path-prefix hits but no query-prefix hits. Fetch eventType is not invocation-log type, and this does not establish global query-redaction correctness. |
+
+**Inference:** request-context enrichment is now the strongest supported
+mechanism: a validated application payload coexists with retained path text in
+indexed context and the Worker request envelope. The official [telemetry event
+schema](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/)
+describes those metadata/Worker envelopes independently of `source`. This is
+structural evidence consistent with platform enrichment, **not definitive
+attribution to a particular platform logger or proof that invocation suppression
+failed**. Original request-ID/suffix attribution and capture settings retain the
+limitations recorded in the first-result section.
+
+### Chosen next branch: Queue-only sink, staging first
+
+The second result is sufficient to choose the containment experiment without
+another broader historical query: move only the reviewed safe events over a
+private Queue binding to a queue-only logging Worker, and disable retained
+observability on the request-facing producer. This changes the sink invocation
+context rather than trying to redact an original request after enrichment.
+[Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)
+documents queue invocation messages as queue names, supporting the experiment;
+it does not guarantee that every retained sink field is safe. Preserve the
+existing API/CLI and causal trace IDs, and validate the envelope at both ends.
+
+The Queue branch is justified by observed context retention despite a reviewed
+source, even though the indexed row type is unrecognized. It does not require
+declaring the platform producer conclusively known. A fixed-URL service logger
+is a smaller alternative, but caller-context propagation remains an unproven
+boundary; Queue delivery provides a distinct non-HTTP invocation to test.
+Analytics Engine sampling/retention still makes it unsuitable as the only
+per-event causal diagnostic store for this contract.
+
+**No unsafe dual logging:** deploy/review the private sink first, then switch
+the producer's typed handoff and retained-observability settings together at a
+pinned staging version. Do not retain the old request-facing console path for
+comparison or fallback. Check traces, invocation/custom capture, destinations,
+tails and preview exposure, not only one flag. Queue outage must not restore
+unsafe request logs or alter mail results. Rollback preserves source retention
+off; temporary reduced diagnostics is safer than reinstating the evidenced
+leak. Queue messages and any dead-letter copies are also retained data and need
+the same payload allowlist and explicit retention bounds.
+
+**Acceptance remains outstanding:** independently review the implementation,
+run hosted tests, then establish complete retained sink records and queued
+envelopes contain no synthetic path/query/mail/body/header markers, preserve
+CLI-to-API parentage and denial isolation, and behave safely on dependency or
+schema failures. [At-least-once delivery](https://developers.cloudflare.com/queues/reference/delivery-guarantees/)
+requires stable event identity and duplicate-aware interpretation; Queue ACK is
+not a Workers Logs persistence receipt. Keep the production privacy/public-send
+gate closed until that exact deployed acceptance passes. See the migration and
+failure-model sections below for the remaining contract, and the dedicated
+[Queue-sink ADR](mail-trace-queue-sink-decision.md) for the concrete architecture.
 
 ## First historical result: exact interpretation
 
@@ -47,7 +121,7 @@ difference makes a wrapper or type-location mismatch plausible; it does **not**
 prove that the retained row used that shape, nor license searching arbitrary
 nested `type` fields as authoritative classifications.
 
-## Minimal second discriminator: preserve structure, never values
+## Second-discriminator design (now exercised): preserve structure, never values
 
 The useful question is now: **which predeclared structural carrier categories
 matched, and where is the recognized event-type discriminator?** Do not repeat
@@ -147,7 +221,7 @@ URL/request forwarding defeats it. It changes every mail call and failure path,
 whereas the current defect may concern only the emission sink. Prefer moving
 safe events, not moving the whole API.
 
-## Options if platform enrichment is the confirmed carrier
+## Sink options after locating request-context carriers
 
 Keep the existing typed `Event` and `ClientEvent` semantics and W3C parentage.
 `trace.rs` currently emits JSON through `console_log!`; it has no dynamic
@@ -228,8 +302,9 @@ CLI span C -> authenticated API span S (same trace T, parent C)
 
 ## Evidence-gated migration, not another generic canary
 
-After the classifier selects the enrichment branch, implement/review only the
-new sink, typed handoff and readback guards. Hosted tests cover schema rejection,
+The second classifier has justified the Queue-sink experiment, but has not
+attested it. Implement/review only the new sink, typed handoff and readback
+guards. Hosted tests cover schema rejection,
 client legacy compatibility, delivery duplicates, no raw-error fallbacks and
 retained-record assessment of the new service. Deploy the sink first, then the
 producer configuration atomically at a pinned staging version. Never dual-log
@@ -253,6 +328,6 @@ from typed diagnostic data, using native bindings rather than REST credentials
 The empirical [USENIX Security 2023 logging study](https://www.usenix.org/conference/usenixsecurity23/presentation/lyons)
 supports checking collectors and complete retained records rather than trusting
 application formatting alone; it does not establish Cloudflare's producer here.
-The actionable next step is the independently reviewed, fixed-bin structural
-follow-up on the same historical window, not a speculative configuration change,
-another generic canary, or production rollout.
+The actionable next step is the independently reviewed Queue-sink design and
+implementation, followed by hosted tests and one pinned deployed privacy gate,
+not another broader historical query or a speculative production rollout.

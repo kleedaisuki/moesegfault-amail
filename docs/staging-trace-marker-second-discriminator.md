@@ -1,17 +1,19 @@
 # Same-window retained-marker second discriminator
 
-Status: source prepared for independent review and hosted synthetic CI only.
-No local tests, live query, new request, or configuration change was performed.
+Status: **historical read completed; request-context carriers located; privacy
+acceptance remains unverified**. This document records the fixed hosted result,
+not raw telemetry. The read created no traffic or configuration change.
 
 ## Motivation and immutable scope
 
-Historical read-only run `36713163067`, deployed SHA `17abe25`, returned
+Historical read-only run `36713163067`, workflow source SHA `17abe25`, returned
 `carrier=other_or_multiple type=other_or_mixed component=path_only records=1`.
 One matched record means its type is absent, malformed, or unknown, not that
 several row types were mixed. Its carrier may be one unknown leaf or multiple
 categories inside that single row. These alternatives change the next action:
 platform enrichment requires sink containment, while source payload retention
-requires tracing the application serialization path. Neither is established yet.
+requires tracing the application serialization path. The second result below
+now supports the containment branch, without proving a specific producer.
 
 `infra/tests/staging_trace_marker_discriminator.py` reuses the original
 preflight and complete dry cursor/count/ID validation. It queries only the
@@ -44,15 +46,44 @@ No category can itself prove which logger produced the row or reverse the
 existing privacy failure. A zero, malformed, expired, or incomplete query
 remains `UNVERIFIED`, not a privacy pass.
 
-## Execution gates and useful next decisions
+## Live result and bounded decision (2026-09-30)
+
+[Hosted run `36723490687`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36723490687)
+at classifier source `d8b9631` queried only the unchanged historical window and
+returned:
+
+```text
+carrier=metadata_context+workers_event_request carriers=2_plus leaves=2_plus metadata_type=unrecognized wrapper_type=wrapper_absent trigger=fetch source_shape=allowlisted_application component=path_only records=1
+```
+
+One matching record has at least two matching string leaves across exactly two
+declared categories: indexed context (`trigger`, `spanName` or
+`transactionName`) and the Worker request envelope. Its source validated as a
+reviewed application event and was not a marker carrier. This is consistent
+with request-context enrichment, not a leak in the inspected application event.
+However, the indexed type is an **unrecognized string**, not absent/malformed,
+and the exact wrapper is absent; neither custom-log nor invocation-log type is
+established. `fetch` describes eventType, not the logger. No raw type string,
+leaf name, value, marker suffix or identifier was exported.
+
+This scoped result supports a **reviewed staging Queue-only logging sink
+experiment**, not an attribution claim or a whole-system privacy pass. It cannot
+attest unqueried records, body/attachment/header or exception paths, global query
+redaction, or exact correlation to the discarded original request ID. Keep the
+privacy gate closed. Do not repeat/widen the historical query or retain unsafe
+source logs in parallel for comparison. See the [bounded mechanism and selected
+next branch](mail-trace-sink-remediation-options.md#second-historical-result-request-context-retention-located)
+and the [superseding privacy decision](mail-trace-privacy-decision.md).
+
+## Execution gates and historical next-decision table
 
 The manual `ci.yml` target `staging-trace-marker-discriminator` requires exact
 `READ_STAGING_TRACE_MARKER_DISCRIMINATOR` confirmation and the project branch.
 It uses staging Environment, read-only repository permission, five-minute
 timeout, non-cancelling dedicated concurrency, and final-step-only repository
 secrets. First obtain independent source review and hosted synthetic CI at the
-reviewed SHA. Only then consider one read-only dispatch; do not push/deploy
-during root's pinned live E2E. No broadened search is authorized on failure.
+reviewed SHA. Those prerequisites preceded the completed read above; they do
+not authorize another dispatch. No broadened search is authorized on failure.
 
 | Observation | Next investigation, not conclusion |
 |---|---|

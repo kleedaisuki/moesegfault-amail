@@ -1,12 +1,68 @@
 # Decision: privacy-safe distributed correlation for mail Workers (2026-09-29)
 
-Status: proposed architecture, **not an implemented or deployed privacy claim**. This complements `review-mail-observability-privacy.md`; no private telemetry, mail, secrets, or deployed settings were queried.
+Status: original source design followed by **2026-09-30 evidence-driven sink
+revision**; not a deployed privacy claim. This complements
+`review-mail-observability-privacy.md`. No raw private telemetry, mail, secret,
+or deployed setting is reproduced here.
 
-## Decision in one sentence
+## Superseding sink decision after retained-context evidence (2026-09-30)
+
+The original recommendation to retain allowlisted custom events directly on
+the request-facing Mail Worker is **not sufficient for the required privacy
+boundary**. The live marker failure in `36703733769` was followed by a bounded
+structural historical read, [run `36723490687`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36723490687)
+at classifier source `d8b9631`, for the same 10:42:00–10:42:37 UTC staging
+window. Its fixed output locates a path marker in `metadata_context` and
+`workers_event_request`, across at least two leaves in one matching record,
+with `source_shape=allowlisted_application`, `metadata_type=unrecognized`,
+`wrapper_type=wrapper_absent`, `trigger=fetch`, and `component=path_only`.
+
+This supports request-context enrichment coexisting with a reviewed safe source.
+It does not conclusively identify the producer, prove invocation capture stayed
+enabled, or attest every payload/exception path. The [precise evidence and
+limitations](mail-trace-sink-remediation-options.md#second-historical-result-request-context-retention-located)
+are the operative rationale; no further broad historical read is needed to
+choose the next containment experiment.
+
+**Revised decision:** preserve typed application events, existing W3C causal
+IDs, local CLI telemetry privacy and all mail APIs, but move the safe events
+through a private Cloudflare Queue binding to a queue-only logging Worker.
+Disable retained observability on the public request-facing producer. The sink
+receives only the reviewed bounded envelope, not the triggering Request, URL,
+headers, mail data or arbitrary exceptions; validate at both boundaries.
+The consumer's non-HTTP invocation is a different enrichment boundary to test,
+not an assumed privacy guarantee. Stable event IDs, bounded retry/retention and
+duplicate-aware reading address Queue at-least-once delivery; diagnostics remain
+best-effort and cannot change business success/failure.
+
+Deploy the reviewed sink first, then atomically switch the producer's handoff
+and retention settings at a pinned staging version. **No unsafe dual logging or
+raw-error fallback**: do not keep the old request-facing retained logs to compare
+results, including on rollback or Queue failure. Audit capture/export/tail and
+preview settings independently. The earlier direct-source settings recipe below
+is historical implementation context, **not the new rollout recipe**. Do not
+apply it to re-enable the unsafe source.
+
+The production privacy/public-send gate remains closed until independent review,
+hosted tests and exact deployed retained-data/failure canaries establish marker
+absence and preserved parentage through the new sink. The [Queue-sink contract
+and migration conditions](mail-trace-sink-remediation-options.md#minimal-queue-sink-contract-and-failure-model)
+remain required. This revision selects the next evidence-producing design;
+it does not claim implementation, deployment or acceptance is complete. The
+concrete target architecture is recorded separately in
+[the Queue-sink ADR](mail-trace-queue-sink-decision.md).
+
+## Original decision in one sentence (direct-source sink superseded)
 
 Retain reviewed, allowlisted **application trace events** in Cloudflare Workers Logs, linked by W3C trace/span IDs across CLI and the mail API; disable Cloudflare's automatic invocation logs and native traces for the mail API in both realms until Cloudflare can exclude sensitive automatic fields *before persistence*. This is a real causal distributed trace graph over structured events, but **not** the Cloudflare native Traces waterfall or automatic D1/R2/fetch spans.
 
 ## Why native tracing cannot be the privacy-safe default
+
+The following background and original implementation recipe preserve the
+2026-09-29 investigation snapshot, not current serving-setting evidence. The
+superseding decision above governs sink rollout; consult the later live-result
+documents for observed state instead of treating historical "current" wording
+as a new readback.
 
 | Boundary | Current code / platform capture | Consequence |
 |---|---|---|
@@ -90,7 +146,10 @@ Do **not** claim external OpenRouter traces join automatically. Cloudflare docum
 * Native custom spans with a sanitized attribute allowlist: auto-spans still coexist; IDs and manual parent control are unavailable today.
 * A Tail Worker filtering native spans after emission: it cannot guarantee that Cloudflare never retained the original sensitive fields.
 * Setting native trace sampling to zero or a small fraction: does not provide useful comprehensive tracing or a privacy guarantee.
-* Disabling all observability: sacrifices safe, actionable diagnostics despite a feasible allowlisted event path.
+* Disabling observability everywhere without a replacement: sacrifices safe,
+  actionable diagnostics. Disabling retained observability on the unsafe public
+  producer while adding the reviewed Queue sink is the revised decision, not
+  this rejected shortcut.
 
 ## Sources
 
