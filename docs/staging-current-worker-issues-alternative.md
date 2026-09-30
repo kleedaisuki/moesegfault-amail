@@ -1,7 +1,7 @@
 # Alternative: edit the current Worker resource, not legacy script settings
 
 Investigated 2026-10-01 at local revision `1aea780`. Status: **documented
-alternative for independent design review; not implemented or executed**.
+alternative implemented for independent design review; not executed**.
 No private API request, mutation, local test/build, deployment or historical
 audit expansion was performed. Existing run observations are reused from
 [the containment correction](staging-containment-settings-correction.md) and
@@ -105,3 +105,64 @@ details; disabling it stops new detection, not already retained occurrences.
 Effective settings acceptance consequently remains a prerequisite, not the
 whole-retained-record privacy canary or a public-send approval. Missing fields,
 absence of a new issue, or a successful source build cannot replace it.
+
+## Guarded implementation and hosted-only acceptance
+
+`infra/deploy/apply_staging_current_worker_capture_off.py` is a distinct one-shot
+implementation. Its synthetic contracts are
+`infra/tests/test_staging_current_worker_capture_off.py`. The implementation has
+not been run against Cloudflare and the contracts have not been executed locally;
+they must pass on GitHub Actions before an independently reviewed manual dispatch.
+No workflow wiring or live operation is included in this change.
+
+Recommended separate target: `staging-current-worker-capture-off`. Required env:
+
+| Variable | Required value |
+| --- | --- |
+| `AMAIL_CURRENT_WORKER_CONFIRM` | `APPLY_STAGING_CURRENT_WORKER_CAPTURE_OFF` |
+| `AMAIL_CURRENT_WORKER_FREEZE` | `FREEZE_STAGING_MAIL_DEPLOYS` |
+| `AMAIL_EXPECTED_WORKER_VERSION` | the exact approved `c3f6401a-1e84-4f51-91df-ae77d90683e9` |
+| `GITHUB_EVENT_NAME`, `GITHUB_RUN_ATTEMPT`, `GITHUB_REF` | manual dispatch, first attempt, `refs/heads/codex/amail-v0.1.0` |
+| `GITHUB_SHA` | exact reviewed 40-character hexadecimal source revision |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | existing private project credentials |
+
+The external deployment freeze must be real: the environment value is an
+operator acknowledgement, not a provider-side lock. Workflow wiring must use
+the existing staging Mail service deployment concurrency group with
+`cancel-in-progress: false`, and enforce confirmation before credentials. Source
+tests should run before provider access. Public-send hold remains a separate
+release gate; this helper neither reads nor changes its D1 state and never
+attests a remote hold, privacy pass, or permission to send.
+
+The strict decoder rejects duplicate JSON members, nonfinite constants,
+oversized objects, redirects, non-200 and non-success responses. The request
+projection requires explicit writable subdomain flags and tags and refuses
+unknown subdomain/observability members. It retains recognized observability
+preferences, overlays the reviewed all-off source policy, and requires the
+result to pass the source policy predicate. Optional provider preferences that
+cannot satisfy this predicate block the operation rather than being removed.
+Every unaffected current response field, including private references, preview
+configuration and response-only subdomain properties, is compared in memory;
+only observability and mutable update timestamps are excluded. No raw response
+or projection is logged or persisted.
+
+At most one PATCH occurs. A successful PATCH response must identify the same
+Worker, but does not establish acceptance. A separate current-resource GET
+must show explicit parent/Logs/traces/Issues=false **and** exactly the projected
+observability object (no silently dropped optional preferences). Existing code,
+bindings, single100 deployment identity and Worker ID must remain unchanged.
+Already explicit-off current state can reconcile without a PATCH, while still
+requiring the same positive GET and serving brackets.
+
+Failure emits only `staging_current_worker_capture_off=UNVERIFIED` and closed
+phase bins (`projection`, `serving_pin`, `patch`, `readback`, `unchanged_state`).
+`patch:attempted` without `accepted` means a potentially ambiguous write; it
+does not mean the provider rejected or failed to apply it. Do not retry the
+workflow or fall back to PUT, legacy settings, redeployment or polling. Inspect
+the fixed phase evidence and independently approve the next discriminator.
+Success emits distinct
+`staging_current_worker_capture_attestation=current-worker-v1 version=...`.
+Existing `settings-v1` attestation parsers intentionally do not recognize this
+marker; downstream containment acceptance needs a separate reviewed integration.
+The retained-record privacy canary and production release gates remain closed
+until their independent evidence passes.
