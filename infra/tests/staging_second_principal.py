@@ -274,20 +274,11 @@ def preflight_contacts(mode: str, contacts: dict[str, tuple[str, str, str, str]]
             "recovery_contact_preflight_failed")
 
 
-def execute() -> None:
-    """Provision B exactly once and attest its distinct native principal."""
+def inspect_state(username: str, password: str) -> tuple[str, str, dict, set[str]]:
+    """Read deployed inbox, both routes, Identity contacts and private R2 only."""
 
-    require(os.name == "nt", "windows_runner_required")
-    mode = os.environ.get("AMAIL_SECOND_PRINCIPAL_MODE", "provision")
-    require(mode in ("provision", "recover"), "principal_mode_invalid")
-    expected_confirm = ("RUN_STAGING_SECOND_PRINCIPAL_PROVISION" if mode == "provision"
-                        else "RUN_STAGING_SECOND_PRINCIPAL_RECOVER")
-    require(os.environ.get("AMAIL_SECOND_PRINCIPAL_CONFIRM") == expected_confirm,
-            "explicit_confirmation_required")
-    require(TEMP == ROOT / ".temp", "repo_temp_redirected")
-    username = os.environ.pop("STAGING_E2E_B_USERNAME", "")
-    password = os.environ.pop("STAGING_E2E_B_PASSWORD", "")
-    from staging_identity_cdp import decoded_credential, native_login, registration, route
+    from staging_identity_cdp import decoded_credential, route
+
     decoded_credential({"username": username, "password": password, "address": ADDRESS})
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
     token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
@@ -305,10 +296,56 @@ def execute() -> None:
     require(deployed.returncode == 0, "private_inbox_deployment_unverified")
     require(route(address=ADDRESS) == "absent" and route(address=FIRST) == "absent",
             "verification_route_preexisting")
-    before = identity_contacts(account, token)
-    preflight_contacts(mode, before, username)
+    contacts = identity_contacts(account, token)
     baseline = object_inventory(account, token)
     require(len(baseline) <= 1000, "r2_inventory_too_large")
+    return account, token, contacts, baseline
+
+
+def classify_contact(contacts: dict[str, tuple[str, str, str, str]], username: str) -> str:
+    """Classify B with fixed labels only; never return any Identity identifier."""
+
+    require(FIRST in contacts and contacts[FIRST][0] and contacts[FIRST][1]
+            and contacts[FIRST][2] == "verified", "identity_contact_preflight_failed")
+    if ADDRESS not in contacts:
+        return "absent"
+    b = contacts[ADDRESS]
+    require(b[0] != contacts[FIRST][0] and b[3] == username,
+            "second_contact_owner_mismatch")
+    if b[2] in ("unverified", "pending"):
+        return "pending_same_account"
+    require(b[2] == "verified", "second_contact_state_invalid")
+    return "verified_same_account"
+
+
+def read_only_preflight() -> None:
+    """Check current token capabilities and B state before any one-shot change."""
+
+    require(os.environ.get("AMAIL_SECOND_PRINCIPAL_MODE") == "preflight"
+            and os.environ.get("AMAIL_SECOND_PRINCIPAL_CONFIRM") ==
+            "READ_STAGING_SECOND_PRINCIPAL_PREFLIGHT", "explicit_confirmation_required")
+    username = os.environ.pop("STAGING_E2E_B_USERNAME", "")
+    password = os.environ.pop("STAGING_E2E_B_PASSWORD", "")
+    _, _, contacts, _ = inspect_state(username, password)
+    print("staging_second_principal_preflight_" + classify_contact(contacts, username))
+
+
+def execute() -> None:
+    """Provision B exactly once and attest its distinct native principal."""
+
+    require(os.name == "nt", "windows_runner_required")
+    mode = os.environ.get("AMAIL_SECOND_PRINCIPAL_MODE", "provision")
+    require(mode in ("provision", "recover"), "principal_mode_invalid")
+    expected_confirm = ("RUN_STAGING_SECOND_PRINCIPAL_PROVISION" if mode == "provision"
+                        else "RUN_STAGING_SECOND_PRINCIPAL_RECOVER")
+    require(os.environ.get("AMAIL_SECOND_PRINCIPAL_CONFIRM") == expected_confirm,
+            "explicit_confirmation_required")
+    require(TEMP == ROOT / ".temp", "repo_temp_redirected")
+    username = os.environ.pop("STAGING_E2E_B_USERNAME", "")
+    password = os.environ.pop("STAGING_E2E_B_PASSWORD", "")
+    from staging_identity_cdp import native_login, registration, route
+    account, token, before, baseline = inspect_state(username, password)
+    preflight_contacts(mode, before, username)
     binary = ROOT / "target" / "debug" / "amail.exe"
     require(binary.is_file(), "hosted_cli_binary_missing")
     TEMP.mkdir(exist_ok=True)
@@ -373,7 +410,10 @@ def main() -> int:
     """Emit only fixed labels, never provider responses or exception reprs."""
 
     try:
-        execute()
+        if os.environ.get("AMAIL_SECOND_PRINCIPAL_MODE") == "preflight":
+            read_only_preflight()
+        else:
+            execute()
         return 0
     except ProvisionFailure as error:
         label = str(error)

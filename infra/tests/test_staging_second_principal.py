@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import format_datetime
+from contextlib import redirect_stdout
 import importlib.util
+from io import StringIO
+import os
 from pathlib import Path
 import re
 import sys
@@ -75,6 +78,85 @@ class SecondPrincipalTests(unittest.TestCase):
         self.assertIn("RUN_STAGING_SECOND_PRINCIPAL_RECOVER", job)
         self.assertIn("staging-second-principal-recover", job)
         self.assertNotIn("generate_credential", job)
+
+    def test_read_only_workflow_has_no_registration_or_cli_build(self) -> None:
+        """The permission discriminator must stop before any mutation."""
+
+        workflow = (MODULE.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = workflow.split("  staging-second-principal-preflight:\n", 1)[1].split(
+            "\n  staging-second-principal:", 1
+        )[0]
+        self.assertIn("github.event_name == 'workflow_dispatch'", job)
+        self.assertIn("READ_STAGING_SECOND_PRINCIPAL_PREFLIGHT", job)
+        self.assertIn("AMAIL_SECOND_PRINCIPAL_MODE: preflight", job)
+        self.assertIn("environment: staging", job)
+        self.assertNotIn("cargo build", job)
+        self.assertNotIn("--apply", job)
+        self.assertNotIn("--remove", job)
+
+    def test_preflight_classifies_only_fixed_contact_states(self) -> None:
+        """Keep usernames, principal IDs and mail contacts out of output."""
+
+        a = ("principal-a", "subject-a", "verified", "a_username")
+        self.assertEqual(MODULE.classify_contact({MODULE.FIRST: a}, "b_username"), "absent")
+        self.assertEqual(MODULE.classify_contact({
+            MODULE.FIRST: a,
+            MODULE.ADDRESS: ("principal-b", "", "pending", "b_username"),
+        }, "b_username"), "pending_same_account")
+        self.assertEqual(MODULE.classify_contact({
+            MODULE.FIRST: a,
+            MODULE.ADDRESS: ("principal-b", "subject-b", "verified", "b_username"),
+        }, "b_username"), "verified_same_account")
+        for b in (("principal-a", "", "pending", "b_username"),
+                  ("principal-b", "", "pending", "other_user")):
+            with self.assertRaises(MODULE.ProvisionFailure):
+                MODULE.classify_contact({MODULE.FIRST: a, MODULE.ADDRESS: b}, "b_username")
+
+    def test_preflight_emits_only_fixed_label_and_does_not_mutate(self) -> None:
+        """Even with protected credentials, this path never invokes execute()."""
+
+        contacts = {MODULE.FIRST: ("principal-a", "subject-a", "verified", "a_username")}
+        env = {
+            "AMAIL_SECOND_PRINCIPAL_MODE": "preflight",
+            "AMAIL_SECOND_PRINCIPAL_CONFIRM": "READ_STAGING_SECOND_PRINCIPAL_PREFLIGHT",
+            "STAGING_E2E_B_USERNAME": "b_username",
+            "STAGING_E2E_B_PASSWORD": "private-password-not-logged",
+        }
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(MODULE, "inspect_state", return_value=("account", "token", contacts, set())), \
+                patch.object(MODULE, "execute", side_effect=AssertionError("must not mutate")), \
+                redirect_stdout(StringIO()) as output:
+            self.assertEqual(MODULE.main(), 0)
+        self.assertEqual(output.getvalue().strip(), "staging_second_principal_preflight_absent")
+
+    def test_inspection_calls_only_audits_and_read_only_config(self) -> None:
+        """A source-level route audit cannot silently become --apply."""
+
+        stub = types.ModuleType("staging_identity_cdp")
+        stub.decoded_credential = lambda value: (value["username"], value["password"], value["address"])
+        audited: list[str] = []
+
+        def route(action=None, address=None):
+            self.assertIsNone(action)
+            audited.append(address)
+            return "absent"
+
+        stub.route = route
+        provider_env = {
+            "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+            "CLOUDFLARE_API_TOKEN": "private-token",
+            "CF_EMAIL_ROUTING_TOKEN": "private-route-token",
+        }
+        with patch.dict(sys.modules, {"staging_identity_cdp": stub}), \
+                patch.dict(os.environ, provider_env, clear=True), \
+                patch.object(MODULE.subprocess, "run", return_value=types.SimpleNamespace(returncode=0)) as run, \
+                patch.object(MODULE, "identity_contacts", return_value={}), \
+                patch.object(MODULE, "object_inventory", return_value=set()):
+            MODULE.inspect_state("b_username", "protected-password")
+        self.assertEqual(audited, [MODULE.ADDRESS, MODULE.FIRST])
+        args = run.call_args.args[0]
+        self.assertEqual(args[-2:], ["--live", "--deployed"])
+        self.assertTrue(str(args[1]).endswith("check_config.py"))
 
     def test_recovery_refuses_absent_verified_and_wrong_owner(self) -> None:
         """Recovery must never register a replacement for an ambiguous B."""

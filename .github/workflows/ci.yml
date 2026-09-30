@@ -12,7 +12,7 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-http-compare, staging-trace-security-events, production]
+        options: [staging, staging-e2e, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-http-compare, staging-trace-security-events, production]
       confirm:
         description: Staging E2E, semantic query, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -166,6 +166,46 @@ jobs:
           CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_hosted_e2e.py
+
+  staging-second-principal-preflight:
+    name: Read-only second-principal Identity, routing and private-R2 preflight
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-second-principal-preflight' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 8
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact read-only preflight confirmation
+        env:
+          SECOND_PREFLIGHT_CONFIRM: ${{ inputs.confirm }}
+        shell: pwsh
+        run: |
+          if ($env:SECOND_PREFLIGHT_CONFIRM -ne 'READ_STAGING_SECOND_PRINCIPAL_PREFLIGHT') {
+            throw 'Explicit second-principal read-only preflight confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install import-only CDP dependency
+        run: python -m pip install websocket-client==1.9.2
+      - name: Read exact staging inbox, routes, Identity and R2 state
+        env:
+          AMAIL_SECOND_PRINCIPAL_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_SECOND_PRINCIPAL_MODE: preflight
+          STAGING_E2E_B_USERNAME: ${{ secrets.STAGING_E2E_B_USERNAME }}
+          STAGING_E2E_B_PASSWORD: ${{ secrets.STAGING_E2E_B_PASSWORD }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_second_principal.py
 
   staging-second-principal:
     name: One-shot normal registration and native PKCE for principal B
