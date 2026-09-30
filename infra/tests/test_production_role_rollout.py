@@ -16,13 +16,23 @@ import prepare_production_graph as prepare
 
 class StorageTests(unittest.TestCase):
     """A pristine bootstrap is not a partially migrated or operational replacement."""
+    def schema_rows(self):
+        """Use actual reviewed CREATE statements as synthetic SQLite metadata."""
+        text = (ROOT/'workers/role-monitor/migrations/0001_role_monitor.sql').read_text()
+        text = re.sub(r'--[^\n]*','',text)
+        return [{"type":match[1].lower(),"name":match[2],
+                 "tbl_name":match[2] if match[1].lower() == 'table' else 'role_arrivals',
+                 "sql":match[0]} for match in re.finditer(r'CREATE\s+(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([a-z_]+)\b[^;]*',text,re.I)]
+
     def query(self, sql):
         """Use synthetic known schema and initial empty state, not live D1."""
+        if sql == graph.SCHEMA_SQL:
+            return self.schema_rows()
         if 'sqlite_master' in sql and "type='table'" in sql:
             return [{"name": name} for name in ("role_arrivals", "role_monitor_health")]
         if sql.startswith('PRAGMA'):
             names = ("arrival_seq", "id", "role", "received_at", "forward_state", "forward_updated_at", "alerted_at") if 'arrivals' in sql else ("singleton", "lease_until", "checked_at")
-            return [{"name": name, "type": "INTEGER", "pk": int(name in ("arrival_seq", "singleton"))} for name in names]
+            return [{"name": name, "type": "TEXT" if name in ("id", "role", "forward_state") else "INTEGER", "pk": int(name in ("arrival_seq", "singleton"))} for name in names]
         if "type='index'" in sql:
             return [{"name": name} for name in ("role_arrivals_unalerted", "role_arrivals_forward")]
         if 'COUNT' in sql:
@@ -53,6 +63,39 @@ class StorageTests(unittest.TestCase):
                 return self.query(sql)
             with patch.object(graph, 'query', side_effect=changed), self.assertRaises(ValueError):
                 graph.storage('replacement')
+
+    def test_complete_schema_rejects_type_constraints_indexes_views_and_triggers(self):
+        """Matching names and primary keys cannot hide incompatible live DDL."""
+        rows = self.schema_rows()
+        self.assertTrue(graph.exact_schema(rows))
+        for old,new in (("lease_until INTEGER", "lease_until TEXT"),
+                        ("id TEXT NOT NULL UNIQUE", "id TEXT NOT NULL"),
+                        ("lease_until INTEGER NOT NULL", "lease_until INTEGER"),
+                        ("CHECK (singleton = 1)", "CHECK (singleton >= 1)"),
+                        ("(alerted_at, received_at)", "(received_at, alerted_at)"),
+                        ("'apex_abuse'", "'apex_abuse '")):
+            changed = deepcopy(rows)
+            for row in changed:
+                row['sql'] = row['sql'].replace(old,new)
+            self.assertFalse(graph.exact_schema(changed),old)
+        for kind in ('view','trigger'):
+            changed = deepcopy(rows)+[{"name":"unexpected","type":kind,"tbl_name":"role_arrivals","sql":"unknown"}]
+            self.assertFalse(graph.exact_schema(changed))
+
+    def test_foreign_account_zone_route_is_not_private(self):
+        """A second zone must not escape an audit scoped only to the mail zone."""
+        import check_trace_sink_isolation as isolation
+        account='a'*32
+        zones=[{"id":"b"*32,"account":{"id":account}},{"id":"c"*32,"account":{"id":account}}]
+        version='11111111-1111-4111-8111-111111111111'
+        def api(path, token):
+            if path.endswith('/subdomain'):
+                return {"enabled":False,"previews_enabled":False}
+            return {}
+        pages=[{"result":[]},{"result":[{"id":"d"*32,"pattern":"foreign.example/*","script":graph.ROLE}]}]
+        with patch.object(graph.role,'api_get',side_effect=api),patch.object(graph.role,'inspect_serving_bindings'),patch.object(graph.capture,'effective_api_settings',return_value=True),patch.object(isolation,'worker_domains',return_value=[]),patch.object(isolation,'inventory',return_value=zones),patch.object(isolation,'envelope',side_effect=pages) as reads,self.assertRaises(ValueError):
+            graph.role_capabilities(account,'synthetic',version,'e'*32)
+        self.assertEqual(reads.call_count,2)
 
     def test_absence_is_complete_success_not_error(self):
         """Wrong provider shape, duplicated workers and existing role fail closed."""

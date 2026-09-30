@@ -7,6 +7,7 @@ a failed GET. No function mutates routing, storage, settings or sending policy.
 from __future__ import annotations
 import argparse
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -46,6 +47,54 @@ def query(binding: str, sql: str) -> list[dict]:
         raise ValueError("d1_unverified") from error
 
 
+SCHEMA_SQL = ("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE "
+              "name NOT GLOB 'sqlite_*' AND NOT (type='table' AND name IN ('d1_migrations','_cf_KV'))")
+
+
+def ddl_tokens(sql: str) -> tuple[str, ...]:
+    """Compare conservative SQL tokens while preserving quoted literal semantics.
+
+    SQLite may omit IF NOT EXISTS in stored CREATE text. Whitespace and keyword
+    case are immaterial; changing types, defaults, constraints, index order,
+    collations, predicates, quoted literal whitespace or identifiers is not.
+    """
+    if not isinstance(sql, str):
+        raise ValueError("schema_sql_unverified")
+    text = re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", sql, flags=re.I).strip().rstrip(';')
+    parts = re.findall(r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[^\s]", text)
+    return tuple(part if part.startswith("'") else part.casefold() for part in parts)
+
+
+def expected_schema() -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Derive exact production objects from the single reviewed additive migration."""
+    text = (ROOT / "workers/role-monitor/migrations/0001_role_monitor.sql").read_text(encoding="utf-8")
+    text = re.sub(r"--[^\n]*", "", text)
+    result = {}
+    for match in re.finditer(r"CREATE\s+(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([a-z_]+)\b[^;]*", text, re.I):
+        result[match[2]] = (match[1].lower(), ddl_tokens(match[0]))
+    if set(result) != {"role_arrivals", "role_monitor_health", "role_arrivals_unalerted", "role_arrivals_forward"}:
+        raise ValueError("reviewed_schema_unverified")
+    return result
+
+
+def exact_schema(rows: list[dict]) -> bool:
+    """Reject extra views/triggers or drift in complete table/index DDL."""
+    expected = expected_schema()
+    if not isinstance(rows, list) or len(rows) != len(expected):
+        return False
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict) or row.get("name") not in expected or row["name"] in seen:
+            return False
+        name = row["name"]
+        seen.add(name)
+        kind, tokens = expected[name]
+        table = name if kind == "table" else "role_arrivals"
+        if row.get("type") != kind or row.get("tbl_name") != table or ddl_tokens(row.get("sql")) != tokens:
+            return False
+    return seen == set(expected)
+
+
 def storage(lifecycle: str) -> None:
     """First migration requires pristine storage; replacements require empty expired state."""
     from importlib.util import spec_from_file_location, module_from_spec
@@ -55,10 +104,12 @@ def storage(lifecycle: str) -> None:
     tables = query("ROLE_MONITOR", module.SQL)
     names = [row.get("name") for row in tables]
     if lifecycle == "first-bootstrap":
-        if names:
+        if names or query("ROLE_MONITOR", SCHEMA_SQL):
             raise ValueError("bootstrap_storage_unverified")
         return
     if lifecycle not in ("replacement", "migrated", "maintenance") or len(names) != 2 or set(names) != module.ALLOWED:
+        raise ValueError("schema_unverified")
+    if not exact_schema(query("ROLE_MONITOR", SCHEMA_SQL)):
         raise ValueError("schema_unverified")
     if not module.valid_schema(query("ROLE_MONITOR", "PRAGMA table_info(role_arrivals)"),
                                query("ROLE_MONITOR", "PRAGMA table_info(role_monitor_health)")):
@@ -139,16 +190,29 @@ def role_capabilities(account: str, token: str, version: str, queue: str, *, att
     worker = role.api_get(f"/accounts/{account}/workers/workers/{ROLE}", token)
     if not capture.effective_api_settings(worker, ROLE, settings, script):
         raise ValueError("role_capture_unverified")
+    import check_trace_sink_isolation as isolation
     subdomain = role.api_get(f"{base}/subdomain", token)
-    routes = role.api_get(f"/zones/{role.ZONE}/workers/routes", token)
-    domains = role.api_get(f"/accounts/{account}/workers/domains?service={ROLE}", token)
     if (not isinstance(subdomain, dict) or subdomain.get("enabled") is not False
-            or subdomain.get("previews_enabled") is not False
-            or not isinstance(routes, list) or not all(isinstance(row, dict) for row in routes)
-            or any(row.get("script") == ROLE for row in routes)
-            or not isinstance(domains, list) or not all(isinstance(row, dict) for row in domains)
-            or any(row.get("service") == ROLE for row in domains)):
+            or subdomain.get("previews_enabled") is not False):
         raise ValueError("role_surface_unverified")
+    domains = isolation.worker_domains(account, token)
+    if any(row["service"] == ROLE for row in domains):
+        raise ValueError("role_surface_unverified")
+    zones = isolation.inventory(token, f"/zones?account.id={account}&type=full,partial,secondary,internal")
+    if not zones or len(zones) > 20:
+        raise ValueError("role_surface_unverified")
+    for zone in zones:
+        if not isinstance(zone.get("account"), dict) or zone["account"].get("id") != account:
+            raise ValueError("role_surface_unverified")
+        envelope = isolation.envelope(token, f"/zones/{zone['id']}/workers/routes")
+        routes = envelope.get("result")
+        if (not isinstance(routes, list) or len(routes) > 1000 or envelope.get("result_info") not in (None, {})
+                or not all(isinstance(row, dict) and isinstance(row.get("id"), str)
+                           and ID.fullmatch(row["id"]) and isinstance(row.get("pattern"), str)
+                           and (row.get("script") is None or isinstance(row["script"], str)) for row in routes)
+                or len({row["id"] for row in routes}) != len(routes)
+                or any(row.get("script") == ROLE for row in routes)):
+            raise ValueError("role_surface_unverified")
 
 
 def verify(phase: str, lifecycle: str, *, migrated: bool = False) -> None:

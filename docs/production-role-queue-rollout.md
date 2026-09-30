@@ -304,3 +304,25 @@ Official provider references retrieved for implementation: documented
 and [Workers production practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/).
 The design chooses successful inventory rather than treating error 10007 as
 absence, because that code also covers a missing workers.dev subdomain.
+
+
+### Review corrections and current lock scope
+
+The bootstrap predicate now independently reads persisted global-held policy
+and the unset role release gate before graph acceptance. A pristine Mail policy
+schema is not interpreted as an accepted hold. The isolated role schema gate
+compares the complete non-provider `sqlite_master` object set and conservative
+SQL tokens against the actual reviewed CREATE TABLE/INDEX migration. It preserves
+string-literal semantics and rejects changed types/defaults/UNIQUE/NOT NULL/CHECK,
+index column order, extra views and triggers, not just object names and PKs.
+Role HTTP absence now uses the sink's bounded complete account-zone inventory
+and unfiltered account custom-domain readers, checking every readable zone.
+
+Current implemented shared lock covers `ci.yml` production graph writes and the
+standalone gated production role deploy only. Other existing route and send-policy
+workflows have not yet joined it; therefore external freeze of **all** those
+writers is still mandatory and the full cross-workflow exclusion promised by the
+runbook is not accepted. No role route cutover workflow is enabled. Whether role
+monitor integration is v0.1 scope is being reassessed against the owner's choice
+of confidential direct forwarding and deferred operations center. These dormant
+source gates must not be interpreted as an obligation to deploy a new ops system.
