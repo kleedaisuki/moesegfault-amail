@@ -1,11 +1,51 @@
 # Explicit staging D1 schema and synthetic provider proof
 
-Date: 2026-10-01. Status: **original schema dispatch failed; read-only incident
-discriminator implemented and independently reviewed (Source GO); exact hosted
-source CI / separately authorized inspection still pending**. No local project
+Date: 2026-10-01. Status: **exact hosted feature source CI, corrected read-only
+inspection, native schema and synthetic cross-dispatch protocol passed; real
+quota/campaign, 24-hour intake and production acceptance remain NO-GO**. No local project
 tests/builds, provider operations, migration, workflow dispatch, push, or deploy
 were performed while authoring this slice. Live ten-address acceptance remains
 **NO-GO**. This is not a 24-hour accountable-intake demonstration.
+
+## Current native D1 and synthetic-only evidence (2026-10-01)
+
+These later operations followed a reviewed correction and independently
+successful source/read-only evidence; they were not unchanged blind replays.
+[Exact feature source CI 36789400291](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789400291)
+passed all six source jobs at `9499e7f20049b853b41da6790489f02fbfe20569`.
+The corrected exact-c3f binding matcher received independent **Source GO**;
+source review did not itself authorize provider operations.
+
+| Operation | Evidence | Bounded observation |
+| --- | --- | --- |
+| First read-only inspect | [36788755759](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36788755759), feature `48f960b` | Stopped at `binding=unverified`; later held/schema phases were not established. This is not schema absence or a diagnosis of the original failure. |
+| Corrected independent read-only inspect | [36789711030](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789711030), feature `9499e7f` | Guard, exact source, database, Worker, complete binding, held state and recheck verified; formal and mirror schemas absent at this observation. Both integer and numeric-string REST parameters were accepted. No DDL was performed by the inspector. |
+| New separately authorized apply-schema | [36789780146](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789780146), feature `9499e7f` | Succeeded with `d1_proof_schema_verified`: native formal and mirror schema readback passed. This accepts the bounded native schema, not a real campaign. |
+| Synthetic encrypted write | [36789867723](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789867723), feature `9499e7f` | Succeeded: two ciphertext chunks, 82,592-byte plaintext envelope, synthetic-only mirror retention. No real recovery row or mutation permit. |
+| Independent cross-dispatch read-terminal | [36789986151](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789986151), feature `9499e7f` | Succeeded with the same envelope digest and retained mirror terminal receipt; `real_cleanup_attested=false`, synthetic-only. Not real mailbox cleanup or expiry-recovery acceptance. |
+
+Public synthetic evidence digests (SHA-256; not keys or private mail):
+
+| Artifact | Digest | Provenance |
+| --- | --- | --- |
+| Verified schema | `8e8f98365779c7d8d9c3607b00b891f2bff639b99a5c69307cd8a6996125d88d` | [Schema run 36789780146](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789780146) |
+| Synthetic plaintext envelope | `8988f551e833960e53f94e7bba02b41ec65aec9399449c5013d7667d8c6bd1cc` | [Write 36789867723](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789867723), [independent read 36789986151](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789986151) |
+| Retained synthetic mirror terminal receipt | `526d173e4233f1b41dc5224845c9dae4bfdd148f0b2b652df024e43b749f22b2` | [Read-terminal 36789986151](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789986151) |
+
+The native provider mechanics gap is now closed **only for this bounded staging
+schema and synthetic cross-dispatch protocol**. Real escrow admission, native
+quota/reserved-name campaign, authenticated-owner mailbox/R2 recovery and
+teardown, artifact-expiry recovery, accountable 24-hour intake, direct-contact
+adoption/health and production remain **NO-GO / unaccepted**. Do not repeat the
+completed synthetic proof for another green result. No provider operation or
+project test/build was performed for this documentation update.
+
+[PR #6](https://github.com/kleedaisuki/moesegfault-amail/pull/6) subsequently
+merged the inspector and exact-c3f correction into main
+`c691f99cba8cab96d11e5d74bee61f94784415aa`. This is integration evidence,
+not a provider rerun at main or a retroactive change to the feature run SHAs.
+The source-era design/review notes below retain their authoring context; where
+they describe then-pending observations, this current evidence section governs.
 
 ## Reused knowledge and the exact gap
 
@@ -90,8 +130,11 @@ not full three-service/capture-off or authenticated-owner campaign admission.
 
 GitHub's [official workflow-trigger documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)
 requires a `workflow_dispatch` workflow file to exist on the repository's
-default branch before it can receive manual events. The workflow was subsequently registered on `main` at `de2caf2` (parent supplied
-registration evidence; not re-observed by this implementation workstream).
+default branch before it can receive manual events. [PR #1](https://github.com/kleedaisuki/moesegfault-amail/pull/1)
+registered the workflow on main at `de2caf2e7d63c492b75ad7bddf89c0a8892e647b`;
+[exact-main CI 36786862389](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36786862389)
+and [feature source CI 36786388230](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36786388230)
+each passed six source jobs with 51 non-source jobs skipped.
 A workflow existing only on the feature branch would **not be dispatchable**, even with
 `gh workflow run ... --ref codex/amail-v0.1.0`. A successful feature-branch source
 CI does not satisfy registration, and `--ref` selects an execution revision; it
@@ -111,10 +154,13 @@ The single authorized original `apply-schema` run
 at `242b5abfee461d04188757e8b365d387d46fcdf9` failed only in the final provider
 step after before-Secrets guard and hosted synthetic tests passed, according to
 the parent-supplied nonsecret step metadata. Its generic fixed failure label
-cannot prove that no DDL committed. **Do not rerun apply-schema, write-synthetic
-or read-terminal as diagnosis; all mutation state remains unknown until the
-separately authorized read-only observation below.** The historical phase table
-above explains original contracts, not a standing sequence to execute.
+`d1_proof_failed_retained_no_campaign_authority` cannot prove that no DDL
+committed. The later independent inspect established absence at its own
+observation, not the original failed request's exact phase or state. The
+checkable historical no-DDL implication below remains explicitly conditional.
+Do not use mutation as diagnosis or repeat completed synthetic phases: see the
+[current evidence](#current-native-d1-and-synthetic-only-evidence-2026-10-01).
+The historical phase table explains contracts, not a standing execution plan.
 
 `apply-schema` checks both namespaces before any CREATE. Each must be absent or
 exactly match every checked-in table/index/trigger DDL. Existing equivalent
@@ -184,8 +230,8 @@ below actual HTTP JSON encoding/parsing rather than replacing `Escrow._query`:
 
 These are **inspected test sources, not executed/passing runs** at authoring.
 SQLite plus a native-shaped JSON fixture is not actual Cloudflare evidence.
-Pinned actual AES-GCM source CI and future native provider demonstration remain
-separate obligations. The native fixture is two chunks, not a measured
+The [current evidence](#current-native-d1-and-synthetic-only-evidence-2026-10-01)
+records subsequent exact source CI and the bounded native demonstration. The native fixture is two chunks, not a measured
 31-chunk maximum-envelope provider/latency test. Persistent mirror ciphertext
 also consumes finite staging DB storage; it has its own reviewed 16 MiB logical
 budget and one outstanding record. Partial writes can block subsequent proofs
@@ -194,7 +240,8 @@ or DROP schemas. They do not block the independent real campaign slot.
 
 ## Required acceptance evidence and remaining live NO-GO
 
-Before closing this provider gap, retain verified default-branch workflow
+The bounded provider gap is closed by the current evidence above. Preserve
+verified default-branch workflow
 registration evidence and its exact commit, then exact hosted CI/dispatch IDs, attempts,
 integration/source SHAs and successful step conclusions for all three phases.
 Compare write/read-terminal JSON original run, original SHA, envelope digest,
@@ -314,12 +361,13 @@ current source SHA / historical run ID. Do not equate workflow green with GO.
 Same-repository noncanceling concurrency remains unchanged; operational exclusion
 from external administrators is still required for meaningful observations.
 
-The only conditional next command, **not executed or authorized here**, after
-independent review, feature source push, exact successful hosted source CI and
-explicit administrator authorization is:
+The following is reference syntax for the now-completed read-only discriminator,
+not a next command or an authorization to repeat it. Any future inspection
+requires a new discriminating question, exact source CI and explicit
+administrator authorization:
 
 ```shell
-# READ ONLY; existing default-branch registration does not authorize dispatch.
+# READ-ONLY REFERENCE; the bounded inspect already completed, not a replay plan.
 gh workflow run staging-ten-address-d1-proof.yml --ref codex/amail-v0.1.0 \
   -f mode=inspect -f confirm=INSPECT_STAGING_D1_READ_ONLY \
   -f source_run=EXACT_NEW_SUCCESSFUL_SOURCE_RUN -f prior_run=36787173756
@@ -335,7 +383,8 @@ protocol observation. They are authored **not locally executed**. Local
 verification is only Python AST parsing, YAML parsing and `git diff --check`.
 No account/provider request, push, workflow dispatch, local unittest/build or
 mutation retry occurred in this source workstream. Hosted tests and authorized
-provider observations remain external acceptance requirements.
+provider observations were subsequently recorded in the current evidence
+section; real campaign acceptance remains separate.
 
 External grounding reuses the original API/SQL/RIFL references above plus
 [GitHub manual workflow semantics](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow):
@@ -409,11 +458,11 @@ binding must leave held/schema phases unobserved and SQL call list empty.
 The prior read-only, dual-parameter and stability tests continue unchanged in
 semantics. Tests are authored and source-traced only; no local unittest/build.
 
-The correction enables a future authorized, exact-source-tested **inspect** to
-proceed through the documented c3f contract into held/schema classification.
-It does not establish that those gates will pass, correct params or DDL, or
-authorize rerunning either failed operation. Do **not** repeat apply-schema.
-The earlier inspect run is evidence already collected, not a passing schema
-proof. A subsequent read-only observation requires separate authorization and
-successful source CI at the new exact feature SHA; no provider/dispatch/push
-operation occurred during this correction.
+At source-review time the correction enabled a future separately authorized,
+exact-source-tested inspect; the review itself supplied no mutation permission.
+The subsequent successful corrected inspect and newly authorized schema/write/
+read phases are recorded in the [current evidence](#current-native-d1-and-synthetic-only-evidence-2026-10-01).
+The earlier failed inspect remains negative evidence, not schema proof. No
+provider/dispatch/push operation occurred while authoring that correction or
+this evidence update. Completed phases should not be repeated for another
+passing result; any new operation requires its own scope and authorization.
