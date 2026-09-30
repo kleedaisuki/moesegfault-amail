@@ -39,7 +39,11 @@ the separate bounded-privacy marker only after the real retained-record canary.
 
 `check_role_trace_rollout.py` brackets **all three** serving deployment/version
 identities around exact Queue-ID/topology and effective capture checks, and
-rechecks Queue topology as well. Mail's Queue binding comes from the pinned
+rechecks Queue topology as well. Before both migration and Worker replacement,
+it independently requires an absent synthetic route, an empty existing role
+ledger and an initial expired lease; checking schema alone is insufficient.
+A pristine role database without those tables is deliberately rejected by this
+replacement target and requires a separate reviewed bootstrap. Mail's Queue binding comes from the pinned
 immutable version resources, not `/settings`. The default
 `pin_staging_mail.py --phase pre-queue` remains strict for the historical
 settings-only containment version; new Queue-capable callers must explicitly

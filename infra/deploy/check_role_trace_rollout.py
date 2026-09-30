@@ -85,6 +85,12 @@ def verify(phase: str) -> None:
         role.audit()
     else:
         route_absent()
+        # Replacing a previously deployed role Worker is not a schema bootstrap:
+        # require its existing isolated ledger to be empty and its lease at the
+        # initial expired value before migration or replacement. A pristine DB
+        # without these tables needs a separately reviewed bootstrap, not an
+        # implicit fallback that hides pending role mail.
+        role.inspect_d1()
     # Queue attachments are non-versioned too: reread exact topology, never
     # infer stability merely because the three Worker versions did not change.
     queues.reconcile(account, token, "staging", "readback", topology)

@@ -169,13 +169,30 @@ class RolloutBracketTests(unittest.TestCase):
                     patch.object(rollout.capture, "readback", return_value=version()), \
                     patch.object(rollout.capture, "verify", return_value=True), \
                     patch.object(rollout.role, "audit") as role_audit, \
+                    patch.object(rollout.role, "inspect_d1") as ledger, \
                     patch.object(rollout, "route_absent") as route:
                 rollout.verify(phase)
                 self.assertEqual(pins.call_count, 2)
                 self.assertEqual(topology.call_count, 2)
                 self.assertEqual(topology.call_args.args[-1], self.environment(phase)["AMAIL_TRACE_TOPOLOGY"])
                 self.assertEqual(role_audit.call_count, phase == "after")
+                self.assertEqual(ledger.call_count, phase == "before")
                 self.assertEqual(route.call_count, phase == "before")
+
+    def test_nonempty_ledger_or_live_lease_blocks_pre_mutation_gate(self) -> None:
+        """D1 state is checked before migration and again immediately before replacement."""
+        for failure in ("role arrival ledger not empty", "role lease not at initial default"):
+            with patch.dict(os.environ, self.environment("before")), \
+                    patch.object(rollout, "serving_pins", return_value={}) as pins, \
+                    patch.object(queues, "reconcile") as topology, \
+                    patch.object(rollout.capture, "readback", return_value=version()), \
+                    patch.object(rollout.capture, "verify", return_value=True), \
+                    patch.object(rollout, "route_absent"), \
+                    patch.object(rollout.role, "inspect_d1", side_effect=RuntimeError(failure)), \
+                    self.assertRaises(RuntimeError):
+                rollout.verify("before")
+            self.assertEqual(pins.call_count, 1)
+            self.assertEqual(topology.call_count, 1)
 
     def test_topology_and_missing_pins_fail_before_provider_access(self) -> None:
         """Caller defaults cannot cross the phase boundary or select latest implicitly."""
