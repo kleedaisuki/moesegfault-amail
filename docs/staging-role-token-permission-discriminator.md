@@ -1,5 +1,44 @@
 # Staging role Routing token permission discriminator
 
+## Post-policy-change bounded result (2026-10-01)
+
+After the owner confirmed a policy adjustment to the existing single repository
+`CF_EMAIL_ROUTING_TOKEN`, [run 36757470446](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36757470446)
+executed the existing GET-only probe **once**, on hosted-CI-green remote source
+`cd64c140fb7c7c6ce5208afc4afa97fc00c5a4fb`. Normal source CI
+[36756333754](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36756333754)
+and workflow lint had passed before dispatch. The comparison used the last
+independently matched historical version pin from run `36676551506`, not a
+claim that this version remained current before the new read.
+
+| Fixed label | Result |
+| --- | --- |
+| `role_token_addresses` | `accessible` |
+| `role_token_rules` | `accessible` |
+| `role_token_destination` | `verified` |
+| `role_token_standard_rules` | `four_direct` |
+| `role_token_disposable_route` | `absent` |
+| `role_token_worker_version` | `drift` |
+| `role_token_probe` | `inconclusive` |
+
+**The current repository-token Addresses-read blocker is removed, and exactly
+one provider-verified private destination is positively attested.** Four exact
+standard direct forwards still match it and the disposable route is absent.
+However, the current sole 100%-serving role version differs from the historical
+pin, so the aggregate probe intentionally failed closed. It reports no actual
+new version value and does not establish deployed-secret parity, current Cron
+health/lease, private Inbox/Junk notice, retained-record privacy, or production
+acceptance. Do not repeat this successful permission/destination check just to
+obtain an aggregate green result. Reconcile the changed serving version through
+its existing deployment provenance and a separately bounded version readback
+before treating role health evidence as applicable.
+
+Only `Read-only role routing token permission discriminator` ran; other jobs
+were skipped. No SMTP, route mutation, deployment, token creation/rotation,
+local test, private-address output or raw provider-record artifact was involved.
+The observed labels were emitted at `2026-09-30T18:17:20Z`; the document date
+uses the maintainer's local date.
+
 ## Least-privilege decision update (2026-10-01)
 
 **Keep the existing single repository-level `CF_EMAIL_ROUTING_TOKEN`.** The
