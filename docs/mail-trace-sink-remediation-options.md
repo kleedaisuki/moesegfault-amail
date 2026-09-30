@@ -1,15 +1,117 @@
 # Conditional remediation: retained URL markers (2026-09-30)
 
-Status: **conditional architecture, not an implementation or privacy attestation**.
+Status: **conditional architecture; first historical result is insufficient to
+select remediation; not an implementation or privacy attestation**.
 This extends [the privacy decision](mail-trace-privacy-decision.md) and the
 [historical discriminator](staging-trace-canary.md). No deployed setting, private
-record, secret, live query, build, or test was accessed for this investigation.
+record, secret, live query, build, or test was accessed for this interpretation.
 The positive failure in hosted run `36703733769` establishes marker retention,
-not the offending field or producer. The classifier result is still required.
+not the offending field or producer. The first classifier result below narrows
+the evidence, but does not yet select the responsible producer or sink change.
+
+## First historical result: exact interpretation
+
+[Hosted read-only run `36713163067`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36713163067)
+returned the fixed line:
+
+```text
+carrier=other_or_multiple type=other_or_mixed component=path_only records=1
+```
+
+This used the already reviewed historical service/window classifier, not new
+traffic or a fresh privacy canary. Interpret its bins through
+`infra/tests/staging_trace_marker_location.py`, not their colloquial names:
+
+| Observed bin | Supported conclusion | Not supported |
+| --- | --- | --- |
+| `records=1` | Exactly one returned record contained a recognized canary-prefix match. | Only one total event was returned; only one leaf in that record matched; exact attribution to the discarded original request ID. |
+| `carrier=other_or_multiple` | Either a matched leaf was in the catch-all category, or two or more distinct carrier categories matched within this one record. | Multiple distinct records, emitters or defects; a leak specifically in `source`, `$metadata.url`, or `$workers.event.request`. |
+| `type=other_or_mixed` with `records=1` | This single matching record's **top-level** `$metadata.type` was absent, non-string, or a string other than the two exact recognized literals. | Mixed event types across matching records; proof of invocation capture, a custom log, or native tracing. |
+| `component=path_only` | The complete returned view contained a recognized path prefix and no recognized query prefix, with one consistent suffix. | Query redaction works for all requests; no query was stored outside this view; the path prefix necessarily appeared in a literal URL rather than a copied message. |
+
+The transport required a completed, bounded, cursor-complete dry events query;
+the classifier additionally required unique record IDs, exact staging service and
+timestamps, supported `source`/`dataset` shape, and rejected explicit malformed or
+true `$workers.truncated`. Those checks establish the scope of this finding, not
+unconditional provider completeness or retention of every invocation. The
+original random suffix was deliberately not persisted, so prefix attribution in
+this short historical interval is strong bounded evidence, not an exact
+request-ID proof. **The privacy gate remains closed.**
+
+There is a concrete representation ambiguity worth discriminating once.
+Cloudflare's [REST telemetry schema](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/)
+places optional event type in `$metadata.type` and permits generic Worker event
+enrichment. Its [Workers Logs guide](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)
+identifies invocation type at `$cloudflare.$metadata.type`. This documentation
+difference makes a wrapper or type-location mismatch plausible; it does **not**
+prove that the retained row used that shape, nor license searching arbitrary
+nested `type` fields as authoritative classifications.
+
+## Minimal second discriminator: preserve structure, never values
+
+The useful question is now: **which predeclared structural carrier categories
+matched, and where is the recognized event-type discriminator?** Do not repeat
+the same lossy four-bin result, generate traffic, expand the interval, query by
+marker value, export a row, or change deployed settings first.
+
+Retain the exact historical window/service, dry transport, pagination and shape
+guards. Replace the single carrier winner with independently reported fixed
+presence bins (or a fixed ordered set of those labels), so simultaneous matches
+are not collapsed. The minimum informative partition is:
+
+1. Existing exact indexed URL and application payload/message categories.
+2. Indexed request-context names (`trigger`, `spanName`, `transactionName`),
+   separately from derived message/error text (`messageTemplate`, `error`,
+   `errorTemplate`) and other indexed metadata.
+3. Worker request enrichment, other Worker event enrichment, diagnostic-channel
+   messages, and remaining Worker metadata, separately from application source.
+4. The same exact predeclared URL/context/message/request categories under a
+   literal `$cloudflare` wrapper, plus wrapper remainder. A wrapper is a
+   structural observation, not proof that its text was emitted by the platform.
+5. An explicit unmatched remainder for all other leaves, never their names.
+
+For the matching record, report independent type-state bins at the exact
+top-level `$metadata.type` and literal `$cloudflare.$metadata.type` locations:
+`absent | malformed | unrecognized | cf_worker_event | cf_worker_log` (plus a
+distinct absent-wrapper state and `mixed` only when multiple matching records
+have different states). These are indexed/type-location observations, not a
+claim to identify the telemetry producer. Do not echo the unknown
+string, normalize it into a recognized type, or infer a type from a URL-bearing
+message. If multiple matching records unexpectedly appear, report bounded
+per-category presence/type-state sets, not an arbitrary first record or
+lossy majority. Component and hit-count bins remain as before. A matched-carrier
+count and matched-leaf count may use `1 | 2_plus`; count structural leaves, not
+repeated appearances of the marker within one string.
+
+Two fixed hints can help select the next source/settings check without exposing
+values: allowlisted `$workers.eventType` (with explicit absent/unknown/mixed
+states), and whether the inspected source parses as the already reviewed
+application event schema (`allowlisted_application | unallowlisted_application |
+not_application_schema | mixed`). These hints do not explain a hit in another
+carrier: safe source plus an unknown error/wrapper hit is not an enrichment
+attestation, and `eventType=fetch` is not proof of invocation-log type.
+
+The implementation and synthetic tests must declare the exact labels/paths
+before a second hosted read. Unknown structures stay unknown rather than
+triggering recursive schema expansion. All visible fields remain scanned for
+markers; a failure of shape/completeness, mismatched suffix or no surviving hit
+is still **UNVERIFIED**. This is a deliberately limited diagnostic contract,
+not a reusable arbitrary telemetry inspector or a privacy acceptance checker.
+
+| Follow-up structure | Remediation decision |
+| --- | --- |
+| Only known request-context/enrichment carriers; recognized custom-log type; no application/message/error or remainder hit | Review the sink-boundary options below. An application regex cannot remove platform context before persistence. |
+| Recognized invocation type at a reviewed exact type location | First reconcile the historical serving version and effective capture settings; type-location correction alone does not repair capture. |
+| Application source or message/error text hit, including a wrapper's message representation | Audit the deployed emitter/generated shim/platform wrapping path. Do not relocate an unsafe payload and call that redaction. |
+| Both context and payload carriers | Preserve both findings; they may be copies of one cause or separate causes. Determine the payload producer before selecting a combined fix. |
+| Only known context, but no authoritative recognized type | Context retention is established structurally, while invocation-versus-custom remains unresolved. Review containment/sink separation without claiming invocation suppression failed. |
+| Unknown remainder, conflicting type locations, incomplete/expired/no surviving hit | No single emitter-specific fix is justified. Keep the gate closed and use source/settings evidence to choose a separately reviewed containment experiment, not an indefinite sequence of broader historical queries. |
 
 ## Classifier result -> next action
 
-Treat mixed carriers as multiple defects; fixing one does not close the gate.
+Treat multiple carriers as multiple observations, not automatically multiple
+defects: a single URL can be copied into several indexed fields. Every observed
+unsafe carrier must be eliminated, but causation may be shared.
 The classifier's fixed bins deliberately suppress raw records and field names.
 
 | Fixed result | What it supports, not proves | Smallest appropriate action |
@@ -151,5 +253,6 @@ from typed diagnostic data, using native bindings rather than REST credentials
 The empirical [USENIX Security 2023 logging study](https://www.usenix.org/conference/usenixsecurity23/presentation/lyons)
 supports checking collectors and complete retained records rather than trusting
 application formatting alone; it does not establish Cloudflare's producer here.
-The actionable next step remains the reviewed one-shot historical classifier,
-not a speculative configuration change or production rollout.
+The actionable next step is the independently reviewed, fixed-bin structural
+follow-up on the same historical window, not a speculative configuration change,
+another generic canary, or production rollout.
