@@ -1,7 +1,9 @@
 # Review: historical staging settings audit classifier (182535f)
 
 Date: 2026-10-01 Asia/Singapore.
-Verdict: **NO-GO for credentialed execution pending one scoped exception-boundary fix**.
+Original verdict at `182535f`: **NO-GO pending one scoped exception-boundary fix**.
+Current verdict after `7e5ae7b`: **GO for hosted source checks, then one bounded
+read-only historical Audit query if those checks pass**.
 Confidence: high in the source failure path; no claim that it occurred in a live run.
 
 ## Scope and method
@@ -14,7 +16,7 @@ requests, deployment, mutation, workflow dispatch or push were performed.
 Historical job facts in the task are context supplied by the parent, not
 independently reconstructed evidence.
 
-## Required correction
+## Original finding (resolved in source)
 
 ### P2: HTTP parser exceptions escape the fixed privacy output boundary
 
@@ -37,6 +39,19 @@ Extend focused synthetic tests with `BadStatusLine("PRIVATE...")` during
 open and `IncompleteRead` during read, checking the complete main output
 and no private stdout/stderr. Keep exactly one request, no retries and the
 immutable query. No unrelated architecture change is necessary.
+
+### Resolution review: 7e5ae7b
+
+Independently inspected commit `7e5ae7bfec9de6c860c03ea2ce20a945420ec68e`.
+The helper imports `HTTPException` and adds it to the existing transport catch
+around both open and read, preserving `from None`. The new synthetic test
+injects a private `BadStatusLine` at open and a private `IncompleteRead` at
+read through the real main/reader boundary; it asserts all seven exact output
+lines, failure exit, empty stderr, no private marker and one request. The open
+failure additionally checks no response read; the read failure checks the exact
+byte bound. This resolves the original P2 in source without widening the query,
+adding a retry or weakening ambiguity/containment gates. No new substantive
+issue was found in this scoped correction. Tests were inspected, not executed.
 
 Evidence:
 [Python HTTP exceptions](https://docs.python.org/3.12/library/http.client.html#http.client.HTTPException),
@@ -67,8 +82,8 @@ required correction.
 
 ## Limits and next gate
 
-Synthetic tests were read, not executed. After the exception correction,
-independently inspect the scoped diff and run focused tests on GitHub-hosted
-infrastructure before one historical audit dispatch. Permission failure,
+Synthetic tests were read, not executed. The scoped correction has now passed
+independent source review; run focused tests on GitHub-hosted infrastructure
+before one historical audit dispatch. Permission failure,
 missing data or zero matches must remain unresolved; none authorizes a
 mutation retry, broader query or relaxation of effective privacy acceptance.
