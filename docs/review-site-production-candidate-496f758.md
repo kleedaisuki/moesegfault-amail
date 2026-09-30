@@ -4,9 +4,9 @@ Date: 2026-10-01. Scope: `496f75826f74417081a8558b8018aadd329c9168`, its nine ch
 
 ## Verdict
 
-**GO for non-mutating hosted source checks.** The separate lane preserves the published release/deployment boundaries and is suitable for hosted validation. **No deployment authorization is given.** At the original commit, one P2 contract finding below must be resolved before describing the lane as review-complete for a deployment decision. Default-branch registration, exact-source hosted evidence, production operator freeze and actual smoke acceptance are still future obligations, not results of this review.
+**GO for non-mutating hosted source checks.** After re-review of correction `e35b7439e45f10eabc86de13f7c72a75a940ab6c`, **GO at source-review level for the later main-only candidate deployment lane, conditional on the runbook prerequisites**. The P2 contract finding below is resolved; no remaining substantive source defect was found in this scoped review. This does not authorize or execute a deployment now. Default-branch registration, exact-source hosted evidence, production operator freeze and actual smoke acceptance are still future obligations, not results of this review.
 
-## Finding: P2 — public-release lookup does not establish draft absence
+## Resolved finding: P2 — public-release lookup does not establish draft absence
 
 Location: `infra/release/check_candidate_site_gate.py:64-67`; `docs/site-production-candidate-lane.md`, No candidate downgrade contract.
 
@@ -15,6 +15,12 @@ The tag probe correctly excludes existing `v0.1.0` tags. However, the Release pr
 Practical correction: keep least-privilege reads and explicitly narrow the automated contract to existing Git tags and published Releases. State that untagged internal drafts are not inspected and do not imply public asset availability; freeze tag/publication operations independently during dispatch. This is coherent with a candidate page that truthfully says no public v0.1.0 assets exist. If draft exclusion is genuinely required, use an independently authorized draft-capable, paginated inventory and validate its access contract instead; simply changing to a release-list read with the same credentials is not enough to claim it. Do not silently widen workflow write permissions just to preserve an unnecessary stronger sentence.
 
 Primary evidence: [GitHub Releases REST API](https://docs.github.com/en/rest/releases/releases#get-a-release-by-tag-name), including the List releases section on draft visibility. This finding does not identify a way to overwrite an already tagged/published release: the tag check already blocks that case.
+
+### Re-review of `e35b743`
+
+The correction takes the least-privilege contract-narrowing remedy. Workflow permissions remain `contents: read` / `actions: read`; the pre-mutation gate is still repeated. Gate documentation, site README and operator contract now describe existing public tags / published Releases rather than claiming draft inventory. The new `check_release` accepts a missing visible resource or a boolean `draft: true`, rejects any non-draft Release and rejects missing/non-boolean publication metadata. Existing tag detection remains an independent unconditional block. Success output now says `published_release=not_visible`, avoiding the earlier universal absence claim. Added synthetic cases encode visible/invisible drafts as allowed and non-draft or malformed publication metadata as rejected; these tests were inspected, not executed.
+
+The runbook explicitly requires a freeze covering publication of any internal draft or creation of its tag, notes that read-only preflights and the shared site lock cannot enforce that external freeze, and preserves main-only/default-branch registration and exact-source CI requirements. This narrowed obligation is appropriate: an untagged internal draft is not a public Release and cannot contradict candidate copy saying public downloads are not published. No permission expansion, published-workflow edit or source-header contamination was introduced by the correction. The original P2 is closed rather than retained as a deployment blocker.
 
 ## Reviewed invariants and evidence
 
