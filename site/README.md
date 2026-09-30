@@ -1,67 +1,78 @@
-# amail release site
+# amail candidate site
 
-Astro/TypeScript static product site for `https://amail.moesegfault.dev/`, deployed as Cloudflare Workers Static Assets. It is a release page and user guide, not the API reference. The authoritative CLI/ZIP contract is in `../docs/architecture.md` and must be kept aligned with `../crates/amail` before publication.
+Standalone Astro/TypeScript static product candidate at
+`https://amail.moesegfault.dev/`, served by Cloudflare Workers Static Assets.
+Expected routes: `/`, `/manual/`, `/changelog/`, with heading-derived manual
+navigation and stable version-based changelog navigation.
 
-## Build and deploy
+The site documents intended CLI workflows. **This checkout does not contain
+the CLI, Mail/Identity backend, Agent Skill, release packaging, or published
+deployment workflow.** Hosting a candidate does not release those artifacts,
+launch Mail, or authorize public sending. Before a later release, reconcile the
+guide with the independently reviewed CLI/ZIP contract and release matrix.
 
-Use Node >=22.12 and pnpm with the checked-in lockfile:
+## Hosted checks and guarded deployment
 
-```sh
-pnpm install --frozen-lockfile
-pnpm check
-pnpm build
-pnpm run deploy
-```
+Tests/builds for this workstream run in GitHub Actions, not on the developer
+machine. `.github/workflows/site-ci.yml` (Candidate site CI) has one successful
+job identity, `Astro candidate site source checks`, used by the deployment gate.
+It runs synthetic regressions, locked pnpm install, Astro checks and both
+candidate/published-state build fixtures. It never deploys or receives provider
+credentials. Node 22 and pnpm 12.4.1 are pinned by workflow; site package versions
+and lockfile remain those imported from reviewed source.
 
-The build-time `AMAIL_RELEASE_STATE` is typed and fail-closed: unset or `candidate`
-renders honest pre-release copy; `published` renders the published links and status.
-Only the release-gated production deploy jobs set `published`, after a non-draft
-GitHub Release and expected assets exist. CI builds and checks both variants;
-staging always uses the default candidate variant. Unknown values fail the build.
+`AMAIL_RELEASE_STATE` is typed and fail-closed: unset or `candidate` renders
+pre-release copy; `published` renders future public-release copy, **only for a
+non-deploying compatibility test here**. Unknown values fail the build. No
+workflow in this bootstrap deploys published state.
 
-The build yields `dist/`; `wrangler.jsonc` deploys it as the `amail-release-site` Worker on the `amail.moesegfault.dev` custom domain. An isolated `staging` environment deploys `amail-release-site-staging` to `amail-staging.moesegfault.dev` with explicit route/asset settings; use `pnpm run deploy:staging`. CI owns deploy and live smoke checks. The expected routes are `/`, `/manual/`, and `/changelog/`. For production, use `pnpm run deploy` explicitly: pnpm 12.4.1 also has a built-in `deploy` command.
+`Production candidate site` is manual-only, defaults to checks, reuses same-commit
+source workflow without inheriting provider secrets, and can deploy only from
+main after default-branch registration, independent review, exact-source site
+CI, explicit confirmation and an external site/tag/Release publication freeze.
+Its GitHub gate rejects public v0.1.0 tags and published Releases; read-only token
+visibility is not inventory of internal untagged drafts. See [operator contract](../docs/site-production-candidate-lane.md).
 
-The source-managed static asset `_headers` rule matches **only** the staging hostname and sends `X-Robots-Tag: noindex, nofollow`. The shared `robots.txt` remains crawlable so search engines can actually see the noindex header; ordinary published production builds get no such header. CI should smoke-check the staging response header after deploy. See [Cloudflare Workers Static Assets headers](https://developers.cloudflare.com/workers/static-assets/headers/).
+The build yields `dist/`; Wrangler config targets `amail-release-site` and its
+production Custom Domain. Staging config remains isolated as imported, but
+**this bootstrap adds no staging deployment workflow**. Only the guarded
+candidate workflow uses `pnpm run deploy`; explicit script invocation avoids
+pnpm's distinct built-in `deploy` command. Do not bypass review/gates with raw
+deploy commands. First Custom Domain deployment may provision DNS/certificates;
+do not add placeholders.
 
-Before v0.1.0 publication, a separate reviewed, main-only manual
-`Production candidate site` workflow can serve truthful candidate copy on the
-production hostname without changing Mail/send/release gates. It adds
-production noindex/nofollow and an opaque source revision **only to generated
-candidate dist headers**, never to source `_headers`; a fresh published build
-must not inherit them. Exact-source hosted CI, absence of a public v0.1.0 tag or
-published Release, and three-route truthfulness/TOC/header smoke are mandatory.
-Independent review
-and a freeze of other site/tag writers are operator prerequisites. The read-only
-token does not inventory internal untagged draft Releases. See
-[the candidate lane contract](../docs/site-production-candidate-lane.md).
+Source `public/_headers` targets staging only. Candidate preparation modifies
+only generated `dist/_headers`, adding production-host-only noindex/nofollow
+and exact source revision. Crawlable robots.txt lets crawlers see the header.
+A fresh published compatibility build restores headers byte-identical to source.
+Candidate live smoke validates exact routes, local status, service-availability
+disclaimer, real links, working TOCs, MIME and HTTP/source/indexing headers.
+Green build checks are not live acceptance.
 
-`node scripts/check-release-state.mjs candidate|published` checks each rendered
-route's own release copy, links, navigation, and HTML indexability, plus the
-staging-only `_headers` rule. `node --test scripts/check-release-state.test.mjs`
-exercises missing status/link regressions without building or deploying. These
-source checks do not establish live response headers or published asset bytes;
-the deploy smoke and Release checksum gate remain necessary.
+## Future release compatibility
 
-## Appending a release
-
-Add **one** Markdown file named `src/content/releases/vX.Y.Z.md` with `version`, UTC `date`, and `summary` frontmatter. Keep the body reader-focused. The content collection validates versions and automatically sorts entries newest-first; its table of contents uses stable version anchors. Update the main-page download link and manual installation link when the latest public version changes. Do not publish a changelog claim ahead of release/smoke gates.
-
-The v0.1.0 candidate copy does not claim a release exists. The production workflow
-sets the published build state only after its release gate; verify real asset
-downloads against `SHA256SUMS` during cutover. For later releases, update the
-tagged links and versioned installation instructions together with the new
-entry. The manual's five platform filenames must match the `release.yml` target
-matrix; its checksum instructions use OS-native tools and fail before extraction.
+Append one Markdown file under `src/content/releases/` per version. The collection
+validates versions and orders entries newest-first. Release dates, claims, five
+intended platform filenames, Agent Skill and checksums need separate release
+review; candidate record dates are not public release dates. Do not set published
+mode for production upload without that future gate.
 
 ## MoeSegfault Style integration
 
-The site self-hosts unmodified, exact-version `v0.1.2` **public static distribution** files from [`kleedaisuki/moesegfault-style`](https://github.com/kleedaisuki/moesegfault-style) under `public/vendor/moesegfault-style/v0.1.2/`: `tokens.css`, `foundation.css`, `components.css`, and `assets/icons/brand.svg`. Their source paths are `static-releases/v0.1.2/` in that repository. Host-specific CSS uses the documented `--moe-*` semantic tokens; the product pages use the public `.moe-button` class. We self-host instead of depending on a remote stylesheet at page-load time. The upstream repository and these assets are GPL-3.0-or-later; retain attribution and version pin when updating. Do not edit the vendored files, and do not import upstream private `dist` paths.
+Exact-version v0.1.2 public static distribution from
+[MoeSegfault Style](https://github.com/kleedaisuki/moesegfault-style) is vendored
+unmodified under `public/vendor/moesegfault-style/v0.1.2/`, with provenance.
+Self-hosted `css/tokens.css`, `css/foundation.css`, `css/components.css` and
+`assets/icons/brand.svg` avoid runtime cross-site CSS dependencies. Preserve
+GPL-3.0-or-later attribution/version pin; do not import private upstream paths.
+Host CSS uses semantic `--moe-*` tokens and public `.moe-button` classes.
 
-## Design rationale
+Static rendering needs no authenticated API or Worker request handler. The manual
+discloses intended address limits, forwarding boundary, automatic third-party
+semantic indexing and operational retention; the candidate service disclaimer
+prevents these from asserting a live service.
 
-- Static rendering keeps the marketing site independent of the authenticated mail API.
-- The manual TOC is derived from Markdown headings, so edits cannot leave stale links.
-- Changelog entries are separate append-only files, avoiding a long manually maintained index.
-- The public guide discloses the 10-address/account and current 198-user-address service capacity (two of the provider's 200 literal routes are reserved for `postmaster` and `abuse`), and the fact that semantic search sends text to the embedding provider.
-
-Cloudflare deployment uses [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/routing/static-site-generation/) with a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/). Markdown heading behavior follows the [Astro Markdown guide](https://docs.astro.build/en/guides/markdown-content/).
+References: [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/routing/static-site-generation/),
+[Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/),
+[Static Asset headers](https://developers.cloudflare.com/workers/static-assets/headers/),
+[Astro Markdown](https://docs.astro.build/en/guides/markdown-content/).

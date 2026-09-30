@@ -1,7 +1,7 @@
 ---
 import BaseLayout from './BaseLayout.astro';
 import '../styles/manual.css';
-import { releaseState } from '../releaseState';
+import { candidateServiceNotice, releaseState } from '../releaseState';
 
 /** 中文：目录直接取 Astro 生成的标题锚点，避免手写目录漂移。 English: Derive the table of contents from generated heading anchors to prevent drift. */
 interface Heading { depth: number; slug: string; text: string }
@@ -10,7 +10,7 @@ const { headings, frontmatter } = Astro.props;
 const sections = headings.filter((heading) => heading.depth === 2 || heading.depth === 3);
 ---
 <BaseLayout title={`${frontmatter.title} · amail`} description={frontmatter.description} current="manual">
-  <section class="page-head"><div class="wrap"><span class="eyebrow">The field guide</span><h1>用户手册<span class="period">.</span></h1><p>从第一次登录到发出一封完整的邮件。写给想掌握工作流的人，也写给会替你动手的 Agent。</p><p>{releaseState === 'published' ? <>v0.1.0 已发布。请从 <a href="https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0">GitHub Release</a> 取得安装包、Agent Skill 与校验文件。</> : 'v0.1.0 尚未开放下载；以下安装步骤供正式发布后使用。'}</p></div></section>
+  <section class="page-head"><div class="wrap"><span class="eyebrow">The field guide</span><h1>用户手册<span class="period">.</span></h1><p>从第一次登录到发出一封完整的邮件。写给想掌握工作流的人，也写给会替你动手的 Agent。</p><p>{releaseState === 'published' ? <>v0.1.0 已发布。请从 <a href="https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0">GitHub Release</a> 取得安装包、Agent Skill 与校验文件。</> : 'v0.1.0 尚未开放下载；以下安装步骤供正式发布后使用。'}</p>{releaseState === 'candidate' && <p>{candidateServiceNotice}</p>}</div></section>
   <div class="wrap reading-layout">
     <nav class="toc" aria-label="用户手册目录"><p class="toc-title">目录 / Contents</p><ol>{sections.map((heading) => <li class={heading.depth === 3 ? 'toc-sub' : undefined}><a href={`#${heading.slug}`}>{heading.text}</a></li>)}</ol></nav>
     <article class="prose manual-prose"><slot /></article>

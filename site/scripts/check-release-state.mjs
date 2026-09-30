@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 const tagUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0';
 const releasesUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases';
+const serviceNotice = '这是候选版本说明，不表示邮件服务或发送已开放。';
 const pages = [
   { path: 'index', label: 'home', candidate: 'v0.1.0 尚未发布', published: 'v0.1.0 已发布' },
   { path: 'manual/index', label: 'manual', candidate: 'v0.1.0 尚未开放下载', published: 'v0.1.0 已发布' },
@@ -49,6 +50,9 @@ export function checkReleaseState(state, htmlByPath, headers) {
     }
     if (!html.includes(page[state]) || html.includes(page[state === 'candidate' ? 'published' : 'candidate'])) {
       throw new Error(`${page.label}: incorrect ${state} release copy`);
+    }
+    if ((state === 'candidate') !== html.includes(serviceNotice)) {
+      throw new Error(`${page.label}: incorrect candidate service-availability boundary`);
     }
     if (state === 'published' && !hasHref(html, tagUrl)) {
       throw new Error(`${page.label}: exact v0.1.0 Release link is missing`);
