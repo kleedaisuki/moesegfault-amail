@@ -255,6 +255,38 @@ class WorkerCreatedR2Tests(unittest.TestCase):
         self.assertEqual(get.call_count, 1)
         self.assertEqual(delete.call_count, 1)
 
+    def test_whole_probe_does_not_retry_denied_delete_in_finally(self) -> None:
+        """The outer cleanup must not turn one definite 403 into a second write."""
+
+        key = "verification/12345678-1234-4123-8123-123456789abc.eml"
+        env = {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+               "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+               "CLOUDFLARE_API_TOKEN": "private-token",
+               "AMAIL_SENDING_GRANT_ATTEST": "ATTEST_ONE_SYNTHETIC_APEX_SEND"}
+        contacts = {MODULE.FIRST: ("principal-a", "subject-a", "verified", "a_username")}
+        actions: list[str] = []
+
+        def fake_route(action: str) -> str:
+            actions.append(action)
+            return {"apply": "created", "audit": "enabled" if "remove" not in actions else "absent",
+                    "remove": "removed"}[action]
+
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(MODULE, "audit"), \
+                patch.object(MODULE, "identity_contacts", return_value=contacts), \
+                patch.object(MODULE, "sender_ready"), \
+                patch.object(MODULE, "one_key", side_effect=[None, key, key]), \
+                patch.object(MODULE, "route", side_effect=fake_route), \
+                patch.object(MODULE, "send_once", return_value=True), \
+                patch.object(MODULE, "get_owned", return_value="present"), \
+                patch.object(R2, "delete", side_effect=R2.ProbeFailure("r2_delete_denied")) as delete, \
+                patch.object(MODULE.time, "sleep"):
+            with self.assertRaises(MODULE.ProbeFailure) as caught:
+                MODULE.probe()
+        self.assertEqual(str(caught.exception), "object_delete_denied_cleanup_unverified")
+        self.assertEqual(delete.call_count, 1)
+        self.assertEqual(actions[-2:], ["remove", "audit"])
+
     def test_failed_send_is_one_request_and_multiple_objects_fail_closed(self) -> None:
         """A lost sending response cannot trigger a second synthetic message."""
 
@@ -312,10 +344,16 @@ class WorkerCreatedR2Tests(unittest.TestCase):
         run = {"id": 123, "run_attempt": 1, "event": "workflow_dispatch",
                "status": "completed", "conclusion": "failure", "head_branch": MODULE.BRANCH,
                "head_sha": "a" * 40,
-               "path": ".github/workflows/ci.yml@refs/heads/" + MODULE.BRANCH,
+               "path": ".github/workflows/ci.yml",
                "created_at": start.isoformat(), "updated_at": end.isoformat()}
-        jobs = {"total_count": 1, "jobs": [{"name": MODULE.JOB_NAME,
-                                           "status": "completed"}]}
+        valid_job = {"name": MODULE.JOB_NAME, "run_id": 123, "head_sha": "a" * 40,
+                     "status": "completed", "conclusion": "failure",
+                     "started_at": (start + timedelta(minutes=1)).isoformat(),
+                     "completed_at": (end - timedelta(minutes=1)).isoformat(),
+                     "steps": [{"name": MODULE.PROBE_STEP_NAME, "status": "completed",
+                                "conclusion": "failure",
+                                "started_at": (start + timedelta(minutes=2)).isoformat()}]}
+        jobs = {"total_count": 1, "jobs": [valid_job]}
         env = {"GITHUB_REPOSITORY": MODULE.REPOSITORY, "GITHUB_RUN_ID": "124",
                "GITHUB_TOKEN": "private-github-token",
                "AMAIL_WORKER_R2_PRIOR_SHA": "a" * 40}
@@ -324,6 +362,10 @@ class WorkerCreatedR2Tests(unittest.TestCase):
             window = MODULE.prior_window("123", "1")
         self.assertEqual(window[0], start)
         self.assertEqual(window[1], end + timedelta(minutes=10))
+        qualified = {**run, "path": ".github/workflows/ci.yml@refs/heads/" + MODULE.BRANCH}
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(MODULE, "github_json", side_effect=[qualified, jobs]):
+            self.assertEqual(MODULE.prior_window("123", "1")[0], start)
         bad_jobs = {"total_count": 1, "jobs": [{"name": "unrelated target",
                                                "status": "completed"}]}
         with patch.dict(os.environ, env, clear=True), \
@@ -331,6 +373,29 @@ class WorkerCreatedR2Tests(unittest.TestCase):
             with self.assertRaises(MODULE.ProbeFailure) as caught:
                 MODULE.prior_window("123", "1")
         self.assertEqual(str(caught.exception), "prior_run_job_invalid")
+        for bad in (
+            {**valid_job, "conclusion": "skipped"},
+            {**valid_job, "run_id": 999},
+            {**valid_job, "head_sha": "b" * 40},
+            {**valid_job, "steps": [{**valid_job["steps"][0], "conclusion": "skipped"}]},
+        ):
+            with self.subTest(bad=bad), patch.dict(os.environ, env, clear=True), \
+                    patch.object(MODULE, "github_json", side_effect=[run, {
+                        "total_count": 1, "jobs": [bad]}]):
+                with self.assertRaises(MODULE.ProbeFailure):
+                    MODULE.prior_window("123", "1")
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(MODULE, "github_json", side_effect=[run, {
+                    "total_count": 2, "jobs": [valid_job, valid_job]}]):
+            with self.assertRaises(MODULE.ProbeFailure) as caught:
+                MODULE.prior_window("123", "1")
+        self.assertEqual(str(caught.exception), "prior_run_job_invalid")
+        wrong_workflow = {**run, "path": ".github/workflows/other.yml"}
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(MODULE, "github_json", return_value=wrong_workflow):
+            with self.assertRaises(MODULE.ProbeFailure) as caught:
+                MODULE.prior_window("123", "1")
+        self.assertEqual(str(caught.exception), "prior_run_metadata_invalid")
         stale = {**run, "created_at": (now - timedelta(hours=25)).isoformat()}
         with patch.dict(os.environ, env, clear=True), \
                 patch.object(MODULE, "github_json", return_value=stale):

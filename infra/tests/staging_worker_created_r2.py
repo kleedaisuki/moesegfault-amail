@@ -33,6 +33,7 @@ ROUTE_HELPER = ROOT / "workers" / "identity-test-inbox" / "ensure_route.py"
 REPOSITORY = "kleedaisuki/moesegfault-amail"
 BRANCH = "codex/amail-v0.1.0"
 JOB_NAME = "One-shot Worker-created R2 GET/DELETE"
+PROBE_STEP_NAME = "Probe Worker-created private R2 object"
 SENDER = "mail@moesegfault.dev"
 TEMPLATE = "amail private R2 capability v1 "
 MAX_MIME = 8_192
@@ -153,16 +154,35 @@ def prior_window(value: str, attempt: str) -> tuple[datetime, datetime]:
             and run.get("conclusion") in ("failure", "cancelled", "timed_out")
             and run.get("head_branch") == BRANCH
             and run.get("head_sha") == source_sha
-            and isinstance(run.get("path"), str)
-            and run["path"].startswith(".github/workflows/ci.yml@")
+            and run.get("path") in (
+                ".github/workflows/ci.yml",
+                ".github/workflows/ci.yml@refs/heads/" + BRANCH,
+            )
             and start <= end <= now + timedelta(minutes=2)
             and now - start <= timedelta(hours=24), "prior_run_metadata_invalid")
     jobs = github_json(base + "/jobs?per_page=100", token)
     entries = jobs.get("jobs")
     require(type(jobs.get("total_count")) is int and jobs["total_count"] <= 100
-            and isinstance(entries, list) and len(entries) == jobs["total_count"]
-            and any(isinstance(job, dict) and job.get("name") == JOB_NAME
-                    and job.get("status") == "completed" for job in entries),
+            and isinstance(entries, list) and len(entries) == jobs["total_count"],
+            "prior_run_job_invalid")
+    matches = [job for job in entries if isinstance(job, dict)
+               and job.get("name") == JOB_NAME]
+    require(len(matches) == 1, "prior_run_job_invalid")
+    job = matches[0]
+    require(job.get("run_id") == int(value) and job.get("head_sha") == source_sha
+            and job.get("status") == "completed"
+            and job.get("conclusion") in ("failure", "cancelled", "timed_out")
+            and start - timedelta(minutes=2) <= parse_time(job.get("started_at"))
+            <= parse_time(job.get("completed_at")) <= end + timedelta(minutes=2),
+            "prior_run_job_invalid")
+    steps = job.get("steps")
+    require(isinstance(steps, list), "prior_run_job_invalid")
+    probe_steps = [step for step in steps if isinstance(step, dict)
+                   and step.get("name") == PROBE_STEP_NAME]
+    require(len(probe_steps) == 1 and probe_steps[0].get("status") == "completed"
+            and probe_steps[0].get("conclusion") in ("success", "failure", "cancelled", "timed_out")
+            and start - timedelta(minutes=2)
+            <= parse_time(probe_steps[0].get("started_at")) <= end + timedelta(minutes=2),
             "prior_run_job_invalid")
     return start, end + timedelta(minutes=10)
 
@@ -306,14 +326,21 @@ def delete_owned(key: str, value: str, attempt: str,
 
 
 def reconcile(value: str, attempt: str, window: tuple[datetime, datetime],
-              settle: bool) -> bool:
-    """After route closure, remove one owned MIME or prove empty inventory."""
+              settle: bool, allow_delete: bool = True) -> bool:
+    """After route closure, remove owned MIME unless DELETE was denied."""
 
     key = one_key()
     if key is None and settle:
         time.sleep(60)
         key = one_key()
     if key is None:
+        return False
+    if not allow_delete:
+        require(get_owned(key, value, attempt, window) == "absent",
+                "object_delete_denied_cleanup_unverified")
+        if settle:
+            time.sleep(60)
+            require(one_key() is None, "late_delivery_unverified")
         return False
     delete_owned(key, value, attempt, window)
     if settle:
@@ -383,15 +410,19 @@ def probe() -> None:
         if route_closed:
             try:
                 if send_possible:
+                    allow_delete = failure is None or str(failure) != "object_delete_denied"
                     late = reconcile(value, attempt,
                                      (started, datetime.now(timezone.utc) + timedelta(minutes=10)),
-                                     settle=True)
+                                     settle=True, allow_delete=allow_delete)
                     if proved and late:
                         failure = ProbeFailure("late_delivery_unverified")
                 else:
                     require(one_key() is None, "private_object_cleanup_unverified")
             except Exception:
-                failure = ProbeFailure("private_object_cleanup_unverified")
+                label = ("object_delete_denied_cleanup_unverified"
+                         if failure and str(failure) == "object_delete_denied"
+                         else "private_object_cleanup_unverified")
+                failure = ProbeFailure(label)
     if failure:
         raise failure
     require(proved, "object_capability_unverified")
