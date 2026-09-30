@@ -68,6 +68,18 @@ class TraceQueueTests(unittest.TestCase):
                 MODULE.reconcile("a", "t", "staging", "queues")
             call.assert_not_called()
 
+    def test_existing_attachment_conflict_prevents_peer_creation(self):
+        """Reviewed identity is insufficient if the existing queue has a foreign consumer."""
+        main = queue("amail-trace-events-staging")
+        bad = {**main, "consumers": [{"type": "http_pull"}], "producers": [],
+               "consumers_total_count": 1, "producers_total_count": 0}
+        with patch.object(MODULE, "inventory", return_value=[main]), patch.dict(MODULE.os.environ,
+                {"AMAIL_TRACE_QUEUE_ID": "a" * 32}), patch.object(MODULE, "request", return_value={"result": bad}) as call:
+            with self.assertRaisesRegex(ValueError, "consumer_drift"):
+                MODULE.reconcile("a", "t", "staging", "queues")
+            self.assertEqual(call.call_count, 1)
+            self.assertEqual(call.call_args.args[2], "queues/" + "a" * 32)
+
     def test_create_identity_must_survive_readback(self):
         """A successful POST identity cannot be replaced by a same-name resource."""
         dlq, main = queue("amail-trace-dlq-staging"), queue("amail-trace-events-staging")

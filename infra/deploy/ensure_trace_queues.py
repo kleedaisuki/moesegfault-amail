@@ -76,6 +76,43 @@ def bounded_queue(row: dict) -> bool:
             and settings.get("delivery_paused", False) is False)
 
 
+def validate_detail(detail: object, name: str, queue_id: str, suffix: str, phase: str) -> None:
+    """Require complete exact attachment ownership before mutating any peer resource."""
+    if (not isinstance(detail, dict) or not bounded_queue(detail)
+            or detail.get("queue_id") != queue_id or detail.get("queue_name") != name):
+        raise ValueError("queue_settings_drift")
+    consumers, producers = detail.get("consumers"), detail.get("producers")
+    if (not isinstance(consumers, list) or not isinstance(producers, list)
+            or type(detail.get("consumers_total_count")) is not int
+            or detail["consumers_total_count"] != len(consumers)
+            or type(detail.get("producers_total_count")) is not int
+            or detail["producers_total_count"] != len(producers)):
+        raise ValueError("ownership_shape")
+    if name.startswith("amail-trace-dlq"):
+        if consumers or producers:
+            raise ValueError("dlq_consumer_unreviewed")
+        return
+    if phase == "queues" and not consumers and not producers:
+        return
+    if len(consumers) != 1 or not isinstance(consumers[0], dict):
+        raise ValueError("consumer_drift")
+    consumer = consumers[0]
+    settings = consumer.get("settings")
+    if (consumer.get("type") != "worker" or consumer.get("script_name") != f"amail-trace-sink{suffix}"
+            or consumer.get("dead_letter_queue") != f"amail-trace-dlq{suffix}"
+            or not isinstance(settings, dict)
+            or any(settings.get(key) != value for key, value in {
+                "batch_size": 10, "max_wait_time_ms": 1000, "max_retries": 3,
+                "retry_delay": 30, "max_concurrency": 2}.items())):
+        raise ValueError("consumer_drift")
+    if phase == "queues" and not producers:
+        return
+    if (len(producers) != 1 or not isinstance(producers[0], dict)
+            or producers[0].get("type") != "worker"
+            or producers[0].get("script") != f"amail-mail{suffix}"):
+        raise ValueError("producer_drift")
+
+
 def reconcile(account: str, token: str, target: str, phase: str) -> None:
     """Create only absent resources; readback never mutates or consumes messages."""
     suffix = "-staging" if target == "staging" else ""
@@ -96,6 +133,10 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
         if not re.fullmatch(r"[0-9a-f]{32}", expected) or row["queue_id"] != expected:
             raise ValueError("existing_queue_ownership_unverified")
         identities[name] = expected
+    if phase == "queues":
+        for name, queue_id in identities.items():
+            detail = request(account, token, f"queues/{queue_id}").get("result")
+            validate_detail(detail, name, queue_id, suffix, phase)
     for name in names:
         if name in identities:
             continue
@@ -115,39 +156,7 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
         if row is None or not bounded_queue(row) or row["queue_id"] != identities[name]:
             raise ValueError("queue_settings_drift")
         detail = request(account, token, f"queues/{row['queue_id']}").get("result")
-        if (not isinstance(detail, dict) or not bounded_queue(detail)
-                or detail.get("queue_id") != row["queue_id"] or detail.get("queue_name") != name):
-            raise ValueError("queue_settings_drift")
-        consumers, producers = detail.get("consumers"), detail.get("producers")
-        if (not isinstance(consumers, list) or not isinstance(producers, list)
-                or type(detail.get("consumers_total_count")) is not int
-                or detail["consumers_total_count"] != len(consumers)
-                or type(detail.get("producers_total_count")) is not int
-                or detail["producers_total_count"] != len(producers)):
-            raise ValueError("ownership_shape")
-        if name.startswith("amail-trace-dlq"):
-            if consumers or producers:
-                raise ValueError("dlq_consumer_unreviewed")
-            continue
-        if phase == "queues" and not consumers and not producers:
-            continue
-        if len(consumers) != 1 or not isinstance(consumers[0], dict):
-            raise ValueError("consumer_drift")
-        consumer = consumers[0]
-        settings = consumer.get("settings")
-        if (consumer.get("type") != "worker" or consumer.get("script_name") != f"amail-trace-sink{suffix}"
-                or consumer.get("dead_letter_queue") != f"amail-trace-dlq{suffix}"
-                or not isinstance(settings, dict)
-                or any(settings.get(key) != value for key, value in {
-                    "batch_size": 10, "max_wait_time_ms": 1000, "max_retries": 3,
-                    "retry_delay": 30, "max_concurrency": 2}.items())):
-            raise ValueError("consumer_drift")
-        if phase == "queues" and not producers:
-            continue
-        if (len(producers) != 1 or not isinstance(producers[0], dict)
-                or producers[0].get("type") != "worker"
-                or producers[0].get("script") != f"amail-mail{suffix}"):
-            raise ValueError("producer_drift")
+        validate_detail(detail, name, row["queue_id"], suffix, phase)
     output = os.getenv("GITHUB_OUTPUT")
     if phase == "queues" and output:
         # Non-secret resource IDs connect the authorized create step to this exact rollout.
