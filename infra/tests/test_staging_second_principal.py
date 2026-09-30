@@ -8,6 +8,7 @@ from email.utils import format_datetime
 from contextlib import redirect_stdout
 import importlib.util
 from io import StringIO
+import json
 import os
 from pathlib import Path
 import re
@@ -27,6 +28,47 @@ SPEC.loader.exec_module(MODULE)
 
 class SecondPrincipalTests(unittest.TestCase):
     """Protect the private OTP boundary and non-repeatable registration gate."""
+
+    def test_r2_inventory_discriminates_shape_without_accepting_missing_pagination(self) -> None:
+        """Optional provider metadata is not proof of a complete inventory."""
+
+        key = "verification/12345678-1234-4123-8123-123456789abc.eml"
+        cases = (
+            ({"result": []}, "r2_result_info_missing"),
+            ({"result": [], "result_info": []}, "r2_result_info_invalid"),
+            ({"result": [], "result_info": {}}, "r2_result_info_invalid"),
+            ({"result": {}, "result_info": {"is_truncated": False}}, "r2_result_invalid"),
+            ({"result": ["not-an-object"], "result_info": {"is_truncated": False}},
+             "r2_object_entry_invalid"),
+            ({"result": [{"key": "verification/not-uuid.eml"}],
+              "result_info": {"is_truncated": False}}, "r2_object_key_invalid"),
+            ({"result": [{"key": key}, {"key": key}],
+              "result_info": {"is_truncated": False}}, "r2_duplicate_key"),
+            ({"result": [], "result_info": {"is_truncated": True}}, "r2_cursor_invalid"),
+        )
+        for payload, expected in cases:
+            raw = json.dumps({"success": True, **payload}).encode()
+            with self.subTest(expected=expected), patch.object(MODULE, "request", return_value=raw):
+                with self.assertRaises(MODULE.ProvisionFailure) as caught:
+                    MODULE.object_inventory("a" * 32, "private-token")
+            self.assertEqual(str(caught.exception), expected)
+        valid = json.dumps({"success": True, "result": [],
+                            "result_info": {"is_truncated": False}}).encode()
+        with patch.object(MODULE, "request", return_value=valid):
+            self.assertEqual(MODULE.object_inventory("a" * 32, "private-token"), set())
+
+    def test_r2_duplicate_on_later_page_fails_without_truncation_assumption(self) -> None:
+        """A repeated UUID across pages cannot silently inflate or terminate inventory."""
+
+        key = "verification/12345678-1234-4123-8123-123456789abc.eml"
+        first = json.dumps({"success": True, "result": [{"key": key}],
+                            "result_info": {"is_truncated": True, "cursor": "next"}}).encode()
+        second = json.dumps({"success": True, "result": [{"key": key}],
+                             "result_info": {"is_truncated": False}}).encode()
+        with patch.object(MODULE, "request", side_effect=[first, second]):
+            with self.assertRaises(MODULE.ProvisionFailure) as caught:
+                MODULE.object_inventory("a" * 32, "private-token")
+        self.assertEqual(str(caught.exception), "r2_duplicate_key")
 
     def test_one_vetted_mime_code(self) -> None:
         """Require exact Identity sender, recipient, fresh date and one text code."""

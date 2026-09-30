@@ -138,14 +138,20 @@ def object_inventory(account: str, token: str) -> set[str]:
         value = json_result(raw)
         batch = value.get("result")
         info = value.get("result_info")
-        require(isinstance(batch, list) and isinstance(info, dict), "r2_inventory_invalid")
+        require(isinstance(batch, list), "r2_result_invalid")
+        require("result_info" in value, "r2_result_info_missing")
+        require(isinstance(info, dict), "r2_result_info_invalid")
         for item in batch:
-            key = item.get("key") if isinstance(item, dict) else None
-            require(isinstance(key, str) and KEY.fullmatch(key) is not None
-                    and key not in keys, "r2_inventory_invalid")
+            require(isinstance(item, dict), "r2_object_entry_invalid")
+            key = item.get("key")
+            require(isinstance(key, str) and KEY.fullmatch(key) is not None,
+                    "r2_object_key_invalid")
+            require(key not in keys, "r2_duplicate_key")
             keys.add(key)
         require(len(keys) <= 1000, "r2_inventory_too_large")
-        if info.get("is_truncated") is False:
+        truncated = info.get("is_truncated")
+        require(type(truncated) is bool, "r2_result_info_invalid")
+        if not truncated:
             return keys
         next_cursor = info.get("cursor")
         require(isinstance(next_cursor, str) and next_cursor and next_cursor != cursor,
