@@ -6,6 +6,7 @@ import { checkReleaseState } from './check-release-state.mjs';
 
 const tagUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0';
 const releasesUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases';
+const serviceNotice = '这是候选版本说明，不表示邮件服务或发送已开放。';
 const headers = readFileSync(new URL('../public/_headers', import.meta.url), 'utf8');
 const claims = {
   index: ['v0.1.0 尚未发布', 'v0.1.0 已发布'],
@@ -21,6 +22,7 @@ function fixture(state) {
      ${path === 'manual/index' ? '<nav aria-label="用户手册目录"></nav>' : ''}
      ${path === 'changelog/index' ? '<nav aria-label="更新日志目录"></nav>' : ''}
      <p>${state === 'candidate' ? candidate : published}</p>
+     ${state === 'candidate' ? `<p>${serviceNotice}</p>` : ''}
      ${state === 'published' || path !== 'index' ? `<a href="${state === 'published' ? tagUrl : releasesUrl}">Release</a>` : ''}`,
   ]));
 }
@@ -72,4 +74,15 @@ test('published HTML noindex fails on any page', () => {
 
 test('staging-only noindex header rule cannot expand to production', () => {
   assert.throws(() => checkReleaseState('published', fixture('published'), headers.replace('amail-staging', 'amail')), /staging-only noindex/);
+});
+
+test('candidate service disclaimer is required locally and cannot leak into published output', () => {
+  for (const path of Object.keys(claims)) {
+    const candidate = fixture('candidate');
+    candidate[path] = candidate[path].replace(serviceNotice, 'removed');
+    assert.throws(() => checkReleaseState('candidate', candidate, headers), /service-availability boundary/);
+    const published = fixture('published');
+    published[path] += `<p>${serviceNotice}</p>`;
+    assert.throws(() => checkReleaseState('published', published, headers), /service-availability boundary/);
+  }
 });

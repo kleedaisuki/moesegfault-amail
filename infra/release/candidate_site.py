@@ -15,6 +15,7 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGING_HEADERS = "https://amail-staging.moesegfault.dev/*\n  X-Robots-Tag: noindex, nofollow\n"
+SERVICE_NOTICE = "这是候选版本说明，不表示邮件服务或发送已开放。"
 PAGES = {
     "home": ("index.html", "v0.1.0 尚未发布", "v0.1.0 已发布", None),
     "manual": ("manual/index.html", "v0.1.0 尚未开放下载", "v0.1.0 已发布", "用户手册目录"),
@@ -85,6 +86,8 @@ def check_page(route, html):
     text = "".join(page.text)
     if candidate not in text or published in text:
         raise ValueError(f"{route}: candidate status missing or published claim present")
+    if SERVICE_NOTICE not in text:
+        raise ValueError(f"{route}: candidate service-availability boundary missing")
     if not {"/", "/manual/", "/changelog/"}.issubset(page.hrefs):
         raise ValueError(f"{route}: three-page navigation missing")
     for href in page.hrefs:

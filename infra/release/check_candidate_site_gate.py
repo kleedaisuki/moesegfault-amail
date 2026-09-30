@@ -12,6 +12,12 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
+# Dedicated site-only evidence remains independent of the Mail CI workflow.
+SOURCE_WORKFLOW = "site-ci.yml"
+SOURCE_JOB = "Astro candidate site source checks"
+SOURCE_BRANCHES = ("main", "codex/amail-site-candidate")
+
+
 def github(path, allow_missing=False):
     """Read a fixed API route; explicit 404 means no token-visible resource.
 
@@ -42,7 +48,7 @@ def check_run(run, workflow_id, sha):
     if (
         run.get("workflow_id") != workflow_id
         or run.get("head_sha") != sha
-        or run.get("head_branch") not in ("main", "codex/amail-v0.1.0")
+        or run.get("head_branch") not in SOURCE_BRANCHES
         or run.get("event") not in ("push", "workflow_dispatch")
         or run.get("status") != "completed"
         or run.get("conclusion") != "success"
@@ -69,10 +75,10 @@ def main():
         run_id = os.environ.get("SOURCE_CI_RUN_ID", "")
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or not re.fullmatch(r"[1-9][0-9]*", run_id):
             raise ValueError("full source SHA and numeric source CI run ID required")
-        workflow = github("actions/workflows/ci.yml")
+        workflow = github(f"actions/workflows/{SOURCE_WORKFLOW}")
         check_run(github(f"actions/runs/{run_id}"), workflow["id"], sha)
         jobs = github(f"actions/runs/{run_id}/jobs?per_page=100&filter=latest")
-        site_jobs = [job for job in jobs["jobs"] if job.get("name") == "Astro release site"]
+        site_jobs = [job for job in jobs["jobs"] if job.get("name") == SOURCE_JOB]
         if len(site_jobs) != 1 or site_jobs[0].get("conclusion") != "success":
             raise ValueError("exact-source Astro CI job must have passed, not skipped")
         # Any tag blocks a candidate downgrade, including an in-flight release.

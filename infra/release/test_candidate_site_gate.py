@@ -27,8 +27,10 @@ class CandidateGateTests(unittest.TestCase):
     def test_exact_source_run(self):
         """Only successful source evidence for the exact immutable SHA passes."""
         gate.check_run(run(), 7, SHA)
+        gate.check_run({**run(), "head_branch": "codex/amail-site-candidate"}, 7, SHA)
         for key, value in (
             ("workflow_id", 8), ("head_sha", "b" * 40), ("head_branch", "untrusted"),
+            ("head_branch", "codex/amail-v0.1.0"),
             ("event", "pull_request"), ("status", "in_progress"), ("conclusion", "failure"),
         ):
             modified = run()
@@ -38,7 +40,7 @@ class CandidateGateTests(unittest.TestCase):
 
     def test_gate_rejects_public_tag_published_release_or_skipped_site(self):
         """Public publication blocks a downgrade; untagged drafts are not releases."""
-        jobs = {"jobs": [{"name": "Astro release site", "conclusion": "success"}]}
+        jobs = {"jobs": [{"name": gate.SOURCE_JOB, "conclusion": "success"}]}
         for responses, passes in (
             # None can mean an internal draft is hidden from the read token;
             # passing this case proves no public publication was observed.
@@ -49,7 +51,9 @@ class CandidateGateTests(unittest.TestCase):
             ([{"id": 7}, run(), jobs, None, {"draft": False}], False),
             ([{"id": 7}, run(), jobs, None, {"draft": "false"}], False),
             ([{"id": 7}, run(), {"jobs": []}], False),
-            ([{"id": 7}, run(), {"jobs": [{"name": "Astro release site", "conclusion": "skipped"}]}], False),
+            ([{"id": 7}, run(), {"jobs": [{"name": gate.SOURCE_JOB, "conclusion": "skipped"}]}], False),
+            ([{"id": 7}, run(), {"jobs": [{"name": "Astro release site", "conclusion": "success"}]}], False),
+            ([{"id": 7}, run(), {"jobs": jobs["jobs"] * 2}], False),
         ):
             with patch.dict(gate.os.environ, ENV, clear=True), patch.object(gate, "github", side_effect=responses):
                 if passes:
@@ -57,6 +61,13 @@ class CandidateGateTests(unittest.TestCase):
                 else:
                     with self.assertRaises(SystemExit):
                         gate.main()
+
+    def test_site_only_workflow_identity(self):
+        """The standalone gate cannot silently consume Mail CI as evidence."""
+        responses = [{"id": 7}, run(), {"jobs": [{"name": gate.SOURCE_JOB, "conclusion": "success"}]}, None, None]
+        with patch.dict(gate.os.environ, ENV, clear=True), patch.object(gate, "github", side_effect=responses) as request:
+            gate.main()
+            self.assertEqual(request.call_args_list[0].args, ("actions/workflows/site-ci.yml",))
 
     def test_release_visibility_is_not_draft_inventory(self):
         """Both an invisible resource and an explicitly draft resource are allowed."""

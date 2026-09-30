@@ -18,7 +18,7 @@ def fixture(route):
     date = "候选记录日期" if route == "changelog" else ""
     return (
         f'<a href="/">Home</a><a href="/manual/">Manual</a><a href="/changelog/">Changelog</a>'
-        f'<p>{candidate}</p>{toc}{date}'
+        f'<p>{candidate}</p><p>{site.SERVICE_NOTICE}</p>{toc}{date}'
         '<a href="https://github.com/kleedaisuki/moesegfault-amail/releases">Releases</a>'
     )
 
@@ -43,6 +43,7 @@ class CandidateSiteTests(unittest.TestCase):
         for route, (_, candidate, published, _) in site.PAGES.items():
             cases = [
                 fixture(route).replace(candidate, "missing"),
+                fixture(route).replace(site.SERVICE_NOTICE, "missing"),
                 fixture(route) + published,
                 fixture(route).replace('href="/manual/"', 'data-href="/manual/"'),
                 fixture(route) + '<a href="https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0">Tag</a>',

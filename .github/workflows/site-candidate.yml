@@ -2,11 +2,6 @@
 name: Production candidate site
 
 on:
-  push:
-    branches: [main, codex/amail-v0.1.0]
-    paths: ['site/**', 'infra/release/**', '.github/workflows/site-candidate.yml']
-  pull_request:
-    paths: ['site/**', 'infra/release/**', '.github/workflows/site-candidate.yml']
   workflow_dispatch:
     inputs:
       target:
@@ -16,7 +11,7 @@ on:
         default: checks
         options: [checks, deploy-candidate]
       source_ci_run_id:
-        description: Successful CI and deploy run for this exact source SHA
+        description: Successful Candidate site CI run for this exact source SHA
         type: string
         required: false
       confirm:
@@ -30,49 +25,9 @@ permissions:
 jobs:
   source:
     name: Candidate source and publication-isolation checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: site
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 12.4.1
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Check candidate regressions without provider access
-        working-directory: .
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: python -m unittest discover -s infra/release -p 'test_candidate_site*.py' -v
-      - name: Install locked site dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Check Astro and existing route-local fixtures
-        run: |
-          pnpm check
-          node --test scripts/check-release-state.test.mjs
-      - name: Build truthful candidate and prepare production noindex
-        env:
-          AMAIL_RELEASE_STATE: candidate
-        run: |
-          pnpm build
-          pnpm check:release-state candidate
-          python ../infra/release/candidate_site.py prepare "$GITHUB_SHA"
-      - name: Verify a fresh published build does not inherit candidate headers
-        env:
-          AMAIL_RELEASE_STATE: published
-        run: |
-          pnpm build
-          pnpm check:release-state published
-          cmp public/_headers dist/_headers
+    # Same-commit reuse prevents drift between prior CI and same-run checks.
+    # Deliberately do not inherit any provider secrets.
+    uses: ./.github/workflows/site-ci.yml
 
   deploy:
     name: Deploy reviewed candidate only, not v0.1.0
