@@ -80,25 +80,39 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
     """Create only absent resources; readback never mutates or consumes messages."""
     suffix = "-staging" if target == "staging" else ""
     rows = inventory(account, token)
-    for name in (f"amail-trace-dlq{suffix}", f"amail-trace-events{suffix}"):
+    names = (f"amail-trace-dlq{suffix}", f"amail-trace-events{suffix}")
+    identities: dict[str, str] = {}
+    # Validate every existing resource before any mutation, even when its peer is absent.
+    for name in names:
         row = exact_queue(rows, name)
         if row is None:
             if phase != "queues":
                 raise ValueError("queue_missing")
-            request(account, token, "queues", {"queue_name": name, "settings": {
-                "message_retention_period": RETENTION, "delivery_delay": 0, "delivery_paused": False}})
-        elif not bounded_queue(row):
+            continue
+        if not bounded_queue(row):
             raise ValueError("queue_settings_drift")
-        elif phase == "queues":
-            key = "AMAIL_TRACE_DLQ_ID" if name.startswith("amail-trace-dlq") else "AMAIL_TRACE_QUEUE_ID"
-            expected = os.getenv(key, "")
-            if not re.fullmatch(r"[0-9a-f]{32}", expected) or row["queue_id"] != expected:
-                raise ValueError("existing_queue_ownership_unverified")
-    # Fresh readback proves create completion; a timed-out POST is not retried here.
+        key = "AMAIL_TRACE_DLQ_ID" if name.startswith("amail-trace-dlq") else "AMAIL_TRACE_QUEUE_ID"
+        expected = os.getenv(key, "")
+        if not re.fullmatch(r"[0-9a-f]{32}", expected) or row["queue_id"] != expected:
+            raise ValueError("existing_queue_ownership_unverified")
+        identities[name] = expected
+    for name in names:
+        if name in identities:
+            continue
+        response = request(account, token, "queues", {"queue_name": name, "settings": {
+            "message_retention_period": RETENTION, "delivery_delay": 0, "delivery_paused": False}})
+        result = response.get("result")
+        created = exact_queue([result], name) if isinstance(result, dict) else None
+        if created is None or not bounded_queue(created):
+            raise ValueError("created_queue_unverified")
+        identities[name] = created["queue_id"]
+    if len(set(identities.values())) != len(names):
+        raise ValueError("queue_identity_ambiguous")
+    # Fresh readback must match the exact create response or reviewed existing identity.
     rows = inventory(account, token)
-    for name in (f"amail-trace-dlq{suffix}", f"amail-trace-events{suffix}"):
+    for name in names:
         row = exact_queue(rows, name)
-        if row is None or not bounded_queue(row):
+        if row is None or not bounded_queue(row) or row["queue_id"] != identities[name]:
             raise ValueError("queue_settings_drift")
         detail = request(account, token, f"queues/{row['queue_id']}").get("result")
         if (not isinstance(detail, dict) or not bounded_queue(detail)
@@ -134,6 +148,11 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
                 or producers[0].get("type") != "worker"
                 or producers[0].get("script") != f"amail-mail{suffix}"):
             raise ValueError("producer_drift")
+    output = os.getenv("GITHUB_OUTPUT")
+    if phase == "queues" and output:
+        # Non-secret resource IDs connect the authorized create step to this exact rollout.
+        with open(output, "a", encoding="utf-8") as destination:
+            destination.write(f"queue_id={identities[names[1]]}\ndlq_id={identities[names[0]]}\n")
 
 
 def main() -> int:

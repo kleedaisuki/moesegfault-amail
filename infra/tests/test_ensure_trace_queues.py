@@ -12,7 +12,7 @@ SPEC.loader.exec_module(MODULE)
 
 def queue(name):
     """Build explicit provider-shape fixtures, not permissive Wrangler output."""
-    return {"queue_name": name, "queue_id": "a" * 32, "settings": {
+    return {"queue_name": name, "queue_id": ("b" if "dlq" in name else "a") * 32, "settings": {
         "message_retention_period": 86400, "delivery_delay": 0, "delivery_paused": False}}
 
 
@@ -60,6 +60,24 @@ class TraceQueueTests(unittest.TestCase):
                 MODULE.reconcile("a", "t", "staging", "queues")
             call.assert_not_called()
 
+    def test_peer_conflict_prevents_any_creation(self):
+        """An absent DLQ cannot be created before an existing main queue is authorized."""
+        with patch.object(MODULE, "inventory", return_value=[queue("amail-trace-events-staging")]), patch.dict(
+                MODULE.os.environ, {}, clear=True), patch.object(MODULE, "request") as call:
+            with self.assertRaisesRegex(ValueError, "existing_queue_ownership_unverified"):
+                MODULE.reconcile("a", "t", "staging", "queues")
+            call.assert_not_called()
+
+    def test_create_identity_must_survive_readback(self):
+        """A successful POST identity cannot be replaced by a same-name resource."""
+        dlq, main = queue("amail-trace-dlq-staging"), queue("amail-trace-events-staging")
+        changed = {**main, "queue_id": "c" * 32}
+        with patch.object(MODULE, "inventory", side_effect=[[], [dlq, changed]]), patch.object(
+                MODULE, "request", side_effect=[{"result": dlq}, {"result": main}, {"result": {
+                    **dlq, "consumers": [], "producers": [], "consumers_total_count": 0, "producers_total_count": 0}}]):
+            with self.assertRaisesRegex(ValueError, "queue_settings_drift"):
+                MODULE.reconcile("a", "t", "staging", "queues")
+
     def test_readback_requires_exact_owner(self):
         """Extra consumers/producers, bad DLQ and wrong retry settings are rejected."""
         dlq, main = queue("amail-trace-dlq-staging"), queue("amail-trace-events-staging")
@@ -72,7 +90,7 @@ class TraceQueueTests(unittest.TestCase):
                               ({**safe, "consumers": []}, True),
                               ({**safe, "queue_id": "b" * 32}, True),
                               ({**safe, "producers_total_count": 2}, True)]:
-            with self.subTest(fails=fails), patch.object(MODULE, "inventory", return_value=[dlq, main]), patch.object(
+            with self.subTest(fails=fails), patch.dict(MODULE.os.environ, {"AMAIL_TRACE_QUEUE_ID": "a" * 32, "AMAIL_TRACE_DLQ_ID": "b" * 32}), patch.object(MODULE, "inventory", return_value=[dlq, main]), patch.object(
                     MODULE, "request", side_effect=[{"result": {**dlq, "consumers": [], "producers": [], "consumers_total_count": 0, "producers_total_count": 0}}, {"result": detail}]):
                 if fails:
                     with self.assertRaises(ValueError):
