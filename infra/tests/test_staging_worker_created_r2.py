@@ -538,6 +538,44 @@ class WorkerCreatedR2Tests(unittest.TestCase):
         self.assertEqual(err.getvalue().strip(),
                          "staging_worker_created_r2_failed:unexpected_failure")
 
+    def test_manual_workflow_is_guarded_and_tests_before_secrets(self) -> None:
+        """Probe and recovery stay dormant, serialized and source-name aligned."""
+
+        workflow = (MODULE.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        probe = workflow.split("  staging-worker-r2-probe:\n", 1)[1].split(
+            "\n  staging-worker-r2-recover:", 1)[0]
+        recovery = workflow.split("  staging-worker-r2-recover:\n", 1)[1].split(
+            "\n  staging-second-principal-preflight:", 1)[0]
+        self.assertIn("staging-worker-r2-get-delete", workflow)
+        self.assertIn("staging-worker-r2-recover", workflow)
+        for job, target, mode in ((probe, "staging-worker-r2-get-delete", "probe"),
+                                  (recovery, "staging-worker-r2-recover", "recover")):
+            with self.subTest(mode=mode):
+                self.assertIn("github.event_name == 'workflow_dispatch'", job)
+                self.assertIn("inputs.target == '" + target + "'", job)
+                self.assertIn("github.ref == 'refs/heads/codex/amail-v0.1.0'", job)
+                self.assertIn("runs-on: ubuntu-latest", job)
+                self.assertIn("environment: staging", job)
+                self.assertIn("group: staging-native-mail-acceptance", job)
+                self.assertIn("cancel-in-progress: false", job)
+                self.assertIn("CURRENT_ATTEMPT: ${{ github.run_attempt }}", job)
+                self.assertIn("AMAIL_WORKER_R2_MODE: " + mode, job)
+                self.assertIn("python infra/tests/staging_worker_created_r2.py", job)
+                self.assertIn("test_staging_worker_created_r2.py", job)
+                self.assertLess(job.index("test_staging_worker_created_r2.py"),
+                                job.index("secrets.CLOUDFLARE_API_TOKEN"))
+                self.assertEqual(job.count("secrets.CLOUDFLARE_API_TOKEN"), 1)
+                self.assertNotIn("STAGING_E2E_B_USERNAME", job)
+                self.assertNotIn("STAGING_E2E_B_PASSWORD", job)
+                self.assertNotIn("--apply", job)
+        self.assertIn("name: " + MODULE.JOB_NAME, probe)
+        self.assertIn("- name: " + MODULE.PROBE_STEP_NAME, probe)
+        self.assertIn("ATTEST_ONE_SYNTHETIC_APEX_SEND", probe)
+        self.assertIn("permissions:\n      contents: read\n      actions: read", recovery)
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", recovery)
+        self.assertIn("AMAIL_WORKER_R2_PRIOR_SHA: ${{ inputs.worker_r2_prior_sha }}", recovery)
+        self.assertNotIn("AMAIL_SENDING_GRANT_ATTEST", recovery)
+
 
 if __name__ == "__main__":
     unittest.main()
