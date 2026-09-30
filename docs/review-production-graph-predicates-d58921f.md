@@ -1,7 +1,7 @@
 # Independent review: production graph predicates at d58921f
 
 Date: 2026-10-01. Reviewed commit: `d58921fd557cd28dab69d7d8905df2984d75381a`.
-Decision: **CHANGES REQUIRED before treating these predicates as production authorization.**
+Initial decision at d58921f: **CHANGES REQUIRED**. Narrow corrective review at `0191a32e706c7f6058bd15e3199a65de40858b06` + `0ad1d389491f4c4b58a69c43a4f2ee0b999768c0`: **GO for hosted source checks of these predicates; all three findings below resolved in examined corrective source.**
 This is a source review, not a live deployment, privacy canary, or release acceptance.
 
 ## Scope and method
@@ -10,7 +10,7 @@ Inspected the four committed files, their imported Queue/capture/binding/routing
 
 ## Findings
 
-### P1 — Bootstrap authorization does not prove held send policy
+### Resolved P1 — Bootstrap authorization does not prove held send policy
 
 Location: `infra/deploy/prepare_production_graph.py:24-39`.
 
@@ -22,7 +22,7 @@ Correction: distinguish pristine Mail storage (including successfully establishe
 
 Confidence: high for the missing read; downstream impact depends on the separately reviewed caller.
 
-### P2 — Exact schema gate accepts materially different tables and indexes
+### Resolved P2 — Exact schema gate accepts materially different tables and indexes
 
 Location: `infra/deploy/check_production_role_graph.py:55-68`; fixture `infra/tests/test_production_role_rollout.py:21-27`.
 
@@ -36,7 +36,7 @@ Correction: verify the complete reviewed user schema against a migration-derived
 
 Confidence: high; acceptance follows directly from the predicate and existing positive fixture.
 
-### P2 — Role HTTP-route absence is checked in only one zone
+### Resolved P2 — Role HTTP-route absence is checked in only one zone
 
 Location: `infra/deploy/check_production_role_graph.py:139-151` (`role_capabilities`).
 
@@ -67,3 +67,13 @@ Retrieved official documentation during review:
 - [List Worker Domains (service filter)](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/list/).
 
 These references support the API inventory/filter judgments, not a claim that current production state was inspected.
+
+## Narrow corrective re-review
+
+Reviewed exact diffs at `0191a32` and `0ad1d38` only, including the added fixtures. No local/hosted tests, live reads, deployment or production edits were performed by this reviewer. Concurrent orchestration and the separately reviewed production graph-writer lock are outside this verdict.
+
+1. **Bootstrap hold resolved:** the bootstrap path now invokes the shared `held_send()` before provider script inventory and phase acceptance. It demands a persisted held policy and an unset role gate; missing policy/schema, unreadable state, or a set gate fail closed rather than become pristine bootstrap. The documentation makes the required migrated Mail storage explicit. Hosted fixtures cover early denial and the shared policy/gate predicate.
+2. **Schema drift resolved:** role storage now checks full user TABLE/INDEX DDL against the reviewed migration, retaining literal tokens and index ordering, with a narrow exact provider-table exclusion. Unexpected views/triggers/user objects cannot fit the exact object set, and pristine bootstrap inspects the whole schema rather than tables alone. Positive fixtures now use actual migration DDL and correct TEXT field types; negative fixtures cover type, nullability, unique/CHECK constraints, index order, changed quoted literals and extra views/triggers. The conservative DDL equivalence may reject benign alternate spelling; that is a fail-closed limitation, not authorization of incompatible storage.
+3. **Cross-zone route gap resolved:** role surface checks now reuse the sink's complete bounded account-zone inventory and inspect each zone's bounded, unique route array. A role attachment in a second zone is rejected. Custom domains use the existing reviewed bounded account-wide helper. The new two-zone fixture traces the second request and denial. Unreadable/truncated inventory behavior is inherited from the existing sink inventory contract rather than relaxed.
+
+No additional substantive defect was found in this narrow correction review. This GO permits hosted validation of corrected source only: it does not accept an unreviewed caller, unlock production writers, authorize live rollout, prove current privacy/delivery, or release public sending.
