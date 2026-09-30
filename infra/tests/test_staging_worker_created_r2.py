@@ -11,8 +11,10 @@ from io import StringIO
 import os
 from pathlib import Path
 import sys
+import types
 import unittest
 from unittest.mock import patch
+import urllib.request
 
 import staging_r2_object_capability as R2
 
@@ -185,6 +187,36 @@ class WorkerCreatedR2Tests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "route_cleanup_unverified")
         delete.assert_not_called()
 
+    def test_expired_open_route_budget_closes_before_send(self) -> None:
+        """Slow creation/readback consumes the mutation budget, not cleanup."""
+
+        env = {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+               "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+               "CLOUDFLARE_API_TOKEN": "private-token",
+               "AMAIL_SENDING_GRANT_ATTEST": "ATTEST_ONE_SYNTHETIC_APEX_SEND"}
+        contacts = {MODULE.FIRST: ("principal-a", "subject-a", "verified", "a_username")}
+        actions: list[str] = []
+
+        def fake_route(action: str) -> str:
+            actions.append(action)
+            return {"apply": "created", "audit": "enabled" if "remove" not in actions else "absent",
+                    "remove": "removed"}[action]
+
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(MODULE, "audit"), \
+                patch.object(MODULE, "identity_contacts", return_value=contacts), \
+                patch.object(MODULE, "sender_ready"), \
+                patch.object(MODULE, "one_key", return_value=None), \
+                patch.object(MODULE, "route", side_effect=fake_route), \
+                patch.object(MODULE, "send_once") as send, \
+                patch.object(MODULE.time, "monotonic", side_effect=[0, 360]), \
+                patch.object(MODULE.time, "sleep"):
+            with self.assertRaises(MODULE.ProbeFailure) as caught:
+                MODULE.probe()
+        self.assertEqual(str(caught.exception), "route_window_expired")
+        self.assertEqual(actions[-2:], ["remove", "audit"])
+        send.assert_not_called()
+
     def test_recovery_closes_route_before_metadata_and_never_checks_b(self) -> None:
         """Recovery must work even if B credentials or D1 checks are unavailable."""
 
@@ -287,6 +319,44 @@ class WorkerCreatedR2Tests(unittest.TestCase):
         self.assertEqual(delete.call_count, 1)
         self.assertEqual(actions[-2:], ["remove", "audit"])
 
+    def test_whole_probe_stops_after_conditional_delete_is_denied(self) -> None:
+        """Ambiguous first DELETE permits one readback, not a third after 403."""
+
+        key = "verification/12345678-1234-4123-8123-123456789abc.eml"
+        env = {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+               "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+               "CLOUDFLARE_API_TOKEN": "private-token",
+               "AMAIL_SENDING_GRANT_ATTEST": "ATTEST_ONE_SYNTHETIC_APEX_SEND"}
+        contacts = {MODULE.FIRST: ("principal-a", "subject-a", "verified", "a_username")}
+
+        def fake_route(action: str) -> str:
+            return {"apply": "created", "audit": "enabled" if action == "audit"
+                    and fake_route.closed is False else "absent", "remove": "removed"}[action]
+
+        fake_route.closed = False
+
+        def route_action(action: str) -> str:
+            if action == "remove":
+                fake_route.closed = True
+            return fake_route(action)
+
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(MODULE, "audit"), \
+                patch.object(MODULE, "identity_contacts", return_value=contacts), \
+                patch.object(MODULE, "sender_ready"), \
+                patch.object(MODULE, "one_key", side_effect=[None, key, key]), \
+                patch.object(MODULE, "route", side_effect=route_action), \
+                patch.object(MODULE, "send_once", return_value=True), \
+                patch.object(MODULE, "get_owned", return_value="present"), \
+                patch.object(R2, "delete", side_effect=[
+                    R2.ProbeFailure("r2_outcome_ambiguous"),
+                    R2.ProbeFailure("r2_delete_denied")]) as delete, \
+                patch.object(MODULE.time, "sleep"):
+            with self.assertRaises(MODULE.ProbeFailure) as caught:
+                MODULE.probe()
+        self.assertEqual(str(caught.exception), "object_delete_denied_cleanup_unverified")
+        self.assertEqual(delete.call_count, 2)
+
     def test_failed_send_is_one_request_and_multiple_objects_fail_closed(self) -> None:
         """A lost sending response cannot trigger a second synthetic message."""
 
@@ -298,10 +368,44 @@ class WorkerCreatedR2Tests(unittest.TestCase):
         send.assert_called_once()
         with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a" * 32,
                                       "CLOUDFLARE_API_TOKEN": "private-token"}, clear=True), \
-                patch.object(MODULE, "object_inventory", return_value={"one", "two"}):
+                patch.object(MODULE, "request", return_value=(
+                    b'{"success":true,"result":[{"key":"one"},{"key":"two"}]}')) as listing:
             with self.assertRaises(MODULE.ProbeFailure) as caught:
                 MODULE.one_key()
         self.assertEqual(str(caught.exception), "private_inventory_ambiguous")
+        listing.assert_called_once()
+
+    def test_one_key_proves_singleton_with_explicit_empty_next_page(self) -> None:
+        """The short-window inventory makes at most two bounded REST calls."""
+
+        key = "verification/12345678-1234-4123-8123-123456789abc.eml"
+        pages = [(('{"success":true,"result":[{"key":"' + key + '"}]}').encode()),
+                 b'{"success":true,"result":[]}']
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+                                      "CLOUDFLARE_API_TOKEN": "private-token"}, clear=True), \
+                patch.object(MODULE, "request", side_effect=pages) as listing:
+            self.assertEqual(MODULE.one_key(), key)
+        self.assertEqual(listing.call_count, 2)
+        self.assertIn("start_after=verification%2F", listing.call_args.args[1])
+
+    def test_route_scan_budget_expires_inside_helper_page(self) -> None:
+        """A nested page cannot outlive the route action's 45-second budget."""
+
+        def run_helper(module):
+            module.reconcile = lambda *_args: urllib.request.urlopen(
+                urllib.request.Request("https://api.cloudflare.com/client/v4/test"), timeout=20)
+
+        spec = types.SimpleNamespace(loader=types.SimpleNamespace(exec_module=run_helper))
+        env = {"CLOUDFLARE_ZONE_ID": "a" * 32,
+               "CF_EMAIL_ROUTING_TOKEN": "private-route-token"}
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(MODULE.importlib.util, "spec_from_file_location", return_value=spec), \
+                patch.object(MODULE.importlib.util, "module_from_spec", return_value=types.SimpleNamespace()), \
+                patch.object(MODULE.time, "monotonic", side_effect=[0, 46]), \
+                patch.object(MODULE.OPENER, "open", side_effect=AssertionError("must not call provider")):
+            with self.assertRaises(MODULE.ProbeFailure) as caught:
+                MODULE.route("audit")
+        self.assertEqual(str(caught.exception), "exact_route_control_failed")
 
     def test_get_denial_and_foreign_mime_cannot_reach_delete(self) -> None:
         """The exact candidate must be readable and strictly owned first."""

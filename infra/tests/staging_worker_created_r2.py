@@ -8,6 +8,7 @@ Neither mode registers Identity B or calls R2 REST PUT. Both emit fixed labels.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
@@ -17,15 +18,17 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from staging_r2_object_capability import (OPENER, ProbeFailure as R2ProbeFailure,
                                           audit, call, object_path)
-from staging_second_principal import (ADDRESS, FIRST, identity_contacts,
-                                      object_inventory)
+from staging_second_principal import (ADDRESS, BUCKET, FIRST, KEY, ProvisionFailure,
+                                      identity_contacts, json_result, object_inventory, request)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +45,13 @@ MAX_GITHUB = 524_288
 
 class ProbeFailure(Exception):
     """Carry only a fixed source-owned stage label to Actions output."""
+
+
+@dataclass
+class CleanupState:
+    """Make a definite DELETE denial an irreversible read-only cleanup mode."""
+
+    may_delete: bool = True
 
 
 def require(condition: bool, label: str) -> None:
@@ -67,21 +77,43 @@ def marker(value: str, attempt: str) -> str:
 
 
 def route(action: str) -> str:
-    """Use the reviewed exact-route helper without forwarding bearer on redirects."""
+    """Bound the reviewed exact-route scan without forwarding bearer on 30x."""
 
     require(action in ("apply", "audit", "remove"), "route_action_invalid")
     spec = importlib.util.spec_from_file_location("staging_worker_r2_route", ROUTE_HELPER)
     require(spec is not None and spec.loader is not None, "route_helper_unavailable")
     module = importlib.util.module_from_spec(spec)
     prior = urllib.request.urlopen
+    deadline = time.monotonic() + 45
+    previous_alarm = None
+
+    def expire(_signum, _frame):
+        """Interrupt even a trickling response after the total action budget."""
+
+        raise TimeoutError()
+
+    def bounded_open(req, timeout=20):
+        """Cap all pages in one route action to a single 45-second budget."""
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError()
+        return OPENER.open(req, timeout=min(timeout, remaining))
+
     try:
-        urllib.request.urlopen = OPENER.open
+        urllib.request.urlopen = bounded_open
+        if hasattr(signal, "setitimer"):
+            previous_alarm = signal.signal(signal.SIGALRM, expire)
+            signal.setitimer(signal.ITIMER_REAL, 45)
         spec.loader.exec_module(module)
         state = module.reconcile(os.environ["CLOUDFLARE_ZONE_ID"],
                                  os.environ["CF_EMAIL_ROUTING_TOKEN"], action, FIRST)
     except Exception:
         raise ProbeFailure("exact_route_control_failed") from None
     finally:
+        if previous_alarm is not None:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_alarm)
         urllib.request.urlopen = prior
     require(state in ("created", "enabled", "removed", "absent"),
             "exact_route_state_invalid")
@@ -271,13 +303,47 @@ def sender_ready() -> None:
 
 
 def one_key() -> str | None:
-    """Require at most one object in the otherwise-empty private inbox."""
+    """Prove a complete 0/1-key inventory with at most two requests."""
 
     account = os.environ["CLOUDFLARE_ACCOUNT_ID"]
     token = os.environ["CLOUDFLARE_API_TOKEN"]
-    keys = object_inventory(account, token)
-    require(len(keys) <= 1, "private_inventory_ambiguous")
-    return next(iter(keys)) if keys else None
+    base = f"/accounts/{account}/r2/buckets/{BUCKET}/objects"
+
+    def info_valid(value: dict) -> bool:
+        """Accept absent REST pagination metadata, not malformed present data."""
+
+        if "result_info" not in value:
+            return True
+        info = value["result_info"]
+        return (isinstance(info, dict) and
+                ("is_truncated" not in info or type(info["is_truncated"]) is bool))
+
+    try:
+        first = json_result(request("GET", base + "?prefix=verification/&per_page=2", token))
+        require(info_valid(first), "private_inventory_invalid")
+        batch = first.get("result")
+        require(isinstance(batch, list) and len(batch) <= 2,
+                "private_inventory_invalid")
+        require(len(batch) <= 1, "private_inventory_ambiguous")
+        if not batch:
+            info = first.get("result_info")
+            require(not (isinstance(info, dict) and info.get("is_truncated") is True),
+                    "private_inventory_invalid")
+            return None
+        require(isinstance(batch[0], dict) and isinstance(batch[0].get("key"), str)
+                and KEY.fullmatch(batch[0]["key"]) is not None,
+                "private_inventory_invalid")
+        key = batch[0]["key"]
+        query = "?prefix=verification/&per_page=2&start_after=" + urllib.parse.quote(key, safe="")
+        second = json_result(request("GET", base + query, token))
+        require(info_valid(second), "private_inventory_invalid")
+        info = second.get("result_info")
+        require(second.get("result") == [] and
+                not (isinstance(info, dict) and info.get("is_truncated") is True),
+                "private_inventory_ambiguous")
+        return key
+    except ProvisionFailure:
+        raise ProbeFailure("private_inventory_unavailable") from None
 
 
 def get_owned(key: str, value: str, attempt: str,
@@ -300,18 +366,22 @@ def get_owned(key: str, value: str, attempt: str,
 
 
 def delete_owned(key: str, value: str, attempt: str,
-                 window: tuple[datetime, datetime]) -> None:
+                 window: tuple[datetime, datetime],
+                 cleanup: CleanupState | None = None) -> None:
     """Delete only proven synthetic bytes, read back before uncertain retry."""
 
     from staging_r2_object_capability import delete
 
     account = os.environ["CLOUDFLARE_ACCOUNT_ID"]
     token = os.environ["CLOUDFLARE_API_TOKEN"]
+    cleanup = cleanup or CleanupState()
+    require(cleanup.may_delete, "object_delete_denied")
     require(get_owned(key, value, attempt, window) == "present", "object_not_present")
     try:
         delete(account, key, token)
     except R2ProbeFailure as error:
         if str(error) == "r2_delete_denied":
+            cleanup.may_delete = False
             raise ProbeFailure("object_delete_denied") from None
         # A failed/ambiguous DELETE might already have taken effect. Never
         # issue another write until exact-key GET has proved the same bytes.
@@ -319,30 +389,35 @@ def delete_owned(key: str, value: str, attempt: str,
         if state == "present":
             try:
                 delete(account, key, token)
-            except R2ProbeFailure:
-                raise ProbeFailure("object_delete_unverified") from None
+            except R2ProbeFailure as error:
+                if str(error) == "r2_delete_denied":
+                    cleanup.may_delete = False
+                label = ("object_delete_denied" if not cleanup.may_delete
+                         else "object_delete_unverified")
+                raise ProbeFailure(label) from None
     require(get_owned(key, value, attempt, window) == "absent"
             and key not in object_inventory(account, token), "object_cleanup_unverified")
 
 
 def reconcile(value: str, attempt: str, window: tuple[datetime, datetime],
-              settle: bool, allow_delete: bool = True) -> bool:
+              settle: bool, cleanup: CleanupState | None = None) -> bool:
     """After route closure, remove owned MIME unless DELETE was denied."""
 
+    cleanup = cleanup or CleanupState()
     key = one_key()
     if key is None and settle:
         time.sleep(60)
         key = one_key()
     if key is None:
         return False
-    if not allow_delete:
+    if not cleanup.may_delete:
         require(get_owned(key, value, attempt, window) == "absent",
                 "object_delete_denied_cleanup_unverified")
         if settle:
             time.sleep(60)
             require(one_key() is None, "late_delivery_unverified")
         return False
-    delete_owned(key, value, attempt, window)
+    delete_owned(key, value, attempt, window, cleanup)
     if settle:
         time.sleep(60)
         require(one_key() is None, "late_delivery_unverified")
@@ -370,30 +445,33 @@ def probe() -> None:
             "ATTEST_ONE_SYNTHETIC_APEX_SEND", "sending_grant_attestation_missing")
     require(one_key() is None, "private_inbox_not_empty")
     started = datetime.now(timezone.utc)
+    opened = time.monotonic()  # Include create/readback, not only settle/send.
+    open_deadline = opened + 420
     route_possible = True  # Installed before an ambiguous route-create response.
     route_closed = False
     send_possible = False
     failure: ProbeFailure | None = None
+    cleanup = CleanupState()
     proved = False
     try:
         require(route("apply") == "created" and route("audit") == "enabled",
                 "route_create_unverified")
-        opened = time.monotonic()
         time.sleep(60)
         require(route("audit") == "enabled", "route_settle_unverified")
-        require(time.monotonic() - opened <= 240, "route_window_expired")
+        require(time.monotonic() + 70 < open_deadline, "route_window_expired")
         send_possible = True
         accepted = send_once(account, token, value, attempt)
-        deadline = min(opened + 240, time.monotonic() + 150)
-        candidate = one_key()
-        while candidate is None and time.monotonic() < deadline:
-            time.sleep(5)
+        deadline = min(open_deadline - 90, time.monotonic() + 150)
+        candidate = None
+        while candidate is None and time.monotonic() + 50 < deadline:
             candidate = one_key()
+            if candidate is None:
+                time.sleep(5)
         close_route()
         route_closed = True
         require(candidate is not None, "synthetic_delivery_missing")
         window = (started, datetime.now(timezone.utc) + timedelta(minutes=2))
-        delete_owned(candidate, value, attempt, window)
+        delete_owned(candidate, value, attempt, window, cleanup)
         proved = True
         require(accepted, "synthetic_send_unverified")
     except ProbeFailure as error:
@@ -410,17 +488,16 @@ def probe() -> None:
         if route_closed:
             try:
                 if send_possible:
-                    allow_delete = failure is None or str(failure) != "object_delete_denied"
                     late = reconcile(value, attempt,
                                      (started, datetime.now(timezone.utc) + timedelta(minutes=10)),
-                                     settle=True, allow_delete=allow_delete)
+                                     settle=True, cleanup=cleanup)
                     if proved and late:
                         failure = ProbeFailure("late_delivery_unverified")
                 else:
                     require(one_key() is None, "private_object_cleanup_unverified")
             except Exception:
                 label = ("object_delete_denied_cleanup_unverified"
-                         if failure and str(failure) == "object_delete_denied"
+                         if not cleanup.may_delete
                          else "private_object_cleanup_unverified")
                 failure = ProbeFailure(label)
     if failure:
