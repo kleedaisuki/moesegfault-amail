@@ -116,6 +116,24 @@ class Arm:
     armed_at: int
 
 
+def query_result(value: dict) -> Result:
+    """Parse the native single-query D1 REST shape, never infer a missing ACK.
+
+    Provider metadata can contain additional fields; changes must be an actual
+    nonnegative integer. This parser is shared by the fixed escrow adapter and
+    the separately guarded synthetic provider proof, not a general SQL client.
+    """
+    batches = value.get("result") if isinstance(value, dict) else None
+    require(isinstance(value, dict) and value.get("success") is True
+            and isinstance(batches, list) and len(batches) == 1 and isinstance(batches[0], dict)
+            and batches[0].get("success") is True and isinstance(batches[0].get("results"), list)
+            and all(isinstance(row, dict) for row in batches[0]["results"])
+            and isinstance(batches[0].get("meta"), dict)
+            and type(batches[0]["meta"].get("changes")) is int and batches[0]["meta"]["changes"] >= 0,
+            "escrow_response_unverified")
+    return Result(batches[0]["results"], batches[0]["meta"]["changes"])
+
+
 class Escrow:
     """Fixed staging operations; private receipt/purge requires a reviewed coordinator.
 
@@ -143,13 +161,7 @@ class Escrow:
                                         self._token, body, limit=MAX_RESPONSE))
         except Exception:
             raise manifest.ContractFailure("escrow_query_unverified") from None
-        batches = value.get("result")
-        require(isinstance(batches, list) and len(batches) == 1 and isinstance(batches[0], dict)
-                and batches[0].get("success") is True and isinstance(batches[0].get("results"), list)
-                and isinstance(batches[0].get("meta"), dict)
-                and type(batches[0]["meta"].get("changes")) is int and batches[0]["meta"]["changes"] >= 0,
-                "escrow_response_unverified")
-        return Result(batches[0]["results"], batches[0]["meta"]["changes"])
+        return query_result(value)
 
     def _run(self, kind: str, params: tuple = ()) -> Result:
         """Execute one source-owned statement once; unknown outcomes are never retried."""
