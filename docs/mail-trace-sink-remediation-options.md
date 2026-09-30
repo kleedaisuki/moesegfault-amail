@@ -32,7 +32,7 @@ therefore this label **does not identify a particular mismatch**. In particular,
 neither “Logs are still on” nor “Logs are safely off but the checker is too
 strict” follows from it. Do not weaken the gate based on speculation.
 
-**Current operational state:** effective Logs-off is **not proven**, and there
+**Operational state after that attempt:** effective Logs-off is **not proven**, and there
 is **no safe serving pin for this uploaded version**. An older pin cannot be
 carried forward across this upload. Keep the production privacy/public-send
 gate closed and pause fresh traffic-based privacy, B registration and mutating
@@ -51,6 +51,64 @@ Worker build/deploy, so this attempt did not upload the inbox replacement;
 subsequent lifecycle/deployed-binding checks are not attested by this failed
 check. Keep the current private-inbox/B gate unverified; see
 [the operational record](staging-second-principal.md#latest-deployment-attempt-private-inbox-read-not-completed).
+
+### Fixed-bin settings diagnostic: stable deployment, absent/non-object configuration
+
+A later [core CI run `36728726698`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36728726698)
+uploaded staging Mail version `c3f6401a` (abbreviated version ID), but the
+post-deploy observability check still failed. The targeted read-only diagnostic
+[run `36730461386`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36730461386)
+at branch source `b536963` then returned `stable100` for that expected staging
+version and the following fixed categories:
+
+| Endpoint | Observability container | Observability child shapes/members | `logpush` | `tails` |
+| --- | --- | --- | --- | --- |
+| `/settings` | `observability_shape=missing` | All reported observability child shapes/members `missing` | `false` | `false` |
+| `/script-settings` | `observability_shape=other` | All reported observability child shapes/members `missing` | `false` | `other` |
+
+The reported child categories cover `logs_shape`, `traces_shape`, `enabled`,
+`sampling`, `redact`, `logs`, `invocation`, `persist`, `logs_sampling`,
+`logs_destinations`, `traces`, `traces_sampling`, and `traces_destinations`.
+No raw container value, tail identity, binding, URL, account or provider error
+was exported.
+
+At `b536963`, `stable100` means both bounded settings GETs succeeded and were
+bracketed by an identical single expected deployment/version at 100% traffic.
+It is a **stable-serving control-plane observation for that interval**, not a
+privacy-safe serving pin. It does not turn missing capture configuration into
+disabled capture, establish data-plane non-retention, or carry across a later
+deployment/settings change.
+
+The exact classifier semantics matter:
+
+- `/settings` `missing` means the `observability` key was absent in that returned
+  settings object. The classifier cannot inspect its children and reports them
+  as `missing`; those labels are not independent provider defaults.
+- `/script-settings` `other` means `observability` was present but **not a
+  dictionary**. The raw representation is deliberately undisclosed. Child
+  `missing` here means no inspectable dictionary parent, not proof that each
+  individual backend setting was omitted or false.
+- `logpush=false` is the strict false Boolean category at both endpoints.
+  `/settings` `tails=false` is an empty-list category. `/script-settings`
+  `tails=other` is a non-list representation, not evidence of a populated Tail
+  consumer or proof that exports are safely absent everywhere.
+
+These shapes are sufficient to explain why the strict checker cannot pass:
+`safe_observability()` requires a dictionary with explicit reviewed flags,
+whereas neither returned observability container satisfies that prerequisite.
+This locates a concrete representation/presence rejection rather than an
+unexplained aggregate result; it **does not establish that it was the sole
+failure branch in either earlier deployment job**. Do not reinterpret `missing`
+or `other` as false, bypass one endpoint, or loosen the checker just to pass.
+
+**Still unresolved:** effective Logs/Traces on versus off, Cloudflare's effective
+default/normalization contract, and authoritative disabled-capture readback for
+this version. Research into that contract is underway. The next action is to
+resolve the authoritative effective-settings mechanism and independently review
+any verifier change against it, not rerun the unchanged deployment, widen a
+telemetry query or create new canary traffic. Production privacy/public sending
+and the Queue-sink rollout containment prerequisite remain closed. This result
+does not resolve the separate private-inbox/R2 transport gate.
 
 ## Second historical result: request-context retention located
 

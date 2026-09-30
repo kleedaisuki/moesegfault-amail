@@ -67,6 +67,29 @@ reviewed targeted fixed-bin readback diagnostic, not blind redeployment or a
 fresh privacy canary, is the next discriminator. No production/public-send or
 new mutation gate is opened by successful source tests alone.
 
+### Readback representation located; effective capture remains unknown
+
+[Read-only diagnostic `36730461386`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36730461386)
+at branch source `b536963` observed `stable100` around expected staging version
+`c3f6401a` (abbreviated ID). [Core CI `36728726698`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36728726698)
+had uploaded that version but failed the post-deploy observability checker.
+The diagnostic's `/settings` observation was `observability_shape=missing`,
+all observability child shapes/members `missing`, `logpush=false`, `tails=false`.
+Its `/script-settings` observation was `observability_shape=other`, all such
+children `missing`, `logpush=false`, `tails=other`.
+
+This explains an explicit prerequisite rejection in the strict checker:
+neither observability representation is the required dictionary. It does **not**
+prove capture is on, off, or governed by a safe Cloudflare default. Missing
+children under a non-dictionary parent are classifier categories, not individual
+effective false flags; `tails=other` is not evidence of enabled consumers.
+`stable100` establishes a bracketed serving-version observation, **not a safe
+containment pin or retained-data privacy pass**. The [full fixed-bin record and
+limitations](mail-trace-sink-remediation-options.md#fixed-bin-settings-diagnostic-stable-deployment-absentnon-object-configuration)
+are authoritative for this result. Resolve the authoritative effective readback
+contract before changing the verifier or attempting Queue rollout; do not
+repeat the same deployment or infer permission to send new canary traffic.
+
 ## Original decision in one sentence (direct-source sink superseded)
 
 Retain reviewed, allowlisted **application trace events** in Cloudflare Workers Logs, linked by W3C trace/span IDs across CLI and the mail API; disable Cloudflare's automatic invocation logs and native traces for the mail API in both realms until Cloudflare can exclude sensitive automatic fields *before persistence*. This is a real causal distributed trace graph over structured events, but **not** the Cloudflare native Traces waterfall or automatic D1/R2/fetch spans.
