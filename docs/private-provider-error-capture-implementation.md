@@ -89,6 +89,15 @@ The raw interpreter cannot print, execute provider commands or contact network
 APIs; the orchestrator's network calls are only authenticated GitHub lifecycle
 operations, never Cloudflare or an LLM provider.
 
+Before any inspection API request, the helper records public run/SHA recovery
+intent, then stores the authenticated numeric artifact ID **before download**.
+Interruption fixtures cover token/provenance/download/ZIP/envelope/decrypt/delete
+and local-cleanup boundaries, preserving key and recovery receipt. A session
+without a receipt may have been dispatched but never inspected: automatic
+cleanup refuses to destroy that key because remote state is uncertain. Supply
+the actual capture run/SHA through inspection to establish recovery coordinates;
+do not erase the key just to make the cleanup status green.
+
 After successful private classification, the exact numeric remote artifact is
 deleted and its absence checked before exact local file deletion. No recursive
 delete is used. On interruption, `cleanup` uses the public-only receipt to

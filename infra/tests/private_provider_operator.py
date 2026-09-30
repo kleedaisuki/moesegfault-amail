@@ -175,12 +175,13 @@ def retire_remote(session: str) -> None:
     """Recover interrupted remote cleanup from public, authenticated coordinates only."""
     folder = session_path(session)
     receipt = folder / "receipt.json"
-    if not receipt.exists():
-        return
+    # A session without capture coordinates may have been dispatched but never
+    # inspected. Do not silently destroy the only key in that uncertain state.
+    history.need(receipt.exists(), "scope")
     history.need(receipt.stat().st_size <= 1024, "scope")
     state = json.loads(receipt.read_bytes(), object_pairs_hook=history.unique_object)
     history.need(set(state) == {"artifact_id", "run_id", "source_sha"}
-                 and type(state["artifact_id"]) is int and state["artifact_id"] > 0
+                 and (state["artifact_id"] is None or type(state["artifact_id"]) is int and state["artifact_id"] > 0)
                  and re.fullmatch(r"[1-9][0-9]{0,19}", state["run_id"]) is not None
                  and re.fullmatch(r"[0-9a-f]{40}", state["source_sha"]) is not None, "scope")
     bearer = token()
@@ -193,12 +194,18 @@ def retire_remote(session: str) -> None:
     entries = listing.get("artifacts")
     history.need(isinstance(entries, list) and type(listing.get("total_count")) is int
                  and len(entries) == listing["total_count"] <= 100, "provenance")
-    matches = [item for item in entries if isinstance(item, dict) and item.get("id") == state["artifact_id"]]
+    name = f"private-provider-error-{state['run_id']}-1"
+    matches = [item for item in entries if isinstance(item, dict)
+               and (item.get("id") == state["artifact_id"] if state["artifact_id"] is not None else item.get("name") == name)]
     history.need(len(matches) <= 1, "provenance")
     if not matches:
         return
-    history.need(matches[0].get("name") == f"private-provider-error-{state['run_id']}-1", "provenance")
-    path = f"/repos/{history.REPOSITORY}/actions/artifacts/{state['artifact_id']}"
+    artifact = matches[0]
+    binding = artifact.get("workflow_run")
+    history.need(artifact.get("name") == name and type(artifact.get("id")) is int and artifact["id"] > 0
+                 and isinstance(binding, dict) and binding.get("id") == int(state["run_id"])
+                 and binding.get("head_sha") == state["source_sha"], "provenance")
+    path = f"/repos/{history.REPOSITORY}/actions/artifacts/{artifact['id']}"
     status, raw = github(path, bearer, "DELETE")
     history.need(status == 204 and not raw, "provider")
     try:
@@ -216,8 +223,17 @@ def inspect(session: str, run_id: str, sha: str) -> str:
     created = datetime.fromisoformat((folder / "created.utc").read_text())
     history.need(timedelta(0) <= datetime.now(timezone.utc) - created < timedelta(hours=24), "scope")
     public = (folder / "public.spki").read_text()
+    history.need(re.fullmatch(r"[1-9][0-9]{0,19}", run_id) is not None
+                 and re.fullmatch(r"[0-9a-f]{40}", sha) is not None, "identity")
+    # Persist public recovery intent before the first API/provenance request.
+    # Every subsequent interruption keeps enough coordinates to retire the
+    # exact artifact, including when its numeric ID has not been learned yet.
+    receipt = folder / "receipt.json"
+    with receipt.open("x") as file:
+        json.dump({"artifact_id": None, "run_id": run_id, "source_sha": sha}, file)
     bearer = token()
     artifact = provenance(run_id, sha, bearer)
+    receipt.write_text(json.dumps({"artifact_id": artifact["id"], "run_id": run_id, "source_sha": sha}))
     encrypted = envelope_from_zip(download(artifact, bearer))
     metadata = {"source_sha": sha, "capture_run": run_id, "capture_attempt": "1",
                 "original_run": history.RUN, "original_attempt": history.ATTEMPT,
@@ -226,7 +242,6 @@ def inspect(session: str, run_id: str, sha: str) -> str:
     capture.validate_envelope(encrypted, metadata, public)
     # Persist only authenticated ciphertext and public recovery coordinates.
     (folder / "capture.enc.json").write_bytes(encrypted)
-    (folder / "receipt.json").write_text(json.dumps({"artifact_id": artifact["id"], "run_id": run_id, "source_sha": sha}))
     category = child("classify", session, encrypted).decode("ascii")
     history.need(category in CATEGORIES, "schema")
     status, body = github(f"/repos/{history.REPOSITORY}/actions/artifacts/{artifact['id']}", bearer, "DELETE")

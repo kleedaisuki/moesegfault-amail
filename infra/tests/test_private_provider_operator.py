@@ -4,6 +4,9 @@ import io
 import json
 import os
 import stat
+from datetime import datetime, timezone
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -72,6 +75,41 @@ class OperatorTests(unittest.TestCase):
         self.assertNotIn("GITHUB_TOKEN", env)
         self.assertNotIn("CF_OBSERVABILITY_TOKEN", env)
         self.assertEqual(execute.call_args.kwargs["input"], b"CIPHERTEXT")
+
+    def test_interruption_preserves_key_and_recoverable_coordinates(self):
+        # All experiment files stay inside repository-root .temp, on hosted CI.
+        root = Path(operator.__file__).resolve().parents[2] / ".temp"
+        root.mkdir(exist_ok=True)
+        for phase in ("token", "provenance", "download", "envelope_from_zip", "validate_envelope", "child", "github", "cleanup"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory(dir=root) as folder_name:
+                folder = Path(folder_name)
+                (folder / "private.pk8").write_bytes(b"SYNTHETIC-NOT-A-KEY")
+                (folder / "public.spki").write_text("synthetic-public")
+                (folder / "created.utc").write_text(datetime.now(timezone.utc).isoformat())
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(patch.object(operator, "session_path", return_value=folder))
+                    replacements = {"token": "synthetic", "provenance": {"id": 42}, "download": b"ZIP",
+                                    "envelope_from_zip": b"ENCRYPTED", "child": b"unclassified",
+                                    "github": (204, b""), "cleanup": None}
+                    for name, value in replacements.items():
+                        stack.enter_context(patch.object(operator, name,
+                            side_effect=RuntimeError("PRIVATE") if name == phase else None, return_value=value))
+                    stack.enter_context(patch.object(operator.capture, "validate_envelope",
+                        side_effect=RuntimeError("PRIVATE") if phase == "validate_envelope" else None))
+                    with self.assertRaises(Exception):
+                        operator.inspect("session", "123", "a" * 40)
+                state = json.loads((folder / "receipt.json").read_text())
+                self.assertEqual(state["run_id"], "123")
+                self.assertEqual(state["source_sha"], "a" * 40)
+                self.assertEqual(state["artifact_id"], None if phase in ("token", "provenance") else 42)
+                self.assertTrue((folder / "private.pk8").exists())
+
+    def test_uninspected_key_cleanup_refuses_uncertain_remote_state(self):
+        folder = unittest.mock.MagicMock()
+        receipt = folder.__truediv__.return_value
+        receipt.exists.return_value = False
+        with patch.object(operator, "session_path", return_value=folder), self.assertRaises(Exception):
+            operator.retire_remote("session")
 
 
 if __name__ == "__main__":
