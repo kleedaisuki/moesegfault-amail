@@ -113,7 +113,9 @@ def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-qu
     # as an empty binding set or fall back to unversioned /settings.
     if isinstance(actual, dict) and set(actual) == {"result"}:
         actual = actual["result"]
-    expected = expected_bindings(phase, queue_id)
+    # Preserve the historical no-argument contract for pre-Queue callers and
+    # their minimal-resource fixtures; only the new phase requires Queue pins.
+    expected = expected_bindings() if phase == "pre-queue" else expected_bindings(phase, queue_id)
     if not isinstance(actual, list) or len(actual) != len(expected):
         return False
     seen: set[str] = set()
