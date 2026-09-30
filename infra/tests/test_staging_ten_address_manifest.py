@@ -201,6 +201,18 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(target.ContractFailure, "recovery_owner_mismatch"):
             target.recovery_actions(value, self.live(value), "foreign", KEY, RUN, GEN)
 
+    def test_callback_failures_and_malformed_state_are_fixed_labels(self):
+        """Untrusted adapter text and invalid state containers never escape."""
+        read = mock.Mock(side_effect=ValueError("synthetic private marker"))
+        delete = mock.Mock()
+        with self.assertRaisesRegex(target.ContractFailure, "^snapshot_read_failed$"):
+            target.reconcile(plan(), read, delete, OWNER, KEY, RUN, GEN)
+        delete.assert_not_called()
+        bad = row()
+        bad["state"] = []
+        with self.assertRaisesRegex(target.ContractFailure, "^row_shape_invalid$"):
+            target.Snapshot({"bad@example.test": bad}, [], 1).validate()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -111,7 +111,8 @@ class Snapshot:
         for address, row in self.rows.items():
             require(isinstance(address, str) and isinstance(row, dict)
                     and set(row) == ROW_KEYS, "row_shape_invalid")
-            require(row["state"] in {"pending", "provisioning", "active", "deleting", "retired"}
+            require(isinstance(row["state"], str)
+                    and row["state"] in {"pending", "provisioning", "active", "deleting", "retired"}
                     and isinstance(row["owner_iss"], str) and bool(row["owner_iss"])
                     and isinstance(row["owner_sub"], str) and bool(row["owner_sub"])
                     and type(row["created_at"]) is int and row["created_at"] >= 0
@@ -217,8 +218,8 @@ def seal(plan: dict, secret: str, run: str, generation: str) -> bytes:
 
     validate(plan, secret, run, generation)
     aad = associated(run, generation)
-    nonce = os.urandom(12)
     try:
+        nonce = os.urandom(12)
         encrypted = _cipher(key_bytes(secret)).encrypt(nonce, canonical(plan), aad)
         return b"AMAIL-TEN-V1\x00" + nonce + encrypted
     except ContractFailure:
@@ -333,16 +334,25 @@ def reconcile(plan: dict, read: Callable[[], Snapshot], delete: Callable[[str], 
               owner: str, secret: str, run: str, generation: str) -> None:
     """Re-audit each exact delete once; stop on ambiguity with no automatic replay."""
 
-    actions = recovery_actions(plan, read(), owner, secret, run, generation)
+    def snapshot() -> Snapshot:
+        """Capture adapter failures without rendering third-party exception text."""
+        try:
+            value = read()
+        except Exception:
+            raise ContractFailure("snapshot_read_failed") from None
+        require(isinstance(value, Snapshot), "snapshot_shape_invalid")
+        return value
+
+    actions = recovery_actions(plan, snapshot(), owner, secret, run, generation)
     for address in actions:
-        latest = recovery_actions(plan, read(), owner, secret, run, generation)
+        latest = recovery_actions(plan, snapshot(), owner, secret, run, generation)
         if address not in latest:
             continue
         try:
             delete(address)
         except Exception:
             raise ContractFailure("delete_outcome_ambiguous") from None
-    final = read()
+    final = snapshot()
     require(not recovery_actions(plan, final, owner, secret, run, generation), "cleanup_required")
     baseline = validate(plan, secret, run, generation)
     resources = set(plan["resources"])
