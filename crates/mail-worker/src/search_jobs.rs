@@ -857,12 +857,14 @@ mod tests {
             query_vector: Some(changed),
             ..checkpoint
         };
+        // A corrupted durable checkpoint is a stale job, not a provider drift
+        // across independently prepared semantic cursor pages.
         assert_eq!(
             check_semantic_state(Some(&decoded), &hash, &drifted_state)
                 .err()
                 .unwrap()
                 .code,
-            "search_cursor_stale"
+            "search_job_stale"
         );
     }
 
