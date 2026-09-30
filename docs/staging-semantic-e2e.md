@@ -1,7 +1,17 @@
 # Staging semantic-search verification boundary
 
-Status: integrated as an **opt-in hosted stage**, **not deployed evidence**.
-The bounded [guarded exact-oracle run 36699356379](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36699356379)
+Status: **bounded live staging acceptance for two documents and two pages**.
+The [guarded run 36719116852](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36719116852)
+at `17abe25`, after [100%-serving Mail Worker pin 36713072636](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36713072636)
+to version `8f05fd3f-3c7d-4dad-9c79-2a67f87b1583`, passed native PKCE,
+two SMTP submissions, ZIP retrieval, basic two-message semantic search,
+search/read/delete, and exact route retirement with primary/cleanup `none`.
+Its v5 origin-vector oracle reported
+`semantic_exact_cosine_verified:max_abs_error=0.00000000:count=2:order=true:origin_vector=true`.
+This verifies exact scores and order for the complete two-document snapshot
+across two `limit=1` pages, not tie ordering, three pages, live tamper
+rejection, large-mailbox behavior, or production. The earlier bounded
+[v4 attempt 36699356379](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36699356379)
 at `11127a8` passed native PKCE, two real SMTP fixtures, ZIP, and the basic
 two-message semantic behavior check. Its separate exact-cosine phase stopped
 before the first CLI page because independently repeated OpenRouter query
@@ -57,13 +67,14 @@ one authenticated staging search, including each opaque `next_cursor`, plus an
 **independently complete** authorized/filter-matching D1 snapshot. Each
 document record contains the persisted 256-dimensional vector, model slug,
 dimension count and API-format UTC timestamp. The query vector must be the
-actual 256-dimensional f32 vector persisted in that search job, or a separately
-obtained vector using exactly the same OpenRouter route, query input version,
-and f32 rounding. A fresh embedding call is not automatically the same vector.
-The fast two-message POST deletes its transient search job, so this vector is
-not available from the CLI probe. Use a separate restricted fixture that
-forces a durable job and capture its query vector while it is running; never
-add a public vector-returning endpoint just for a test.
+actual 256-dimensional `f32` vector used on page 1. The current v5 cursor
+refers to a completed, owner-bound origin job from which the restricted
+operator reads that vector privately; it does not depend on an independently
+repeated OpenRouter embedding. The earlier v4 approach could not safely
+assume a fresh embedding was identical, as the guarded v4 attempt above
+demonstrated. Never add a public vector-returning endpoint just for a test.
+The [protected oracle](staging-exact-cosine-oracle.md) documents the current
+origin-vector procedure and historical v4 alternatives.
 The helper recomputes all cosine scores using f64 accumulation and norms,
 checks the complete descending `(score, received_at, id)` sequence, rejects
 duplicate or omitted messages, and checks cursor termination/repetition. Its
@@ -77,8 +88,9 @@ generation for all pages; mutation should separately produce HTTP 409
 and HTTP bodies must remain in restricted ephemeral memory or repository
 `.temp`, never GitHub logs/artifacts. Log only fixed case labels, count,
 maximum absolute score error, status/error codes, and a boolean indicating
-whether the full snapshot was independently attested. Without that operator
-oracle, report exact cosine and cursor pagination as **unverified**.
+whether the full snapshot was independently attested. The successful run above
+attests only its two-document/two-page fixture; without an equivalent operator
+oracle for another scope, report that scope as **unverified**.
 
 The source contract is documented in `docs/architecture.md` and
 `docs/search-jobs.md`. The distinction matters: exact arithmetic over a

@@ -1,7 +1,17 @@
 # Protected staging oracle for exact semantic scores
 
-Status (2026-09-30): **v5 origin-vector oracle source revised; hosted tests,
-review, and live exact-cosine attestation pending**. A guarded v4 live attempt at
+Status (2026-09-30): **v5 origin-vector oracle live-attested for one bounded
+two-document staging fixture**. The [successful guarded run 36719116852](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36719116852)
+at `17abe25` followed the [100%-serving Mail Worker pin 36713072636](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36713072636)
+to version `8f05fd3f-3c7d-4dad-9c79-2a67f87b1583`. Its fixed oracle result
+was `semantic_exact_cosine_verified:max_abs_error=0.00000000:count=2:order=true:origin_vector=true`.
+The same run passed native PKCE, two accepted SMTP fixtures, ZIP retrieval,
+basic two-message semantic search, search/read/delete, and exact route
+retirement; primary and cleanup errors were both `none`. The result covers
+the complete two-document owner-scoped snapshot and two `limit=1` pages with
+the actual origin query vector. It does **not** establish tie ordering,
+three-page behavior, cursor tamper rejection in live staging, large-mailbox
+exhaustiveness, or production behavior. A guarded v4 live attempt at
 [`11127a8`, run 36699356379](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36699356379)
 aborted with fixed label `query_vector_unstable`: its two independent
 OpenRouter query embeddings differed in rounded `f32` bits, before the first
@@ -51,8 +61,9 @@ attestation, not a large-corpus performance claim. The outcome no longer says
 `provider_repeatable`: cross-request bitwise repeatability was never a
 necessary condition for v5 pagination. The Actions execution step no longer
 receives a separate OpenRouter key for this oracle; the Worker still uses its
-own provider secret on the first page. Real v5 deployment and a fresh guarded
-run remain necessary before any live exactness claim.
+own provider secret on the first page. The bounded live result above satisfies
+this specific two-document exact-score oracle; do not generalize it to other
+corpora or production.
 
 The following v4 design and run history is retained for provenance, **not**
 as the current execution procedure.
