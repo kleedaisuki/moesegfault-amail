@@ -235,3 +235,14 @@ claiming downloadable artifacts or a publicly available Mail service. Later
 site source changes still require fresh exact-main-SHA source evidence;
 publication/tag changes permanently close this candidate lane for v0.1.0.
 Further deployment or public release decisions remain separately root-owned.
+
+### Additional owner-reported independent readback
+
+Root separately reported an independent post-deploy public readback of `/`,
+`/manual/` and `/changelog/` at the fixed de2f150 source: HTTP 200 HTML,
+nonempty pages, noindex/nofollow and the exact source revision header. Root also
+reported post-deploy read-only checks that the public v0.1.0 tag and published
+Release remained absent. These are **owner-reported corroborating results**,
+not this observer's direct probes and not an inventory of internal drafts.
+They supplement, rather than replace, the fixed hosted smoke and timestamped
+independent HTTPS/DNS/TOC observations above.
