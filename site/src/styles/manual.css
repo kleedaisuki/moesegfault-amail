@@ -1,0 +1,17 @@
+.period {
+	color: var(--moe-accent);
+}
+.manual-prose h2:first-child {
+	margin-top: 0;
+}
+.manual-prose hr {
+	border: 0;
+	border-top: 1px solid var(--moe-border);
+	margin: 45px 0;
+}
+.manual-prose strong {
+	color: var(--moe-heading);
+}
+.manual-prose pre {
+	box-shadow: 0 12px 24px color-mix(in srgb, var(--moe-heading) 8%, transparent);
+}

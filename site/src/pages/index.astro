@@ -1,0 +1,67 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import '../styles/home.css';
+import { releaseState } from '../releaseState';
+---
+<BaseLayout title="amail — 让 Agent 真正拥有邮件工作流" description="amail 是面向 AI Agent 的 CLI 邮件软件。用一个可组合的命令行管理地址、检索邮件，并通过 ZIP 交换消息。" current="home">
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
+        <div class="eyebrow">The agent-native mail client · v0.1.0</div>
+        <h1>邮件工作流，<br /><em>交给 Agent。</em></h1>
+        <p class="hero-lead">你只负责登录。地址注册、收件检索、邮件整理和发送，由 Agent 通过 <strong>amail</strong> 完成。没有必须打开的收件箱，也不需要把邮件暴露成聊天上下文。</p>
+        <p class="hero-privacy">隐私提醒：邮件主题与正文片段会自动交由第三方模型建立语义索引，即使你不使用语义检索。<a href="/manual/#隐私与边界">了解处理方式 ↗</a></p>
+        <div class="hero-actions">
+          <a class="moe-button button button-primary" href="/manual/">开始使用 <span aria-hidden="true">↗</span></a>
+          <a class="moe-button button button-secondary" data-variant="secondary" href="/manual/#安装与首次登录">选择安装包 <span aria-hidden="true">↗</span></a>
+        </div>
+        <p class="hero-note">为 <code>mail.moesegfault.dev</code> 而生 · Linux / macOS / Windows<br />{releaseState === 'published' ? <>v0.1.0 已发布；<a href="https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0">下载安装包与 Agent Skill ↗</a></> : 'v0.1.0 尚未发布；安装包与 Agent Skill 将在验收后开放。'}</p>
+      </div>
+      <div class="hero-art" aria-label="amail 工作流示意：检索邮件、交给 Agent 处理并以 ZIP 发送">
+        <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
+        <div class="work-card card-inbox">
+          <span class="card-kicker">01 · INBOX</span>
+          <span class="card-title">需要处理的邮件</span>
+          <span class="card-meta">匹配条件 → 最小元数据</span>
+          <span class="mail-lines"><i></i><i></i><i></i></span>
+        </div>
+        <div class="flow-line flow-a" aria-hidden="true">↘</div>
+        <div class="work-card card-agent">
+          <span class="agent-star" aria-hidden="true">✳</span>
+          <span class="card-kicker">02 · AGENT</span>
+          <span class="card-title">理解，决定，行动</span>
+          <span class="card-meta">文本 / HTML · 可组合命令</span>
+        </div>
+        <div class="flow-line flow-b" aria-hidden="true">↙</div>
+        <div class="work-card card-package">
+          <span class="card-kicker">03 · PACKAGE</span>
+          <span class="card-title">message.zip</span>
+          <span class="card-meta">正文 + 资源 + 元数据</span>
+          <span class="zip-seal" aria-hidden="true">ZIP ↗</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="promise-band" aria-label="产品原则"><div class="wrap promise-grid">
+    <p><strong>一个身份</strong><span>使用 moeSegFault 账号登录</span></p>
+    <p><strong>最多十个地址</strong><span>让不同工作流有自己的入口</span></p>
+    <p><strong>不必打开收件箱</strong><span>检索优先，而不是页面优先</span></p>
+  </div></section>
+
+  <section class="section why-section"><div class="wrap">
+    <div class="section-heading"><span class="eyebrow">A different interface</span><h2>不是把网页邮箱<br />塞进终端。</h2><p>amail 从 Agent 的真实工作方式出发：先缩小范围，再获取内容；先准备完整的消息包，再发送。每一步都可被组合、审查和自动化。</p></div>
+    <div class="feature-grid">
+      <article class="feature-card"><span class="feature-number">01 /</span><div class="feature-icon">⌕</div><h3>检索，而非翻页</h3><p>组合时间、标题、元数据和正文条件；需要时再用正则、大小写选项和语义检索。已读状态也是筛选条件，而不是一次“打开”动作。</p></article>
+      <article class="feature-card"><span class="feature-number">02 /</span><div class="feature-icon">▣</div><h3>ZIP 是交接点</h3><p>接收时把邮件交给 Agent 可处理的文件；发送时把正文、资源与元数据装进 ZIP。amail 负责解析、校验和邮件编译，Agent 不必直接改动底层邮件。</p></article>
+      <article class="feature-card"><span class="feature-number">03 /</span><div class="feature-icon">◈</div><h3>默认简洁，按需展开</h3><p>机器输出紧凑、方便管道捕获；需要给人看时再使用 <code>--human</code>。常用操作短，复杂选项留在消息包里，不让每条命令都像配置文件。</p></article>
+    </div>
+  </div></section>
+
+  <section class="section flow-section"><div class="wrap flow-grid">
+    <div><span class="eyebrow">Your role / Agent's role</span><h2>你授权一次。<br />它完成工作。</h2><p>登录必须由你明确完成；此后的地址注册、邮件拉取、更新和删除可以交给 Agent。权限与身份仍由 moeSegFault 账号约束。</p><a class="text-link" href="/manual/">阅读完整使用流程 <span aria-hidden="true">↗</span></a></div>
+    <ol class="steps"><li><span>1</span><div><strong>登录</strong><p>在 <code>login.moesegfault.dev</code> 授权 amail。</p></div></li><li><span>2</span><div><strong>建立地址</strong><p>在 <code>mail.moesegfault.dev</code> 下注册专属邮箱。</p></div></li><li><span>3</span><div><strong>交给 Agent</strong><p>检索、取用、整理，并用 ZIP 准备回复。</p></div></li></ol>
+  </div></section>
+
+  <section class="closing"><div class="wrap closing-inner"><div><span class="eyebrow">Ready when you are</span><h2>让邮件回到工作流里。</h2><p>从 v0.1.0 开始，把「查找、理解、回复」接成一条线。</p></div><a class="moe-button button button-primary" href="/manual/">打开用户手册 <span aria-hidden="true">↗</span></a></div></section>
+</BaseLayout>
