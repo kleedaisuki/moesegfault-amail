@@ -29,7 +29,9 @@ MAX_COUNT = 99
 REASONS = frozenset({
     "confirmation", "credential", "permission", "http", "transport", "size",
     "schema_unverified", "graphql_unverified", "scope_unverified",
-    "truncated_unverified", "internal",
+    "truncated_unverified", "internal", "graphql_retention_unverified",
+    "graphql_limit_unverified", "graphql_parse_unverified",
+    "graphql_auth_unverified", "graphql_transient_unverified",
 })
 QUERY = """query TraceSecurityEvents($zoneTag: string, $start: Time, $end: Time, $host: string) {
   viewer {
@@ -76,6 +78,46 @@ DESCRIPTIONS = {
 
 class Unverified(Exception):
     """Represent a safe fixed-code diagnostic failure."""
+
+
+def _graphql_error_reason(errors: object) -> str:
+    """Classify documented error phrases without exposing provider text.
+
+    GraphQL can return HTTP 200 with an error array. Categories are diagnostic
+    hints only: unknown or mixed messages remain unverified, and no category
+    establishes whether the historical mail request reached the Worker.
+    """
+
+    if not isinstance(errors, list) or not 1 <= len(errors) <= 8:
+        return "graphql_unverified"
+    reasons = set()
+    for item in errors:
+        if not isinstance(item, dict):
+            return "graphql_unverified"
+        message = item.get("message")
+        if not isinstance(message, str) or len(message) > 2048:
+            return "graphql_unverified"
+        message = message.casefold()
+        if "cannot request data older than" in message:
+            reasons.add("graphql_retention_unverified")
+        elif "not authorized" in message or "unauthorized" in message or \
+                "does not have access to the path" in message:
+            reasons.add("graphql_auth_unverified")
+        elif "unknown field" in message or "error parsing args" in message or \
+                "query contains error" in message or \
+                "scalar fields must have no selections" in message or \
+                "object field must have selections" in message:
+            reasons.add("graphql_parse_unverified")
+        elif "limit must be positive" in message or \
+                "query time range is too large" in message or \
+                "number of fields can't be more than" in message:
+            reasons.add("graphql_limit_unverified")
+        elif "unable to execute query" in message or \
+                "too many queries in progress" in message:
+            reasons.add("graphql_transient_unverified")
+        else:
+            reasons.add("graphql_unverified")
+    return reasons.pop() if len(reasons) == 1 else "graphql_unverified"
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -133,7 +175,7 @@ def classify(payload: object) -> list[str]:
     if not isinstance(payload, dict) or set(payload) not in ({"data"}, {"data", "errors"}):
         raise Unverified("schema_unverified")
     if payload.get("errors") is not None:
-        raise Unverified("graphql_unverified")
+        raise Unverified(_graphql_error_reason(payload["errors"]))
     data = payload["data"]
     if not isinstance(data, dict) or set(data) != {"viewer"}:
         raise Unverified("schema_unverified")

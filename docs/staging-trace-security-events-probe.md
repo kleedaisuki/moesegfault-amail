@@ -17,8 +17,11 @@ only into the final query step. The first hosted dispatch
 [36673249868](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36673249868)
 stopped **before any provider request** with `reason=credential`: unlike the
 other staging jobs, its workflow incorrectly read a nonexistent `CF_ZONE_ID`
-secret. This wiring was corrected; no Security Events result has yet been
-observed. Example dispatch:
+secret. This wiring was corrected. The next hosted dispatch
+[36675301214](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36675301214)
+reached GraphQL and received HTTP 200 with a non-null `errors` array, but the
+original privacy gate collapsed all provider errors to `graphql_unverified`.
+No Security Events rows or cause were established. Example dispatch:
 
 ```text
 gh workflow run ci.yml --ref codex/amail-v0.1.0 \
@@ -42,7 +45,15 @@ in memory by exact equality; all other descriptions map to `other`. The
 program does not select or print URL, path, query, IP, Ray ID, user agent,
 response body, GraphQL error message, redirect target, or raw event. Any
 401/403 on GraphQL is `permission` and says nothing about the mail API's 403.
-Schema/validation errors become `graphql_unverified`, never provider text.
+GraphQL errors never print provider text. A subsequent source revision
+classifies only the fixed phrases documented by Cloudflare into
+`graphql_retention_unverified`, `graphql_limit_unverified`,
+`graphql_parse_unverified`, `graphql_auth_unverified`, or
+`graphql_transient_unverified`; unknown, malformed, or mixed errors remain
+`graphql_unverified`. These are **diagnostic hints**, not proof of a specific
+invalid field or of the origin of the mail API's 403. The same exact zone,
+host, window, selected fields, 100-row limit, credential, and one-request
+contract remain unchanged. There is no broader fallback or raw error logging.
 
 ## Interpretation and limitations
 
@@ -74,3 +85,4 @@ Primary Cloudflare references:
 - [Security Events sampling and retention](https://developers.cloudflare.com/waf/analytics/security-events/)
 - [GraphQL field-change notice for `description`](https://developers.cloudflare.com/logs/reference/change-notices/2023-02-01-security-fields-updates/)
 - [Analytics API token permissions](https://developers.cloudflare.com/analytics/graphql-api/getting-started/authentication/api-token-auth/)
+- [GraphQL error response categories and HTTP 200 behavior](https://developers.cloudflare.com/analytics/graphql-api/errors/)

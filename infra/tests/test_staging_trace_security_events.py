@@ -109,6 +109,30 @@ class SecurityEventTests(unittest.TestCase):
             with self.subTest(case=type(value).__name__), self.assertRaises(probe.Unverified):
                 probe.classify(value)
 
+    def test_graphql_200_errors_use_only_fixed_documented_categories(self) -> None:
+        """Classify hints while never echoing provider text or treating data as valid."""
+
+        examples = {
+            "cannot request data older than 86400s PRIVATE": "graphql_retention_unverified",
+            "unknown field clientRequestHTTPHost PRIVATE": "graphql_parse_unverified",
+            "not authorized for that account PRIVATE": "graphql_auth_unverified",
+            "query time range is too large PRIVATE": "graphql_limit_unverified",
+            "too many queries in progress PRIVATE": "graphql_transient_unverified",
+            "PRIVATE unexplained GraphQL failure": "graphql_unverified",
+        }
+        for message, expected in examples.items():
+            with self.subTest(expected=expected), self.assertRaises(probe.Unverified) as caught:
+                probe.classify({"data": None, "errors": [{"message": message}]})
+            self.assertEqual(caught.exception.args, (expected,))
+            self.assertNotIn("PRIVATE", caught.exception.args[0])
+
+        with self.assertRaises(probe.Unverified) as caught:
+            probe.classify({"data": None, "errors": [
+                {"message": "unknown field PRIVATE"},
+                {"message": "not authorized for that account PRIVATE"},
+            ]})
+        self.assertEqual(caught.exception.args, ("graphql_unverified",))
+
     def test_duplicate_keys_rejected(self) -> None:
         """A duplicate GraphQL field cannot shadow the checked host or error key."""
 
