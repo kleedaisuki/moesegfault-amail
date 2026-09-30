@@ -967,6 +967,8 @@ jobs:
           AMAIL_STAGING_ROLE_FREEZE: ${{ inputs.role_freeze }}
           AMAIL_STAGING_ROLE_DEPLOY_RUN: ${{ inputs.role_deploy_run }}
           AMAIL_STAGING_ROLE_VERSION: ${{ inputs.role_version }}
+          AMAIL_EXPECTED_ROLE_WORKER_VERSION: ${{ inputs.role_version }}
+          AMAIL_EXPECTED_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}

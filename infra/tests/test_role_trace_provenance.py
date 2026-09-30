@@ -130,6 +130,16 @@ class ProvenanceTests(unittest.TestCase):
         self.assertLess(canary.index("python infra/tests/staging_hosted_trace_sink_canary.py"),
                         canary.index("trace_rollout_attestation.py --kind sink-canary"))
 
+    def test_smtp_caller_wires_both_required_readback_pins(self) -> None:
+        """The legacy hosting wrapper passes exact immutable-role and reviewed-Queue pins."""
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        smtp = workflow.split("\n  staging-role-smtp:\n", 1)[1].split("\n  staging-role-timeout-audit:\n", 1)[0]
+        step = smtp.split("      - name: Check deployed provenance and run one ID-bound SMTP probe\n", 1)[1]
+        self.assertIn("AMAIL_EXPECTED_ROLE_WORKER_VERSION: ${{ inputs.role_version }}", step)
+        self.assertIn("AMAIL_EXPECTED_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}", step)
+        self.assertIn("AMAIL_STAGING_ROLE_VERSION: ${{ inputs.role_version }}", step)
+        self.assertIn("run: python workers/role-monitor/hosted_acceptance.py", step)
+
 
 if __name__ == "__main__":
     unittest.main()
