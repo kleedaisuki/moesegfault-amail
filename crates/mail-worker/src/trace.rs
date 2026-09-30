@@ -33,7 +33,7 @@ pub(crate) fn operation_from_cli(raw: &str) -> Option<Operation> {
 
 fn error_code(status: u16) -> Option<ErrorCode> {
     Some(match status {
-        200..=399 => return None,
+        100..=399 => return None,
         400 => ErrorCode::InvalidRequest,
         401 => ErrorCode::Unauthorized,
         403 => ErrorCode::Forbidden,
@@ -151,7 +151,7 @@ impl Trace {
             parent_span_id: self.parent_span_id.as_deref(),
             request_id,
             outcome: match status {
-                200..=399 => Outcome::Success,
+                100..=399 => Outcome::Success,
                 400..=499 => Outcome::ClientError,
                 _ => Outcome::ServerError,
             },
@@ -345,7 +345,7 @@ pub(crate) fn client_event(
         span_id,
         request_id: request_id.filter(|value| amail_trace_schema::canonical_uuid(value)),
         outcome: match status {
-            200..=399 => Outcome::Success,
+            100..=399 => Outcome::Success,
             400..=499 => Outcome::ClientError,
             _ => Outcome::ServerError,
         },
