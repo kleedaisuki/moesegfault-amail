@@ -72,6 +72,91 @@ split traffic. The justified inference is that a frozen stable deployment plus
 current non-versioned settings reads attests an observed interval, not an
 immutable per-version observability snapshot or future privacy behavior.
 
+## Workers Issues: independent capture and explicit disable
+
+Follow-up investigated 2026-09-30. **Issues is an independent capture product,
+not an invocation-log selection option.** The official
+[Investigate issues](https://developers.cloudflare.com/workers/observability/issues/investigate/)
+documentation explicitly says detection does not require Workers Logs or
+tracing. It detects uncaught exceptions, failed invocations, HTTP 5xx responses,
+and error-level console messages or messages containing an Error/stack trace.
+Thus general observability, Logs and native-trace flags being false cannot by
+themselves establish that Issues is off.
+
+Occurrence context can contain the error/stack, related logs and traces, Worker
+version, invocation/request details, and application attributes attached to a
+trace. Availability depends on failure and captured telemetry; the docs do not
+enumerate every request field or guarantee redaction. Occurrence details remain
+available for seven days; issue listings survive occurrence expiry. Disabling
+Issues stops new detection, **not deletion of existing occurrences/listings**.
+
+### Supported control and pinned source
+
+[Wrangler configuration](https://developers.cloudflare.com/workers/wrangler/configuration/#issues)
+and [Issues overview](https://developers.cloudflare.com/workers/observability/issues/)
+document support since Wrangler 4.134.0. Pinned 4.142.0 supports:
+
+```toml
+# Independent error capture must be explicitly disabled for private HTTP input.
+[observability.issues]
+enabled = false
+```
+
+Deploy applies the setting. The overview also says an otherwise dashboard-enabled
+Issues configuration is turned off by the next Wrangler deployment unless
+Issues is specified. This is a source/deployment behavior statement, **not a
+contract that an absent readback property means false**. Keep explicit false in
+the repository and verify effective readback rather than relying on omission.
+
+At the same immutable Wrangler revision `f96458cefb7eaffc611f38f59f41d573dfa8b112`:
+
+- [`workers-utils/src/config/environment.ts`, lines 1971-1975](https://github.com/cloudflare/workers-sdk/blob/f96458cefb7eaffc611f38f59f41d573dfa8b112/packages/workers-utils/src/config/environment.ts#L1971-L1975)
+  declares the independent optional `issues` object and Boolean `enabled`.
+- [`workers-utils/src/config/validation.ts`, lines 7622-7696](https://github.com/cloudflare/workers-sdk/blob/f96458cefb7eaffc611f38f59f41d573dfa8b112/packages/workers-utils/src/config/validation.ts#L7622-L7696)
+  validates `issues.enabled` as Boolean, rejects null/array/non-object Issues,
+  and restricts the Issues object to the `enabled` property.
+- The unchanged-object upload and non-versioned settings serializers documented
+  above retain `issues: { enabled: false }` too. No special Issues-specific
+  serializer transformation was found or assumed. Deploy warning handling still
+  makes a successful upload insufficient proof of settings application.
+
+The official Python SDK pinned at
+`c9dd8956de93575640e06ea28e802951175099a0` provides the exact account-scoped
+settings operation in
+[`workers/scripts/settings.py`](https://github.com/cloudflare/cloudflare-python/blob/c9dd8956de93575640e06ea28e802951175099a0/src/cloudflare/resources/workers/scripts/settings.py#L48-L114):
+
+```text
+PATCH /accounts/{account_id}/workers/scripts/{script_name}/script-settings
+body.observability.issues.enabled = false
+```
+
+Its [edit parameter schema](https://github.com/cloudflare/cloudflare-python/blob/c9dd8956de93575640e06ea28e802951175099a0/src/cloudflare/types/workers/scripts/setting_edit_params.py)
+contains this Issues field. Do not invent an account-global Issues toggle or
+use a guessed Issues endpoint. A later reviewed settings-only mutation must
+preserve the complete intended observability object and unrelated settings;
+this investigation performed no mutation and does not certify server merge
+semantics for a partial nested PATCH.
+
+### Fail-closed effective readback
+
+Use the existing exact-name
+[Worker GET](https://developers.cloudflare.com/api/resources/workers/subresources/beta/subresources/workers/methods/get/):
+`GET /accounts/{account_id}/workers/workers/{worker_name_or_id}`. Its SDK
+[Worker model](https://github.com/cloudflare/cloudflare-python/blob/c9dd8956de93575640e06ea28e802951175099a0/src/cloudflare/types/workers/beta/worker.py#L50-L115)
+has top-level `observability.issues.enabled`, separately from preview defaults.
+Both Issues and its enabled flag are optional. Require a real object and literal
+Boolean false for a full private-HTTP capture-off claim. Missing/null/malformed
+remains UNVERIFIED; true is unsafe. Do not use `previews_base_config` as evidence.
+Bracket this read with stable expected 100% serving deployment; reject conflicting
+enabled legacy settings. Retained-data canaries remain additional evidence, not
+a replacement for this positive control-state requirement.
+
+Public docs content was obtained through the official repository when the web
+reader could not open Issues pages. Reviewed production revision was
+[`231bff9a17c57d9f737eb3683363e001fad7a93f`](https://github.com/cloudflare/cloudflare-docs/tree/231bff9a17c57d9f737eb3683363e001fad7a93f/src/content/docs/workers/observability/issues);
+downloaded text is under `.cache/observability-source/issues-*.mdx`. No local
+toolchain build/test, live private request, or live settings update was performed.
+
 ## Reproduction without installing or executing a toolchain
 
 Retrieve individual public files from
