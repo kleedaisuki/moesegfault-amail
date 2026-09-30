@@ -145,6 +145,16 @@ WHEN NEW.abuse_contact_verified=1 BEGIN
         AND contract_id=NEW.abuse_contact_contract_id)
         THEN RAISE(ABORT,'contact_attestation_mismatch') END);
 END;
+-- Explicit contact revocation also invalidates configuration observations, even
+-- on repeated revoke while the human flag is already zero. Other gate/canary
+-- updates do not clear contact health; verification never renews it.
+CREATE TRIGGER send_release_contact_revoked AFTER UPDATE OF abuse_contact_verified,abuse_contact_contract_id ON send_release_gates
+WHEN NEW.abuse_contact_verified=0 BEGIN
+    DELETE FROM role_contact_health;
+    UPDATE send_policy SET state='held',reason_code='contact_attestation_revoked',actor=NEW.actor,
+        note_ref=NEW.case_ref,updated_at=unixepoch()
+    WHERE scope='global' AND owner_iss='*' AND owner_sub='*' AND state!='held';
+END;
 CREATE TRIGGER send_request_direct_contact_guard BEFORE INSERT ON send_requests BEGIN
     -- A held canary is checked/consumed by the existing guard. Do not depend on
     -- trigger order, or let an allowed-but-expired contact fall back to a canary.

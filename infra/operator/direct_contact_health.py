@@ -36,6 +36,12 @@ WHERE excluded.checked_at>role_contact_health.checked_at
        AND excluded.state='unverified' AND role_contact_health.state='healthy')
 """
 READBACK_SQL = "SELECT contract_id,state,checked_at,expires_at,run_ref FROM role_contact_health WHERE id=1"
+SCHEMA_SQL = """
+SELECT (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+ ('role_contact_policy','role_contact_policy_audit','role_contact_health','role_contact_health_audit')) AS contact_tables,
+ (SELECT COUNT(*) FROM sqlite_master WHERE type='view' AND name='direct_role_contact_ready') AS contact_views,
+ (SELECT COUNT(*) FROM pragma_table_info('send_release_gates') WHERE name='abuse_contact_contract_id') AS contact_columns
+"""
 
 
 class HealthError(Exception):
@@ -158,9 +164,43 @@ def snapshot(client: RoutingClient, account: str, policy: dict, destination: str
     return (policy["destination_id"], matches[0]["verified"], tuple(relevant))
 
 
-def refresh(database: DatabaseClient, client: RoutingClient, account: str, destination: str, run_ref: str) -> bool:
+def optional_held_policy(database: DatabaseClient) -> dict | None:
+    """Distinguish real absence from errors; skip only after exact global hold.
+
+    Catalog reads do not query a nonexistent policy table. Partial migrations,
+    malformed envelopes and provider errors are never absence evidence.
+    """
+    from check_send_hold import HOLD_SQL, held
+
+    schema = one_row(database.query(SCHEMA_SQL))
+    keys = ("contact_tables", "contact_views", "contact_columns")
+    if not all(type(schema.get(key)) is int for key in keys):
+        raise HealthError("schema_invalid")
+    shape = tuple(schema[key] for key in keys)
+    if shape == (0, 0, 0):
+        policy = None
+    elif shape == (4, 1, 1):
+        rows = database.query(POLICY_SQL).get("results")
+        if not isinstance(rows, list) or len(rows) > 1 or not all(isinstance(row, dict) for row in rows):
+            raise HealthError("contract_invalid")
+        policy = rows[0] if rows else None
+        # Do not let the version=1 WHERE clause turn an unknown-version row
+        # into apparent absence. Check the actual singleton inventory first.
+        actual = one_row(database.query("SELECT COUNT(*) AS policy_rows FROM role_contact_policy"))
+        if type(actual.get("policy_rows")) is not int or actual["policy_rows"] != len(rows):
+            raise HealthError("contract_invalid")
+    else:
+        raise HealthError("schema_invalid")
+    if policy is None and not held(one_row(database.query(HOLD_SQL))):
+        raise HealthError("hold_not_proven")
+    return policy
+
+
+def refresh(database: DatabaseClient, client: RoutingClient, account: str, destination: str, run_ref: str, *, skip_unadopted_held: bool = False) -> bool | None:
     """Observe twice, then commit once; never retry an ambiguous renewal write."""
-    policy = one_row(database.query(POLICY_SQL))
+    policy = optional_held_policy(database) if skip_unadopted_held else one_row(database.query(POLICY_SQL))
+    if policy is None:
+        return None
     validate_policy(policy)
     state = "unverified"
     try:
@@ -197,21 +237,34 @@ def main() -> int:
     routing_token = os.getenv("CF_EMAIL_ROUTING_TOKEN", "")
     destination = os.getenv("ROLE_FORWARD_DESTINATION", "")
     run_ref = f'{os.getenv("GITHUB_RUN_ID", "")}:{os.getenv("GITHUB_RUN_ATTEMPT", "")}:direct-v1'
+    skip = os.getenv("INPUT_SKIP_UNADOPTED_HELD") == "true"
     if (os.getenv("GITHUB_ACTIONS") != "true" or os.getenv("GITHUB_REF") != "refs/heads/main"
         or target not in DATABASES or not re.fullmatch(r"[0-9a-f]{32}", account)
-        or not token or not routing_token or not RUN.fullmatch(run_ref)
-        or len(destination) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", destination)
+        or not token or not RUN.fullmatch(run_ref)):
+        print("direct_contact_health=configuration_invalid", file=sys.stderr)
+        return 2
+    database = DatabaseClient(account, token, target)
+    if skip:
+        try:
+            if optional_held_policy(database) is None:
+                print("direct_contact_health=unadopted_held")
+                return 0
+        except Exception:
+            print("direct_contact_health=not_committed", file=sys.stderr)
+            return 1
+    if (not routing_token or len(destination) > 254
+        or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", destination)
         or destination.rsplit("@", 1)[-1].casefold() == "moesegfault.dev"
         or destination.rsplit("@", 1)[-1].casefold().endswith(".moesegfault.dev")):
         print("direct_contact_health=configuration_invalid", file=sys.stderr)
         return 2
     try:
-        healthy = refresh(DatabaseClient(account, token, target), RoutingClient(routing_token, account), account, destination, run_ref)
+        healthy = refresh(database, RoutingClient(routing_token, account), account, destination, run_ref)
     except Exception:
         print("direct_contact_health=not_committed", file=sys.stderr)
         return 1
-    print("direct_contact_health=" + ("healthy_recorded" if healthy else "unverified_recorded"))
-    return 0 if healthy else 1
+    print("direct_contact_health=" + ("unadopted_held" if healthy is None else "healthy_recorded" if healthy else "unverified_recorded"))
+    return 0 if healthy is not False else 1
 
 
 if __name__ == "__main__":

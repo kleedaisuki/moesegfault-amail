@@ -50,12 +50,17 @@ sending automatically.
 
 `infra/operator/direct_contact_policy.py` requires main-branch GitHub Actions,
 `INPUT_TARGET` (`staging` or `production`), `INPUT_CONFIRM=ADOPT_DIRECT_CONTACT_HELD`,
+`INPUT_EXPECTED_CONTACT_CONTRACT_ID` (`NONE` for positively established absence,
+or the currently pinned UUID),
 `INPUT_CASE_REF`, `GITHUB_ACTOR`, existing account/API-token Secrets,
 `INPUT_DESTINATION_ID` and the four `INPUT_*_RULE_ID` pins corresponding to the
 four fixed schema columns. It generates a new UUID and adopts only held state.
 Retrieve the resulting contract ID privately; the script prints no IDs/pins.
 A change in destination, route identity or operational commitment requires new
 adoption, not editing a still-attested contract in place.
+The expected-current predicate is checked atomically in adoption SQL; a stale
+dispatched workflow cannot overwrite a newer contract, and errors never mean
+absence. The generated UUID also makes ambiguous-write readback exact.
 
 `infra/operator/attest_gate.py` retains its existing non-contact gate interface.
 For abuse-contact `verified=true` it additionally requires the exact
@@ -79,6 +84,13 @@ writes only the unchanged contract. It uses a GET-only routing client and
 rejects redirects for both credentials. Rule `id` and legacy `tag` spelling are
 accepted only when they do not conflict. Unrelated routing churn is not renewal
 failure when the relevant identities/shape remain identical.
+An explicit `INPUT_SKIP_UNADOPTED_HELD=true` enables a safe hourly no-adoption
+path: a catalog query must positively establish the pre-0009 contact schema is
+absent, or the expected v1 schema has no policy row; an exact legacy global-held
+readback must then succeed. Partial schema, unknown version, malformed/provider
+errors or allowed/missing global policy never become a skip. This path needs
+the existing D1 credentials but no routing token/private destination and makes
+no routing GET. It prints only `direct_contact_health=unadopted_held`.
 
 All unclassified routing outcomes write unverified when D1 is reachable, with
 an atomic hold. A D1 failure performs one scoped readback, **no write retry**,
@@ -101,6 +113,22 @@ boundary, not invented table-scoped authorization. No new Secrets or mailbox
 access are introduced. Routing mutations must invalidate/hold the contract
 before changing provider state; this checker does not repair provider routes.
 
+`infra/operator/direct_contact_invalidate.py` is the main-branch,
+production-only routing-mutation barrier using `INPUT_CASE_REF`, `GITHUB_ACTOR`
+and existing D1 credentials. Migration 0009 is required: exact contact-schema
+catalog and revocation-trigger presence are checked before mutation. One
+explicit abuse-contact revocation atomically clears human acceptance and
+configuration health and holds sending, even if the human flag was already
+zero. Unrelated gate/canary updates do not clear health. The helper requires an
+acknowledged one-row update **and** exact held/revoked/health-absent readback.
+An ambiguous update gets one readback, never a retry or provider-write permit;
+the operator can explicitly rerun the idempotent revoke. No private destination
+or routing bearer is needed. Workflow callers must serialize routing mutation,
+adoption, manual attestation and checker refresh with the same non-canceling
+realm lock; this is workflow coordination, not a database lease. Any changed
+provider identity requires re-adoption of the pinned contract; a fresh machine
+check cannot restore the revoked human attestation or global allow.
+
 ## Verification and rollout boundaries
 
 Added `infra/tests/test_direct_contact_gate.py` for the existing hosted infra
@@ -114,6 +142,10 @@ capability. Raw global INSERT/UPDATE/reassertion tests cover every-unhold guards
 and unchanged emergency-hold/account behavior; one fixture removes only the
 unhold guard to independently verify the send-admission defense. Release
 response tests now require `contact_ready=1`.
+Additional tests cover atomic expected-current adoption, pre-0009/empty-policy
+held skips without routing Secrets, partial-schema/provider-denied skip,
+already-zero repeated revocation, unaffected unrelated gates and suppression
+of a caller's provider mutation after ambiguous D1 invalidation.
 
 **No local tests, builds, hosted run, provider mutation or deployment was
 executed for this source change.** Hosted execution and independent review are

@@ -20,6 +20,7 @@ import direct_contact_policy as adoption
 import attest_gate
 import send_control
 import check_send_hold
+import direct_contact_invalidate as invalidation
 
 CONTRACT = "11111111-1111-4111-8111-111111111111"
 OTHER = "22222222-2222-4222-8222-222222222222"
@@ -43,10 +44,12 @@ def database() -> sqlite3.Connection:
     return db
 
 
-def adopt(db: sqlite3.Connection, contract: str = CONTRACT) -> None:
+def adopt(db: sqlite3.Connection, contract: str = CONTRACT, expected: str | None = None) -> int:
     """Use the actual operator adoption SQL to install synthetic pins."""
     row = policy()
-    db.execute(adoption.ADOPT_SQL, [contract, row["destination_id"], *(row[key] for key in health.PIN_COLUMNS), "operator", "CASE_1"])
+    current = db.execute("SELECT contract_id FROM role_contact_policy WHERE id=1").fetchone()
+    expected = expected if expected is not None else current[0] if current else "NONE"
+    return db.execute(adoption.ADOPT_SQL, [contract, row["destination_id"], *(row[key] for key in health.PIN_COLUMNS), "operator", "CASE_1", expected]).rowcount
 
 
 def ready(db: sqlite3.Connection) -> None:
@@ -157,6 +160,48 @@ class DirectContactSqlTest(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             db.execute("UPDATE send_release_gates SET abuse_contact_verified=1,abuse_contact_contract_id=?", [CONTRACT])
 
+    def test_adoption_compares_expected_absence_or_current_contract_atomically(self):
+        """Stale manual runs cannot replace a contract selected after dispatch."""
+        db = database()
+        self.assertEqual(adopt(db, expected=OTHER), 0)
+        self.assertEqual(adopt(db, expected="NONE"), 1)
+        self.assertEqual(adopt(db, OTHER, expected="NONE"), 0)
+        self.assertEqual(adopt(db, OTHER, expected=CONTRACT), 1)
+        self.assertEqual(adopt(db, "33333333-3333-4333-8333-333333333333", expected=CONTRACT), 0)
+
+    def test_explicit_repeated_contact_revoke_clears_health_without_other_gate_effects(self):
+        """Flag-zero revocation still invalidates routes before provider mutation."""
+        db = FakeDatabase()
+        db.db.execute(health.WRITE_SQL, [CONTRACT, "healthy", NOW, "1:1:direct-v1"])
+        db.db.execute("UPDATE send_release_gates SET preview_reviewed=0 WHERE id=1")
+        self.assertEqual(db.db.execute("SELECT count(*) FROM role_contact_health").fetchone()[0], 1)
+        invalidation.invalidate(db, "github:operator", "CASE_2")
+        self.assertEqual(db.db.execute("SELECT count(*) FROM role_contact_health").fetchone()[0], 0)
+        db.db.execute(health.WRITE_SQL, [CONTRACT, "healthy", NOW, "2:1:direct-v1"])
+        invalidation.invalidate(db, "github:operator", "CASE_3")
+        self.assertEqual(db.db.execute("SELECT count(*) FROM role_contact_health").fetchone()[0], 0)
+        self.assertEqual(db.db.execute("SELECT state FROM send_policy WHERE scope='global'").fetchone()[0], "held")
+
+    def test_ambiguous_invalidation_never_authorizes_a_provider_mutation(self):
+        """A committed-but-unacknowledged revoke still blocks the caller's write."""
+        db = FakeDatabase()
+        query = db.query
+        provider_calls = []
+
+        def ambiguous(sql, params=None):
+            """Model a successful D1 commit whose response was lost."""
+            result = query(sql, params)
+            if sql == invalidation.INVALIDATE_SQL:
+                raise health.HealthError("database_unavailable")
+            return result
+
+        with patch.object(db, "query", side_effect=ambiguous):
+            with self.assertRaises(health.HealthError):
+                invalidation.invalidate(db, "github:operator", "CASE_2")
+                provider_calls.append("mutation")
+        self.assertEqual(provider_calls, [])
+        self.assertEqual(db.db.execute("SELECT count(*) FROM role_contact_health").fetchone()[0], 0)
+
     def test_held_canary_does_not_depend_on_contact_health(self):
         """One held key is allowed without any adopted contract; second is denied."""
         db = database()
@@ -195,10 +240,11 @@ class FakeRouting:
 class FakeDatabase:
     """Execute fixed checker SQL against the same real synthetic migrations."""
 
-    def __init__(self, *, fail_write=False):
+    def __init__(self, *, fail_write=False, adopted=True):
         """Adopt a held contract without manufacturing human acceptance."""
         self.db = database()
-        adopt(self.db)
+        if adopted:
+            adopt(self.db)
         self.db.row_factory = sqlite3.Row
         self.fail_write = fail_write
         self.writes = 0
@@ -275,6 +321,40 @@ class DirectContactProviderTest(unittest.TestCase):
         with self.assertRaises(health.HealthError):
             health.refresh(db, FakeRouting(), "a" * 32, DESTINATION, "1:1:direct-v1")
         self.assertEqual(db.writes, 1)
+
+    def test_optional_no_adoption_skip_requires_explicit_held_readback(self):
+        """Only real absence plus a proven legacy hold can yield a safe skip."""
+        db = FakeDatabase(adopted=False)
+        self.assertIsNone(health.refresh(db, FakeRouting(), "a" * 32, DESTINATION, "1:1:direct-v1", skip_unadopted_held=True))
+        self.assertEqual(db.writes, 0)
+        db.db.execute("DROP TRIGGER send_policy_direct_allow_update")
+        db.db.execute("UPDATE send_policy SET state='allowed' WHERE scope='global'")
+        with self.assertRaises(health.HealthError):
+            health.optional_held_policy(db)
+        db.db.execute("UPDATE send_policy SET state='held' WHERE scope='global'")
+        db.db.execute("DROP VIEW direct_role_contact_ready")
+        with self.assertRaises(health.HealthError):
+            health.optional_held_policy(db)
+
+    def test_optional_pre_migration_skip_never_treats_provider_errors_as_absence(self):
+        """Catalog absence is queried positively; all errors still fail closed."""
+        db = FakeDatabase(adopted=False)
+        db.db = sqlite3.connect(":memory:")
+        db.db.row_factory = sqlite3.Row
+        for migration in ("0001_initial.sql", "0002_reservation_lease.sql", "0006_outbound_abuse.sql"):
+            db.db.executescript((ROOT / "crates/mail-worker/migrations" / migration).read_text(encoding="utf-8"))
+        self.assertIsNone(health.optional_held_policy(db))
+        with patch.object(db, "query", side_effect=health.HealthError("database_unavailable")):
+            with self.assertRaises(health.HealthError):
+                health.optional_held_policy(db)
+
+    def test_optional_held_main_needs_no_routing_secret_before_adoption(self):
+        """No-adoption held readback never touches the routing client or mailbox."""
+        env = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1",
+            "CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "synthetic", "INPUT_SKIP_UNADOPTED_HELD": "true"}
+        with patch.dict("os.environ", env, clear=True), patch.object(health, "DatabaseClient", return_value=FakeDatabase(adopted=False)), patch.object(health, "RoutingClient") as client:
+            self.assertEqual(health.main(), 0)
+            client.assert_not_called()
 
 
 if __name__ == "__main__":
