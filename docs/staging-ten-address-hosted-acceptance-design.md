@@ -448,3 +448,31 @@ instead of skipping. It uses only synthetic in-memory records, never Secrets,
 local builds or live provider resources. Hosted execution remains pending until
 the reviewed commit passes CI; source wiring is not an encryption acceptance
 result or permission to dispatch quota mutation.
+
+## Native adapter source boundary
+
+`staging_ten_address_native.py` now provides a non-executable composition seam
+for supported CLI operations and one fresh hosted-Windows native login. The
+CLI child inherits only the existing staging environment allowlist, never
+provider/GitHub/synthetic-login Secrets. Only source-listed reserved submissions
+or eleven exact run-derived aliases can be added; supported deletes remain
+subject to the controller's immediate complete owner/rule audit. Captured CLI
+output stays private and is never replayed after an ambiguous process outcome.
+
+The account scope reuses normal first-party synthetic A credentials and fresh
+browser/CLI-home PKCE, reads A's verified username/contact/pairwise subject
+independently before/after login, and ignores B's presence or verification state.
+Current CLI `auth status` intentionally does not disclose a token subject. The
+identity relation follows the submitted exact username in a fresh browser and
+independent current Identity ownership readback; it does **not** copy/decrypt a
+local token to manufacture a subject attestation. A successful or partially
+persisted native home is locally logged out before deleting only its newly
+created repository `.temp/ten-address-native-*` directory. Normal logout attempts
+remote refresh revocation but its local result is not evidence of successful
+remote revocation on a provider outage.
+
+This adapter alone grants no live acceptance. Full wrapper assembly still needs
+source/binary and single-serving service readback, actual hold/binding evidence,
+immutable manifest upload/download metadata validation, external same-artifact
+recovery and manual-only workflow review. Native synthetic fixtures are
+hosted-only; no CLI/browser/provider was run locally by this change.
