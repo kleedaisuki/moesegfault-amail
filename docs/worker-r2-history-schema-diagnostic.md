@@ -256,3 +256,32 @@ unclassified error leaves the older rejection unresolved; do not add another
 request automatically. This is a deliberate trade-off: privacy retains
 actionable public error categories while withholding identifying details,
 rather than making every provider failure indistinguishable.
+
+### Error-class source implementation (no live result)
+
+`infra/tests/staging_worker_r2_history_error.py` and its focused synthetic tests
+implement this separate query. The confirmation is
+`READ_WORKER_R2_HISTORY_ERROR_CLASS_36751791789`, with the unchanged original run
+as the second argument. The original event/shape classifiers are not modified.
+The helper reuses the immutable provenance/window and no-redirect transport;
+non-200 JSON bodies can be classified within the same size bound and request,
+without retry. HTTP category is reported separately from GraphQL error category.
+
+Only case-sensitive, full-string public templates (with bounded, newline-free
+suffixes for documented variable portions) match. Arbitrary keyword mentions,
+unknown messages/codes and differently cased variants stay unclassified.
+The documented budget extension adds positive rate/resource evidence; if its
+category contradicts a recognized message, the output is mixed. Missing or
+oversized messages remain invalid. Integer/string zero path indices and both
+source-owned aliases/canonical dataset names are recognized; no path is emitted.
+
+The fixed output begins
+`worker_r2_history_error=CLASSIFIED delivery=UNVERIFIED`, followed by HTTP, errors,
+scope and data bins. Exit zero means classification only, including unknown,
+mixed or failed-provider categories. No-error, metadata-only data shape is not
+delivery evidence, completeness evidence or a grant inspection. In particular,
+an unknown-field error in this **new** query could concern the newly selected
+standard GraphQL meta-field; its category alone cannot establish which field
+the older queries rejected. No category justifies blind token expansion or a
+schema patch. Synthetic tests were authored and statically inspected, not
+executed locally. No workflow wiring or live read is included in this commit.
