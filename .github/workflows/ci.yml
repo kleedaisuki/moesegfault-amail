@@ -1296,20 +1296,56 @@ jobs:
         working-directory: .
         shell: bash
         run: |
-          curl --fail --silent --show-error --retry 6 --retry-delay 5 https://amail.moesegfault.dev/ > /dev/null
-          curl --fail --silent --show-error https://amail.moesegfault.dev/manual/ > /dev/null
-          curl --fail --silent --show-error https://amail.moesegfault.dev/changelog/ > /dev/null
-          home=$(curl --fail --silent --show-error https://amail.moesegfault.dev/)
-          grep -Fq 'v0.1.0 已发布' <<< "$home"
-          if grep -Fq 'v0.1.0 尚未发布' <<< "$home"; then
-            echo '::error::Production site still claims the release is unpublished'
-            exit 1
-          fi
-          headers=$(curl --fail --silent --show-error --head https://amail.moesegfault.dev/)
-          if grep -iq '^x-robots-tag:.*noindex' <<< "$headers"; then
-            echo '::error::Production launch page must be indexable'
-            exit 1
-          fi
+          set -euo pipefail
+          mkdir -p .temp
+          smoke_dir=$(mktemp -d .temp/site-smoke.XXXXXX)
+          trap 'rm -f -- "$smoke_dir"/*.html "$smoke_dir"/*.headers; rmdir -- "$smoke_dir"' EXIT
+          # One GET per exact public route; curl does not follow redirects.
+          for route in home manual changelog; do
+            path=/
+            if [ "$route" != home ]; then path="/$route/"; fi
+            status=$(curl --fail --silent --show-error --retry 6 --retry-delay 5 \
+              --dump-header "$smoke_dir/$route.headers" --output "$smoke_dir/$route.html" \
+              --write-out '%{http_code}' "https://amail.moesegfault.dev$path")
+            if [ "$status" != 200 ]; then
+              echo "::error::$route: expected HTTP 200, got $status"
+              exit 1
+            fi
+          done
+          python - "$smoke_dir" <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          import re
+          import sys
+
+          class Anchors(HTMLParser):
+              """Collect actual anchor href attributes, excluding lookalike attributes."""
+
+              def __init__(self):
+                  super().__init__()
+                  self.hrefs = set()
+
+              def handle_starttag(self, tag, attrs):
+                  if tag == 'a':
+                      self.hrefs.update(value for name, value in attrs if name == 'href')
+
+          pages = {
+              'home': ('v0.1.0 已发布', 'v0.1.0 尚未发布'),
+              'manual': ('v0.1.0 已发布', 'v0.1.0 尚未开放下载'),
+              'changelog': ('v0.1.0 已正式发布', 'v0.1.0 仍在验收'),
+          }
+          tag_url = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0'
+          root = Path(sys.argv[1])
+          for route, (published, candidate) in pages.items():
+              html = (root / f'{route}.html').read_text(encoding='utf-8')
+              headers = (root / f'{route}.headers').read_text(encoding='utf-8')
+              anchors = Anchors()
+              anchors.feed(html)
+              if published not in html or candidate in html or tag_url not in anchors.hrefs:
+                  raise SystemExit(f'::error::{route}: published copy or exact Release href is missing, or candidate copy remains')
+              if re.search('noindex', html, re.IGNORECASE) or re.search(r'^x-robots-tag\s*:[^\r\n]*\bnoindex\b', headers, re.IGNORECASE | re.MULTILINE):
+                  raise SystemExit(f'::error::{route}: production response must be indexable')
+          PY
 
   staging-site:
     name: Deploy isolated staging release site
