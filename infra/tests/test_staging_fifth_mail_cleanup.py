@@ -132,6 +132,9 @@ class CleanupGuardTests(unittest.TestCase):
                                      '\n[[assets]]\npath = "assets/2-payload.bin"\n'
                                      'content_type = "application/octet-stream"\n'
                                      'disposition = "attachment"\nfilename = "payload.bin"\n')
+                    else:
+                        # The Worker serializes an empty asset array explicitly.
+                        manifest += 'assets = []\n'
                     (dest / "manifest.toml").write_text(manifest, encoding="utf-8")
                     outputs = [[{"id": msg_id, "path": str(archive), "unpacked": False}],
                                [{"path": str(dest), "unpacked": True}]]
@@ -149,6 +152,15 @@ class CleanupGuardTests(unittest.TestCase):
                             cleanup.verify_archive(Path("amail"), {}, root, msg_id,
                                                    MAILBOX, subject, signal, row)
                     manifest_path.write_text(manifest, encoding="utf-8")
+                    if not signal:
+                        manifest_path.write_text(manifest.replace('assets = []\n', ''),
+                                                 encoding="utf-8")
+                        with patch.object(cleanup, "success", side_effect=outputs):
+                            with self.assertRaisesRegex(cleanup.CleanupFailure,
+                                                        "^fixture_archive_manifest_mismatch$"):
+                                cleanup.verify_archive(Path("amail"), {}, root, msg_id,
+                                                       MAILBOX, subject, signal, row)
+                        manifest_path.write_text(manifest, encoding="utf-8")
                     if signal:
                         html_path = dest / "body.html"
                         html_path.write_text(f'<p>{phrase}</p><img onerror="alert(1)" '
