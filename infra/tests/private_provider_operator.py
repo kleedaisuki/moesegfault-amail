@@ -210,7 +210,7 @@ def retire_remote(session: str) -> None:
     run = github_json(base + "/attempts/1", bearer)
     history.need(run.get("id") == int(state["run_id"]) and run.get("head_sha") == state["source_sha"]
                  and run.get("head_branch") == history.BRANCH and run.get("run_attempt") == 1
-                 and run.get("event") == "workflow_dispatch", "provenance")
+                 and run.get("event") == "workflow_dispatch" and run.get("status") == "completed", "provenance")
     listing = github_json(base + "/artifacts?per_page=100", bearer)
     entries = listing.get("artifacts")
     history.need(isinstance(entries, list) and type(listing.get("total_count")) is int

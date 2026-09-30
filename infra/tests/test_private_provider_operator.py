@@ -141,6 +141,30 @@ class OperatorTests(unittest.TestCase):
             self.assertEqual(operator.main(), 1)
         local.assert_not_called()
 
+    def test_late_upload_not_inferred_absent_before_terminal_run(self):
+        folder = unittest.mock.MagicMock()
+        receipt = folder.__truediv__.return_value
+        receipt.exists.return_value = True
+        receipt.stat.return_value.st_size = 100
+        receipt.read_bytes.return_value = json.dumps({"artifact_id": None, "run_id": "123", "source_sha": "a" * 40}).encode()
+        original = {"id": 123, "head_sha": "a" * 40, "head_branch": operator.history.BRANCH,
+                    "run_attempt": 1, "event": "workflow_dispatch"}
+        for status in ("queued", "in_progress", "waiting", "pending", "requested"):
+            with self.subTest(status=status), patch.object(operator, "session_path", return_value=folder), \
+                    patch.object(operator, "token", return_value="synthetic"), \
+                    patch.object(operator, "github_json", return_value={**original, "status": status}) as api, self.assertRaises(Exception):
+                operator.retire_remote("session")
+            self.assertEqual(api.call_count, 1)
+        # Completed cancellation/failure can be retired after the authenticated,
+        # complete artifact listing proves exact absence; no future upload remains.
+        for conclusion in ("failure", "cancelled"):
+            with self.subTest(conclusion=conclusion), patch.object(operator, "session_path", return_value=folder), \
+                    patch.object(operator, "token", return_value="synthetic"), \
+                    patch.object(operator, "github_json", side_effect=[{**original, "status": "completed", "conclusion": conclusion},
+                                                                           {"total_count": 0, "artifacts": []}]) as api:
+                operator.retire_remote("session")
+            self.assertEqual(api.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

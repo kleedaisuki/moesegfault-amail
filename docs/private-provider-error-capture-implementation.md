@@ -117,7 +117,11 @@ read. Output explicitly says `LOCAL_RETAINED`, never `CLEANED`, until explicit
 destroy the only diagnostic and force a new live capture. No recursive delete
 is used. On interruption, `cleanup` uses the public-only receipt to
 authenticate the original run and recover remote deletion before removing local
-files. A provider cleanup failure retains only encrypted evidence and private
+files. Artifact absence is accepted only after that exact authenticated run
+attempt has terminal `completed` status; queued/running/waiting runs preserve
+the key because a later upload may still occur. Completed failed/cancelled runs
+remain recoverable. Synthetic fixtures cover both late-upload rejection and
+terminal cancellation/failure absence. A provider cleanup failure retains only encrypted evidence and private
 key until retry/24-hour deadline; the next operator session must finish cleanup
 before opening another session. There is no background expiry task: the operator
 must enforce the documented deadline. Deletion is not a physical secure-wipe
