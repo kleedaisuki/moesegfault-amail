@@ -116,6 +116,34 @@ outstanding hosted verifier, rollout and retained-data gates. See the
 [bounded current-resource interpretation](mail-trace-sink-remediation-options.md#current-worker-resource-readback-explicit-disabled-capture-acceptance-pending)
 and [official effective-readback investigation](observability-effective-readback-decision.md).
 
+### Settings correction failed without phase evidence; rollout remains closed
+
+[Hosted source CI `36742065920`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36742065920)
+passed at `a30cd5d46f36e373feb1bf7933aab2fdfce0b122`. The subsequent isolated
+[settings-correction run `36742914068`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36742914068)
+at that SHA passed confirmation and synthetic contracts, but its live helper
+emitted only `staging_api_capture_off=UNVERIFIED` and no settings-v1 attestation.
+This output does not locate the failure phase or establish whether PATCH
+reached the provider. Neither "no PATCH occurred" nor "PATCH succeeded but
+readback failed" is justified.
+
+The subsequent read-only
+[five-GET diagnostic `36743104235`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36743104235)
+at the same SHA succeeded with `stable100` around expected serving version
+`c3f6401a-1e84-4f51-91df-ae77d90683e9`. Separately, the **current Worker resource**
+reported observability parent/Logs/traces=false, Issues missing, Logpush=false
+and typed empty tails. Legacy `/settings` still omitted observability and
+`/script-settings` returned null. The current Worker resource is a read of
+non-versioned settings, not the immutable serving version; stable traffic does
+not atomically lock those settings or identify the earlier helper phase.
+
+Issues omission is not explicit false, and this read generated no Mail traffic
+or retained-record privacy evidence. **No active privacy pass, accepted
+containment attestation or Queue rollout results.** Diagnose the failed phase
+with reviewed bounded categories before any mutation retry; preserve public
+send/production gates. The [complete bounded attempt and readback record](staging-containment-settings-correction.md#first-hosted-attempt-no-accepted-correction-evidence)
+is the current recovery entry point.
+
 ## Original decision in one sentence (direct-source sink superseded)
 
 Retain reviewed, allowlisted **application trace events** in Cloudflare Workers Logs, linked by W3C trace/span IDs across CLI and the mail API; disable Cloudflare's automatic invocation logs and native traces for the mail API in both realms until Cloudflare can exclude sensitive automatic fields *before persistence*. This is a real causal distributed trace graph over structured events, but **not** the Cloudflare native Traces waterfall or automatic D1/R2/fetch spans.

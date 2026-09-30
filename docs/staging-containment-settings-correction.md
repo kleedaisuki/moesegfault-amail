@@ -1,8 +1,9 @@
 # Decision: correct staging API capture settings without redeploying code
 
-Date: 2026-09-30. Status: **implemented source contract, not live deployed**.
-No private API call, local test/build,
-deployment, push, or production change was performed. This supplements
+Date: 2026-09-30. Status: **implemented source contract; first live correction
+attempt UNVERIFIED, with no accepted settings attestation**. The original design
+investigation performed no private API call, local test/build, deployment, push,
+or production change; the bounded hosted attempt is recorded below. This supplements
 [effective readback](observability-effective-readback-decision.md) and the
 [Queue migration](privacy-trace-sink-deployment.md).
 
@@ -249,13 +250,60 @@ tests cover wrong run event/path/branch/SHA/job/conclusion, incomplete jobs,
 duplicate/mixed markers, wrong version, unsafe historical TOML and explicit
 kind handling. Run these on GitHub Actions, not the workstation.
 
-After source review and successful hosted checks, dispatch the narrow settings
-job once. Record its exact successful run/SHA, unchanged expected version and
-effective all-off result. Then dispatch Queue rollout with
+The intended acceptance sequence is one narrow settings dispatch after source
+review and successful hosted checks, followed by recording its exact successful
+run/SHA, unchanged expected version and effective all-off result. Only then
+dispatch Queue rollout with
 `trace_containment_kind=settings-v1` and that run/version. The later complete
 retained-record synthetic canary remains necessary; settings success does not
 attest erased historical records, future uninterrupted privacy, role Email/Cron
 capture, Security Events, or lossless Queue tracing.
+
+## First hosted attempt: no accepted correction evidence
+
+[Source CI `36742065920`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36742065920)
+completed successfully at immutable source
+`a30cd5d46f36e373feb1bf7933aab2fdfce0b122`. The subsequent isolated
+[settings run `36742914068`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36742914068)
+used the same SHA. Its confirmation and credential-free synthetic contracts
+passed; the credential-bearing correction step failed at 2026-09-30
+16:16:04 UTC with only the fixed helper result:
+
+```text
+staging_api_capture_off=UNVERIFIED
+```
+
+No settings-v1 attestation was emitted. This aggregate failure does **not**
+identify a phase, establish that PATCH was attempted, or establish that PATCH
+was not attempted. It is not evidence of either successful mutation or a
+provider rejection. Successful source/synthetic checks cannot replace live
+postconditions or make this failed run valid containment provenance.
+
+The subsequent read-only
+[Worker-resource run `36743104235`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36743104235),
+also at `a30cd5d`, succeeded. Its five-GET observation reported `stable100`
+around the expected serving Version ID
+`c3f6401a-1e84-4f51-91df-ae77d90683e9`. The distinct **current Worker resource**
+(non-versioned settings, not the immutable version object) passed name/ID checks
+and returned:
+
+| Read boundary | Bounded observation |
+| --- | --- |
+| Current Worker resource | Observability object; parent enabled=false, Logs=false, traces=false; Issues shape/member missing; Logpush=false; tails typed empty list. |
+| Current Worker subordinate options | invocation=true, persist=true, redact=false; sampling=one; Logs/traces destinations typed empty lists. |
+| Legacy `/settings` | Observability missing; Logpush=false; tails typed empty list. |
+| Legacy `/script-settings` | Observability explicit null; Logpush=false; tails explicit null. |
+
+These explicit parent/Logs/traces false flags are positive observations, but
+Issues omission remains **unverified**, not false. Stable serving traffic
+brackets code selection; it does not atomically freeze non-versioned settings,
+prove a PATCH phase, or provide a whole-retained-record privacy result.
+
+**Next discriminator:** diagnose the failed helper's phase through reviewed
+bounded fixed-category instrumentation/readback. Do not retry the mutation
+before that diagnosis, infer the PATCH outcome from unchanged bins, accept the
+failed run as an attestation, or open Queue rollout/public sending. No active
+privacy pass or Queue rollout follows from either run.
 
 ## Evidence boundary
 
