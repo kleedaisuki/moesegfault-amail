@@ -12,7 +12,7 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-trace-canary, production]
+        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-trace-canary, staging-trace-security-events, production]
       confirm:
         description: Staging E2E, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -671,6 +671,31 @@ jobs:
       mode: ${{ inputs.trace_mode }}
       confirm: ${{ inputs.confirm }}
     secrets: inherit
+
+  staging-trace-security-events:
+    name: Read only sampled Security Events for one staging trace incident
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-trace-security-events' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Classify one bounded, sampled zone-host event window
+        env:
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DIAGNOSTIC_CONFIRM: ${{ inputs.confirm }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python infra/provider/probe_staging_trace_security_events.py "$DIAGNOSTIC_CONFIRM" 36671177226
 
   worker:
     name: Rust Worker (Wasm)
