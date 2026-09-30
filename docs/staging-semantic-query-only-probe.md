@@ -1,7 +1,7 @@
 # Bounded native semantic-query discriminator without another SMTP delivery
 
-Status: **source prepared, not hosted CI or deployed evidence**. This is a
-diagnostic follow-up to [hosted run 36677506793](staging-semantic-live-failure-36677506793.md),
+Status: **one hosted staging query-only pass; full semantic mail acceptance still unverified**.
+This is a diagnostic follow-up to [hosted run 36677506793](staging-semantic-live-failure-36677506793.md),
 whose semantic stage failed with an unclassified CLI label after successful
 SMTP-to-ZIP acceptance. It neither retroactively diagnoses that failure nor
 establishes full two-message semantic-search acceptance.
@@ -43,7 +43,7 @@ OpenRouter call. This probe deliberately cannot test document indexing,
 semantic score/order, lexical AND-composition, or exact cosine, because there
 are no active documents. It also cannot establish why run 36677506793 failed.
 
-## Hosted validation and launch discipline
+## Hosted validation and launch discipline (historical)
 
 `infra/tests/test_staging_semantic_query_only.py` is mock-only. GitHub Actions
 must pass its infrastructure test job and CLI Windows build; no local heavy
@@ -56,3 +56,23 @@ failure green. Record the checkout SHA, serving Worker version, Actions run,
 fixed status/phase label, and whether the account inventory was empty; retain
 no raw artifacts. If the account is not empty, inspect it only through an
 authorized, separate workflow rather than weakening the empty-inventory gate.
+
+## First live result (2026-09-30)
+
+| Boundary | Recorded evidence |
+| --- | --- |
+| Checkout | `3dbc961b35408105f7f5bceb599fe32ccc536b04` |
+| Serving-version pin | [run 36681988920](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36681988920), 100%-serving Mail version `a5429622-67ac-4570-b771-a50c3683e5d4`, `staging_mail_serving_pin=match` |
+| Native query-only probe | [run 36682045842](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36682045842), Windows job `109779427733`, successful fixed result `staging_semantic_query_only=empty_query_completed_and_local_cleanup_passed` |
+
+The fixed success label is emitted only after the owner-scoped ordinary
+inventory was empty, the native PKCE semantic CLI request completed with an
+empty result, and the temporary CLI home was removed. Under the pinned Worker
+source, `search_jobs::search` embeds the query before scanning messages; thus
+the completed request supports the narrower inference that query-embedding
+and search-job plumbing worked for this empty-mail request. The fixed log
+does not independently expose a provider receipt, and neither this result nor
+the source ordering demonstrates document indexing, lexical AND composition,
+semantic ranking/scores, or the cause of the earlier two-message failure.
+No SMTP delivery or address creation was performed by this probe. Preserve
+the earlier failure as a distinct, unresolved observation.

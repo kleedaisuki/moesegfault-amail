@@ -1,7 +1,9 @@
 # First live semantic-stage failure: exact hosted run 36677506793
 
-Status: **semantic acceptance failed; mechanism unproven**. This note records
-only fixed-label evidence and source-level discriminators. It does not contain
+Status: **semantic acceptance failed; mechanism unproven**. A later
+[empty-mail query-only probe](staging-semantic-query-only-probe.md#first-live-result-2026-09-30)
+passed, but does not repair or diagnose this historical two-message failure.
+This note records only fixed-label evidence and source-level discriminators. It does not contain
 the staging address, message IDs, query text, ZIP, token, mail body, or raw CLI
 output.
 
@@ -85,6 +87,14 @@ two-message AND behavior; a later deliberate two-fixture acceptance run still
 requires its own guarded authorization and cleanup. Repeating SMTP merely to
 clarify the opaque first marker would create extra mail and obscure the
 failure.
+
+The proposed narrower probe subsequently ran once: [run 36682045842](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36682045842)
+reported `empty_query_completed_and_local_cleanup_passed` after a
+[100%-serving Worker pin](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36681988920).
+It supports query-embedding/job completion on an empty mailbox under the
+pinned source, not document-index readiness, lexical AND, semantic score
+correctness, or a cause for this earlier failure. See the linked probe note
+for exact revision, version, and limitations.
 
 Evidence: [hosted run](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36677506793),
 `infra/tests/staging_mail_e2e.py`, `infra/tests/staging_semantic_e2e.py`,
