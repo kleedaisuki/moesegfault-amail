@@ -17,6 +17,11 @@ proof that any test, D1 migration, or production configuration passed.
 
 ## Contract distinction: admission is enforced; arbitrary unhold is not
 
+**Resolved by source correction `212cfe07e84fbc5740e85a1f9166af300fcbf2c7`,
+independently re-reviewed on 2026-10-01.** The discussion below describes the
+original a93fe58 state, not the corrected candidate. See the correction review
+at the end of this document; do not reopen this gap without new evidence.
+
 Location: `0009_direct_role_contact.sql`, the two `BEFORE INSERT ON
 send_requests` guards; `infra/operator/send_control.py::statement`.
 
@@ -112,3 +117,43 @@ The architecture's existing Gray Failure reference usefully separates
 control-plane observations from user outcomes; no new speculative academic
 mechanism is necessary to review these executable authorization paths. Human
 coverage and delivery/intervention remain separately owned evidence.
+
+## Correction review: 212cfe0
+
+Scope: inspected the correction diff for migration 0009, direct-contact SQL
+tests, and implementation documentation. No local tests/builds or live calls
+were executed. This review assesses source logic, not D1 execution evidence.
+
+**GO for hosted source-only checks of the corrected held candidate.** The
+every-unhold source gap is resolved; no new substantive defect was identified.
+**NO-GO for public release or unheld deployment remains unchanged** because
+human coverage, scheduled checking and real hosted acceptance are not supplied
+by a source trigger correction.
+
+The new `send_policy_direct_allow_insert` and
+`send_policy_direct_allow_update` guards condition on every NEW global allowed
+row, not just held-to-allowed transitions. Both reject unless the four static
+flags and the exact shared `direct_role_contact_ready` view pass in database
+time. Existing send_policy CHECK constraints already require global owner pins
+`*`/`*`, so omitting duplicate owner checks in their WHEN clause does not widen
+the accepted global row domain. Allowed-to-allowed edits recheck freshness.
+Global held and account-local writes are outside these conditions, preserving
+emergency hold and account policy operations. The migration's final contact
+revocation/hold writes do not trigger an allowed-only guard, and policy/health
+failure holds do not acquire a readiness dependency.
+
+The added synthetic test covers missing-evidence raw UPDATE, raw INSERT after
+global-row removal, successful ready reassertion, a missing static flag, exact
+expiry on allowed-to-allowed reassertion, emergency hold and account allow.
+The existing held-canary test now expects raw unhold to fail, then explicitly
+drops only the update guard to verify the independent send-request admission
+defense. This intentional test-only fault injection avoids claiming one guard's
+rejection proves another guard's behavior. The pre-0009 hold-readback test is
+correctly retained unchanged. Positive global INSERT with complete readiness
+and account UPDATE could broaden hosted coverage, but inspection establishes
+no production defect requiring them before source-check execution.
+
+Because 0009 has not been represented as deployed, correcting its source is
+consistent with the pending held rollout. If contrary deployment evidence
+appears, do not assume editing 0009 retrofits an already migrated database;
+create an additive follow-up migration and re-review that rollout separately.
