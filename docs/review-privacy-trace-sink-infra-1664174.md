@@ -241,3 +241,37 @@ is full private sink attestation, hosted green integrated tests, successful
 containment evidence accepted by the exact gate, and the bounded pre-mutation
 ownership refinement. Queue schema/provider-shape failures must stop and be
 classified; no blind rerun or adoption is authorized.
+
+## Final infra-specific correction check (`282596e`, `0e50c35`, `c9fe9c9`, `f62b11b`)
+
+Static review, 2026-09-30. No local test/build, live call, deployment or push.
+
+The earlier infra-specific corrections now have coherent source implementations:
+- Historical fixture includes the mandatory sampling/redaction fields.
+- Run/version data are supplied in the intended staging job environments and
+  referenced as quoted environment variables, not shell-expanded expressions.
+- All preexisting resource attachment/count/identity details are validated with
+  GET before creating any missing peer. The new foreign-consumer fixture asserts
+  exactly a detail GET and no creation.
+- Created IDs pass to both sink and API readback in that authorized workflow.
+  Independent canary supplies separately reviewed project variables.
+- First-attempt-only evidence check remains (`031cee7`).
+
+### New P1 workflow syntax regression to correct before CI
+
+`282596e` also accidentally inserted `AMAIL_TRACE_CONTAINMENT_RUN` and
+`AMAIL_TRACE_CONTAINMENT_VERSION` at six-space indentation inside the
+`detect-release` job's `steps` sequence, immediately after step `env.GH_TOKEN`
+and before eight-space `shell`. These two mapping keys terminate/mix with the
+sequence at the wrong level. The workflow cannot be parsed as valid YAML.
+Remove those unrelated inserted lines; keep only the two intended staging job
+`env` placements. This was established by direct source inspection, not a local
+parser/test execution. Implementer and root were notified immediately.
+
+No prior resolved Queue finding is reopened. **Hosted source CI is NO-GO only
+until that deterministic syntax regression is fixed; afterward the reviewed
+infra/provenance changes are GO for non-deploying hosted source CI.** Full sink
+private exposure/trigger/bindings checker is still separately in progress, so
+**live Queue creation/rollout remains unapproved** pending that source review,
+actual hosted green result and accepted immutable containment evidence. Canary
+wiring remains a guarded manual path, not an automatic privacy approval.
