@@ -1,5 +1,15 @@
 # Hosted staging address/quota/isolation acceptance
 
+For the next quota-only acceptance, use the narrower
+[B-only hosted design](staging-ten-address-hosted-acceptance-design.md).
+It supersedes this combined campaign's proposed live execution path: reuse
+the normally verified B principal **after** the smaller two-principal
+isolation acceptance, use ten routes with zero SMTP, and require a durable
+private baseline manifest before any mutation. Neither path is live-wired.
+Credential/recovery Secrets are repository-level, with the staging
+Environment retained as a job gate; the older environment-secret wording
+below is historical planning, not a request to duplicate Secrets.
+
 Status (2026-09-30): **prepared ten-address harness and hosted mock-only tests;
 no ten-address live execution or verified second principal**. The ordinary
 [staging inbound run 36682429638](validation.md) proved one principal's native
