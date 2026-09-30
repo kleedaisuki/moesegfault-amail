@@ -30,7 +30,7 @@ RESERVED = (
 )
 LIMIT = 2_000_000
 ROW_KEYS = {"owner_iss", "owner_sub", "state", "created_at", "cf_rule_id",
-            "needs_reconcile"}
+            "needs_reconcile", "local_part", "slot", "next_reconcile_at"}
 RULE_KEYS = {"id", "address", "enabled", "source", "name", "worker"}
 
 
@@ -96,6 +96,9 @@ class Snapshot:
     baseline. Rules contain the entire zone, normalized only after a future
     adapter validates every raw matcher/action. Unknown shapes must be rejected
     by that adapter, not filtered away. This class performs no network I/O.
+    The map key represents the migration's address primary key; each row keeps
+    every other addresses column, including slot and signed reconciliation
+    schedule. Projecting either away could conceal unrelated Cron/state drift.
     """
 
     rows: dict[str, dict]
@@ -116,6 +119,11 @@ class Snapshot:
                     and isinstance(row["owner_iss"], str) and bool(row["owner_iss"])
                     and isinstance(row["owner_sub"], str) and bool(row["owner_sub"])
                     and type(row["created_at"]) is int and row["created_at"] >= 0
+                    and isinstance(row["local_part"], str) and bool(row["local_part"])
+                    and len(row["local_part"]) <= 32
+                    and type(row["slot"]) is int and 0 <= row["slot"] <= 9
+                    and type(row["next_reconcile_at"]) is int
+                    and -(2 ** 63) <= row["next_reconcile_at"] < 2 ** 63
                     and (row["cf_rule_id"] is None or
                          isinstance(row["cf_rule_id"], str) and bool(row["cf_rule_id"]))
                     and type(row["needs_reconcile"]) is int and row["needs_reconcile"] in (0, 1),
@@ -296,11 +304,14 @@ def recovery_actions(plan: dict, current: Snapshot, verified_owner: str,
             require(not after, "unowned_rule_orphan")
             continue
         require(row["owner_iss"] == ISSUER and row["owner_sub"] == verified_owner
-                and row["created_at"] >= plan["created_at"], "recovery_resource_not_owned")
+                and row["created_at"] >= plan["created_at"]
+                and row["local_part"] == address.split("@", 1)[0], "recovery_resource_not_owned")
         require(rule_safe(current, address, row), "recovery_rule_unsafe")
         if row["state"] == "retired":
             require(not after and row["cf_rule_id"] is None and row["needs_reconcile"] == 0,
                     "retirement_unsettled")
+            # Production leaves the old next_reconcile_at value after settling.
+            # It is journal state, not pending work when retired + needs=0.
         else:
             actions.append(address)
     return tuple(actions)
@@ -323,6 +334,7 @@ def assert_prefix(plan: dict, current: Snapshot, prefix: int,
         row = current.rows[address]
         require(row["state"] == "active" and row["needs_reconcile"] == 0
                 and row["owner_iss"] == ISSUER and row["owner_sub"] == plan["owner_sub"]
+                and row["local_part"] == address.split("@", 1)[0]
                 and row["created_at"] >= plan["created_at"] and rule_safe(current, address, row)
                 and any(rule["address"] == address for rule in current.rules), "prefix_not_active")
     unrelated = [rule for rule in current.rules if rule["address"] not in expected]

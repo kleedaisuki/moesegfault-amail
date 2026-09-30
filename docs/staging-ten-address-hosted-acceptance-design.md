@@ -29,6 +29,15 @@ fixture and do **not** prove encryption/library behavior. All code errors are
 fixed source-owned codes; there is no live CLI entry point or raw-data output.
 The root recovery key is domain-separated into a cipher key, independently of
 the candidate-derivation namespace. No secret is configured by this increment.
+Snapshot rows retain every column from address migrations `0001` and `0008`:
+the resource-map key is `address`, and values include `local_part`, `slot`,
+owner issuer/subject, state, rule ID, creation time, `needs_reconcile` and signed
+`next_reconcile_at`. The latter legitimately allows `-1`; production may leave
+its old value after retirement settles, so a settled tombstone does not require
+a zero schedule. Full baseline equality nevertheless catches unrelated
+local-part, slot and schedule changes. Hosted synthetic tests bind this field
+set to the actual migrations, reject projections/malformed types, and cover
+these count-preserving drift cases.
 
 ## Scope and source evidence
 

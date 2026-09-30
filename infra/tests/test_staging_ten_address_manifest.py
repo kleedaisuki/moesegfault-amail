@@ -18,11 +18,13 @@ GEN = "test-key-v1"
 OWNER = "synthetic-b"
 
 
-def row(state="active", owner=OWNER, saved=None, created=1000, reconcile=0):
+def row(state="active", owner=OWNER, saved=None, created=1000, reconcile=0,
+        local_part="synthetic", slot=0, next_reconcile_at=0):
     """Construct a normalized synthetic D1 row without real account data."""
 
     return {"owner_iss": target.ISSUER, "owner_sub": owner, "state": state,
-            "created_at": created, "cf_rule_id": saved, "needs_reconcile": reconcile}
+            "created_at": created, "cf_rule_id": saved, "needs_reconcile": reconcile,
+            "local_part": local_part, "slot": slot, "next_reconcile_at": next_reconcile_at}
 
 
 def rule(address, identity="synthetic-rule"):
@@ -136,7 +138,8 @@ class ManifestTests(unittest.TestCase):
     def live(self, value, count=1):
         """Create the exact prefix of synthetic active rows and rules."""
         aliases = value["allowed"][:count]
-        return target.Snapshot({a: row(saved=str(i)) for i, a in enumerate(aliases)},
+        return target.Snapshot({a: row(saved=str(i), local_part=a.split("@")[0], slot=i)
+                                for i, a in enumerate(aliases)},
                                [rule(a, str(i)) for i, a in enumerate(aliases)], count)
 
     def test_prefix_and_external_drift(self):
@@ -152,7 +155,7 @@ class ManifestTests(unittest.TestCase):
         """Whole-plan recovery does not depend on acknowledged success ledger."""
         value = plan()
         names = [value["allowed"][10], f"admin@{target.DOMAIN}"]
-        current = target.Snapshot({a: row("pending") for a in names}, [], 2)
+        current = target.Snapshot({a: row("pending", local_part=a.split("@")[0]) for a in names}, [], 2)
         self.assertEqual(set(target.recovery_actions(value, current, OWNER, KEY, RUN, GEN)), set(names))
 
     def test_foreign_duplicate_and_saved_rule_block_delete(self):
@@ -182,7 +185,9 @@ class ManifestTests(unittest.TestCase):
         """Supported delete occurs once and final retired state is accepted."""
         value = plan()
         current = self.live(value)
-        retired = target.Snapshot({value["allowed"][0]: row("retired")}, [], 0)
+        retired = target.Snapshot({value["allowed"][0]: row("retired",
+                                  local_part=value["allowed"][0].split("@")[0],
+                                  next_reconcile_at=-1)}, [], 0)
         read = mock.Mock(side_effect=[current, current, retired])
         delete = mock.Mock()
         target.reconcile(value, read, delete, OWNER, KEY, RUN, GEN)
@@ -195,7 +200,8 @@ class ManifestTests(unittest.TestCase):
     def test_unsettled_tombstone_and_wrong_recovery_owner(self):
         """A retired label alone cannot prove provider reconciliation."""
         value = plan()
-        current = target.Snapshot({value["allowed"][0]: row("retired", reconcile=1)}, [], 0)
+        current = target.Snapshot({value["allowed"][0]: row("retired", reconcile=1,
+                                  local_part=value["allowed"][0].split("@")[0])}, [], 0)
         with self.assertRaisesRegex(target.ContractFailure, "retirement_unsettled"):
             target.recovery_actions(value, current, OWNER, KEY, RUN, GEN)
         with self.assertRaisesRegex(target.ContractFailure, "recovery_owner_mismatch"):
@@ -212,6 +218,46 @@ class ManifestTests(unittest.TestCase):
         bad["state"] = []
         with self.assertRaisesRegex(target.ContractFailure, "^row_shape_invalid$"):
             target.Snapshot({"bad@example.test": bad}, [], 1).validate()
+
+    def test_full_row_schema_matches_all_address_migrations(self):
+        """Projection must include every actual column, not a convenient subset."""
+        root = Path(__file__).resolve().parents[2] / "crates/mail-worker/migrations"
+        initial = (root / "0001_initial.sql").read_text(encoding="utf-8")
+        table = initial.split("CREATE TABLE IF NOT EXISTS addresses (", 1)[1].split(");", 1)[0]
+        columns = set(re.findall(r"^\s*([a-z_]+)\s+(?:TEXT|INTEGER)\b", table, re.MULTILINE))
+        for migration in sorted(root.glob("*.sql")):
+            columns.update(re.findall(r"ALTER TABLE addresses ADD COLUMN ([a-z_]+)\b",
+                                      migration.read_text(encoding="utf-8")))
+        self.assertEqual(target.ROW_KEYS | {"address"}, columns)
+
+    def test_local_part_slot_and_schedule_drift_are_not_projected_away(self):
+        """Count-preserving unrelated row edits must still stop the quota claim."""
+        address = "foreign@example.test"
+        base = target.Snapshot({address: row("pending", "foreign", local_part="foreign")}, [], 1)
+        value = plan(base)
+        for field, replacement in (("local_part", "changed"), ("slot", 1), ("next_reconcile_at", -1)):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(base.rows)
+                changed[address][field] = replacement
+                current = target.Snapshot(changed, [], 1)
+                with self.assertRaisesRegex(target.ContractFailure, "unrelated_row_drift"):
+                    target.assert_prefix(value, current, 0, KEY, RUN, GEN)
+                with self.assertRaisesRegex(target.ContractFailure, "cleanup_unrelated_drift"):
+                    target.reconcile(value, lambda: current, mock.Mock(), OWNER, KEY, RUN, GEN)
+
+    def test_schedule_and_slot_types_fail_closed(self):
+        """Signed schedules are valid; missing fields, bool and out-of-range slots are not."""
+        for field, invalid in (("slot", True), ("slot", 10), ("next_reconcile_at", True),
+                               ("next_reconcile_at", 2 ** 63), ("local_part", "")):
+            bad = row()
+            bad[field] = invalid
+            with self.subTest(field=field, invalid=invalid):
+                with self.assertRaisesRegex(target.ContractFailure, "row_shape_invalid"):
+                    target.Snapshot({"bad@example.test": bad}, [], 1).validate()
+        incomplete = row()
+        del incomplete["next_reconcile_at"]
+        with self.assertRaisesRegex(target.ContractFailure, "row_shape_invalid"):
+            target.Snapshot({"bad@example.test": incomplete}, [], 1).validate()
 
 
 if __name__ == "__main__":
