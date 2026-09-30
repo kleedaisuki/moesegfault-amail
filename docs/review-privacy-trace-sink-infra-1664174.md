@@ -341,3 +341,33 @@ Additional official sources retrieved independently:
 - [Cloudflare Queue SDK resource](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/resources/queues/queues.py).
 - [Create parameter schema](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/types/queues/queue_create_params.py).
 - [PATCH parameter schema](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/types/queues/queue_edit_params.py).
+
+## Recovery closure (`120a243`, `b829d29`)
+
+Final narrow static review, 2026-09-30. No local tests/builds, live call or push.
+
+The failed-PATCH recovery finding is **resolved in source**: exact reviewed
+name/ID is checked, detail GET is allowed despite retention drift, complete
+owner arrays/counts remain checked, and only a fixed `not_ready` retention
+classification is emitted. Recover cannot enter the POST/PATCH loop and does
+not emit provisioning `match`. Normal queues/readback phases still reject
+retention drift. The new fixture models default 345600-second retention,
+asserts a bodyless exact-ID GET and `not_ready`, and separately proves normal
+provisioning rejects that resource without mutation. It has not been executed
+locally or attested by hosted CI yet.
+
+`b829d29` closes inventory envelope/metadata to the documented SinglePage
+fields. Continuation/truncation additions, even false/empty, now fail rather
+than being interpreted as a complete inventory. Optional absent/empty
+SinglePage metadata remains compatible with the official SDK contract.
+No new substantive issue found in these corrections.
+
+**Infra source verdict: GO for non-deploying hosted source CI.** All findings
+owned by this infra review are now source-resolved. **Live Queue creation is
+not yet approved by this review:** require actual hosted integrated green,
+separate strict-sink source approval, and the exact successful immutable
+containment/100%-serving prerequisite before dispatch. These are verification
+prerequisites, not remaining demonstrated defects in this corrected infra
+source. After those gates, the reviewed bounded fresh POST→PATCH operation is
+eligible for one deliberate staging rollout; ambiguity uses read-only recovery,
+not a blind retry. Whole-record privacy still requires the post-rollout canary.
