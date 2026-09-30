@@ -11,6 +11,36 @@ This document extends the held-only contract implemented in `a93fe58` and
 [implementation](direct-forward-role-release-gate-implementation.md) and
 [independent contact-gate review](review-direct-forward-contact-gate-a93fe58.md).
 
+## Current default-branch and first manual health evidence
+
+[PR #1](https://github.com/kleedaisuki/moesegfault-amail/pull/1) registered these
+workflows on `main` at `de2caf2e7d63c492b75ad7bddf89c0a8892e647b`.
+Its exact-main nondeploying source CI
+[36786862389](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36786862389)
+passed six source jobs with 51 non-source jobs skipped; this is not live contact
+or production Mail acceptance.
+
+One manual **production** health dispatch
+[36787473601](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36787473601)
+ran at that exact main revision. Checkout passed; `Observe adopted policy or
+prove unadopted global hold` failed at 2026-09-30 22:46:36 UTC with the sole
+fixed helper result `direct_contact_health=not_committed`. This is not a
+successful health observation, adoption or affirmative human attestation. It
+does not prove the unadopted global hold from a provider readback, identify the
+failing phase, or establish D1/routing state. No repeated manual run, route
+repair, adoption, attestation, deployment or public unhold is justified by it.
+Preserve the first failure and require separately reviewed discriminating
+evidence before a new operational attempt. Scheduled workflow registration
+is not a passed scheduled observation. Subsequent [PR #5](https://github.com/kleedaisuki/moesegfault-amail/pull/5)
+merged the default-off schedule gate into `main` at
+`ba1365d0329bf52a38388460820d584d016a2eba`: scheduled refresh requires
+`AMAIL_CONTACT_HEALTH_ACTIVE=true`; manual dispatch stays independently gated.
+This records source admission behavior, not the live variable value or a
+successful observation. Keep recurring access inactive until the readiness
+conditions below are genuinely met. Public sending remains held; Issues-off
+privacy evidence remains unknown and no genuine release exists. See the
+[current release-gate map](release-gap-audit.md#current-release-gate-delta-2026-10-01-asiasingapore).
+
 ## Deliberately separate capabilities
 
 | Workflow | Entry and capability | What it cannot establish |
@@ -63,12 +93,11 @@ and `false` consistently rather than relying on case distinctions.
 [GitHub contexts reference](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#vars-context)
 and [expression comparisons](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#operators).
 
-After the held source landed on `main` at `de2caf2`, manual production run
-`36787473601` failed with the fixed status `direct_contact_health=not_committed`
-before a supported contact schema/global-held proof was established. It is
-not successful health or release evidence. The default-off gate prevents an
-unready hourly schedule from repeatedly accessing provider infrastructure;
-it does not turn that manual failure into success or suppress helper errors.
+The [first manual failure recorded above](#current-default-branch-and-first-manual-health-evidence)
+established neither successful contact health nor schema/global-held proof.
+The default-off gate prevents an unready hourly schedule from repeatedly
+accessing provider infrastructure; it does not turn that failure into success,
+suppress helper errors or authorize an unchanged manual replay.
 
 To stop recurring observations, unset the repository variable or set `false`.
 That affects future job admission, not a run already admitted. It does not
