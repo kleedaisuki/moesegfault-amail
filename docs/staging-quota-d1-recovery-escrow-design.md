@@ -155,9 +155,13 @@ alert receipt/acknowledgement. Do not infer notification delivery from API 201 o
 issue creation, and do not disclose the private operational mailbox in issues.
 
 Use a dedicated metadata-only GitHub watchdog workflow, with `contents: read`,
-`issues: write` and the existing protected staging D1 read capability. It needs
-no recovery key, mail content, artifact download, Cloudflare routing write or
-Delete capability. Query indexed public escrow metadata only. Run it on a
+`issues: write` and the existing protected staging D1 control-plane capability.
+Its source adapter may SELECT indexed public escrow metadata and conditionally
+attach an exact immutable issue number/acknowledgement receipt in the operations
+parent row; it exposes no general SQL, ciphertext-chunk read, mail table access
+or DELETE. This is not a claim that the underlying account-level token is
+read-only or table-scoped. It needs no recovery key, mail content, artifact
+download, Cloudflare routing write or destructive callback. Run it on a
 conservative periodic schedule and explicit dispatch, and use an immediate
 post-failure alert attempt in the acceptance workflow when possible. The durable
 D1 `armed` state covers hard cancellation when that step never runs.
