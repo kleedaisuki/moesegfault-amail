@@ -728,7 +728,7 @@ jobs:
           python-version: '3.14'
       - name: Classify one bounded, sampled zone-host event window
         env:
-          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           DIAGNOSTIC_CONFIRM: ${{ inputs.confirm }}
           PYTHONDONTWRITEBYTECODE: '1'

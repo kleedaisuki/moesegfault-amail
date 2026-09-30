@@ -11,9 +11,14 @@ historical request's producer. The canary's 403 occurred near **2026-09-30
 
 The manual GitHub Actions `ci.yml` target `staging-trace-security-events` is
 fixed to run `36671177226`, the staging environment, and the exact confirmation
-`READ_STAGING_TRACE_SECURITY_EVENTS_36671177226`. It uses only the existing
-`CF_ZONE_ID` and `CLOUDFLARE_API_TOKEN` secrets, injected into the final query
-step. Example dispatch:
+`READ_STAGING_TRACE_SECURITY_EVENTS_36671177226`. It uses the repository's
+fixed, public zone ID and the existing `CLOUDFLARE_API_TOKEN` secret, injected
+only into the final query step. The first hosted dispatch
+[36673249868](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36673249868)
+stopped **before any provider request** with `reason=credential`: unlike the
+other staging jobs, its workflow incorrectly read a nonexistent `CF_ZONE_ID`
+secret. This wiring was corrected; no Security Events result has yet been
+observed. Example dispatch:
 
 ```text
 gh workflow run ci.yml --ref codex/amail-v0.1.0 \
