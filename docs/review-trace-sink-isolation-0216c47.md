@@ -188,3 +188,40 @@ inspect top-level truncation/continuation claims. Apply the same completeness
 boundary consistently to endpoint-specific single-page readers. Confidence:
 high for the accepted synthetic control flow; unqueried runtime behavior remains
 unknown. This does not reopen the already corrected request-shape findings.
+
+## Final narrow source recheck: `b829d29` + `b5db761`
+
+**All findings above are resolved in current source. GO for hosted CI and,
+after that CI passes, guarded read-only live checker execution with the exact
+reviewed identities. No approval of rollout success or privacy acceptance is
+implied before actual readback/canary evidence.** No new substantive defect was
+identified in this final narrow recheck.
+
+- Queue SinglePage inventory has a closed documented envelope and closed
+  optional result_info. The unknown nested `cursors.after`, top-level
+  next_cursor and truncated examples now reject rather than being ignored.
+  Current source tests include those exact cases and an unknown false-valued
+  metadata field, demonstrating that rejection does not depend on its truthiness.
+- Domains uses the same closed envelope boundary and closed optional metadata;
+  its source denial tests explicitly exercise top-level next_cursor, truncated,
+  has_more, and nested cursors.after. Official complete absent/empty/coherent
+  metadata responses remain accepted rather than demanding invented pagination.
+- The integration test now exercises actual Queue inventory via
+  `queue_trigger_exact`: valid absent/empty/per_page20 metadata proceeds to the
+  two valid detail reads; contradictory count, advertised omitted third row,
+  inadequate per_page and later-page claims fail at the inventory step. These
+  assertions were inspected, not executed locally.
+- The zone path deliberately includes
+  `type=full,partial,secondary,internal`. Current official Zone documentation
+  supports comma-separated types and states that omission excludes internal
+  zones. This strengthens the intended account-visible route inventory without
+  inventing another endpoint model. Its known bounds/credential-visibility limit
+  remain unchanged.
+
+This clearance covers source checker contracts only. Existing duties remain:
+hosted denial tests must pass, actual serving/resource identities and private
+surfaces must read back, token visibility must match the claimed account scope,
+and the separate whole-record canary must prove safe retained events. All
+earlier findings are retained above as review history rather than active blockers.
+No local tests/builds, live requests, deployment, production edit or push were
+performed for any of these source rechecks.
