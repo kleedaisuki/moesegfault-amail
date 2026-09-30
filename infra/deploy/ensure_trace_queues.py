@@ -225,6 +225,9 @@ def main() -> int:
     except ValueError as error:
         print(f"trace_queue={error}", file=sys.stderr)
         return 1
+    except OSError:
+        print("trace_queue=recovery_io_unverified", file=sys.stderr)
+        return 1
     print("trace_queue_recover=exact_inventory_only" if args.phase == "recover" else f"trace_queue_{args.phase}=match")
     return 0
 
