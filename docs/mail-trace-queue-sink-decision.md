@@ -348,6 +348,15 @@ review and its own Email whole-record acceptance; do not silently treat the
 Fetch canary as its proof. Maintain the existing private role-mail storage and
 lease/alert behavior unchanged while replacing only diagnostics emission.
 
+**2026-10-01 source extension:** the reviewed role variant and a separate,
+manually promoted exact-two-producer topology are now implemented in source.
+Phase1 remains sole Mail API; phase2 is exactly Mail API plus role-monitor on
+the same pinned Queue/DLQ and sole sink. It requires immutable phase1 provenance,
+an actual prior API/sink whole-record privacy canary, and strict pre/post serving
+readback; it does not deploy role automatically alongside the API. See the
+[complete role transition and remaining independent Email/Cron gates](role-mail-monitoring.md#source-only-staged-shared-queue-rollout-contract-2026-10-01).
+This update is not a live rollout or Email privacy acceptance.
+
 ## References (retrieved 2026-09-30)
 
 1. [Cloudflare Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/).
