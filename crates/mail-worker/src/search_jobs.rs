@@ -133,6 +133,19 @@ fn decode_cursor(
     hash: &str,
     generation: i64,
 ) -> AppResult<Option<SearchCursor>> {
+    if input.cursor.is_none() {
+        return Ok(None);
+    }
+    decode_cursor_at(input, hash, generation, now())
+}
+
+/// Validate an opaque cursor against a supplied clock; native tests do not invoke JS time.
+fn decode_cursor_at(
+    input: &SearchRequest,
+    hash: &str,
+    generation: i64,
+    current_time: i64,
+) -> AppResult<Option<SearchCursor>> {
     let Some(encoded) = input.cursor.as_deref() else {
         return Ok(None);
     };
@@ -142,7 +155,7 @@ fn decode_cursor(
     let cursor: SearchCursor =
         serde_json::from_slice(&bytes).map_err(|_| AppError::bad("invalid_cursor"))?;
     if cursor.hash != hash
-        || cursor.high_water > now() + 60_000
+        || cursor.high_water > current_time + 60_000
         || cursor.last_time >= cursor.high_water
         || cursor.last_id.is_empty()
         || cursor.last_score_bits.is_some() != input.semantic.is_some()
@@ -768,6 +781,8 @@ pub(super) async fn cleanup(env: &Env) -> Result<()> {
 mod tests {
     use super::*;
 
+    const SYNTHETIC_NOW: i64 = 1_000_000;
+
     /// Synthetic commitments are stable across job completion and reject model/vector drift.
     #[test]
     fn semantic_vector_commitment_is_stable_and_fail_closed() {
@@ -787,7 +802,7 @@ mod tests {
         let cursor = SearchCursor {
             version: 4,
             hash: hash.clone(),
-            high_water: now() + 1,
+            high_water: SYNTHETIC_NOW + 1,
             generation: 0,
             last_time: 1,
             last_id: "synthetic-id".into(),
@@ -799,7 +814,9 @@ mod tests {
             cursor: Some(encoded),
             ..input
         };
-        let decoded = decode_cursor(&continued, &hash, 0).unwrap().unwrap();
+        let decoded = decode_cursor_at(&continued, &hash, 0, SYNTHETIC_NOW)
+            .unwrap()
+            .unwrap();
         assert!(check_vector(
             Some(&decoded),
             &vector_commitment(&hash, "model-a", &vector).unwrap()
@@ -865,7 +882,7 @@ mod tests {
             let cursor = SearchCursor {
                 version: 3,
                 hash: hash.clone(),
-                high_water: now() + 1,
+                high_water: SYNTHETIC_NOW + 1,
                 generation: 0,
                 last_time: 1,
                 last_id: "synthetic-id".into(),
@@ -876,7 +893,7 @@ mod tests {
                 cursor: Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).unwrap())),
                 ..input
             };
-            let result = decode_cursor(&continued, &hash, 0);
+            let result = decode_cursor_at(&continued, &hash, 0, SYNTHETIC_NOW);
             if continued.semantic.is_some() {
                 let error = result.err().unwrap();
                 assert_eq!((error.status, error.code), (409, "search_cursor_stale"));
@@ -901,7 +918,7 @@ mod tests {
         let base = SearchCursor {
             version: 4,
             hash: hash.clone(),
-            high_water: now() + 1,
+            high_water: SYNTHETIC_NOW + 1,
             generation: 0,
             last_time: 1,
             last_id: "synthetic-id".into(),
@@ -918,7 +935,9 @@ mod tests {
                 cursor: Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).unwrap())),
                 ..Default::default()
             };
-            let error = decode_cursor(&continued, &hash, 0).err().unwrap();
+            let error = decode_cursor_at(&continued, &hash, 0, SYNTHETIC_NOW)
+                .err()
+                .unwrap();
             assert_eq!((error.status, error.code), (400, "invalid_cursor"));
         }
         let continued = SearchRequest {
@@ -926,7 +945,10 @@ mod tests {
             ..input
         };
         assert_eq!(
-            decode_cursor(&continued, &hash, 0).err().unwrap().code,
+            decode_cursor_at(&continued, &hash, 0, SYNTHETIC_NOW)
+                .err()
+                .unwrap()
+                .code,
             "invalid_cursor"
         );
     }
