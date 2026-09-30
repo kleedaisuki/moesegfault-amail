@@ -78,7 +78,7 @@ def require(condition: bool, label: str) -> None:
 
 
 def inspect_bindings(settings: object, queue_id: str, *, realm: str = "staging",
-                     database: str = DATABASE) -> None:
+                     database: str = DATABASE, queue_attached: bool = True) -> None:
     """Check effective D1 and sending bindings, without showing secrets."""
 
     require(realm in ("staging", "production"), "realm unreviewed")
@@ -97,7 +97,16 @@ def inspect_bindings(settings: object, queue_id: str, *, realm: str = "staging",
         ("secret_text", "CF_ACCOUNT_ID"),
         ("secret_text", "ROLE_TEST_FAULT"),  # Optional staging fault-injection hook.
     }
+    if not queue_attached:
+        require(realm == "production", "non-Queue predecessor realm unreviewed")
+        allowed.remove(("queue", "ROLE_TRACE_EVENTS"))
     if realm == "production":
+        required_names = {"ROLE_MONITOR", "ROLE_ALERT", "ROLE_REALM", "CF_ZONE_ID",
+                          "ROLE_FORWARD_DESTINATION", "CF_EMAIL_ROUTING_TOKEN", "CF_ACCOUNT_ID"}
+        if queue_attached:
+            required_names.add("ROLE_TRACE_EVENTS")
+        require({binding.get("name") for binding in bindings} == required_names,
+                "production capability set differs")
         allowed.remove(("secret_text", "ROLE_TEST_FAULT"))
     require(len({binding.get("name") for binding in bindings}) == len(bindings),
             "duplicate binding names")
@@ -114,8 +123,9 @@ def inspect_bindings(settings: object, queue_id: str, *, realm: str = "staging",
     queue = [binding for binding in bindings if binding.get("type") == "queue"]
     require(QUEUE_ID.fullmatch(queue_id) is not None, "reviewed Queue pin unavailable")
     require(
-        len(queue) == 1 and queue[0].get("name") == "ROLE_TRACE_EVENTS"
-        and queue[0].get("queue_id", queue[0].get("id")) == queue_id,
+        (not queue if not queue_attached else
+         len(queue) == 1 and queue[0].get("name") == "ROLE_TRACE_EVENTS"
+         and queue[0].get("queue_id", queue[0].get("id")) == queue_id),
         "Queue binding differs",
     )
     if realm == "production":
@@ -144,7 +154,8 @@ def inspect_bindings(settings: object, queue_id: str, *, realm: str = "staging",
 
 
 def inspect_serving_bindings(version: object, expected_version: str, queue_id: str, *,
-                             realm: str = "staging", database: str = DATABASE) -> None:
+                             realm: str = "staging", database: str = DATABASE,
+                             queue_attached: bool = True) -> None:
     """Attest immutable serving-version capabilities, never unversioned /settings bindings."""
 
     require(isinstance(version, dict) and version.get("id") == expected_version,
@@ -157,7 +168,8 @@ def inspect_serving_bindings(version: object, expected_version: str, queue_id: s
     if isinstance(bindings, dict):
         require(set(bindings) == {"result"}, "serving binding wrapper differs")
         bindings = bindings["result"]
-    inspect_bindings({"bindings": bindings}, queue_id, realm=realm, database=database)
+    inspect_bindings({"bindings": bindings}, queue_id, realm=realm, database=database,
+                     queue_attached=queue_attached)
 
 
 def inspect_observability(script: object, version: object, worker: object) -> None:

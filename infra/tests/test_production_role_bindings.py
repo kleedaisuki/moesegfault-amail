@@ -43,7 +43,9 @@ class ProductionBindingsTests(unittest.TestCase):
             {"type":"send_email", "name":"ROLE_ALERT", "allowed_sender_addresses":["mail@moesegfault.dev"]},
             {"type":"queue", "name":"ROLE_TRACE_EVENTS", "queue_id":QUEUE},
             {"type":"plain_text", "name":"ROLE_REALM", "text":"production"},
-            {"type":"plain_text", "name":"CF_ZONE_ID", "text":role.ZONE}]}
+            {"type":"plain_text", "name":"CF_ZONE_ID", "text":role.ZONE},
+            *[{"type":"secret_text", "name":name} for name in
+              ("ROLE_FORWARD_DESTINATION", "CF_EMAIL_ROUTING_TOKEN", "CF_ACCOUNT_ID")]]}
         role.inspect_bindings(value, QUEUE, realm="production", database=DATABASE)
         for extra in ({"type":"secret_text", "name":"ROLE_TEST_FAULT"}, deepcopy(value["bindings"][0])):
             changed = deepcopy(value)
