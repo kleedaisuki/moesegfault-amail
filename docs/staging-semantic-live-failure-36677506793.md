@@ -45,28 +45,46 @@ Hosted synthetic tests cover a prior `202` line, typed index/provider/quota
 poll errors, and an unknown code. This is **future diagnostic repair**, not a
 retroactive claim about the live run.
 
-## Smallest next discriminator without new SMTP
+## Historical phase-log discriminator: no-go at this boundary
 
-First examine a restricted, exact-time Worker application-log or provider
-event aggregate for the 06:20–06:26 UTC window. Constrain it to the staging
-mail Worker and only the synthetic test principal/run; return fixed counts of
-`messages.search` versus `messages.search.poll` invocation status and known
-error-code categories, plus whether the request reached the Worker. Do not
-export raw URL, request, response, address, query, subject, IDs, or log row.
-If the observability product cannot scope those fields safely, report
-`unavailable`, not an invented diagnosis. A bounded read-only D1 query can
-separately check owner-scoped `search_jobs` state and `embedding_work`/vector
-counts, but successful test cleanup soft-deletes messages and removes embedding
-work, while fast semantic jobs are deleted after response, so a *current*
-empty D1 snapshot cannot prove historical index readiness.
+An exact-time Cloudflare Workers Observability query is technically possible:
+the repository already has reviewed, bounded, dry, service-filtered readers
+for Mail/Role incidents. That is **insufficient for this incident**. The
+current Mail `Trace::exit` event records only the closed operation
+(`messages_search` or `search_poll`), HTTP status *class*, and a coarse
+`error_code` derived from the HTTP status. For example, every HTTP 503 maps to
+`service_unavailable`; it does not retain the public API's exact code
+(`semantic_index_incomplete`, `semantic_unavailable`, etc.). Unlike Role Cron,
+there is no semantic-search phase log. A historical retained event cannot
+recover the missing code by parsing its body without violating the logging
+privacy boundary, because the API response body is not in the reviewed trace.
 
-After this classifier passes hosted CI, a fresh **read-only** semantic CLI
-request on an existing authorized synthetic mailbox can distinguish initial
-POST from poll and typed error from local failure, provided the test account
-and corpus are deliberately selected and no content is printed. An empty
-mailbox only tests query embedding and job machinery, **not** document
-indexing or two-message AND behavior. Repeating SMTP merely to clarify an
-opaque marker would create extra mail and obscure the first failure.
+The hosted runner deleted its `.temp` CLI home in `finally`, and the harness
+suppressed raw CLI output and correlation IDs. Its only public marker has no
+request/trace ID. Therefore a service/time-only log query over 06:20–06:26
+UTC could at best show a **candidate** search POST/poll and status class,
+not establish that it belongs to run 36677506793 or distinguish the typed
+cause. This is especially important because the synthetic staging account is
+shared across probes. Introducing an account or inferred URL filter into
+Workers Observability would still not recover the exact code and risks
+handling sensitive metadata. **Do not dispatch a historical Mail phase-log
+probe as a root-cause discriminator or weaken the full retained-log privacy
+canary for this run.** A bounded read-only D1 query can check current
+owner-scoped `search_jobs` and vector counts, but successful cleanup
+soft-deletes messages and removes embedding work; fast jobs are deleted after
+response. An empty current snapshot cannot prove historical index readiness.
+
+The best non-mail next probe is a **fresh read-only semantic CLI request** on
+an already authorized synthetic staging mailbox after the revised classifier
+passes hosted CI. Preserve only a fixed POST-versus-poll, status/code label
+and duration; suppress the query, result rows, IDs, stderr and correlation
+headers. This can distinguish query-provider, quota/job, and local CLI failure
+without creating another address or SMTP delivery. If the mailbox is empty,
+it only checks query embedding/job machinery, **not** document indexing or
+two-message AND behavior; a later deliberate two-fixture acceptance run still
+requires its own guarded authorization and cleanup. Repeating SMTP merely to
+clarify the opaque first marker would create extra mail and obscure the
+failure.
 
 Evidence: [hosted run](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36677506793),
 `infra/tests/staging_mail_e2e.py`, `infra/tests/staging_semantic_e2e.py`,
