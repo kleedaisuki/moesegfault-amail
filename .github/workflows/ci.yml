@@ -12,7 +12,7 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production]
+        options: [staging, staging-containment-readback, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production]
       confirm:
         description: Staging E2E, semantic query, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -71,7 +71,7 @@ on:
         required: false
         type: string
       expected_worker_version:
-        description: Expected 100%-serving staging Mail Worker Version ID; staging-serving-pin only
+        description: Expected 100%-serving staging Mail Worker Version ID; serving pin or containment readback
         required: false
         type: string
       alias_run_id:
@@ -396,6 +396,43 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_prior_alias_reconcile.py READ_PRIOR_STAGING_ALIASES
+
+  staging-containment-readback:
+    name: Read-only staging containment settings discriminator
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-containment-readback' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require read-only confirmation and expected version
+        shell: pwsh
+        env:
+          READ_CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_VERSION: ${{ inputs.expected_worker_version }}
+        run: |
+          if ($env:READ_CONFIRM -cne 'READ_STAGING_CONTAINMENT_SETTINGS' -or
+              $env:EXPECTED_VERSION -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') {
+            throw 'Exact read-only confirmation and expected staging version required'
+          }
+      - name: Test synthetic containment readback contracts before credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s infra/tests -p 'test_staging_containment_readback.py' -v
+      - name: Read control-plane categorical settings with deployment brackets
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.expected_worker_version }}
+          AMAIL_CONTAINMENT_CONFIRM: ${{ inputs.confirm }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_containment_readback.py
 
   staging-serving-pin:
     name: Read-only pin of 100%-serving staging Mail Worker
