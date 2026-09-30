@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
 from urllib.request import Request, build_opener
@@ -67,6 +68,29 @@ def worker_readback(account: str, token: str) -> dict:
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}))
 
 
+def validate_write_policy(policy: dict) -> None:
+    """Enforce PATCH input types independently from permissive GET readback.
+
+    Optional response members may be null without contradicting capture-off,
+    but omission and explicit null are not interchangeable in the write schema.
+    Only traces.propagation_policy is a documented nullable request preference.
+    """
+    for section in (policy, policy["logs"], policy["traces"], policy["issues"]):
+        for key in ("enabled", "redact_query_string", "invocation_logs", "persist"):
+            if key in section and type(section[key]) is not bool:
+                raise ValueError("projection")
+        if "head_sampling_rate" in section:
+            value = section["head_sampling_rate"]
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError("projection")
+        if "destinations" in section:
+            value = section["destinations"]
+            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                raise ValueError("projection")
+    if policy["traces"].get("propagation_policy") not in (None, "authenticated", "accept"):
+        raise ValueError("projection")
+
+
 def projection(worker: dict) -> dict:
     """Project six writable required fields; do not copy response-only fields.
 
@@ -98,6 +122,7 @@ def projection(worker: dict) -> dict:
         policy[section].update(reviewed[section])
     if not safe_observability(policy):
         raise ValueError("projection")
+    validate_write_policy(policy)
     return {"name": SCRIPT, "logpush": False, "observability": policy,
             "subdomain": {key: subdomain[key] for key in ("enabled", "previews_enabled")},
             "tags": copy.deepcopy(tags), "tail_consumers": []}

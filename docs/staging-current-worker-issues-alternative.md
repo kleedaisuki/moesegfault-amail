@@ -7,6 +7,24 @@ audit expansion was performed. Existing run observations are reused from
 [the containment correction](staging-containment-settings-correction.md) and
 [PATCH forensics](staging-settings-patch-forensics.md), not independently repeated.
 
+## Historical evidence update (2026-10-01)
+
+Read-only historical Audit page run
+[36758328085](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36758328085)
+at `c0448ba` reported `read=ok`, `complete=unverified`, `matches=one`,
+`http=expected_success`, `action=success`, and
+`historical=page_reported_success`. This updates the legacy operation's evidence
+to a positive provider-reported outcome on one returned page. It does **not**
+establish complete attribution, client response acceptance, or effective
+current Issues=false. It does not authorize another legacy settings PATCH.
+See [the correction's current outcome](staging-containment-settings-correction.md#current-bounded-outcome-2026-10-01)
+and [the classifier contract](staging-settings-patch-forensics.md).
+
+This alternative remains a separately reviewed prospective operation, not an
+executed correction. Its endpoint, exact request projection and positive current
+readback obligations remain necessary even after the historical page observation;
+no historical status bin is substituted for its acceptance checks.
+
 ## Finding and decision implication
 
 There is a materially different documented operation on the same current
@@ -141,6 +159,12 @@ unknown subdomain/observability members. It retains recognized observability
 preferences, overlays the reviewed all-off source policy, and requires the
 result to pass the source policy predicate. Optional provider preferences that
 cannot satisfy this predicate block the operation rather than being removed.
+The separate writable-policy validator rejects explicit null for optional
+Boolean, destination-list and sampling-number members, even where the GET
+capture-off predicate tolerates null. Only `traces.propagation_policy` is a
+documented nullable writable preference and remains preserved. In particular,
+null logs/traces `persist`, `destinations`, or `head_sampling_rate` cannot leak
+from a permissive readback representation into a schema-invalid PATCH body.
 Every unaffected current response field, including private references, preview
 configuration and response-only subdomain properties, is compared in memory;
 only observability and mutable update timestamps are excluded. No raw response

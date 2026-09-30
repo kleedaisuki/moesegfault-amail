@@ -103,6 +103,35 @@ class CurrentWorkerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.execute(prior=prior, current=current)
 
+    def test_explicit_null_read_preferences_cannot_enter_patch(self):
+        """A safe GET null is not a schema-valid optional PATCH bool/list/number."""
+        for section in ("logs", "traces"):
+            for field in ("persist", "destinations", "head_sampling_rate"):
+                prior = worker()
+                prior["observability"][section][field] = None
+                with self.subTest(section=section, field=field), patch.object(subject, "patch_worker") as writer:
+                    with self.assertRaises(ValueError):
+                        subject.projection(prior)
+                    writer.assert_not_called()
+
+    def test_write_validator_types_and_nullable_propagation(self):
+        """Validate writable types separately, preserving documented null enum."""
+        policy = copy.deepcopy(POLICY)
+        policy["traces"]["propagation_policy"] = None
+        subject.validate_write_policy(policy)
+        for section, field, value in (("logs", "persist", None),
+                                      ("traces", "destinations", None),
+                                      ("traces", "head_sampling_rate", None),
+                                      ("traces", "head_sampling_rate", True),
+                                      ("traces", "head_sampling_rate", float("nan")),
+                                      ("traces", "head_sampling_rate", 2),
+                                      ("logs", "destinations", [False]),
+                                      ("traces", "propagation_policy", "unknown")):
+            invalid = copy.deepcopy(policy)
+            invalid[section][field] = value
+            with self.subTest(section=section, field=field, value=value), self.assertRaises(ValueError):
+                subject.validate_write_policy(invalid)
+
     def test_patch_identity_and_missing_readback_fail_closed(self):
         """An accepted write alone or provider omission is never an attestation."""
         for response in ({"id": "other", "name": subject.SCRIPT}, {"id": "synthetic-worker-id"}):
