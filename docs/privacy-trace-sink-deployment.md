@@ -17,8 +17,9 @@ attach a diagnostic HTTP-pull consumer: it changes the reviewed ownership and
 creates a second payload access path.
 
 `infra/deploy/ensure_trace_queues.py --target staging --phase queues` inventories
-the bounded unfiltered single-page Queue endpoint, creates only absent queues, and verifies retention.
-Existing drift fails; it never updates, purges or deletes resources. Preexisting
+the bounded unfiltered single-page Queue endpoint, creates only absent queues, captures each returned ID, configures one-day
+retention using the documented PATCH on only that fresh ID, and verifies retention.
+Existing drift fails; it never updates existing resources, purges or deletes queues. Preexisting
 resources additionally require exact reviewed project variables
 `AMAIL_TRACE_QUEUE_ID_STAGING`/`AMAIL_TRACE_DLQ_ID_STAGING` (or `_PRODUCTION`).
 These non-secret IDs must come from the successful provisioning evidence; name

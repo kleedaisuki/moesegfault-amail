@@ -19,11 +19,11 @@ RETENTION = 86400
 LIMIT = 262144
 
 
-def request(account: str, token: str, path: str, body: dict | None = None):
+def request(account: str, token: str, path: str, body: dict | None = None, *, method: str | None = None):
     """Read a bounded API envelope; never include provider error text in failures."""
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     req = Request(f"{API}/accounts/{account}/{path}", headers=headers,
-                  data=json.dumps(body).encode() if body is not None else None)
+                  data=json.dumps(body).encode() if body is not None else None, method=method)
     try:
         with urlopen(req, timeout=20) as response:
             raw = response.read(LIMIT + 1)
@@ -157,13 +157,20 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
     for name in names:
         if name in identities:
             continue
-        response = request(account, token, "queues", {"queue_name": name, "settings": {
-            "message_retention_period": RETENTION, "delivery_delay": 0, "delivery_paused": False}})
+        response = request(account, token, "queues", {"queue_name": name})
         result = response.get("result")
         created = exact_queue([result], name) if isinstance(result, dict) else None
-        if created is None or not bounded_queue(created):
+        if created is None:
             raise ValueError("created_queue_unverified")
         identities[name] = created["queue_id"]
+        # The create API accepts only identity fields. Configure only this newly
+        # returned ID; never edit settings of a preexisting resource.
+        patched = request(account, token, f"queues/{created['queue_id']}", {"settings": {
+            "message_retention_period": RETENTION, "delivery_delay": 0, "delivery_paused": False}},
+            method="PATCH").get("result")
+        if (not isinstance(patched, dict) or patched.get("queue_id") != created["queue_id"]
+                or patched.get("queue_name") != name or not bounded_queue(patched)):
+            raise ValueError("created_queue_settings_unverified")
     if len(set(identities.values())) != len(names):
         raise ValueError("queue_identity_ambiguous")
     # Fresh readback must match the exact create response or reviewed existing identity.

@@ -98,12 +98,23 @@ class TraceQueueTests(unittest.TestCase):
             self.assertEqual(call.call_count, 1)
             self.assertEqual(call.call_args.args[2], "queues/" + "a" * 32)
 
+    def test_only_new_identity_can_be_configured(self):
+        """Documented create then PATCH targets exactly the fresh provider identity."""
+        dlq = queue("amail-trace-dlq-staging")
+        with patch.object(MODULE, "inventory", return_value=[]), patch.object(MODULE, "request",
+                side_effect=[{"result": dlq}, {"result": {**dlq, "queue_id": "f" * 32}}]) as call:
+            with self.assertRaisesRegex(ValueError, "created_queue_settings_unverified"):
+                MODULE.reconcile("a", "t", "staging", "queues")
+            self.assertEqual(call.call_args_list[0].args[3], {"queue_name": "amail-trace-dlq-staging"})
+            self.assertEqual(call.call_args_list[1].args[2], "queues/" + "b" * 32)
+            self.assertEqual(call.call_args_list[1].kwargs["method"], "PATCH")
+
     def test_create_identity_must_survive_readback(self):
         """A successful POST identity cannot be replaced by a same-name resource."""
         dlq, main = queue("amail-trace-dlq-staging"), queue("amail-trace-events-staging")
         changed = {**main, "queue_id": "c" * 32}
         with patch.object(MODULE, "inventory", side_effect=[[], [dlq, changed]]), patch.object(
-                MODULE, "request", side_effect=[{"result": dlq}, {"result": main}, {"result": {
+                MODULE, "request", side_effect=[{"result": dlq}, {"result": dlq}, {"result": main}, {"result": main}, {"result": {
                     **dlq, "consumers": [], "producers": [], "consumers_total_count": 0, "producers_total_count": 0}}]):
             with self.assertRaisesRegex(ValueError, "queue_settings_drift"):
                 MODULE.reconcile("a", "t", "staging", "queues")
