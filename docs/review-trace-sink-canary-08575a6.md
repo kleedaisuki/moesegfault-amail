@@ -70,3 +70,30 @@ support the architectural boundary, but do not establish actual retained
 privacy. The inherited pagination contract and settings readback require hosted
 and live evidence; review alone cannot prove provider indexing completeness or
 future absence. Queue/schema implementation and CI wiring have separate reviews.
+
+## Narrow recheck — R1 resolved (`4781278`, Rust `728f2c3`)
+
+Decision: **GO for hosted synthetic CI and source-level use as the bounded live
+acceptance oracle.** Actual live acceptance still requires green hosted tests,
+reviewed deployment/wiring, effective settings and version pins, and a successful
+guarded run. This supersedes the earlier R1 dispatch restriction, not the stated
+privacy scope/limitations.
+
+Source comparison confirms `safe_event` no longer delegates to the legacy schema
+checker. Its exact service/phase branches now match Rust's request, dependency,
+CLI, and diagnostic combinations, including the current ten CLI operations.
+Prior impossible successful-root provider/error fields are rejected; mandatory
+API span/request IDs are enforced; status/outcome/error combinations agree.
+Standalone and parented operation-scoped maintenance events are accepted only in
+the respective Rust-defined forms. Power-of-two request/response byte buckets
+through 2^32 are accepted without the former secondary 1 GiB cap. UUID checks
+also require the RFC4122 variant. Optional field omission/null semantics agree
+with serde Option deserialization.
+
+Added hosted synthetic tests cover the prior bad success status/error/provider
+cases, valid status/error combinations, standalone/parented maintenance positive
+and negative cases, 4 GiB boundaries, routing-create-only provider fields, exact
+CLI operations and legacy optional CLI IDs. The fix changes only the new canary,
+its synthetic tests and documentation; old helper and legacy checker behavior
+are untouched. No substantive remaining defect found in this narrow recheck.
+No tests/builds/live traffic were run locally, and CI wiring remains excluded.
