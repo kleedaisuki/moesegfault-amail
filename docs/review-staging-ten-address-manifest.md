@@ -1,27 +1,27 @@
 # Independent review: dormant ten-address manifest contracts
 
-Scope: `b8a8e7b` and hardening `35cc2f6`, reviewed 2026-09-30. This is a
-static review of the dormant Python module, its 14 synthetic test methods,
+Scope: `b8a8e7b`, hardening `35cc2f6` and narrow correction `2496656`, reviewed
+2026-09-30. This is a static review of the dormant Python module, its now 17 synthetic test methods,
 the associated design, existing hosted discovery command and address table/
 Worker deletion semantics. No local tests/builds, workflow dispatch, login,
 artifact upload, provider mutation or live acceptance was performed.
 
 ## Verdict
 
-**NO-GO for accepting the current source contract as complete; one P2
-correction is required before hosted source CI sign-off.** This does not mean
-the dormant module must not be run in secret-free hosted tests. Live dispatch
+**GO for hosted synthetic source CI through `2496656`.** The original P2
+representation gap is resolved by the narrow correction described below.
+No further substantive issue was found in that correction. Live dispatch
 remains independently NO-GO: the design explicitly leaves adapters, workflow
 gates, real crypto integration, prior-isolation evidence and retention/pin
 enforcement unimplemented.
 
-## P2: normalized row contract drops fields needed by the drift oracle
+## P2 resolved: normalized row contract dropped drift-oracle fields
 
 Location: `infra/tests/staging_ten_address_manifest.py:32-33` (`ROW_KEYS`),
 `Snapshot.validate`, `assert_prefix` and the final `reconcile` row comparison.
 Confidence: high, established by source/schema inspection.
 
-The exact allowed row keys omit `local_part`, `slot` and `next_reconcile_at`,
+In the original source, the exact allowed row keys omitted `local_part`, `slot` and `next_reconcile_at`,
 although all are stored address columns (`0001_initial.sql` and
 `0008_address_reconcile_schedule.sql`). A future adapter cannot include them:
 `set(row) == ROW_KEYS` rejects the fuller readback. It must discard them, so a
@@ -40,6 +40,30 @@ tests in which a baseline unrelated row changes only slot, local part or
 next-reconcile time, plus a preexisting role/candidate schedule change; require
 the existing fixed drift labels. Do not widen successful outcomes or add
 provider mutation to solve this representation issue.
+
+### Narrow recheck of `2496656`
+
+`ROW_KEYS` now includes every non-primary-key address column in migrations
+`0001_initial.sql` plus `0008_address_reconcile_schedule.sql`. The dictionary
+key retains `address`. Slot requires a true integer in 0..9; schedule requires
+a true signed 64-bit integer and permits the established -1 sentinel. Candidate
+prefix and recovery paths additionally bind local part to the exact address.
+The sealed baseline and existing dictionary comparisons now preserve the
+previously omitted columns without special-case comparison guards.
+
+The new schema-parity test enumerates initial columns and subsequent ADD COLUMN
+migrations. Three count-preserving mutations (local part, slot and schedule)
+are rejected by both the prefix drift and final cleanup drift contracts. An
+existing baseline candidate uses the same full dictionary equality before
+deletion; its schedule cannot silently change, although this exact candidate
+variation does not have a dedicated new test.
+
+Allowing a settled run-owned retired tombstone to retain a signed schedule is
+correct. `ADDRESS_RECONCILE_SQL` selects only provisioning/deleting rows or
+`needs_reconcile=1`; retirement cleanup clears the flag without resetting the
+schedule. Thus retired + needs=0 + absent saved/exact provider rule is settled
+even with -1 or a prior future schedule. Requiring schedule zero would invent
+a false cleanup failure. The corrected retirement fixture exercises -1.
 
 ## Positive assessment and discovery evidence
 
@@ -70,7 +94,7 @@ provider mutation to solve this representation issue.
   provider/CLI exception rendering was found in these reviewed paths.
 - `.github/workflows/ci.yml:1106` runs `python -m unittest discover -s
   infra/tests -v`. The filename `test_staging_ten_address_manifest.py` matches
-  default `test*.py`; all **14** methods are named `test_*` on a
+  default `test*.py`; all **17** methods are named `test_*` on a
   `unittest.TestCase`. The sibling module is in the discovery start directory.
   Thus they are in existing hosted discovery scope by static inspection;
   neither discovery success nor test passage was executed or asserted here.
@@ -84,6 +108,6 @@ provider mutation to solve this representation issue.
   accessed 2026-09-30: default filename pattern and discovery/import model.
 
 No general crypto redesign or additional campaign is requested. Re-review the
-specific row representation and tests after correction; do not repeat already
+hosted CI results for this corrected row representation; do not repeat already
 established inbound acceptance or treat this source review as ten-address,
 production capacity, outbound or release validation.
