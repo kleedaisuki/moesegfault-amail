@@ -10,11 +10,17 @@ or test was changed or executed for this architecture work.
 The private destination is intentionally absent. Its selection and four
 successful historical receipts need not be requested or replayed.
 
+**Design revision:** the [complexity decision appendix](#complexity-decision-v01-is-direct-forward-only)
+supersedes this document's initial two-mode recommendation. The chosen v0.1
+contract is **direct-forward-only**; two-mode details below are retained as the
+rejected alternative, not implementation requirements. Freshness, human
+attestation, SQL admission, emergency hold and privacy requirements remain.
+
 ## Decision
 
 If the owner adopts [the product contract](role-mail-release-scope-decision.md),
-use four provider-managed direct forwards, one explicit operational-contact
-mode, a short-lived machine configuration-health record, and a separately
+use four provider-managed direct forwards, one direct-forward operational-contact
+contract, a short-lived machine configuration-health record, and a separately
 audited human operational attestation. Keep the existing global/account holds,
 recipient blocks, outbound feedback and one-use held-state canary contract.
 
@@ -371,3 +377,65 @@ Provider inventory/verification field contracts:
 [rule list](https://developers.cloudflare.com/api/resources/email_routing/subresources/rules/methods/list/).
 Normative contacts, transactional scope and the exact human-coverage question
 remain in [the conditional product decision](role-mail-release-scope-decision.md).
+
+## Complexity decision: v0.1 is direct-forward-only
+
+**Choose direct-forward-only, conditional on the same human coverage decision.**
+The dormant `worker_monitored` branch protects no established external or
+production contract: public sending is held, role-Worker acceptance is not
+established, and the user explicitly deferred the operations center. Staging
+experiments and unaccepted source are evidence to preserve, not functionality
+that every new release must maintain. Removing that branch is internal
+architecture evolution, not a weakening of working public behavior.
+
+| Design burden | Two-mode candidate | Chosen direct-only v0.1 |
+| --- | --- | --- |
+| Active contact readiness forms | 2: direct configuration + isolated Worker lease | 1: accepted direct contract + configuration freshness |
+| Mail contact database dependencies | MAIL_DB plus a conditional ROLE_MONITOR binding/read | MAIL_DB only; remove ROLE_MONITOR binding/read from Mail |
+| Active trace graph variants for contact operation | api-only and api-role, with mode/graph correspondence | api-only, with exact API/sink Queue pins |
+| New policy shape | Mode enum, direct-pin variant, worker-pin variant and forbidden combinations | One typed direct-policy structure with exact destination/rule-ID pins |
+| Health validity branches | Direct TTL plus legacy lease and cross-database limitations | One same-database TTL predicate, also enforced at send admission |
+| Additional matrix obligations | At least both readiness branches, wrong-mode evidence, missing mode binding, mode/topology mismatches and both directed mode transitions | No mode-transition matrix; one explicit held rollout and held rollback |
+
+These are structural counts, **not** measured LOC, runtime speedups or exact
+test totals. The direct checks, scheduled-job failure tests and independent
+release gates do not disappear. The savings are one unused runtime dependency,
+one readiness branch, one active topology variant and their cross-product of
+invalid states; no speculative general policy interface is necessary.
+
+### Simplified implementation interpretation
+
+* `role_contact_policy` has no runtime `mode`, worker-pin union or auto-detection.
+  Its schema/version identifies the one supported direct contract; absent or
+  unknown versions fail closed. Keep `contract_id`, provider destination ID,
+  exact four rule IDs and opaque operator evidence. `role_contact_health` and
+  `abuse_contact_contract_id` remain as designed; no legacy lease is imported.
+* Replace `role_monitor_healthy` **in Mail** with direct-contact readiness. The
+  SQL/Rust/operator/release predicate is always the direct predicate, never a
+  `match` with a dormant lease branch. Preserve public `send_held`, canaries,
+  account/recipient holds, idempotency, API/CLI/ZIP and stored-mail compatibility.
+* Reconcile Mail bindings/pin tests and production bootstrap/maintenance to one
+  strict api-only contract, without role-D1 pristine-schema requirements.
+  Do not loosen Queue allowlists. Future role rollout workflows/source can be
+  preserved as separately scoped research/future work, but must not authorize
+  current release or execute implicitly in production deployment.
+* Keep the original held additive-migration sequence and rollback restriction:
+  an old binary must never be restored under global allow, because it cannot
+  understand direct freshness. Missing new evidence continues to deny sending.
+
+Direct-only does not reduce the four public contact addresses, remove manual
+review or the intervention drill, forgive failed health checks, or bypass
+unresolved privacy/outbound gates. It removes an unaccepted mechanism while
+retaining the required safety outcomes. The trade-off is a future explicit
+migration if agent operations becomes real, rather than paying its state and
+test complexity now.
+
+When that requirement arrives, design from its actual authorization and
+operational ownership model. Hold/revoke the old contact contract, deploy and
+verify the new mechanism/trace graph, migrate evidence and then explicitly
+re-enable. Existing external mail workflows remain unchanged. Introduce a
+two-mode coexistence interval only if a **real migration** requires it, and
+remove it when the migration finishes; do not manufacture present compatibility
+obligations from hypothetical future infrastructure. Existing staging resources
+and historical failures still require the separately reviewed inventory and
+dormancy/retirement treatment above, not deletion as part of this document.
