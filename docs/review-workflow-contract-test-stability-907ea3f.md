@@ -6,9 +6,9 @@ Reviewed commit `907ea3f245d14ad9a32fa39e3684a2bddaf1f97c`, all thirteen migrate
 
 ## Decision
 
-**Correction required before treating the shared extractor as a fail-closed safety boundary.** Ordinary repository-style plain two-space sibling insertion is correctly isolated and all pre-existing secret, guard, and order assertions are retained. One material unsupported-boundary case can silently merge distinct executable jobs.
+**Original review: correction required. Follow-up review of `62fad990bf7c088b774f355b6e6c2be7561fc88f`: GO for GitHub-hosted source validation.** The P2 boundary finding below is resolved by enforcing the documented layout before extraction. No additional substantive issue was found within this narrow review scope. Hosted execution remains unverified by this review.
 
-## P2 — Quoted sibling job keys are absorbed into the preceding safety job
+## Resolved P2 — Quoted sibling job keys were absorbed into the preceding safety job
 
 Location: `infra/tests/workflow_source.py:26` (the `starts` regular expression), with the returned slice constructed at lines 35–36. Confidence: high, established directly from the regex and slice semantics; no execution was used.
 
@@ -49,3 +49,11 @@ Practical correction: retain the small raw-source helper, but make the supported
 ## Validation limits and next step
 
 No finding implies a current deployed workflow lost its guard; the risk is a regression-test false negative after a valid formatting change. The correction should receive independent static review followed by GitHub-hosted source checks and the independent YAML guard. This review does not verify hosted execution, the two historical run payloads, or unrelated provider diagnostics.
+
+## Follow-up: strict layout correction (62fad99)
+
+Static inspection of `62fad990bf7c088b774f355b6e6c2be7561fc88f` confirms the previously unrecognized quoted sibling is rejected before any job slice is returned. The pre-slice scan rejects non-comment shallow lines at zero, one, or three spaces, leading tabs, and two-space headers that do not match a plain block mapping key. This covers quoted, dotted, inline-value, and explicit-mapping sibling forms without broadening the supported syntax. Unsupported quoted top-level boundaries are rejected by the same zero-indent check rather than absorbed. Ordinary blank/comment lines remain allowed, and ordinary top-level sections still terminate the jobs block.
+
+The new negative fixture puts `if: manual` after each unsupported adjacent header and requires extraction to raise, so the adjacent guard cannot satisfy target assertions. Both quote styles, dotted keys, inline mappings, one/three spaces, a leading tab, and explicit `?`/`:` mapping syntax are covered. A supported inline-comment sibling separately proves that its guard remains outside the target. The existing positive insertion/CRLF/nested-step fixture and original migrated safety assertions are unchanged.
+
+**Disposition: resolved; no new material finding.** Proceed to the ordinary GitHub-hosted source checks and independent workflow YAML guard. No local or live tests were run, no production files were changed, and this follow-up makes no claim about hosted outcomes or support for arbitrary YAML layouts.
