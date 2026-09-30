@@ -1902,6 +1902,9 @@ jobs:
         working-directory: workers/trace-sink
         run: wrangler deploy
       - name: Verify sink retained telemetry and private trigger boundary
+        env:
+          AMAIL_TRACE_QUEUE_ID: ${{ steps.queues.outputs.queue_id }}
+          AMAIL_TRACE_DLQ_ID: ${{ steps.queues.outputs.dlq_id }}
         run: python crates/mail-worker/check_observability.py --realm production --mode sink
 
   staging-trace-sink:
@@ -1950,6 +1953,9 @@ jobs:
         working-directory: workers/trace-sink
         run: wrangler deploy --env staging
       - name: Verify sink retained telemetry and private trigger boundary
+        env:
+          AMAIL_TRACE_QUEUE_ID: ${{ steps.queues.outputs.queue_id }}
+          AMAIL_TRACE_DLQ_ID: ${{ steps.queues.outputs.dlq_id }}
         run: python crates/mail-worker/check_observability.py --realm staging --mode sink
       - name: Recheck containment pin after sink deployment
         run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION"
