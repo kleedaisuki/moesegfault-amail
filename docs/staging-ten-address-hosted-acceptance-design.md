@@ -663,3 +663,59 @@ and private synthetic Windows/Ubuntu checks
 [36768773603](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36768773603).
 This verifies the containing native/service admission source, not later artifact
 `04c1391`, this executable wrapper, or an actual quota/cleanup run.
+
+## Standalone workflow and recovery-key source (live NO-GO)
+
+`.github/workflows/staging-ten-address-acceptance.yml` is now a manual-only
+source workflow with seven inputs and no `ci.yml` dispatch additions. It binds
+attempt 1, the feature ref, hosted Windows, staging Environment and the existing
+noncanceling native-mail concurrency group. Exact confirmation/input validation,
+pinned dependencies, full synthetic quota fixtures and real cipher tests precede
+any Secret-bearing step. No build or deployment occurs: the wrapper obtains
+only the exact tested binary artifact of a separately successful source run.
+The workflow must first be independently reviewed, hosted-source-tested and
+registered on the default branch before any dispatch is considered.
+
+For accept mode, prepare is remote read-only and writes one ciphertext file;
+immutable `upload-artifact@v4` with exact file path, hidden-file inclusion,
+no-overwrite, error-on-missing and 30-day retention must finish before campaign.
+The campaign receives the returned numeric artifact ID and performs independent
+metadata/digest/AES-GCM/local-byte readback before its first add. Empty/skipped
+campaign authority is not a pass. The upload action receives no provider/login/
+recovery Secret. Later explicit recover mode references the original run and
+exact original ID; it does not automatically replay cleanup after a failed
+campaign. The controller's `finally` owns same-process cleanup, and hard
+cancellation requires a separately confirmed same-artifact recovery. Artifacts
+are retained, never silently replaced/deleted; an always-run marker records
+availability without plaintext. Local wrapper scopes remove only self-created
+binary/browser/token scratch paths; the encrypted baseline remains recoverable.
+
+The finite job timeout is **80 minutes**, conservatively covering the currently
+reviewed strict sequential cleanup (up to ten 360-second retirement waits plus
+provider/native overhead). Do not call this fast or launch it blindly. A batch
+cleanup change was considered separately and deferred: the immutable manifest
+has no durable per-DELETE attempt journal, so preserving restart/ambiguous-send
+safety takes priority over shortening the Cron wait. See the separately owned
+`ten-address-cleanup-batching-decision.md` when available. No cleanup-controller
+or manifest code is changed by workflow wiring.
+
+The sole new repository-level Secret is
+`AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1`; workflow generation `ten-address-v1` is a
+nonsecret source constant, not a second credential or environment duplicate.
+`infra/deploy/create_ten_address_recovery_key.ps1` is an **unexecuted** explicit
+administrator helper: it verifies exact repository/admin authority, preserves
+an existing key rather than replacing it, generates independent CSPRNG 256-bit
+material and passes it to `gh secret set --app actions` via private stdin.
+It writes no plaintext file and emits only fixed labels. GitHub secret PUT is
+not atomic create-only, so an administrative creation/rotation freeze is an
+explicit prerequisite; no helper can pretend metadata absence reserves a name.
+The key remains versioned and retained until every matching encrypted manifest
+has expired after exact cleanup. Do not rotate/delete it to clear a failed test,
+reuse an Identity password or send its value in chat/logs. No key was generated
+or GitHub Secret configured by this source increment.
+
+Remaining live gates: independent full wrapper/workflow/key-helper review;
+containing hosted CI and cross-platform synthetic checks; protected key existence
+without value disclosure; actual current capture-off, held/service/resource and
+complete quota/routing/storage admission. Neither workflow source registration
+nor its synthetics is a real ten-address result. **No live quota run authorized.**
