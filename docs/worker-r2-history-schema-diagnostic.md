@@ -160,3 +160,21 @@ only separate a currently rejected baseline from baseline compatibility. If it
 returns normal bins, do not add automated retries or infer that the original
 optional fields were the cause. The next narrower investigation remains an
 explicit decision rather than another query hidden in this helper.
+
+## Reduced schema-only workflow lane (2026-10-01)
+
+The manual `staging-worker-r2-history-shape` target in `ci.yml` reuses the existing
+`confirm` input; dispatch inputs remain 24. It requires the feature branch,
+`staging` Environment, first workflow attempt, and exact confirmation
+`READ_WORKER_R2_HISTORY_BASELINE_SHAPE_36751791789`. Synthetic original-history,
+reduced-shape and workflow-contract tests run before the only step that receives
+`CF_OBSERVABILITY_TOKEN` and `GITHUB_TOKEN`.
+
+The helper remains pinned to original run `36751791789` and its validated
+historical experiment window. This lane makes no new email send, routing or R2
+mutation, does not retry the previous all-field query, and does not alter the
+original delivery classifier or current-Worker correction target. It prints
+only closed schema bins; even a successful diagnostic retains
+`delivery=UNVERIFIED`. Source review and hosted checks are prerequisites, not
+proof of live authorization or successful provider shape diagnosis. This change
+has not dispatched a live query.
