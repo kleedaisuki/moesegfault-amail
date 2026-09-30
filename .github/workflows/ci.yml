@@ -1627,8 +1627,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install DNS verifier dependency
-        run: python -m pip install -r infra/dns/requirements.txt
+      - name: Install pinned hosted probe dependencies
+        run: |
+          python -m pip install --only-binary=:all: -r infra/dns/requirements.txt -r infra/tests/ten_address_requirements.txt
+      - name: Test real encrypted quota recovery envelopes
+        run: python infra/tests/staging_ten_address_crypto_check.py -v
       - name: Test DNS and provider probes
         run: python -m unittest discover -s infra/tests -v
       - name: Test staging Identity exact-route safeguards

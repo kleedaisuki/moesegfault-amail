@@ -435,3 +435,16 @@ metadata fields for an existing object and explicit empty keyset completion;
 metadata omission is an inconclusive capability, not an empty bucket. Complete
 provider source-owned fixtures remain hosted-only tests; this reference check
 is not live tenant acceptance.
+
+## Real recovery cipher hosted integration
+
+`infra/tests/ten_address_requirements.txt` pins `cryptography==50.0.1` from the
+[PyCA-maintained package release](https://pypi.org/project/cryptography/50.0.1/)
+(accessed 2026-10-01). The existing infrastructure probe CI lane installs a
+binary wheel and explicitly runs `staging_ten_address_crypto_check.py` before
+the ordinary synthetic suite. This is a real AES-GCM roundtrip/tamper/AAD/private
+ciphertext integration test; a missing or different package version fails
+instead of skipping. It uses only synthetic in-memory records, never Secrets,
+local builds or live provider resources. Hosted execution remains pending until
+the reviewed commit passes CI; source wiring is not an encryption acceptance
+result or permission to dispatch quota mutation.

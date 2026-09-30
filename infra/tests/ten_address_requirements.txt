@@ -1,0 +1,3 @@
+# Hosted-only recovery envelope tests; never install/build on the developer machine.
+# The release is pinned from the PyCA-maintained PyPI project (2026-10-01).
+cryptography==50.0.1
