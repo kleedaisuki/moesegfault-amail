@@ -748,3 +748,23 @@ unchanged. Relevant same-repository deploy/settings/private-inbox jobs are being
 aligned to it separately. A GitHub concurrency group cannot lock another
 repository: sibling Identity/Login deployment freeze and independent three-service
 pins remain required, not replaced by this lock name.
+
+## Open live-release blocker: retained escrow and accountable 24-hour response
+
+Independent workflow review identified a consequential remaining P2: the 30-day
+GitHub artifact, retained key and an `always()` marker do not preserve ciphertext
+beyond artifact expiry or establish an accountable 24-hour recovery response.
+No alert receipt/acknowledgement, default-branch watchdog or durable encrypted
+escrow has been accepted. This is a **live NO-GO**, not a small documentation
+caveat or a permission that can be replaced by a `passed` workflow input.
+
+The next reviewed design is
+[staging D1 recovery escrow and escalation](staging-quota-d1-recovery-escrow-design.md):
+small encrypted-only chunks in additive staging operations tables of the already
+protected MAIL_DB, no TTL, exact no-overwrite/byte/AAD readback before add,
+conditional cleanup-receipt-only purge, and metadata-only issue/watchdog with
+Agent acknowledgement. It deliberately avoids a new unverified R2 PUT/bucket/
+credential path. It also states shared-DB coupling and bounded storage/latency
+risks; no D1 escrow migration or watchdog has been implemented/deployed yet.
+Do not register-and-dispatch mutation or generate a key as if these acceptance
+gates were already complete. Keep the source-only verdict and existing artifacts.
