@@ -12,9 +12,17 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-r2-object-capability, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-http-compare, staging-trace-security-events, production]
+        options: [staging, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-http-compare, staging-trace-security-events, production]
       confirm:
         description: Staging E2E, semantic query, role SMTP, or trace canary requires its documented RUN_* confirmation
+        required: false
+        type: string
+      r2_prior_run_id:
+        description: Original numeric R2 capability probe run ID; recovery only
+        required: false
+        type: string
+      r2_prior_run_attempt:
+        description: Original numeric R2 capability probe attempt; recovery only
         required: false
         type: string
       role_deploy_run:
@@ -179,10 +187,10 @@ jobs:
         run: python infra/tests/staging_hosted_e2e.py
 
   staging-r2-object-capability:
-    name: One-shot private staging R2 object-operation capability
+    name: One-shot private staging R2 object capability or exact-key recovery
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      inputs.target == 'staging-r2-object-capability' &&
+      (inputs.target == 'staging-r2-object-capability' || inputs.target == 'staging-r2-object-recover') &&
       github.ref == 'refs/heads/codex/amail-v0.1.0'
     runs-on: ubuntu-latest
     environment: staging
@@ -192,12 +200,17 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
-      - name: Require explicit object-operation confirmation
+      - name: Require explicit probe or recovery confirmation
         env:
           R2_CONFIRM: ${{ inputs.confirm }}
         shell: pwsh
         run: |
-          if ($env:R2_CONFIRM -ne 'RUN_STAGING_R2_OBJECT_CAPABILITY') {
+          $expected = if ('${{ inputs.target }}' -eq 'staging-r2-object-capability') {
+            'RUN_STAGING_R2_OBJECT_CAPABILITY'
+          } else {
+            'RECOVER_STAGING_R2_OBJECT_CAPABILITY'
+          }
+          if ($env:R2_CONFIRM -ne $expected) {
             throw 'Explicit staging R2 capability confirmation required'
           }
       - uses: actions/setup-python@v5
@@ -206,6 +219,9 @@ jobs:
       - name: Probe one private sentinel and reconcile exact-key cleanup
         env:
           AMAIL_R2_CAPABILITY_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_R2_CAPABILITY_MODE: ${{ inputs.target == 'staging-r2-object-recover' && 'recover' || 'probe' }}
+          AMAIL_R2_PRIOR_RUN_ID: ${{ inputs.r2_prior_run_id }}
+          AMAIL_R2_PRIOR_RUN_ATTEMPT: ${{ inputs.r2_prior_run_attempt }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}

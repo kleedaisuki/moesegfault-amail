@@ -8,6 +8,7 @@ inventory reconciliation before a new key or second-principal mutation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import importlib.util
 import os
@@ -24,7 +25,7 @@ from staging_second_principal import BUCKET, KEY, NoRedirect, object_inventory
 
 ROOT = Path(__file__).resolve().parents[2]
 API = "https://api.cloudflare.com/client/v4"
-SENTINEL = b"amail staging R2 capability sentinel v1\nnot an email or verification code\n"
+SENTINEL_PREFIX = b"amail staging R2 capability sentinel v2; not mail or a code\n"
 BOUNDARY = "amail-staging-r2-capability-v1"
 MAX_REPLY = 65_536
 
@@ -41,6 +42,24 @@ def require(condition: bool, label: str) -> None:
 
     if not condition:
         raise ProbeFailure(label)
+
+
+def sentinel_for(run_id: str, attempt: str) -> tuple[str, bytes]:
+    """Derive a recoverable UUIDv4-format key and harmless bytes from run identity.
+
+    Distinct SHA-256 domains prevent a body digest from doubling as key material.
+    The key is an identifier, never an authorization capability; R2 remains private.
+    """
+
+    require(re.fullmatch(r"[1-9][0-9]{0,19}", run_id) is not None and
+            re.fullmatch(r"[1-9][0-9]{0,9}", attempt) is not None,
+            "run_identity_invalid")
+    identity = f"{run_id}:{attempt}".encode("ascii")
+    key_hash = hashlib.sha256(b"amail/staging/r2-object-key/v1\0" + identity).digest()
+    body_hash = hashlib.sha256(b"amail/staging/r2-object-body/v1\0" + identity).hexdigest()
+    key = f"verification/{uuid.UUID(bytes=key_hash[:16], version=4)}.eml"
+    require(KEY.fullmatch(key) is not None, "r2_key_invalid")
+    return key, SENTINEL_PREFIX + body_hash.encode("ascii") + b"\n"
 
 
 def audit(script: str, *args: str) -> None:
@@ -104,18 +123,18 @@ def object_path(account: str, key: str) -> str:
     return f"/accounts/{account}/r2/buckets/{BUCKET}/objects/{key}"
 
 
-def upload_body() -> bytes:
+def upload_body(body: bytes) -> bytes:
     """Encode the REST API's required multipart ``body`` file field."""
 
     return (f"--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"body\"; "
             "filename=\"sentinel.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n").encode() + \
-        SENTINEL + f"\r\n--{BOUNDARY}--\r\n".encode()
+        body + f"\r\n--{BOUNDARY}--\r\n".encode()
 
 
-def upload(account: str, key: str, token: str) -> None:
+def upload(account: str, key: str, token: str, body: bytes) -> None:
     """Require a matching Cloudflare success envelope; never repeat a PUT."""
 
-    status, raw = call("PUT", object_path(account, key), token, upload_body(),
+    status, raw = call("PUT", object_path(account, key), token, upload_body(body),
                        f"multipart/form-data; boundary={BOUNDARY}")
     if status == 403:
         raise ProbeFailure("r2_put_denied")
@@ -124,18 +143,18 @@ def upload(account: str, key: str, token: str) -> None:
         value = json.loads(raw)
         result = value.get("result")
         valid = (value.get("success") is True and isinstance(result, dict)
-                 and result.get("key") == key and str(result.get("size")) == str(len(SENTINEL)))
+                 and result.get("key") == key and str(result.get("size")) == str(len(body)))
     except (ValueError, AttributeError, TypeError):
         valid = False
     require(valid, "r2_put_ambiguous")
 
 
-def observed(account: str, key: str, token: str) -> str:
+def observed(account: str, key: str, token: str, body: bytes) -> str:
     """Resolve the exact key as owned sentinel or absent via GET and full LIST."""
 
     status, raw = call("GET", object_path(account, key), token)
     if status == 200:
-        require(raw == SENTINEL, "r2_object_mismatch")
+        require(raw == body, "r2_object_mismatch")
         return "present"
     if status == 404:
         require(key not in object_inventory(account, token), "r2_absence_ambiguous")
@@ -160,23 +179,16 @@ def delete(account: str, key: str, token: str) -> None:
             raise ProbeFailure("r2_delete_ambiguous") from None
 
 
-def cleanup(account: str, key: str, token: str, delete_attempted: bool) -> bool:
+def cleanup(account: str, key: str, token: str, body: bytes) -> bool:
     """Reconcile before another DELETE; never repeat an ambiguous mutation blind."""
 
     for _ in range(2):
         try:
-            state = observed(account, key, token)
+            state = observed(account, key, token, body)
         except Exception:
-            if delete_attempted:
-                return False
-            # A possible PUT needs one bounded exact-key cleanup even if GET
-            # is unavailable; the preflight proved this random key absent.
-            try:
-                delete(account, key, token)
-            except Exception:
-                return False
-            delete_attempted = True
-            continue
+            # The key is reconstructable and potentially inferable. Never
+            # delete a foreign or unreadable object, even after a possible PUT.
+            return False
         if state == "absent":
             return True
         try:
@@ -184,18 +196,21 @@ def cleanup(account: str, key: str, token: str, delete_attempted: bool) -> bool:
         except Exception:
             # The next iteration performs GET/LIST before any further delete.
             pass
-        delete_attempted = True
     try:
-        return observed(account, key, token) == "absent"
+        return observed(account, key, token, body) == "absent"
     except Exception:
         return False
 
 
 def execute() -> None:
-    """Perform a one-shot staging probe with fail-closed exact-key cleanup."""
+    """Probe once, or recover a prior run's exact key without ever uploading."""
 
-    require(os.environ.get("AMAIL_R2_CAPABILITY_CONFIRM") ==
-            "RUN_STAGING_R2_OBJECT_CAPABILITY", "explicit_confirmation_required")
+    mode = os.environ.get("AMAIL_R2_CAPABILITY_MODE", "probe")
+    require(mode in ("probe", "recover"), "probe_mode_invalid")
+    expected = ("RUN_STAGING_R2_OBJECT_CAPABILITY" if mode == "probe"
+                else "RECOVER_STAGING_R2_OBJECT_CAPABILITY")
+    require(os.environ.get("AMAIL_R2_CAPABILITY_CONFIRM") == expected,
+            "explicit_confirmation_required")
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
     token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
     require(re.fullmatch(r"[0-9a-fA-F]{32}", account) is not None and bool(token)
@@ -203,31 +218,62 @@ def execute() -> None:
     audit("check_config.py", "--live", "--deployed")
     audit("ensure_route.py", "--all-absent")
     baseline = object_inventory(account, token)
-    key = f"verification/{uuid.uuid4()}.eml"
-    require(KEY.fullmatch(key) is not None and key not in baseline, "r2_key_not_absent")
+    if mode == "recover":
+        key, body = sentinel_for(os.environ.get("AMAIL_R2_PRIOR_RUN_ID", ""),
+                                 os.environ.get("AMAIL_R2_PRIOR_RUN_ATTEMPT", ""))
+        recover(account, key, token, body)
+        print("staging_r2_object_capability_recovered_absent")
+        return
+    # GitHub reruns retain the run ID but increment attempt. A fresh derived
+    # key would bypass reconciliation of the preceding uncertain attempt.
+    require(os.environ.get("GITHUB_RUN_ATTEMPT") == "1", "probe_rerun_forbidden")
+    key, body = sentinel_for(os.environ.get("GITHUB_RUN_ID", ""),
+                             os.environ.get("GITHUB_RUN_ATTEMPT", ""))
+    require(key not in baseline, "r2_key_not_absent")
     # Re-list immediately before PUT. A future concurrent B delivery is held
     # by the same Actions concurrency group, but external writers still exist.
     require(key not in object_inventory(account, token), "r2_key_not_absent")
     put_possible = False
-    delete_attempted = False
     failure: ProbeFailure | None = None
     try:
         put_possible = True
-        upload(account, key, token)
-        require(observed(account, key, token) == "present", "r2_get_mismatch")
-        delete_attempted = True
+        upload(account, key, token, body)
+        require(observed(account, key, token, body) == "present", "r2_get_mismatch")
         delete(account, key, token)
-        require(observed(account, key, token) == "absent", "r2_delete_ambiguous")
+        require(observed(account, key, token, body) == "absent", "r2_delete_ambiguous")
     except ProbeFailure as error:
         failure = error
     except Exception:
         failure = ProbeFailure("r2_outcome_ambiguous")
     finally:
-        if put_possible and not cleanup(account, key, token, delete_attempted):
+        if put_possible and not cleanup(account, key, token, body):
             failure = ProbeFailure("r2_cleanup_unverified")
     if failure:
         raise failure
     print("staging_r2_object_capability_verified")
+
+
+def recover(account: str, key: str, token: str, body: bytes) -> None:
+    """Remove only the prior run's exact, byte-matching sentinel, then prove absence.
+
+    No PUT occurs. A mismatching object or denied GET is never a deletion target.
+    An uncertain DELETE is reconciled with GET before another attempt.
+    """
+
+    state = observed(account, key, token, body)
+    if state == "present":
+        failure: ProbeFailure | None = None
+        try:
+            delete(account, key, token)
+        except ProbeFailure as error:
+            failure = error
+        if failure and str(failure) == "r2_delete_denied":
+            raise failure
+        # A readback first resolves even an ambiguous DELETE. It permits one
+        # more exact delete only if the same synthetic bytes still exist.
+        if not cleanup(account, key, token, body):
+            raise ProbeFailure("r2_recovery_unverified")
+    require(observed(account, key, token, body) == "absent", "r2_recovery_unverified")
 
 
 def main() -> int:
