@@ -158,3 +158,55 @@ Queue drift, failed role-absence proof, hold failure, deployment/forward changes
 and independent API/sink privacy failure. These tests were authored but **not
 run locally**; hosted execution and independent review are required before any
 operational adoption. No provider mutation, deployment or send was performed.
+
+## Same-run staging deployment pin
+
+The redacted deployment helper `infra/deploy/deploy_production_mail.py` now
+accepts optional `--target staging`; omission still selects **production** and
+requires `refs/heads/main`. Staging requires its exact release branch,
+`AMAIL_STAGING_MAIL_DEPLOY_CONFIRM=RUN_STAGING_TRACE_SINK_ROLLOUT`, literal
+api-only topology and a reviewed exact Queue ID. Before writing any secret or
+executing Wrangler it reuses the staging isolation guard (Identity, HTTP route,
+Mail domain, D1/R2, ingress and absence of the production official sender) and
+the single-Mail-D1/strict Queue config allowlist. Staging always constructs
+`wrangler deploy --env staging`; there is no environment auto-detection or
+fallback to default production.
+
+Credentials are supplied by the workflow's protected realm environment; the
+helper cannot prove where a secret was originally obtained. The staging job
+must therefore retain `environment: staging` and map `INGRESS_SECRET_STAGING`
+to the runtime `INGRESS_SECRET`, never substitute the production ingress
+credential. The only uploaded secret-file keys are the existing OpenRouter,
+Email Routing and ingress keys; no confidential role destination is uploaded.
+Temporary files remain restricted to repository `.temp`, receive restrictive
+permissions and are deleted after success, failure or timeout.
+
+Both targets make exactly one deployment attempt with captured private stdout/
+stderr and bounded-output acceptance. The helper publishes only one exact UUID
+to `GITHUB_OUTPUT`. A unique version returned with a failed command is retained
+as a **recovery pin**, but the command still fails and never claims acceptance.
+Missing, duplicated, malformed or oversized output does not become a pin;
+timeouts are not retried. This also moves the preexisting production output-size
+check before recovery-pin emission, avoiding a pin derived from unbounded
+output. Existing production branch, default CLI, command, secrets, labels and
+failure behavior remain otherwise unchanged.
+
+CI should name the staged helper step `api`, supply the explicit staging
+confirmation, and immediately pin its returned version via
+`pin_staging_mail.py --phase queue-api` with
+`AMAIL_EXPECTED_WORKER_VERSION=${{ steps.api.outputs.version }}` and the
+same-run reviewed Queue output as `AMAIL_EXPECTED_TRACE_QUEUE_ID`. The separate
+serving-pin dispatch must also specify `queue-api`. This prevents a successful
+deployment or pre-Queue check from being mistaken for current immutable binding
+acceptance. Independent Queue ownership and API/sink current-resource capture-off
+checks remain mandatory and public sending remains held.
+
+`infra/tests/test_deploy_mail_realms.py` contains hosted synthetic tests for
+production-default compatibility, explicit staging command and secret isolation,
+branch/confirmation/config denial before mutation, exact recovery-only pins,
+duplicate/malformed/oversized output, no private logging, single-attempt timeout
+behavior and temporary-file cleanup. Tests were authored, not run locally.
+Cloudflare documents explicit named environments and non-inherited realm
+bindings/secrets: [Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/).
+The wrapper's real deployment/readback still requires separately authorized
+hosted execution and independent review; this source extension authorizes none.
