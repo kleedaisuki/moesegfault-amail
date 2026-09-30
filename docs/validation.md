@@ -1,6 +1,10 @@
 # Independent validation ledger
 
-Status: **in progress**. This ledger records observed behavior, not implementation claims. Observations below were made on 2026-09-28 and 2026-09-29 from the repository workspace on Windows PowerShell and GitHub-hosted CI. No local Rust, Wasm, or cross-platform build was run, per the project's GitHub-hosted testing requirement. Recheck only affected rows after a fix; an unexercised workflow is not a pass.
+Status: **in progress**. This ledger records observed behavior, not implementation claims. Observations began on 2026-09-28 and continued through 2026-09-30 from the repository workspace on Windows PowerShell and GitHub-hosted CI. No local Rust, Wasm, or cross-platform build was run, per the project's GitHub-hosted testing requirement. Recheck only affected rows after a fix; an unexercised workflow is not a pass.
+
+## Fifth-run synthetic fixture cleanup (2026-09-30)
+
+The [guarded cleanup job 36676916786, attempt 1](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36676916786) completed successfully on exact source `da86b13` after [100%-serving pin 36676819967](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36676819967) matched Mail Worker `a6a6dc47-cde0-41bb-8147-735e158f3241`. Protected job logs contain only fixed phase outcomes: `fifth_cleanup_preflight:verified`, `fifth_cleanup_auth:verified`, `fifth_cleanup_fixture_gate:verified`, two `fifth_cleanup_delete_readback:verified`, and `fifth_cleanup_final:verified`. The script's reviewed order required both owner-scoped ZIP/metadata/content fixture checks before either individual delete and a final exact route/D1/CLI reconciliation. This verifies removal of the **two active synthetic owner-visible fixtures** from the fifth test, not physical erasure or the provenance of their delivered `Message-ID`. The original [fifth mail run 36589042183](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36589042183) still **failed** at its first `amail sync` HTTP 409 before ZIP/search acceptance. The next product test is a new, guarded, provider-receipt-aware staging E2E, not another cleanup replay. See [runbook and historical stops](staging-fifth-mail-exact-fixture-cleanup-design.md).
 
 ## Acceptance basis
 
