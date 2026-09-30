@@ -9,10 +9,10 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Deploy staging, or promote production Workers from main after staging review
+        description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [staging, staging-containment-readback, staging-worker-resource-readback, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production]
+        options: [checks, staging, staging-containment-readback, staging-worker-resource-readback, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production]
       confirm:
         description: Staging E2E, semantic query, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -102,9 +102,11 @@ on:
 permissions:
   contents: read
 
+# Checks can supersede obsolete checks; shared-state manual operations never cancel each other.
+# Keep the existing manual group so in-flight acceptance remains mutually exclusive.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '' }}${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
   cli:
@@ -113,7 +115,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
-      (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'production'))
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || inputs.target == 'production'))
     strategy:
       fail-fast: false
       matrix:
@@ -1112,7 +1114,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
-      (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'production'))
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || inputs.target == 'production'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -1134,6 +1136,28 @@ jobs:
         run: |
           rustup update stable
           rustup target add wasm32-unknown-unknown
+      - name: Fingerprint Worker check toolchain and exact source inputs
+        id: worker-cache-key
+        # No fallback keys: changed inputs must never reuse compiled project outputs.
+        shell: bash
+        run: |
+          compiler=$({ rustc --version --verbose; cc --version; ldd --version; } | sha256sum | cut -d ' ' -f 1)
+          source=$(git rev-parse HEAD:Cargo.toml HEAD:Cargo.lock HEAD:crates HEAD:workers HEAD:.github/workflows/ci.yml | sha256sum | cut -d ' ' -f 1)
+          echo "compiler=$compiler" >> "$GITHUB_OUTPUT"
+          echo "source=$source" >> "$GITHUB_OUTPUT"
+      - name: Restore exact Worker check build cache
+        id: worker-check-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: target
+          key: worker-check-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.worker-cache-key.outputs.compiler }}-${{ steps.worker-cache-key.outputs.source }}
+      - name: Restore pinned Worker check bundler
+        id: worker-bundler-cache
+        uses: actions/cache/restore@v4
+        with:
+          # Dedicated install root contains public compiler tools only, not Cargo credentials.
+          path: .cache/worker-build-check
+          key: worker-build-check-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.worker-cache-key.outputs.compiler }}-0.8.5
       - name: Run privacy trace schema and sink contracts
         run: |
           cargo test -p amail-trace-schema --locked --all-targets
@@ -1161,7 +1185,11 @@ jobs:
       - name: Compile role monitor target
         run: cargo check -p amail-role-monitor --locked --target wasm32-unknown-unknown
       - name: Install workers-rs bundler
-        run: cargo install worker-build --version 0.8.5 --locked
+        if: steps.worker-bundler-cache.outputs.cache-hit != 'true'
+        run: cargo install worker-build --version 0.8.5 --locked --root "$GITHUB_WORKSPACE/.cache/worker-build-check"
+      - name: Use isolated pinned check bundler
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/.cache/worker-build-check/bin" >> "$GITHUB_PATH"
       - name: Bundle privacy trace sink
         working-directory: workers/trace-sink
         run: worker-build --release
@@ -1183,13 +1211,25 @@ jobs:
       - name: Bundle role monitor for Wrangler
         working-directory: workers/role-monitor
         run: worker-build --release
+      - name: Save trusted exact Worker check build cache
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') && steps.worker-check-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: target
+          key: ${{ steps.worker-check-cache.outputs.cache-primary-key }}
+      - name: Save trusted pinned check bundler
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') && steps.worker-bundler-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/worker-build-check
+          key: ${{ steps.worker-bundler-cache.outputs.cache-primary-key }}
 
   site:
     name: Astro release site
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
-      (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'production'))
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || inputs.target == 'production'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -1223,7 +1263,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
-      (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'production'))
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || inputs.target == 'production'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -1250,9 +1290,8 @@ jobs:
 
   provider-live:
     name: OpenRouter 256D live contract
-    if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'production'))
+    # Synthetic provider calls belong to explicit promotion, not the fast source loop.
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'production')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -1565,7 +1604,8 @@ jobs:
 
   staging-site:
     name: Deploy isolated staging release site
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    # Staging is an explicit promotion, never a side effect of a source push.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
     needs: site
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1709,7 +1749,8 @@ jobs:
 
   staging-ingress:
     name: Deploy isolated Rust staging SMTP ingress
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    # Staging is an explicit promotion, never a side effect of a source push.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
     needs: staging-worker
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -1751,7 +1792,8 @@ jobs:
 
   staging-events:
     name: Deploy isolated Rust staging lifecycle consumer
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    # Staging is an explicit promotion, never a side effect of a source push.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
     needs: staging-worker
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -1794,7 +1836,8 @@ jobs:
 
   staging-identity-test-inbox:
     name: Deploy private staging Identity verification inbox
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    # Staging is an explicit promotion, never a side effect of a source push.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
     needs: [worker, dns]
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -1862,7 +1905,8 @@ jobs:
 
   staging-role-monitor:
     name: Deploy isolated staging role monitor
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    # Staging is an explicit promotion, never a side effect of a source push.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
     needs: [worker, dns]
     runs-on: ubuntu-latest
     timeout-minutes: 45

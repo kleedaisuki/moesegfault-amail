@@ -1,0 +1,72 @@
+# Hosted iteration critical path and bounded improvement
+
+## Question and workload
+
+The goal is to shorten **source-change feedback** on GitHub-hosted runners without moving tests onto the developer workstation, weakening release/live-mail/privacy gates, or silently replacing a serving Worker during an acceptance run. This is distinct from shortening one-shot SMTP/Identity/provider observation: those operate on shared external state and remain serial where required.
+
+Evidence was read from the GitHub Actions run and job APIs on 2026-09-30. No local tests, builds, dependency installs, sends, or deployments were performed for this investigation. All times below are UTC. `run_started_at` is not a usable queue measure here: it equals run creation even when no job starts for minutes. The operational wait is creation to the first **non-skipped** job start. Job times include setup/post steps.
+
+## Observed baseline
+
+| Push run | Created | First active job | Last completion | Observed wait | Worker job | Dependent deployment tail | Total |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| [36728726698](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36728726698), `b536963` | 14:23:18 | 14:23:22 | 14:34:56 | 0:04 | 7:19 | 4:13 role monitor | 11:38 |
+| [36732054850](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36732054850), `3ae8ed5` | 14:49:47 | 14:49:50 | 14:59:23 | 0:03 | 5:51 | 3:41 role monitor | 9:36 |
+| [36734170513](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36734170513), `34db41a` | 15:06:16 | 15:11:18 | 15:22:08 | 5:02 | 7:15 | 3:34 private inbox | 15:52 |
+
+The tail includes scheduling gaps from Worker completion to dependent job start. These are three different revisions and runner allocations, **not a controlled repeated benchmark**; report ranges rather than statistical confidence intervals. Worker time ranges 5:51–7:19, median 7:15. The latest run's critical path is approximately:
+
+```text
+5:02 wait -> 7:15 Worker checks/bundles -> 0:04 scheduling -> 3:29 inbox deploy
+```
+
+The latest Worker job spent 2:09 installing `worker-build` (15:13:58–15:16:07), 0:38 bundling the privacy sink, and 1:17 bundling the API. Its actual workerd assertions took 0:09. The downstream inbox job then spent **another 2:24** installing Rust bundler/Wrangler and 0:32 compiling a Worker that the upstream job had already bundled. Role monitor tool installation took 2:02. Site checks took 0:23, infra 0:19, and the Windows CLI job 2:08: none explains the long critical path.
+
+There was also a distinct [duplicate push run 36732055983](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36732055983), with the same SHA/event/workflow ID as 36732054850. It started active jobs at 14:59:27, after the first run completed at 14:59:23, and completed at 15:11:15. The new revision's first jobs started three seconds later. This directly accounts for the new run's five-minute wait behind obsolete work. The API does **not** prove what client action caused the duplicate trigger; do not attribute it to a specific actor/tool bug without further evidence. PR counterpart runs lasted approximately three seconds and skipped the test suites, so they were not duplicate heavy compilations.
+
+### Reproduction
+
+```powershell
+gh api repos/kleedaisuki/moesegfault-amail/actions/runs/36734170513
+gh api 'repos/kleedaisuki/moesegfault-amail/actions/runs/36734170513/jobs?per_page=100'
+```
+
+Use only `id`, `event`, `head_sha`, `created_at`, `updated_at`, job names/start/end/conclusion, and step names/start/end. No retained Worker logs, user content, credentials, or mailbox data are needed. Repeat for the run IDs in the table and duplicate run above. Compute durations by subtracting ISO timestamps, not parsing formatted display strings.
+
+## Causal explanation
+
+1. **Unnecessary shared lane:** all push checks and manual mutations used `ci-${ref}`, with push cancellation disabled. An obsolete/duplicate source run queued behind and blocked newer feedback and diagnostic dispatches.
+2. **Unrelated staging mutations per push:** API deployment had already been manually gated for privacy containment, but source pushes still replaced site, role-monitor, and private Identity inbox Workers. Their deployment tail was unrelated to source-test feedback, could invalidate serving-version evidence, and consumed the same lane.
+3. **Repeated cold tools:** `cargo install worker-build --locked` compiled the public tool in each fresh runner. This is measured wasted setup, not an assertion that the mail algorithm itself is slow.
+4. **A deliberately broad source suite:** all Rust/Wasm packages and all supported CLI OSes still run. That coverage is currently valuable; the first improvement does not attempt uncertain change-impact selection.
+
+Personal root-agent review can add orchestration delay, but the measured sixteen-minute hosted run is machine queue/build/deployment time, not sixteen minutes of root-agent inspection. Contract-derived tests and specialist review should supply evidence directly; root integration should not re-run completed checks without a failure that implicates them.
+
+## Implemented source design
+
+* Push/PR become **non-deploying source checks**; explicit `target=checks` offers the same manual non-deploying path. Full original CLI/Worker/site/infra contracts still execute. OpenRouter synthetic live contract runs on explicit staging/production promotion, not on ordinary pushes.
+* Check runs use a separate `ci-checks-${ref}` concurrency group and cancel obsolete checks. Manual state operations retain the existing `ci-${ref}` group and do not cancel in-progress work. Their job-level locks, exact confirmations, serving pins, route absence checks, account gates, privacy boundaries, and production-main guards are unchanged.
+* The secret-free Worker **check job only** restores two exact caches: compiled `target` keyed by OS/architecture/full Rust/C compiler/libc fingerprint and Git trees/blobs for workspace source inputs and workflow build commands, and a pinned 0.8.5 `worker-build` dedicated install root keyed by OS/architecture/toolchain. There are no partial/fallback keys. Tests always execute, even on cache hits; Wasm bundles and workerd assertions are not skipped.
+* Cache writes are explicit and limited to successful trusted `main`/project-branch push checks after all Worker contracts and bundles. PR/manual check/promotion runs cannot save these caches. No Cargo home, credentials, `.temp`, live diagnostics, or user data is cached. All deployment jobs still build independently and do not consume cached project bundles: a check cache is not a release artifact.
+* `infra/tests/test_ci_iteration_contract.py` makes the separation and cache write restrictions inspectable and regression-tested on hosted CI. New external build inputs (for example root `.cargo/config.toml` or generated inputs outside `crates/` and `workers/`) require extending the exact source key before adopting them.
+
+This preserves manual promotion's source validation and full privacy rollout gate. It deliberately does **not** solve artifact promotion or granular component deployment in the same change; those would need separate provenance and acceptance design.
+
+## Target and validation plan
+
+**Not a measured after-result yet.** With the latest timings, removing the unrelated deployment tail and duplicate-run queue takes source feedback from 15:52 to approximately 7:15 plus runner setup/scheduling. A hit on the public bundler cache removes a measured 2:09 install, suggesting **4–6 minutes warm full-source feedback**, and **7–8 minutes cold** when no obsolete-run queue exists. An exact workspace cache hit can shorten unchanged-Rust/infra-only revisions further, but that gain is not assumed for actual Rust code edits. Infra/site results remain independently available in roughly 20–30 seconds plus runner scheduling. Runner congestion/cache transfer overhead can invalidate these estimates; record it rather than claiming success from source inspection.
+
+After source review, run hosted push checks once cold and an equivalent manual `checks` run warm on the same immutable SHA, then compare job and step times, cache-hit state, test counts, and conclusions. A manual check cannot write caches. Keep mutation/deployment dispatches out of this timing experiment. Do not accept a cache-hit job that skips actual assertions. Verify source push invokes **no** staging deployment/provider-live jobs. These runs validate the design; later ordinary Rust edits measure whether the warm bundler benefit persists with a project build-cache miss.
+
+What remains serialized: reviewed staged rollout, shared alias/account/route creation and cleanup, one-use SMTP sends, serving-pin-sensitive acceptance, production promotion, and observational provider waits. Cancellation is not safe for those operations; a timeout can leave ambiguous external state. Avoid replacing safety serialism with parallel retries.
+
+## External grounding
+
+* [GitHub concurrency documentation](https://docs.github.com/en/actions/concepts/workflows-and-actions/concurrency) supports explicit groups and cancellation of obsolete non-mutating runs. Queue delay and retained run state must be observed rather than inferred from a timeout.
+* [GitHub dependency cache reference](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching) describes exact-key matching, branch access restrictions, cache exposure, and storage costs. Cached files are not a secret store or a passing test result.
+* [Cloudflare workers-rs issue #1021](https://github.com/cloudflare/workers-rs/issues/1021) independently reports cold `worker-build` installation as a substantial hosted-CI cost and recommends a pinned locked pre-step with caching. Our own job timings, not that report, justify this optimization here.
+* [Google's 2025 Speculative Testing with Transition Prediction](https://research.google/pubs/speculative-testing-at-google-with-transition-prediction/) explores scheduling tests by predicted outcome transitions under large-scale CI demand. That frontier matters when assertions themselves dominate; applying learned test omission now would add uncertainty without addressing our measured tool-install/deployment bottleneck. Full coverage is retained.
+
+## Status
+
+Source implementation only; independent review and hosted cold/warm validation are required before claiming an achieved latency improvement. No public sending or privacy gate is relaxed by this change.
