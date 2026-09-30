@@ -77,9 +77,11 @@ def require(condition: bool, label: str) -> None:
         raise RuntimeError(label)
 
 
-def inspect_bindings(settings: object, queue_id: str) -> None:
+def inspect_bindings(settings: object, queue_id: str, *, realm: str = "staging",
+                     database: str = DATABASE) -> None:
     """Check effective D1 and sending bindings, without showing secrets."""
 
+    require(realm in ("staging", "production"), "realm unreviewed")
     require(isinstance(settings, dict), "Worker settings unavailable")
     bindings = settings.get("bindings")
     require(isinstance(bindings, list), "Worker bindings unavailable")
@@ -95,6 +97,10 @@ def inspect_bindings(settings: object, queue_id: str) -> None:
         ("secret_text", "CF_ACCOUNT_ID"),
         ("secret_text", "ROLE_TEST_FAULT"),  # Optional staging fault-injection hook.
     }
+    if realm == "production":
+        allowed.remove(("secret_text", "ROLE_TEST_FAULT"))
+    require(len({binding.get("name") for binding in bindings}) == len(bindings),
+            "duplicate binding names")
     require(
         all((binding.get("type"), binding.get("name")) in allowed for binding in bindings),
         "Worker has an unexpected capability binding",
@@ -103,7 +109,7 @@ def inspect_bindings(settings: object, queue_id: str) -> None:
     send = [binding for binding in bindings if isinstance(binding, dict) and binding.get("type") == "send_email"]
     require(len(d1) == 1 and d1[0].get("name") == "ROLE_MONITOR", "D1 binding differs")
     # Cloudflare's API may use `id` or `database_id` for a D1 binding.
-    require(d1[0].get("database_id", d1[0].get("id")) == DATABASE, "D1 database differs")
+    require(d1[0].get("database_id", d1[0].get("id")) == database, "D1 database differs")
     require(len(send) == 1 and send[0].get("name") == "ROLE_ALERT", "send binding differs")
     queue = [binding for binding in bindings if binding.get("type") == "queue"]
     require(QUEUE_ID.fullmatch(queue_id) is not None, "reviewed Queue pin unavailable")
@@ -112,13 +118,16 @@ def inspect_bindings(settings: object, queue_id: str) -> None:
         and queue[0].get("queue_id", queue[0].get("id")) == queue_id,
         "Queue binding differs",
     )
+    if realm == "production":
+        require(send[0].get("allowed_sender_addresses") == ["mail@moesegfault.dev"],
+                "send binding sender differs")
     if "allowed_sender_addresses" in send[0]:
         require(send[0]["allowed_sender_addresses"] == ["mail@moesegfault.dev"], "send binding sender differs")
     require(
         any(
             binding.get("type") == "plain_text"
             and binding.get("name") == "ROLE_REALM"
-            and binding.get("text") == "staging"
+            and binding.get("text") == realm
             for binding in bindings if isinstance(binding, dict)
         ),
         "staging realm binding differs",
@@ -134,7 +143,8 @@ def inspect_bindings(settings: object, queue_id: str) -> None:
     )
 
 
-def inspect_serving_bindings(version: object, expected_version: str, queue_id: str) -> None:
+def inspect_serving_bindings(version: object, expected_version: str, queue_id: str, *,
+                             realm: str = "staging", database: str = DATABASE) -> None:
     """Attest immutable serving-version capabilities, never unversioned /settings bindings."""
 
     require(isinstance(version, dict) and version.get("id") == expected_version,
@@ -147,7 +157,7 @@ def inspect_serving_bindings(version: object, expected_version: str, queue_id: s
     if isinstance(bindings, dict):
         require(set(bindings) == {"result"}, "serving binding wrapper differs")
         bindings = bindings["result"]
-    inspect_bindings({"bindings": bindings}, queue_id)
+    inspect_bindings({"bindings": bindings}, queue_id, realm=realm, database=database)
 
 
 def inspect_observability(script: object, version: object, worker: object) -> None:

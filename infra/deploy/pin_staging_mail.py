@@ -74,14 +74,17 @@ def serving_deployment(result: dict) -> tuple[str, str] | None:
     return deployment_id, version_id
 
 
-def expected_bindings(phase: str = "pre-queue", queue_id: str = "") -> dict[str, tuple[str, str | None]]:
+def expected_bindings(phase: str = "pre-queue", queue_id: str = "", *, realm: str = "staging") -> dict[str, tuple[str, str | None]]:
     """Derive staging resource values from reviewed config, not copied IDs."""
 
     if phase not in PHASES:
         raise ValueError("pin_phase_unreviewed")
 
+    if realm not in ("staging", "production"):
+        raise ValueError("pin_realm_unreviewed")
     with CONFIG.open("rb") as source:
-        stage = tomllib.load(source)["env"]["staging"]
+        config = tomllib.load(source)
+        stage = config["env"]["staging"] if realm == "staging" else config
     expected = {
         "MAIL_DB": ("d1", stage["d1_databases"][0]["database_id"]),
         "ROLE_MONITOR": ("d1", stage["d1_databases"][1]["database_id"]),
@@ -92,16 +95,18 @@ def expected_bindings(phase: str = "pre-queue", queue_id: str = "") -> dict[str,
         "INGRESS_SECRET": ("secret_text", None),
         **{name: ("plain_text", value) for name, value in stage["vars"].items()},
     }
+    if realm == "production":
+        expected["OFFICIAL_EMAIL"] = ("send_email", None)
     if phase == "queue-api":
         if (ACCOUNT.fullmatch(queue_id) is None or stage.get("queues", {}).get("producers") != [
-                {"binding": "TRACE_EVENTS", "queue": "amail-trace-events-staging"}]):
+                {"binding": "TRACE_EVENTS", "queue": "amail-trace-events" + ("-staging" if realm == "staging" else "")}]):
             raise ValueError("queue_pin_unreviewed")
         expected["TRACE_EVENTS"] = ("queue", queue_id)
     return expected
 
 
 def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-queue",
-                   queue_id: str = "") -> bool:
+                   queue_id: str = "", realm: str = "staging") -> bool:
     """Check exact resource bindings on the identified serving version."""
 
     resources = version.get("resources")
@@ -115,7 +120,8 @@ def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-qu
         actual = actual["result"]
     # Preserve the historical no-argument contract for pre-Queue callers and
     # their minimal-resource fixtures; only the new phase requires Queue pins.
-    expected = expected_bindings() if phase == "pre-queue" else expected_bindings(phase, queue_id)
+    expected = (expected_bindings() if phase == "pre-queue" and realm == "staging"
+                else expected_bindings(phase, queue_id, realm=realm))
     if not isinstance(actual, list) or len(actual) != len(expected):
         return False
     seen: set[str] = set()
@@ -136,6 +142,8 @@ def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-qu
         if kind == "plain_text" and binding.get("text") != value:
             return False
         if kind == "send_email" and binding.get("destination_address") is not None:
+            return False
+        if name == "OFFICIAL_EMAIL" and binding.get("allowed_sender_addresses") != ["mail@moesegfault.dev"]:
             return False
         if kind == "queue" and binding.get("queue_id", binding.get("id")) != value:
             return False
