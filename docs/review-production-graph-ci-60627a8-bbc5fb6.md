@@ -108,3 +108,26 @@ The documented top-level dispatch maximum is 25. Concurrency groups apply across
 workflows in the repository; keeping a running operation non-canceling does not
 by itself promise an unlimited pending queue. This review does not require a new
 queueing option for the intended manually frozen, single-transition operation.
+
+## Addendum: iteration fixture correction 3a519a7
+
+Narrow static review on 2026-10-01: **GO for hosted source checks**. Commit
+`3a519a7` changes only `infra/tests/test_ci_iteration_contract.py`, not workflow
+behavior. The old literal `${{ github.ref }}` assertion no longer matches the
+new nested `format('ci-{0}{1}', ..., github.ref)` representation. Its replacement
+assertions match the same branch component and literal fallback format, and add
+checks for the maintenance target and production graph lock.
+
+The existing exact check/manual selector and `cancel-in-progress` assertions
+remain intact. Manual-only protected jobs, source suites without provider calls,
+staging confirmation predicates, trusted source-only cache writes and test-before-
+cache ordering guards are unchanged. Inspection of the actual CI expression
+confirms the fallback still evaluates to `ci-checks-<ref>` for push/PR/checks and
+`ci-<ref>` for other nonproduction manual targets. Both production graph targets
+select the separate shared group and do not cancel a running operation.
+
+The fixture remains a textual contract rather than a GitHub expression evaluator;
+this addendum does not claim execution coverage for arbitrary expression rewrites.
+No material guard weakening was found in this narrow correction. No local or live
+tests were executed. The cross-writer lock finding above remains outstanding;
+this fixture correction neither repairs nor worsens it.
