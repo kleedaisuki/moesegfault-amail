@@ -134,3 +134,22 @@ in a live run.
   private object persistence or permission to read/delete it.
 
 Implementation agent was notified with the exact failure paths and remedies.
+
+## Scoped follow-up: `1e809cc`
+
+Source inspected without running tests. Findings 1 and 3 are resolved at source
+level: canonical and exact branch-qualified workflow paths are accepted;
+unique matching job/run/SHA and non-skipped terminal job plus started probe-step
+evidence are now required. New fixtures cover canonical/qualified paths, wrong
+workflow, skipped job/step, wrong run/SHA and duplicates. CI wiring still must
+agree with `PROBE_STEP_NAME` and be independently reviewed.
+
+Finding 2 is only **partly resolved**: a first DELETE 403 is carried through
+outer cleanup as read-only, and the new whole-probe test captures that path.
+However, an ambiguous first DELETE followed by GET-present and a conditional
+retry returning 403 is still caught as `object_delete_unverified` by the inner
+retry handler. The outer `finally` then permits deletion again. Preserve the
+definite-denial label/state on the conditional retry as well, and add a
+whole-probe ambiguous-then-403 call-order test.
+
+Finding 4 remains pending. **Overall NO-GO is unchanged.**
