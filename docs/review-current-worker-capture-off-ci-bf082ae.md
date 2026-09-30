@@ -60,3 +60,30 @@ does not satisfy those gates.
 - [GitHub workflow dispatch inputs](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatchinputs): at most 25 top-level inputs.
 - [GitHub workflow permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions): unspecified permissions become none when an explicit permission is set.
 - [GitHub workflow/job concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency): concurrency groups coordinate repository runs/jobs; disabling in-progress cancellation does not turn the acknowledgement into an external lock or guarantee pending-run order.
+
+## Narrow correction review: e4830ca
+
+Reviewed `e4830cae2226fb02e1648992a6a5f30a65c16ec8` after the reported hosted
+infrastructure-test failure at `eb4c09f`. Verdict: **GO for hosted source
+checks; no substantive defect found in this focused correction**. The reported
+failure came from an older R2 workflow test requiring exactly 23 inputs after
+the separately reviewed Mail freeze input raised the actual count to 24. This
+review inspected the source change, not raw hosted logs or a rerun.
+
+Both affected tests now enforce the real platform ceiling (`<=25`), uniqueness,
+and their required contract names rather than an unrelated exact total. The
+current-Worker test still requires `mail_deploy_freeze` and retains all branch,
+confirmation, attempt, service-lock, environment, test-before-secret and helper
+wiring checks. The R2-specific test retains all six dedicated R2 input names;
+its ci.yml contract also requires the dedicated Mail freeze. New fixtures accept
+25 valid inputs and reject 26 inputs, duplicate names, and a missing required
+Mail freeze. Thus the change removes a stale assertion, not the necessary
+dispatch boundary or safety acknowledgement.
+
+The small regex-based contract tests are not complete YAML validators. The
+independent `workflow-lint.yml` parser lane remains unchanged and checks all
+workflow files; this correction does not replace or bypass that broader guard.
+No executable workflow, helper, mutation endpoint, secret or attestation parser
+changed in this commit. No local tests, live requests or production writes were
+performed in this narrow review. The original next-action and operational
+boundaries above continue to apply.
