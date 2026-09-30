@@ -12,7 +12,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging, staging-containment-settings, staging-capture-preflight, staging-settings-patch-audit, staging-settings-audit-shape, staging-containment-readback, staging-worker-resource-readback, staging-role-queue-rollout, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production]
+        options: [checks, staging, staging-containment-settings, staging-capture-preflight, staging-settings-patch-audit, staging-settings-audit-shape, staging-containment-readback, staging-worker-resource-readback, staging-role-queue-rollout, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-worker-r2-delivery-history, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production]
       confirm:
         description: Staging E2E, semantic query, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -248,6 +248,42 @@ jobs:
           CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_r2_object_capability.py
+
+  staging-worker-r2-delivery-history:
+    name: Classify one historical Worker-created R2 delivery window
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-worker-r2-delivery-history' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact historical read confirmation
+        env:
+          HISTORY_CONFIRM: ${{ inputs.confirm }}
+        shell: pwsh
+        run: |
+          if ($env:HISTORY_CONFIRM -ne 'READ_WORKER_R2_DELIVERY_HISTORY_36751791789') {
+            throw 'Exact historical Worker R2 read confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Test fixed historical event and privacy contracts
+        run: python -m unittest discover -s infra/tests -p 'test_staging_worker_r2_delivery_history.py' -v
+      - name: Read bounded historical Sending and Routing events
+        env:
+          HISTORY_CONFIRM: ${{ inputs.confirm }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_worker_r2_delivery_history.py "$HISTORY_CONFIRM" 36751791789
 
   staging-second-principal-preflight:
     name: Read-only second-principal Identity, routing and private-R2 preflight
