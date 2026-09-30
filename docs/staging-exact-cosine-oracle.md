@@ -19,7 +19,7 @@ separate historical observation. No new live probe is authorized by this note.
 | State | Source and lifetime | Operator consequence |
 | --- | --- | --- |
 | Document vectors | `messages.embedding_json` holds 256 `f32` coordinates with `embedding_model`, `embedding_dimensions`, and `embedding_input_version`. Automatic Cron writes them; they remain while the active message exists. Soft deletion hides the row, and garbage collection later physically deletes it. | Read a complete, owner-scoped, **active** snapshot before either fixture is deleted. A post-cleanup read is not a valid historical score oracle. |
-| Query vector | `search_jobs.state_json.query_vector` receives the normalized, `f32`-rounded OpenRouter `search_query` embedding. On a complete job, `advance_claimed` clears it; a fast semantic POST then deletes its transient job row. A `202` job retains it only while unfinished, at most until the 24-hour job expiry/scrub. | The normal two-message search is expected to finish in the POST. Neither CLI JSONL nor a later D1 read contains the vector **actually scored**. Racing an in-flight D1 read is not a deterministic acceptance test. |
+| Query vector | `search_jobs.state_json.query_vector` receives the normalized, `f32`-rounded OpenRouter `search_query` embedding. On a complete job, `advance_claimed` clears it; a fast semantic POST then deletes its transient job row. A `202` job retains it only while unfinished, at most until the 24-hour job expiry/scrub. | The normal two-message search is expected to finish in the POST. Neither CLI JSONL nor a later D1 read contains the vector **actually scored**; however, CLI JSONL **does** emit `next_cursor` as a separate final record. Racing an in-flight D1 read is not a deterministic acceptance test. |
 | Scores and cursors | The Worker computes all-coordinate cosine with `f64` accumulation from the two persisted `f32` vectors. It ranks by score, then received time and ID. The public v3 cursor contains the last score bits, generation, and query hash but **no query-vector identity**. | A score match against a fresh provider embedding is conditional on provider determinism, not proof of the unseen Worker vector. Each semantic cursor POST independently re-embeds, so multi-page exactness also needs vector stability across pages. |
 
 These are source-level conclusions from `crates/mail-worker/src/platform.rs`,
@@ -135,9 +135,9 @@ Do not upload a raw D1 response, provider response, HTTP page, or CLI archive.
    OpenRouter documents the [embedding request parameters](https://openrouter.ai/docs/api/api-reference/embeddings/create-embeddings),
    but it does not make this repeatability check a contract for a different
    Worker request or a later provider route.
-3. Issue authenticated raw HTTP semantic search with the exact same
+3. Issue authenticated native CLI semantic search (the CLI uses HTTP internally) with the exact same
    restrictive mailbox/title/unread predicates and **`limit=1`**, capturing
-   response pages privately (not CLI JSONL, which strips the cursor). Require
+   response pages privately, including each CLI JSONL `next_cursor` record. Require
    the first page has exactly one hit and a v4 cursor whose vector commitment
    matches the independently rounded provider vector. This binds the oracle
    to the *Worker's actual query vector* without retaining it in D1. Request
@@ -161,6 +161,23 @@ Do not upload a raw D1 response, provider response, HTTP page, or CLI archive.
    count 2, bounded maximum absolute score error, order boolean, and
    `provider_repeatable=true/false`. It never emits query, vectors, IDs,
    addresses, SQL parameters, response bodies, tokens, or their hashes.
+
+Implementation wiring (source only, not a live acceptance): `workflow_dispatch`
+`target=staging-e2e`, `semantic=true`, `exact_cosine=true`,
+`exact_cosine_confirm=RUN_STAGING_EXACT_COSINE`, and the existing
+`confirm=RUN_STAGING_E2E` run the protected oracle on **the same two SMTP
+fixtures**, between semantic checks and mark/delete. The existing cleanup
+`finally` still runs after an oracle failure. The GitHub `staging` environment
+provides `OPENROUTER_API_KEY` only to the final E2E step under this opt-in;
+the existing D1-scoped `CLOUDFLARE_API_TOKEN` and native CLI session are used
+without extracting OAuth tokens. The harness first requires an empty full
+owner inventory, then exactly the two run-owned active messages. Its fixed
+embedded D1 SELECTs are parameterized. The two separately requested provider
+vectors must be bit-identical after `f32` rounding, and the first-page v4
+commitment must match. The private CLI pages, vectors, IDs and cursors never
+leave process memory or enter an Actions artifact. Only fixed labels and a
+bounded maximum absolute score error are printed. If the provider vectors
+differ, the outcome is `query_vector_unstable`, not a cosine failure.
 
 After reviewed v4 source is serving, a matching commitment plus complete D1
 snapshot and two pages is a **conclusive two-document, same-vector cosine

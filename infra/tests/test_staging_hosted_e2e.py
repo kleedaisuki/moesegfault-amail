@@ -53,6 +53,33 @@ class HostedHarnessSafetyTests(unittest.TestCase):
         }, clear=True):
             self.assertTrue(HARNESS.isolation_requested())
 
+    def test_exact_cosine_requires_semantic_confirmation_and_private_secret(self) -> None:
+        """The optional operator path is off by default and cannot piggyback."""
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(HARNESS.exact_cosine_requested(False))
+        cases = [
+            ({"AMAIL_STAGING_EXACT_COSINE_E2E": "yes"}, False, "exact_cosine_switch_invalid"),
+            ({"AMAIL_STAGING_EXACT_COSINE_E2E": "1"}, True, "exact_cosine_confirmation_missing"),
+            ({"AMAIL_STAGING_EXACT_COSINE_E2E": "1",
+              "AMAIL_STAGING_EXACT_COSINE_CONFIRM": "RUN_STAGING_EXACT_COSINE",
+              "OPENROUTER_API_KEY": "private"}, False, "exact_cosine_confirmation_missing"),
+            ({"AMAIL_STAGING_EXACT_COSINE_E2E": "1",
+              "AMAIL_STAGING_EXACT_COSINE_CONFIRM": "RUN_STAGING_EXACT_COSINE"},
+             True, "exact_cosine_provider_secret_missing"),
+        ]
+        for values, semantic, expected in cases:
+            with self.subTest(expected=expected), patch.dict(os.environ, values, clear=True):
+                with self.assertRaises(HARNESS.HostedProbeError) as caught:
+                    HARNESS.exact_cosine_requested(semantic)
+                self.assertEqual(str(caught.exception), expected)
+        with patch.dict(os.environ, {
+            "AMAIL_STAGING_EXACT_COSINE_E2E": "1",
+            "AMAIL_STAGING_EXACT_COSINE_CONFIRM": "RUN_STAGING_EXACT_COSINE",
+            "OPENROUTER_API_KEY": "private",
+        }, clear=True):
+            self.assertTrue(HARNESS.exact_cosine_requested(True))
+
     def test_identity_readback_binds_b_login_to_b_contact(self) -> None:
         """Different contact principals alone cannot prove the B CLI session."""
 
@@ -75,6 +102,8 @@ class HostedHarnessSafetyTests(unittest.TestCase):
             "AMAIL_STAGING_SEMANTIC_E2E: ${{ inputs.semantic && '1' || '0' }}", job
         )
         self.assertEqual(workflow.count("AMAIL_STAGING_SEMANTIC_E2E:"), 1)
+        self.assertIn("AMAIL_STAGING_EXACT_COSINE_E2E: ${{ inputs.exact_cosine && '1' || '0' }}", job)
+        self.assertIn("OPENROUTER_API_KEY: ${{ inputs.exact_cosine && secrets.OPENROUTER_API_KEY || '' }}", job)
 
     def test_staging_snapshot_receives_account_id_only_in_execution_step(self) -> None:
         """Fail before login if the bounded D1 readback cannot be authenticated."""

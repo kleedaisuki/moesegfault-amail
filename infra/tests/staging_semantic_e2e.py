@@ -3,8 +3,9 @@
 Call ``check_cli_search`` before the inbound harness marks or deletes its two
 run-owned messages. ``check_exact_pages`` is a separate, restricted operator
 oracle: it needs the exact query vector used by the Worker, persisted document
-vectors, and raw HTTP pages. CLI JSONL alone cannot expose a cursor or prove
-that every eligible vector was scored. Neither function sends mail or changes
+vectors, and complete authenticated CLI pages. CLI JSONL emits a separate
+`next_cursor` record but cannot prove that every eligible vector was scored.
+Neither function sends mail or changes
 mail state.
 """
 

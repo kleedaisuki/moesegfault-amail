@@ -813,7 +813,7 @@ def semantic_cases(
     print("semantic_two_message_search_verified")
 
 
-def cleanup_inventory(binary: Path, env: dict[str, str], address: str,
+def cleanup_inventory(binary: Path, env: dict[str, str], address: str | None,
                       outer_deadline: float | None = None) -> dict[str, dict]:
     """Enumerate one complete owner-scoped snapshot, discarding stale partial pages."""
 
@@ -823,7 +823,9 @@ def cleanup_inventory(binary: Path, env: dict[str, str], address: str,
         seen: set[str] = set()
         found: dict[str, dict] = {}
         for _ in range(100):
-            args = ["search", "--mailbox", address, "--limit", "100", "--wait-seconds", "30"]
+            args = ["search", "--limit", "100", "--wait-seconds", "30"]
+            if address is not None:
+                args += ["--mailbox", address]
             if cursor:
                 args += ["--cursor", cursor]
             for _resume in range(3):
@@ -861,7 +863,7 @@ def cleanup_inventory(binary: Path, env: dict[str, str], address: str,
             for row in lines[:len(lines) - len(markers)]:
                 msg_id = row.get("id")
                 check(isinstance(msg_id, str) and MAIL_ID.fullmatch(msg_id) is not None
-                      and msg_id not in found and row.get("mailbox") == address
+                      and msg_id not in found and (address is None or row.get("mailbox") == address)
                       and row.get("direction") == "inbound", "cleanup_search_row_unverified")
                 found[msg_id] = row
             if not markers:
@@ -1055,9 +1057,12 @@ def main() -> int:
     parser.add_argument("--home", required=True)
     parser.add_argument("--amail", required=True)
     parser.add_argument("--check-semantic", action="store_true")
+    parser.add_argument("--check-exact-cosine", action="store_true",
+                        help="restricted staging operator oracle; implies --check-semantic")
     parser.add_argument("--isolation-home", help="separate native B home; adds no SMTP or route")
     args = parser.parse_args()
     check(args.confirm_staging, "staging_confirmation_required")
+    check(not args.check_exact_cosine or args.check_semantic, "exact_cosine_requires_semantic")
     home, binary = inside_temp(args.home), inside_temp(args.amail)
     check(binary.is_file() and home.is_dir(), "cli_binary_or_home_missing")
     zone = os.environ.get("CLOUDFLARE_ZONE_ID", "")
@@ -1112,6 +1117,8 @@ def main() -> int:
             raise ProbeFailure("address_activation_timeout")
         assert_route(zone, routing_token, address, True)
         print("address_and_literal_route_verified")
+        if args.check_exact_cosine:
+            check(not cleanup_inventory(binary, env, None), "oracle_owner_preinventory_not_empty")
 
         # Email Routing rule propagation can lag the control-plane readback.
         # 邮件路由数据面可能落后于规则 API 回读。
@@ -1166,6 +1173,16 @@ def main() -> int:
                 binary, env, address, nonce, rich_row, rich_oracle,
                 distractor_row,
             )
+        if args.check_exact_cosine:
+            from staging_exact_cosine_oracle import OracleError, verify
+            check(set(cleanup_inventory(binary, env, None)) == {target, distractor_id},
+                  "oracle_owner_inventory_changed")
+            try:
+                error = verify(account, api_token, os.environ.get("OPENROUTER_API_KEY", ""),
+                               binary, env, address, nonce, (target, distractor_id))
+            except OracleError as failure:
+                raise ProbeFailure(str(failure)) from None
+            print(f"semantic_exact_cosine_verified:max_abs_error={error:.8f}:count=2:order=true:provider_repeatable=true")
         amail(binary, env, "mark", target, "--read", failure="mark_read_failed")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--read", failure="read_search_failed"), rich_oracle["subject"], 1, "read_search_count")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--unread", failure="unread_search_failed"), rich_oracle["subject"], 0, "unread_search_count")

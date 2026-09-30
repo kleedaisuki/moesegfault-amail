@@ -75,6 +75,20 @@ def semantic_requested() -> bool:
     return value == "1"
 
 
+def exact_cosine_requested(semantic: bool) -> bool:
+    """Gate the private D1/provider oracle behind a separate manual opt-in."""
+
+    value = os.environ.get("AMAIL_STAGING_EXACT_COSINE_E2E", "0")
+    if value not in ("0", "1"):
+        raise HostedProbeError("exact_cosine_switch_invalid")
+    if value == "1" and (not semantic or os.environ.get("AMAIL_STAGING_EXACT_COSINE_CONFIRM")
+                         != "RUN_STAGING_EXACT_COSINE"):
+        raise HostedProbeError("exact_cosine_confirmation_missing")
+    if value == "1" and not os.environ.get("OPENROUTER_API_KEY"):
+        raise HostedProbeError("exact_cosine_provider_secret_missing")
+    return value == "1"
+
+
 def isolation_requested() -> bool:
     """Require a second literal confirmation before adding principal B."""
 
@@ -118,6 +132,7 @@ def execute() -> bool:
 
     username, password = validate_environment()
     semantic = semantic_requested()
+    exact_cosine = exact_cosine_requested(semantic)
     isolation = isolation_requested()
     nonce = recoverable_run_nonce(password)
     if TEMP != ROOT / ".temp":
@@ -180,6 +195,8 @@ def execute() -> bool:
             ]
             if semantic:
                 sys.argv.append("--check-semantic")
+            if exact_cosine:
+                sys.argv.append("--check-exact-cosine")
             if home_b is not None:
                 sys.argv.extend(("--isolation-home", str(home_b)))
             try:

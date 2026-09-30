@@ -44,6 +44,15 @@ on:
         required: false
         default: false
         type: boolean
+      exact_cosine:
+        description: Private staging D1 and OpenRouter two-page oracle on the same two messages; requires semantic
+        required: false
+        default: false
+        type: boolean
+      exact_cosine_confirm:
+        description: Enter RUN_STAGING_EXACT_COSINE only for the private exact-cosine oracle
+        required: false
+        type: string
       isolation:
         description: Add B denial checks to the same two staging-e2e SMTP fixtures
         required: false
@@ -153,6 +162,8 @@ jobs:
         env:
           AMAIL_STAGING_E2E_CONFIRM: ${{ inputs.confirm }}
           AMAIL_STAGING_SEMANTIC_E2E: ${{ inputs.semantic && '1' || '0' }}
+          AMAIL_STAGING_EXACT_COSINE_E2E: ${{ inputs.exact_cosine && '1' || '0' }}
+          AMAIL_STAGING_EXACT_COSINE_CONFIRM: ${{ inputs.exact_cosine_confirm }}
           AMAIL_STAGING_ISOLATION_E2E: ${{ inputs.isolation && '1' || '0' }}
           AMAIL_STAGING_ISOLATION_CONFIRM: ${{ inputs.isolation_confirm }}
           STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
@@ -163,6 +174,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           AMAIL_TEST_SMTP_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          OPENROUTER_API_KEY: ${{ inputs.exact_cosine && secrets.OPENROUTER_API_KEY || '' }}
           CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_hosted_e2e.py
