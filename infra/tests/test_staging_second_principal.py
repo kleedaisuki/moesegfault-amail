@@ -29,46 +29,82 @@ SPEC.loader.exec_module(MODULE)
 class SecondPrincipalTests(unittest.TestCase):
     """Protect the private OTP boundary and non-repeatable registration gate."""
 
-    def test_r2_inventory_discriminates_shape_without_accepting_missing_pagination(self) -> None:
-        """Optional provider metadata is not proof of a complete inventory."""
+    @staticmethod
+    def r2_page(keys: list[str], **extra: object) -> bytes:
+        """Build only synthetic R2 REST envelopes without private MIME."""
 
-        key = "verification/12345678-1234-4123-8123-123456789abc.eml"
+        return json.dumps({"success": True, "result": [{"key": key} for key in keys],
+                           **extra}).encode()
+
+    @staticmethod
+    def r2_key(number: int) -> str:
+        """Produce ordered, well-formed synthetic Worker UUIDv4 keys."""
+
+        return f"verification/{number:08x}-1234-4123-8123-{number:012x}.eml"
+
+    def test_r2_keyset_accepts_empty_and_requires_followup_after_short_page(self) -> None:
+        """Missing result_info is normal; only an explicit empty page terminates."""
+
+        empty = self.r2_page([])
+        with patch.object(MODULE, "request", return_value=empty) as get:
+            self.assertEqual(MODULE.object_inventory("a" * 32, "private-token"), set())
+        self.assertEqual(get.call_count, 1)
+        self.assertIn("?prefix=verification/&per_page=100", get.call_args.args[1])
+        first, second = self.r2_key(1), self.r2_key(2)
+        pages = [
+            self.r2_page([first], result_info={"is_truncated": False, "cursor": "ignore-me"}),
+            self.r2_page([second], result_info={"cursor": "still-ignore"}),
+            empty,
+        ]
+        with patch.object(MODULE, "request", side_effect=pages) as get:
+            self.assertEqual(MODULE.object_inventory("a" * 32, "private-token"),
+                             {first, second})
+        self.assertEqual(get.call_count, 3)
+        urls = [call.args[1] for call in get.call_args_list]
+        self.assertNotIn("start_after=", urls[0])
+        self.assertIn("start_after=verification%2F", urls[1])
+        self.assertIn(first.rsplit("/", 1)[1], urls[1])
+        self.assertIn(second.rsplit("/", 1)[1], urls[2])
+        self.assertTrue(all("cursor=" not in url for url in urls))
+
+    def test_r2_keyset_rejects_duplicate_order_shape_and_page_overlimit(self) -> None:
+        """Fail closed on any response that cannot establish ordered coverage."""
+
+        first, second = self.r2_key(1), self.r2_key(2)
         cases = (
-            ({"result": []}, "r2_result_info_missing"),
-            ({"result": [], "result_info": []}, "r2_result_info_invalid"),
-            ({"result": [], "result_info": {}}, "r2_result_info_invalid"),
-            ({"result": {}, "result_info": {"is_truncated": False}}, "r2_result_invalid"),
-            ({"result": ["not-an-object"], "result_info": {"is_truncated": False}},
+            ([self.r2_page([first, first])], "r2_duplicate_key"),
+            ([self.r2_page([second, first])], "r2_key_order_invalid"),
+            ([self.r2_page([first]), self.r2_page([first])], "r2_duplicate_key"),
+            ([self.r2_page([second]), self.r2_page([first])], "r2_key_order_invalid"),
+            ([json.dumps({"success": True, "result": {"cursor": "opaque"}}).encode()],
+             "r2_result_invalid"),
+            ([json.dumps({"success": True, "result": ["bad-entry"]}).encode()],
              "r2_object_entry_invalid"),
-            ({"result": [{"key": "verification/not-uuid.eml"}],
-              "result_info": {"is_truncated": False}}, "r2_object_key_invalid"),
-            ({"result": [{"key": key}, {"key": key}],
-              "result_info": {"is_truncated": False}}, "r2_duplicate_key"),
-            ({"result": [], "result_info": {"is_truncated": True}}, "r2_cursor_invalid"),
+            ([self.r2_page(["verification/not-uuid.eml"])], "r2_object_key_invalid"),
+            ([self.r2_page([self.r2_key(index) for index in range(101)])],
+             "r2_page_size_invalid"),
         )
-        for payload, expected in cases:
-            raw = json.dumps({"success": True, **payload}).encode()
-            with self.subTest(expected=expected), patch.object(MODULE, "request", return_value=raw):
+        for pages, expected in cases:
+            with self.subTest(expected=expected), patch.object(MODULE, "request", side_effect=pages):
                 with self.assertRaises(MODULE.ProvisionFailure) as caught:
                     MODULE.object_inventory("a" * 32, "private-token")
             self.assertEqual(str(caught.exception), expected)
-        valid = json.dumps({"success": True, "result": [],
-                            "result_info": {"is_truncated": False}}).encode()
-        with patch.object(MODULE, "request", return_value=valid):
-            self.assertEqual(MODULE.object_inventory("a" * 32, "private-token"), set())
 
-    def test_r2_duplicate_on_later_page_fails_without_truncation_assumption(self) -> None:
-        """A repeated UUID across pages cannot silently inflate or terminate inventory."""
+    def test_r2_keyset_bounds_total_keys_and_pages(self) -> None:
+        """Neither endless short pages nor >1000 objects may greenlight mutation."""
 
-        key = "verification/12345678-1234-4123-8123-123456789abc.eml"
-        first = json.dumps({"success": True, "result": [{"key": key}],
-                            "result_info": {"is_truncated": True, "cursor": "next"}}).encode()
-        second = json.dumps({"success": True, "result": [{"key": key}],
-                             "result_info": {"is_truncated": False}}).encode()
-        with patch.object(MODULE, "request", side_effect=[first, second]):
+        over_limit = [self.r2_page([self.r2_key(index) for index in range(start, start + 100)])
+                      for start in range(0, 1000, 100)]
+        over_limit.append(self.r2_page([self.r2_key(1000)]))
+        with patch.object(MODULE, "request", side_effect=over_limit):
             with self.assertRaises(MODULE.ProvisionFailure) as caught:
                 MODULE.object_inventory("a" * 32, "private-token")
-        self.assertEqual(str(caught.exception), "r2_duplicate_key")
+        self.assertEqual(str(caught.exception), "r2_inventory_too_large")
+        no_end = [self.r2_page([self.r2_key(index)]) for index in range(20)]
+        with patch.object(MODULE, "request", side_effect=no_end):
+            with self.assertRaises(MODULE.ProvisionFailure) as caught:
+                MODULE.object_inventory("a" * 32, "private-token")
+        self.assertEqual(str(caught.exception), "r2_page_limit")
 
     def test_one_vetted_mime_code(self) -> None:
         """Require exact Identity sender, recipient, fresh date and one text code."""

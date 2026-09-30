@@ -125,38 +125,36 @@ def identity_contacts(account: str, token: str) -> dict[str, tuple[str, str, str
 
 
 def object_inventory(account: str, token: str) -> set[str]:
-    """List all bounded UUID-keyed private MIME; reject ambiguous pagination."""
+    """List UUID-keyed MIME by strict keyset order until an explicit empty page.
+
+    REST ``result_info`` is optional; a short page does not prove completion.
+    Always request the next lexicographic slice after the last validated key.
+    """
 
     keys: set[str] = set()
-    cursor = None
+    last: str | None = None
     for _ in range(20):
         query = "?prefix=verification/&per_page=100"
-        if cursor:
-            query += "&cursor=" + urllib.parse.quote(cursor, safe="")
+        if last is not None:
+            query += "&start_after=" + urllib.parse.quote(last, safe="")
         raw = request("GET", f"/accounts/{account}/r2/buckets/{BUCKET}/objects{query}", token,
                       limit=262_144)
         value = json_result(raw)
         batch = value.get("result")
-        info = value.get("result_info")
         require(isinstance(batch, list), "r2_result_invalid")
-        require("result_info" in value, "r2_result_info_missing")
-        require(isinstance(info, dict), "r2_result_info_invalid")
+        require(len(batch) <= 100, "r2_page_size_invalid")
+        if not batch:
+            return keys
         for item in batch:
             require(isinstance(item, dict), "r2_object_entry_invalid")
             key = item.get("key")
             require(isinstance(key, str) and KEY.fullmatch(key) is not None,
                     "r2_object_key_invalid")
             require(key not in keys, "r2_duplicate_key")
+            require(last is None or key > last, "r2_key_order_invalid")
             keys.add(key)
-        require(len(keys) <= 1000, "r2_inventory_too_large")
-        truncated = info.get("is_truncated")
-        require(type(truncated) is bool, "r2_result_info_invalid")
-        if not truncated:
-            return keys
-        next_cursor = info.get("cursor")
-        require(isinstance(next_cursor, str) and next_cursor and next_cursor != cursor,
-                "r2_cursor_invalid")
-        cursor = next_cursor
+            require(len(keys) <= 1000, "r2_inventory_too_large")
+            last = key
     raise ProvisionFailure("r2_page_limit")
 
 
