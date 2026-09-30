@@ -7,9 +7,12 @@ PyYAML dependency, loader/checker, synthetic fixtures, and design note. Inspecte
 the existing workflow event/container forms and the concurrent extraction of
 Worker R2 dispatch inputs, without modifying those changes.
 
-**GO for hosted push/PR validation. No substantive blocking defect found in the
-reviewed change.** This does not certify successful hosted execution, complete
-GitHub Actions schema validation, or the separate R2 workflow extraction.
+**Original GO withdrawn after hosted failure.** Run `36750216887` rejected the
+guard itself at YAML line 26 before any job began. The reviewer missed the
+colon-space sequence in the unquoted pip command; this was a concrete blocking
+syntax defect, not merely an unverified hosted result. The correction and
+current decision are recorded below. Other structural/security observations
+remain applicable, but must not be read as proof that the original file ran.
 
 No local tests, builds, live mutations, or pushes were performed. Inspection of
 current workflow headers is not a substitute for the hosted parser result.
@@ -67,6 +70,37 @@ to run successfully, including its fixtures and all workflow files. The original
 27-input `ci.yml` is expected to fail this guard until the separate extraction
 reduces its inputs; that is detection, not a false positive. Record the source
 SHA and workflow result before claiming the bootstrap failure is resolved.
+
+## Focused correction review: ce1ff14
+
+Reviewed `ce1ff149ab186d02862b808dd402a37d5936df57` after the demonstrated
+parser-stage failure in `36750216887`.
+
+**GO for another hosted push/PR validation of the corrected guard. No remaining
+blocking defect found in this focused correction. Hosted success is not yet
+established.**
+
+- Original line 26 was a YAML plain scalar containing
+  `--only-binary=:all:` followed by a space. The final colon-space sequence is
+  forbidden inside that plain scalar. The correction changes `run` to a literal
+  block scalar and indents the unchanged shell command beneath it, removing
+  interpretation of its internal colons as YAML structure.
+- The other two `run` commands do not contain colon-space sequences. The fix
+  changes no event, permission, timeout, dependency, concurrency, credential,
+  deployment, or cache behavior.
+- Added fixtures validate the guard's own checked-out source and explicitly
+  reject the incident's plain-scalar command while accepting its block-scalar
+  representation. Their strings and file path correspond to the actual
+  correction. No local fixture execution was performed.
+- These fixtures cannot run before GitHub parses their containing workflow.
+  They improve regression coverage after scheduling, not the fundamental
+  bootstrap boundary. The design note now makes that limitation and the failed
+  run explicit; another hosted run must demonstrate actual acceptance.
+
+The earlier GO did not adequately inspect the guard's own YAML scalar syntax.
+That review omission is acknowledged rather than relabeled as infrastructure
+latency. Future review of this lane should explicitly inspect shell command
+serialization alongside event/input structure.
 
 ## Primary references
 
