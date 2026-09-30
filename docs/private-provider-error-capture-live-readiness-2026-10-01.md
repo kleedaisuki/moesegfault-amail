@@ -234,15 +234,40 @@ outcomes, separate from this readiness pass's directly inspected synthetic
 evidence; this addendum did not download artifacts or independently inspect
 private evidence.
 
-The local protected key/ciphertext session remains retained pending an
-independently reviewed **offline-only** bounded classifier and its existing
-24-hour deadline. Remote artifact retirement is not full local cleanup. Do not
-extend the deadline, authorize another provider read, expose raw error prose,
-or infer delivery, B readiness or the original historical failure's cause from
-`unclassified`. Final exact local retirement and disabling verification remain
-operator-owned completion evidence.
+At that intermediate point, the local protected key/ciphertext session was
+retained pending an independently reviewed **offline-only** bounded classifier
+and its existing 24-hour deadline. Remote artifact retirement alone was not full
+local cleanup. The final outcome below supersedes that retained state without
+changing the preceding historical sequence.
 
 No local session/key was accessed, and no provider call, local test or build was
 performed when adding this outcome record. It contains only public run/source
 coordinates and fixed status information, not provider text or local absolute
 paths.
+
+### Final offline outcome and retirement — 2026-09-30T21:19:33Z
+
+The root operator subsequently reports that reviewed classifier source
+`34f20a29ce9c400e68e9d5a8dea91fbc8c5db93e` passed hosted source CI
+[36778229818](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36778229818)
+and dual-OS synthetic checks
+[36778229698](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36778229698).
+One local **offline-only** classification of the same encrypted capture emitted
+only **`http=ok errors=unclassified delivery=UNVERIFIED`**. No additional provider
+query or retry was performed. HTTP ok is not successful GraphQL execution or
+evidence of delivery; the original unknown error remains unresolved.
+
+The root operator reports that cleanup returned **`CLEANED`**. At
+**`2026-09-30T21:19:33Z`**, the exact capture run's artifact inventory was **0**,
+both enabling repository variables were absent, and the local private session
+was absent. This is the final reported remote/local retirement and disabling
+state; no local key/ciphertext retention remains asserted by this record.
+These live/cleanup observations are owner-reported, not independently obtained
+by this documentation update.
+
+**Stop adaptive probing. Delivery remains UNVERIFIED and B/delivery acceptance
+remain NO-GO.** Do not infer a schema repair, broaden credentials, register B,
+resend mail or authorize a further provider query from this result. No provider
+text, raw error, private key material or local private path is recorded. This
+final update accessed no local session/key and performed no tests or provider
+calls.

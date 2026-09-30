@@ -1,5 +1,12 @@
 # Worker-R2 historical query: schema failure discriminator
 
+**Current outcome (2026-10-01): the separately approved single encrypted capture
+and one reviewed offline classification remain `errors=unclassified`; final
+remote/local cleanup and disabling are owner-reported complete. Delivery remains
+UNVERIFIED, B/delivery acceptance remain NO-GO, and adaptive probing stops.**
+The chronology below is retained; the final outcome section supersedes its
+earlier pending-private-channel decision, not its evidence limitations.
+
 ## Evidence and scope (2026-10-01)
 
 The owner reports that hosted historical classifier run
@@ -318,11 +325,50 @@ rate-limit nor service failure is established. The original failed delivery and
 B's existing-object GET/DELETE capability remain unresolved; B remains NO-GO.
 A source/CI success and successful classification exit do not alter that state.
 
-The next decision belongs to the owner and architecture review: either stop
-this investigation pending a different trusted evidence source, or separately
-design and review a narrowly scoped private diagnostic channel (for example,
-encrypted evidence with an explicit access/retention contract). That evaluation
-is not implemented or authorized here. No further private request is included
-in this documentation update. If such a channel is later approved, its evidence
-handling and one-request scope must be established before collection rather
-than retrofitted after raw data has entered logs or artifacts.
+At that point the next decision belonged to the owner and architecture review:
+either stop pending a different trusted evidence source, or separately design
+and review a narrowly scoped private diagnostic channel, such as encrypted
+evidence with an explicit access/retention contract. That earlier documentation
+did not implement or authorize the channel. Its handling and one-request scope
+had to be established before collection, not retrofitted after raw data entered
+logs or artifacts. The subsequently reported bounded outcome is recorded below.
+
+### Final one-shot encrypted capture: unresolved and retired; stop probing
+
+The root operator reports one separately authorized encrypted capture,
+[36776658592](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36776658592),
+at exact source SHA `7719d674a85eaee7df66a487368367ef4fff3c8d`. Private inspection
+emitted only the fixed category **`errors=unclassified`**; no raw provider text
+is available in this record. This new observation does not reconstruct the
+discarded errors of the earlier requests or establish one persistent cause.
+
+Reviewed offline classifier source `34f20a29ce9c400e68e9d5a8dea91fbc8c5db93e`
+subsequently passed hosted source CI
+[36778229818](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36778229818)
+and dual-OS synthetic checks
+[36778229698](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36778229698),
+according to the root operator. One local offline-only classification of the
+same retained encrypted evidence returned exactly
+**`http=ok errors=unclassified delivery=UNVERIFIED`**. There was no additional
+provider query or retry. Successful source/synthetic checks establish the
+reviewed classifier's tested contracts, not the cause of the provider error.
+
+The root operator reports that cleanup returned **`CLEANED`**, and that at
+**`2026-09-30T21:19:33Z`** the exact capture run's artifact inventory was **0**,
+both enabling repository variables were absent, and the local private session
+was absent. The temporary retained-key state has therefore been superseded by
+the final reported cleanup/disable state. This documentation update did not
+independently access a private session or artifact to verify those observations.
+
+**The diagnostic remains unresolved; stop adaptive probing. B/delivery acceptance
+remain NO-GO and delivery remains UNVERIFIED.** HTTP ok does not mean successful
+GraphQL execution, and an unknown error establishes neither missing grants nor
+a field/type/filter defect. No credential widening, speculative schema change,
+new historical query, retry, mail send, R2 PUT or B registration is authorized.
+The encrypted-read lifecycle is complete, not the product acceptance gate.
+
+For the bounded lifecycle and evidence distinctions, see
+[the final readiness/outcome record](private-provider-error-capture-live-readiness-2026-10-01.md).
+No provider prose, raw error, key material or local private path is recorded;
+this final documentation update performed no local session/key access, tests
+or provider calls.
