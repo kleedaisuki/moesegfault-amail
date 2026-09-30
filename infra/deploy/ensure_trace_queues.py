@@ -89,6 +89,11 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
                 "message_retention_period": RETENTION, "delivery_delay": 0, "delivery_paused": False}})
         elif not bounded_queue(row):
             raise ValueError("queue_settings_drift")
+        elif phase == "queues":
+            key = "AMAIL_TRACE_DLQ_ID" if name.startswith("amail-trace-dlq") else "AMAIL_TRACE_QUEUE_ID"
+            expected = os.getenv(key, "")
+            if not re.fullmatch(r"[0-9a-f]{32}", expected) or row["queue_id"] != expected:
+                raise ValueError("existing_queue_ownership_unverified")
     # Fresh readback proves create completion; a timed-out POST is not retried here.
     rows = inventory(account, token)
     for name in (f"amail-trace-dlq{suffix}", f"amail-trace-events{suffix}"):
@@ -96,10 +101,15 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
         if row is None or not bounded_queue(row):
             raise ValueError("queue_settings_drift")
         detail = request(account, token, f"queues/{row['queue_id']}").get("result")
-        if not isinstance(detail, dict) or not bounded_queue(detail):
+        if (not isinstance(detail, dict) or not bounded_queue(detail)
+                or detail.get("queue_id") != row["queue_id"] or detail.get("queue_name") != name):
             raise ValueError("queue_settings_drift")
         consumers, producers = detail.get("consumers"), detail.get("producers")
-        if not isinstance(consumers, list) or not isinstance(producers, list):
+        if (not isinstance(consumers, list) or not isinstance(producers, list)
+                or type(detail.get("consumers_total_count")) is not int
+                or detail["consumers_total_count"] != len(consumers)
+                or type(detail.get("producers_total_count")) is not int
+                or detail["producers_total_count"] != len(producers)):
             raise ValueError("ownership_shape")
         if name.startswith("amail-trace-dlq"):
             if consumers or producers:

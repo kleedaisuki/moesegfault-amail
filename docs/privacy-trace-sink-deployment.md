@@ -18,7 +18,12 @@ creates a second payload access path.
 
 `infra/deploy/ensure_trace_queues.py --target staging --phase queues` inventories
 all bounded provider pages, creates only absent queues, and verifies retention.
-Existing drift fails; it never updates, purges or deletes resources. Ambiguous
+Existing drift fails; it never updates, purges or deletes resources. Preexisting
+resources additionally require exact reviewed project variables
+`AMAIL_TRACE_QUEUE_ID_STAGING`/`AMAIL_TRACE_DLQ_ID_STAGING` (or `_PRODUCTION`).
+These non-secret IDs must come from the successful provisioning evidence; name
+equality alone cannot adopt an unrelated empty queue. Counts and resource
+identity must match complete producer/consumer arrays on detail readback. Ambiguous
 POST failure stops without retry. Reconcile inventory before a later run.
 `--phase readback` is read-only and verifies exact consumer, retry/DLQ settings
 and API producer ownership after API deployment. It never fetches a message.

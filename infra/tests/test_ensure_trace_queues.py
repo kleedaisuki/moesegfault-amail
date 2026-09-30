@@ -52,18 +52,28 @@ class TraceQueueTests(unittest.TestCase):
                 MODULE.reconcile("a", "t", "staging", "queues")
             self.assertEqual(call.call_count, 1)
 
+    def test_existing_queue_requires_reviewed_id(self):
+        """A same-name empty resource is not sufficient provenance for adoption."""
+        with patch.object(MODULE, "inventory", return_value=[queue("amail-trace-dlq-staging")]), patch.dict(
+                MODULE.os.environ, {}, clear=True), patch.object(MODULE, "request") as call:
+            with self.assertRaisesRegex(ValueError, "existing_queue_ownership_unverified"):
+                MODULE.reconcile("a", "t", "staging", "queues")
+            call.assert_not_called()
+
     def test_readback_requires_exact_owner(self):
         """Extra consumers/producers, bad DLQ and wrong retry settings are rejected."""
         dlq, main = queue("amail-trace-dlq-staging"), queue("amail-trace-events-staging")
-        safe = {**main, "consumers": [{"type": "worker", "script_name": "amail-trace-sink-staging",
+        safe = {**main, "consumers_total_count": 1, "producers_total_count": 1, "consumers": [{"type": "worker", "script_name": "amail-trace-sink-staging",
                 "dead_letter_queue": "amail-trace-dlq-staging", "settings": {
                     "batch_size": 10, "max_wait_time_ms": 1000, "max_retries": 3,
                     "retry_delay": 30, "max_concurrency": 2}}],
                 "producers": [{"type": "worker", "script": "amail-mail-staging"}]}
         for detail, fails in [(safe, False), ({**safe, "producers": []}, True),
-                              ({**safe, "consumers": []}, True)]:
+                              ({**safe, "consumers": []}, True),
+                              ({**safe, "queue_id": "b" * 32}, True),
+                              ({**safe, "producers_total_count": 2}, True)]:
             with self.subTest(fails=fails), patch.object(MODULE, "inventory", return_value=[dlq, main]), patch.object(
-                    MODULE, "request", side_effect=[{"result": {**dlq, "consumers": [], "producers": []}}, {"result": detail}]):
+                    MODULE, "request", side_effect=[{"result": {**dlq, "consumers": [], "producers": [], "consumers_total_count": 0, "producers_total_count": 0}}, {"result": detail}]):
                 if fails:
                     with self.assertRaises(ValueError):
                         MODULE.reconcile("a", "t", "staging", "readback")
