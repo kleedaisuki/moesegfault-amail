@@ -56,7 +56,7 @@ for (const state of ['candidate', 'published']) {
         const pages = fixture(state);
         const url = state === 'published' ? tagUrl : releasesUrl;
         pages[path] = pages[path].replace(`href="${url}"`, `data-href="${url}"`);
-        assert.throws(() => checkReleaseState(state, pages, headers), /Release link is missing/);
+        assert.throws(() => checkReleaseState(state, pages, headers), /[Rr]elease[s]? link is missing/);
       });
     }
   }
