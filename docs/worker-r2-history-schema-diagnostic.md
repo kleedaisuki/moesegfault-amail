@@ -125,3 +125,38 @@ object access or relaxation of the original fail-closed delivery classifier.
 
 Even a clean baseline is not retrospective proof that the first response had
 that shape. Adaptive event absence remains inconclusive and B remains NO-GO.
+
+## Source implementation (not yet hosted or queried)
+
+`infra/tests/staging_worker_r2_history_shape.py` implements the reduced query
+and imports the original immutable `historical_window()`, no-redirect opener,
+UTC parser, duplicate-key rejection and body limits without altering the original
+classifier. Its explicit confirmation is
+`READ_WORKER_R2_HISTORY_BASELINE_SHAPE_36751791789`; the second CLI argument must
+be the fixed original run. Only Analytics and GitHub read credentials are read.
+No workflow change or live authorization is included in this source work.
+
+Output starts with
+`worker_r2_history_shape=SHAPE_DIAGNOSED delivery=UNVERIFIED`, followed by fixed
+fields in fixed order. Exit zero means the bounded object was classified, **not**
+that GraphQL succeeded, history is complete, or mail was delivered. Transport,
+HTTP, oversized-body and malformed/duplicate-JSON failures instead use the
+existing closed `UNVERIFIED reason=provider|schema|...` categories; the more
+granular proposed response bins were deliberately not implemented because they
+are unnecessary for the first compatibility decision. `envelope` describes
+only top-level keys, not a nested-key whitelist. `no_rows` explicitly distinguishes
+an empty dataset from a known scalar representation; `full` remains incomplete.
+
+Synthetic tests cover empty/normal/null/mixed/invalid/full rows, GraphQL errors
+without raw message output, envelope variants, one distinct content-minimized
+request with the same time bounds/body cap, duplicate/oversized JSON, exact
+confirmation/run gating and private-error suppression. They were authored and
+statically inspected, **not executed locally**. Root must obtain independent
+review and hosted source checks, then separately wire the manual branch-pinned,
+first-attempt-only, staging-gated read target before considering its one request.
+
+This implementation cannot recover the rejected original condition: it can
+only separate a currently rejected baseline from baseline compatibility. If it
+returns normal bins, do not add automated retries or infer that the original
+optional fields were the cause. The next narrower investigation remains an
+explicit decision rather than another query hidden in this helper.
