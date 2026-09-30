@@ -14,7 +14,7 @@ const releases = await Promise.all(entries.map(async (entry) => ({ entry, Conten
     <nav class="toc" aria-label="更新日志目录"><p class="toc-title">目录 / Contents</p><ol>{releases.map(({ entry }) => <li><a href={`#${entry.data.version}`}>{entry.data.version} · {entry.data.date.toLocaleDateString('zh-CN', { timeZone: 'UTC' })}</a></li>)}</ol></nav>
     <div class="release-list">
       {releases.map(({ entry, Content }) => <article class="release" aria-labelledby={entry.data.version}>
-        <div class="release-marker"><span class="release-tag">Release</span><time datetime={entry.data.date.toISOString().slice(0, 10)}>{entry.data.date.toLocaleDateString('zh-CN', { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' })}</time></div>
+        <div class="release-marker"><span class="release-tag">{releaseState === 'published' ? 'Release' : '候选记录日期'}</span><time datetime={entry.data.date.toISOString().slice(0, 10)}>{entry.data.date.toLocaleDateString('zh-CN', { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' })}</time></div>
         <h2 id={entry.data.version}>{entry.data.version}</h2><p class="release-summary">{entry.data.summary}</p>
         <div class="prose"><Content /></div>
         <a class="release-link" href={releaseState === 'published' ? `https://github.com/kleedaisuki/moesegfault-amail/releases/tag/${entry.data.version}` : 'https://github.com/kleedaisuki/moesegfault-amail/releases'}>查看 GitHub Releases <span aria-hidden="true">↗</span></a>

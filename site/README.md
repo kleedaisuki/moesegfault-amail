@@ -21,7 +21,17 @@ staging always uses the default candidate variant. Unknown values fail the build
 
 The build yields `dist/`; `wrangler.jsonc` deploys it as the `amail-release-site` Worker on the `amail.moesegfault.dev` custom domain. An isolated `staging` environment deploys `amail-release-site-staging` to `amail-staging.moesegfault.dev` with explicit route/asset settings; use `pnpm run deploy:staging`. CI owns deploy and live smoke checks. The expected routes are `/`, `/manual/`, and `/changelog/`. For production, use `pnpm run deploy` explicitly: pnpm 12.4.1 also has a built-in `deploy` command.
 
-The static asset `_headers` rule matches **only** the staging hostname and sends `X-Robots-Tag: noindex, nofollow`. The shared `robots.txt` remains crawlable so search engines can actually see the noindex header; production gets no such header. CI should smoke-check the staging response header after deploy. See [Cloudflare Workers Static Assets headers](https://developers.cloudflare.com/workers/static-assets/headers/).
+The source-managed static asset `_headers` rule matches **only** the staging hostname and sends `X-Robots-Tag: noindex, nofollow`. The shared `robots.txt` remains crawlable so search engines can actually see the noindex header; ordinary published production builds get no such header. CI should smoke-check the staging response header after deploy. See [Cloudflare Workers Static Assets headers](https://developers.cloudflare.com/workers/static-assets/headers/).
+
+Before v0.1.0 publication, a separate reviewed, main-only manual
+`Production candidate site` workflow can serve truthful candidate copy on the
+production hostname without changing Mail/send/release gates. It adds
+production noindex/nofollow and an opaque source revision **only to generated
+candidate dist headers**, never to source `_headers`; a fresh published build
+must not inherit them. Exact-source hosted CI, absence of any v0.1.0 tag/Release,
+and three-route truthfulness/TOC/header smoke are mandatory. Independent review
+and a freeze of other site/tag writers are operator prerequisites. See
+[the candidate lane contract](../docs/site-production-candidate-lane.md).
 
 `node scripts/check-release-state.mjs candidate|published` checks each rendered
 route's own release copy, links, navigation, and HTML indexability, plus the

@@ -1,0 +1,160 @@
+# Candidate landing-page deployment is independent of Mail and published releases.
+name: Production candidate site
+
+on:
+  push:
+    branches: [main, codex/amail-v0.1.0]
+    paths: ['site/**', 'infra/release/**', '.github/workflows/site-candidate.yml']
+  pull_request:
+    paths: ['site/**', 'infra/release/**', '.github/workflows/site-candidate.yml']
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Validate only, or deploy the reviewed production candidate
+        type: choice
+        required: true
+        default: checks
+        options: [checks, deploy-candidate]
+      source_ci_run_id:
+        description: Successful CI and deploy run for this exact source SHA
+        type: string
+        required: false
+      confirm:
+        description: After independent source review enter DEPLOY_REVIEWED_PRODUCTION_CANDIDATE
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    name: Candidate source and publication-isolation checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check candidate regressions without provider access
+        working-directory: .
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s infra/release -p 'test_candidate_site*.py' -v
+      - name: Install locked site dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check Astro and existing route-local fixtures
+        run: |
+          pnpm check
+          node --test scripts/check-release-state.test.mjs
+      - name: Build truthful candidate and prepare production noindex
+        env:
+          AMAIL_RELEASE_STATE: candidate
+        run: |
+          pnpm build
+          pnpm check:release-state candidate
+          python ../infra/release/candidate_site.py prepare "$GITHUB_SHA"
+      - name: Verify a fresh published build does not inherit candidate headers
+        env:
+          AMAIL_RELEASE_STATE: published
+        run: |
+          pnpm build
+          pnpm check:release-state published
+          cmp public/_headers dist/_headers
+
+  deploy:
+    name: Deploy reviewed candidate only, not v0.1.0
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'deploy-candidate' && github.ref == 'refs/heads/main'
+    needs: source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    # Share the published-site lock; never cancel another site's deployment.
+    concurrency:
+      group: deploy-site-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require reviewed intent and exact-source hosted CI
+        working-directory: .
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          SOURCE_CI_RUN_ID: ${{ inputs.source_ci_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          test "$CONFIRM" = DEPLOY_REVIEWED_PRODUCTION_CANDIDATE
+          python infra/release/check_candidate_site_gate.py
+      - name: Install locked site dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build candidate with production-only noindex and source pin
+        env:
+          AMAIL_RELEASE_STATE: candidate
+        run: |
+          pnpm build
+          pnpm check:release-state candidate
+          python ../infra/release/candidate_site.py prepare "$GITHUB_SHA"
+      - name: Recheck Release absence immediately before site mutation
+        working-directory: .
+        env:
+          SOURCE_CI_RUN_ID: ${{ inputs.source_ci_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/release/check_candidate_site_gate.py
+      - name: Deploy candidate assets to the existing public-site Worker only
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          pnpm run deploy
+      - name: Verify three live candidate pages, noindex, source revision and TOCs
+        working-directory: .
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .temp
+          smoke_dir=$(mktemp -d .temp/candidate-site-smoke.XXXXXX)
+          trap 'rm -f -- "$smoke_dir"/*.html "$smoke_dir"/*.headers; rmdir -- "$smoke_dir"' EXIT
+          for route in home manual changelog; do
+            path=/
+            if [ "$route" != home ]; then path="/$route/"; fi
+            status=$(curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 \
+              --connect-timeout 10 --max-time 30 \
+              --dump-header "$smoke_dir/$route.headers" --output "$smoke_dir/$route.html" \
+              --write-out '%{http_code}' "https://amail.moesegfault.dev$path")
+            test "$status" = 200
+          done
+          python infra/release/candidate_site.py smoke "$smoke_dir" "$GITHUB_SHA"
