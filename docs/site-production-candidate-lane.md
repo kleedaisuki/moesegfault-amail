@@ -100,3 +100,150 @@ Primary references rechecked on 2026-10-01:
 - [Cloudflare Static Assets headers](https://developers.cloudflare.com/workers/static-assets/headers/): generated asset-directory headers and HTTPS hostname rules.
 - [Cloudflare Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/): Worker domain/DNS/certificate ownership.
 - [Cloudflare production best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/): platform mechanisms and explicit credential/state boundaries. This assets-only design needs no request handler or runtime binding.
+
+## Fixed post-merge source and workflow-registration outcome
+
+Root merged [focused PR #3](https://github.com/kleedaisuki/moesegfault-amail/pull/3)
+at 2026-09-30 21:54:31 UTC. The fixed main merge source is
+`de2f1508005ff84841bc197b7181c5177f145857`; a fresh remote main read and Git
+fetch confirmed this exact SHA. Site/workflows/helpers/docs at this main commit
+match the reviewed branch tree byte-for-byte before this evidence-only update.
+
+**GO for the source-CI and default-branch-registration prerequisites of a
+separate root deployment decision. No deployment is authorized or executed by
+this evidence record.**
+
+| Fixed evidence | Observed result |
+| --- | --- |
+| [Exact-main Candidate site CI run 36782391377](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36782391377) | Push event, head_branch main, exact head SHA de2f1508005ff84841bc197b7181c5177f145857, attempt 1; completed success at 2026-09-30 21:55:01 UTC |
+| Exact source workflow/job | site-ci.yml workflow ID 371604893; job `Astro candidate site source checks` ID 110115566308; every material and cleanup step completed successfully |
+| Both workflow syntaxes | Hosted digest-pinned actionlint passed both site workflows, including reusable-call validation; archive SHA-256 OK |
+| Synthetic regressions | 13 Python tests passed; 22 Node route-local tests passed with 0 failures |
+| Locked install / Astro checks | Hosted frozen-lockfile install passed; Astro checked 10 files with 0 errors, 0 warnings, 5 retained deprecated-z hints |
+| Candidate output | Three pages built; route-local state and service boundary, both local TOCs and generated-only candidate header preparation passed |
+| Published isolation fixture | Fresh three-page published-mode build and state checks passed; source/generated headers byte-identical via successful cmp; no published deployment occurred |
+| Default branch | Repository API reports main; branch API reports the exact merge SHA above |
+| Candidate workflow registration | [site-candidate.yml on main](https://github.com/kleedaisuki/moesegfault-amail/blob/main/.github/workflows/site-candidate.yml) is present and manual-only; Actions metadata reports `Production candidate site`, ID 371555196, state active |
+| Source workflow registration | [site-ci.yml on main](https://github.com/kleedaisuki/moesegfault-amail/blob/main/.github/workflows/site-ci.yml) is present; Actions metadata reports `Candidate site CI`, ID 371604893, state active |
+
+Registration was verified with read-only repository/branch/workflow metadata
+and default-main file inspection, not by trying a dispatch. Workflow active plus
+default-branch file presence establishes the documented registration boundary;
+it does not establish production environment protections, provider capability,
+DNS/TLS readiness or an already deployed site.
+
+For this fixed main source, the reviewed manual lane's source_ci_run_id evidence
+is **36782391377**, not a pre-merge branch run or PR run. If main changes,
+including integration of this documentation-only commit, obtain successful
+site-ci.yml evidence for the new exact main SHA before dispatch. This entry is
+historical evidence about de2f150, not an exemption from exact-source checks.
+
+Still required before any separately authorized mutation: root/operator intent,
+an externally established freeze of competing site and v0.1.0 tag/publication
+writers, production capability/environment verification, and the workflow's
+fresh public-tag/published-Release preflights. This audit did not inspect or
+establish live public publication absence; the deploy lane checks that state
+again twice. Live three-route acceptance, public DNS/HTTPS and Worker version
+are post-deployment obligations, and no Mail/public-release conclusion follows.
+
+The evidence audit itself ran no local project tests/build/install and did not
+dispatch workflows, deploy, mutate DNS/provider state, create tags/Releases or
+perform SMTP. Root-owned operations are recorded separately below.
+This section records historical evidence for the fixed de2f150 source. Merging
+this documentation creates a new main SHA, which requires its own successful
+site-ci.yml run before any later deployment; the fixed result is not transferable.
+
+## Fixed root-authorized candidate deployment and live acceptance
+
+Root explicitly authorized and dispatched exactly one candidate deployment,
+[Production candidate site run 36782618160](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36782618160),
+at source `de2f1508005ff84841bc197b7181c5177f145857`, main, workflow_dispatch,
+attempt 1. Created 2026-09-30 21:56:46 UTC; completed **success** at 21:57:58 UTC.
+Root reported prior secret-name/default-registration/branch-policy/publication-
+absence/concurrency preflight. This follow-up observed outcomes only; it did not
+dispatch, repeat, authorize or retry a deployment and did not independently
+inventory out-of-workflow writers.
+
+**PASS for candidate-site deployment and the bounded three-route live contract
+at this fixed source/run. This is not v0.1.0 publication or Mail availability.**
+
+### Fixed hosted job and step outcomes
+
+| Boundary | Observed result |
+| --- | --- |
+| Same-run source job | Job 110116324741, `Candidate source and publication-isolation checks / Astro candidate site source checks`, completed success; both-workflow syntax, synthetic regressions, locked install, Astro, candidate preparation and fresh published isolation all passed |
+| Deployment job | Job 110116473345, `Deploy reviewed candidate only, not v0.1.0`, completed success; no skipped/failing material steps |
+| First reviewed-intent/source/publication gate | Step passed; diagnostic at 21:57:32 UTC reported exact-source CI passed, public tag absent and published Release not visible |
+| Candidate output before mutation | Candidate build/state/three-page preparation passed at 21:57:39 UTC, with generated-only production headers |
+| Immediate pre-mutation publication recheck | Step passed at 21:57:41 UTC; public tag absent and published Release not visible, without claiming internal draft inventory |
+| Site-only upload/deployment | Step completed success for configured `amail-release-site` and production Custom Domain; deployment output identifies version `39a2dae4-c1b2-440c-8c27-ef7c386c7441` |
+| Actual hosted live smoke | Step completed success at 21:57:53 UTC: `pages=3 toc=2 state=candidate`, including exact-route HTTP/HTML, candidate copy/service boundary, no premature links, local TOC targets, noindex/nofollow and exact source revision |
+
+Source CI evidence for this deployment remains run **36782391377**, not a
+pre-merge branch or PR run. The fixed Worker version is an identity extracted
+from sanitized deployment evidence; no raw provider body/log or secret value
+is persisted or reproduced here.
+
+### Independent public HTTPS/HTML observation
+
+At **2026-09-30 21:59:03 UTC**, PowerShell `Invoke-WebRequest` requested each
+exact production route, with `MaximumRedirection 0` and a 30-second timeout.
+All returned HTTP 200 and `Content-Type: text/html`, with:
+
+```text
+X-Robots-Tag: noindex, nofollow
+X-Amail-Candidate-Revision: de2f1508005ff84841bc197b7181c5177f145857
+```
+
+Public HTML was inspected in memory without storing/printing body contents.
+The independent observer checked actual anchor hrefs, designated navigation
+labels, decoded fragment targets and HTML IDs; the stronger full hosted smoke
+above also passed. These are point-in-time public observations, not a new local
+project test/build or a reproduction of provider state.
+
+| Exact route | Route-local status and service disclaimer | Version tag/download anchors | Designated local TOC | Local links / missing targets |
+| --- | --- | ---: | ---: | --- |
+| `/` | Candidate status present; service availability explicitly not asserted | 0 | Not required | Not applicable |
+| `/manual/` | Candidate/download-unavailable status and service disclaimer present | 0 | 1 | 12 / 0 |
+| `/changelog/` | Candidate-under-acceptance status and service disclaimer present | 0 | 1 | 1 / 0 |
+
+### Independent public DNS observation
+
+The same observation window freshly queried apex NS through `8.8.8.8`, finding
+`raquel.ns.cloudflare.com` and `jermaine.ns.cloudflare.com`. `Resolve-DnsName
+-DnsOnly` then queried A, AAAA and CNAME for `amail.moesegfault.dev` at both
+authoritative servers and Google Public DNS. All three returned the same sets:
+
+| Record | Answers at both authoritative servers and 8.8.8.8 |
+| --- | --- |
+| A | 104.21.2.174; 172.67.129.129 |
+| AAAA | 2606:4700:3033::6815:2ae; 2606:4700:3035::ac43:8181 |
+| CNAME | Zero answers, no query failure |
+
+Together with the HTTPS 200 observations, this establishes public candidate-host
+resolution/reachability from the observation host and named DNS servers. These
+are public edge answers, not an authenticated zone topology audit; answer order
+may vary. No global DNS-propagation guarantee, independent IPv6 transport test,
+clean-install/CLI/Skill usability, visual/accessibility acceptance, or Mail/API,
+identity, delivery, SMTP or send-policy readiness is inferred.
+
+### Authority and continuation
+
+This acceptance records the one root-authorized run only. No retry, new
+dispatch, manual DNS record, tag/Release or Mail operation was performed by
+this observer. The candidate currently documents intended workflows without
+claiming downloadable artifacts or a publicly available Mail service. Later
+site source changes still require fresh exact-main-SHA source evidence;
+publication/tag changes permanently close this candidate lane for v0.1.0.
+Further deployment or public release decisions remain separately root-owned.
+
+### Additional owner-reported independent readback
+
+Root separately reported an independent post-deploy public readback of `/`,
+`/manual/` and `/changelog/` at the fixed de2f150 source: HTTP 200 HTML,
+nonempty pages, noindex/nofollow and the exact source revision header. Root also
+reported post-deploy read-only checks that the public v0.1.0 tag and published
+Release remained absent. These are **owner-reported corroborating results**,
+not this observer's direct probes and not an inventory of internal drafts.
+They supplement, rather than replace, the fixed hosted smoke and timestamped
+independent HTTPS/DNS/TOC observations above.
