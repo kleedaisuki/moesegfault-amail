@@ -63,8 +63,10 @@ Cron to be absent. It inspects complete bounded account-domain/account-zone
 inventories, every returned zone's unpaginated Worker routes, and account Queue
 subscriptions to reject any other sink subscription. Permission-denied, missing,
 unknown, duplicate, inconsistent, oversized or incomplete readback fails closed;
-local Wrangler intent is not substituted for deployed evidence. Bounds are 20
-inventory pages, 1,000 domain/zone rows, at most 20 zones and 100 Queues for this
+local Wrangler intent is not substituted for deployed evidence. The Domain API is the documented unfiltered SinglePage endpoint, with no invented
+page/per_page parameters: optional generic metadata is accepted only if it does
+not contradict the complete result array. Bounds are 20
+zone inventory pages, 1,000 domain/zone rows, at most 20 zones and 100 Queues for this
 project's acceptance check. The account inventory is necessarily limited to the
 credentials' actual visibility; use an account-wide reviewed deploy capability,
 not a token that silently excludes zones. The compiled no-fetch handler check is
@@ -99,3 +101,17 @@ Readback endpoint contracts follow Cloudflare's [version resource API](https://d
 and [zone Worker route inventory](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/).
 The sink uses the existing reviewed `pin_staging_mail.serving_deployment` parser
 and `ensure_trace_queues` ownership/detail validators without calling provisioning.
+
+
+Domain endpoint shape correction: Cloudflare's [official generated SDK](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/resources/workers/domains.py)
+uses `SyncSinglePage` with no page/per_page request arguments. The generic REST
+example's pagination metadata is not a license to invent pagination for this
+endpoint. Denial tests require optional metadata to agree with the unfiltered
+array, and reject explicit missing rows, later pages, cursors or duplicate IDs.
+
+The Queue subscription proof reuses the strengthened complete inventory helper:
+integer page/per_page/count/total_count/total_pages, requested page size, exact
+per-page cardinality, coherent/stable totals, unique Queue IDs/names and complete
+accumulated count. An integration denial test calls that actual helper through
+`queue_trigger_exact`; a response omitting a third Queue while claiming more
+results fails before any consumer-detail read can falsely attest exclusivity.

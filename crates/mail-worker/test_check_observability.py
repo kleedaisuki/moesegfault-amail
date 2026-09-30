@@ -125,6 +125,7 @@ class SinkIsolationTests(unittest.TestCase):
         with patch.dict(os.environ,{"AMAIL_EXPECTED_TRACE_SINK_VERSION":self.VERSION,
                      "AMAIL_TRACE_QUEUE_ID":self.QUEUE,"AMAIL_TRACE_DLQ_ID":self.DLQ}), \
              patch.object(isolation,"inventory",side_effect=inventory), \
+             patch.object(isolation,"worker_domains",return_value=[]), \
              patch.object(isolation,"envelope",return_value={"success":True,"result":[]}), \
              patch.object(isolation.queues,"inventory",return_value=queues), \
              patch.object(isolation.queues,"request",side_effect=queue_detail):
@@ -162,6 +163,22 @@ class SinkIsolationTests(unittest.TestCase):
         responses,queues=self.fixture(); extra=copy.deepcopy(queues[0]);extra["queue_id"]="e"*32;extra["queue_name"]="other";queues.append(extra)
         self.assertFalse(self.invoke(responses,queues))
 
+    def test_incomplete_queue_inventory_cannot_prove_exclusivity(self):
+        """Real shared inventory validation rejects an omitted third Queue before detail reads."""
+        _,rows=self.fixture()
+        metadata={"page":1,"per_page":100,"count":2,"total_count":2,"total_pages":1}
+        for field,bad in [("count",1),("total_count",3),("per_page",20),("page",True),("total_pages",2)]:
+            info={**metadata,field:bad}
+            with patch.dict(os.environ,{"AMAIL_TRACE_QUEUE_ID":self.QUEUE,"AMAIL_TRACE_DLQ_ID":self.DLQ}), \
+                 patch.object(isolation.queues,"request",return_value={"success":True,"result":rows,"result_info":info}) as request, \
+                 self.assertRaises(ValueError):
+                isolation.queue_trigger_exact(self.ACCOUNT,"token","staging","amail-trace-sink-staging")
+            self.assertEqual(request.call_count,1)
+        with patch.dict(os.environ,{"AMAIL_TRACE_QUEUE_ID":self.QUEUE,"AMAIL_TRACE_DLQ_ID":self.DLQ}), \
+             patch.object(isolation.queues,"request",return_value={"success":True,"result":rows}):
+            with self.assertRaises(ValueError):
+                isolation.queue_trigger_exact(self.ACCOUNT,"token","staging","amail-trace-sink-staging")
+
     def test_unpinned_split_or_changed_serving_fails(self):
         """No implicit latest version can replace explicit reviewed 100% serving provenance."""
         responses,queues=self.fixture();responses["deployments?per_page=1&page=1"]["deployments"][0]["versions"][0]["percentage"]=99
@@ -182,24 +199,43 @@ class SinkIsolationTests(unittest.TestCase):
     def test_inventory_requires_complete_unique_stable_counts(self):
         """Empty/malformed pagination cannot establish route/domain absence."""
         empty={"success":True,"result":[],"result_info":{"page":1,"per_page":50,"count":0,"total_count":0,"total_pages":0}}
-        with patch.object(isolation,"envelope",return_value=empty):self.assertEqual(isolation.inventory("token","/account/domains"),[])
+        with patch.object(isolation,"envelope",return_value=empty):self.assertEqual(isolation.inventory("token","/zones?account.id=fixture"),[])
         for key,value in [("count",1),("total_count",1),("page",2),("per_page",20),("total_pages",2)]:
             bad=copy.deepcopy(empty);bad["result_info"][key]=value
             with patch.object(isolation,"envelope",return_value=bad),self.assertRaises(ValueError):
-                isolation.inventory("token","/account/domains")
+                isolation.inventory("token","/zones?account.id=fixture")
         with patch.object(isolation,"envelope",side_effect=ValueError("denied")),self.assertRaises(ValueError):
-            isolation.inventory("token","/account/domains")
+            isolation.inventory("token","/zones?account.id=fixture")
+
+    def test_domains_single_page_uses_no_invented_paging(self):
+        """Official SinglePage array accepts absent or coherent optional generic metadata."""
+        row={"id":"f"*32,"service":"another-worker"}
+        for metadata in (None,{}, {"count":1,"total_count":1,"page":1,"per_page":20,"total_pages":1}):
+            payload={"success":True,"result":[row]}
+            if metadata is not None:payload["result_info"]=metadata
+            with patch.object(isolation,"envelope",return_value=payload) as request:
+                self.assertEqual(isolation.worker_domains(self.ACCOUNT,"token"),[row])
+                self.assertEqual(request.call_args.args[1],f"/accounts/{self.ACCOUNT}/workers/domains")
+        for metadata in ({"count":0},{"total_count":2},{"page":2},{"total_pages":2},
+                         {"per_page":0},{"per_page":True},{"next_cursor":"opaque"},[] ):
+            with patch.object(isolation,"envelope",return_value={"success":True,"result":[row],"result_info":metadata}),self.assertRaises(ValueError):
+                isolation.worker_domains(self.ACCOUNT,"token")
+        with patch.object(isolation,"envelope",return_value={"success":True,"result":[row,{**row,"id":"e"*32}],"result_info":{"per_page":1}}),self.assertRaises(ValueError):
+            isolation.worker_domains(self.ACCOUNT,"token")
+        with patch.object(isolation,"envelope",return_value={"success":True,"result":[row,row]}),self.assertRaises(ValueError):
+            isolation.worker_domains(self.ACCOUNT,"token")
 
     def test_account_routes_and_domains_are_read_not_assumed(self):
         """Every readable account zone is checked, including non-project zone routes."""
         script="amail-trace-sink-staging"
         readback=lambda account,token,name,part: ({"enabled":False,"previews_enabled":False} if part=="subdomain" else {"schedules":[]})
         domains=[{"id":"f"*32,"service":script}]
-        with patch.object(isolation,"inventory",return_value=domains):
+        with patch.object(isolation,"worker_domains",return_value=domains):
             self.assertFalse(isolation.surfaces_private(self.ACCOUNT,"token",script,readback))
         zones=[{"id":"d"*32,"account":{"id":self.ACCOUNT}},{"id":"e"*32,"account":{"id":self.ACCOUNT}}]
         route={"id":"f"*32,"pattern":"other.invalid/*","script":script}
-        with patch.object(isolation,"inventory",side_effect=[[],zones]), \
+        with patch.object(isolation,"worker_domains",return_value=[]), \
+             patch.object(isolation,"inventory",return_value=zones), \
              patch.object(isolation,"envelope",side_effect=[{"result":[]},{"result":[route]}]) as request:
             self.assertFalse(isolation.surfaces_private(self.ACCOUNT,"token",script,readback))
             self.assertEqual(request.call_count,2)

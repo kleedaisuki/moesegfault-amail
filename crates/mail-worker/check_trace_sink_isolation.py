@@ -74,6 +74,40 @@ def inventory(token: str, path: str) -> list[dict]:
     raise ValueError("sink_inventory_unverified")
 
 
+def worker_domains(account: str, token: str) -> list[dict]:
+    """Read the documented unfiltered SinglePage endpoint without invented pagination.
+
+    Generic result_info is optional. Any supplied metadata must explicitly agree
+    with the complete array and cannot claim another page or missing rows.
+    """
+    value = envelope(token, f"/accounts/{account}/workers/domains")
+    rows, info = value.get("result"), value.get("result_info")
+    if not isinstance(rows, list) or len(rows) > 1000:
+        raise ValueError("sink_domains_unverified")
+    seen = set()
+    for row in rows:
+        if (not isinstance(row, dict) or not isinstance(row.get("id"), str)
+                or not ID.fullmatch(row["id"]) or row["id"] in seen
+                or not isinstance(row.get("service"), str) or not row["service"]):
+            raise ValueError("sink_domains_unverified")
+        seen.add(row["id"])
+    if info is not None:
+        if not isinstance(info, dict) or set(info) - {"count", "page", "per_page", "total_count", "total_pages"}:
+            raise ValueError("sink_domains_unverified")
+        for key in ("count", "total_count"):
+            if key in info and (type(info[key]) is not int or info[key] != len(rows)):
+                raise ValueError("sink_domains_unverified")
+        if "page" in info and (type(info["page"]) is not int or info["page"] != 1):
+            raise ValueError("sink_domains_unverified")
+        if "total_pages" in info and (type(info["total_pages"]) is not int
+                or info["total_pages"] not in ((0,1) if not rows else (1,))):
+            raise ValueError("sink_domains_unverified")
+        if "per_page" in info and (type(info["per_page"]) is not int
+                or info["per_page"] <= 0 or info["per_page"] < len(rows)):
+            raise ValueError("sink_domains_unverified")
+    return rows
+
+
 def version_isolated(value: dict, expected: str) -> bool:
     """Attest exact compiled queue-only handlers and an empty capability binding set."""
     resources=value.get("resources")
@@ -95,7 +129,7 @@ def surfaces_private(account: str, token: str, script: str, readback) -> bool:
     if (subdomain.get("enabled") is not False or subdomain.get("previews_enabled") is not False
             or schedules.get("schedules") != []):
         return False
-    domains=inventory(token,f"/accounts/{account}/workers/domains")
+    domains=worker_domains(account,token)
     if any(not isinstance(row.get("service"),str) or row["service"] == script for row in domains):
         return False
     zones=inventory(token,f"/zones?account.id={account}")
