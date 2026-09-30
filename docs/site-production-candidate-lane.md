@@ -100,3 +100,53 @@ Primary references rechecked on 2026-10-01:
 - [Cloudflare Static Assets headers](https://developers.cloudflare.com/workers/static-assets/headers/): generated asset-directory headers and HTTPS hostname rules.
 - [Cloudflare Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/): Worker domain/DNS/certificate ownership.
 - [Cloudflare production best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/): platform mechanisms and explicit credential/state boundaries. This assets-only design needs no request handler or runtime binding.
+
+## Fixed post-merge source and workflow-registration outcome
+
+Root merged [focused PR #3](https://github.com/kleedaisuki/moesegfault-amail/pull/3)
+at 2026-09-30 21:54:31 UTC. The fixed main merge source is
+`de2f1508005ff84841bc197b7181c5177f145857`; a fresh remote main read and Git
+fetch confirmed this exact SHA. Site/workflows/helpers/docs at this main commit
+match the reviewed branch tree byte-for-byte before this evidence-only update.
+
+**GO for the source-CI and default-branch-registration prerequisites of a
+separate root deployment decision. No deployment is authorized or executed by
+this evidence record.**
+
+| Fixed evidence | Observed result |
+| --- | --- |
+| [Exact-main Candidate site CI run 36782391377](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36782391377) | Push event, head_branch main, exact head SHA de2f1508005ff84841bc197b7181c5177f145857, attempt 1; completed success at 2026-09-30 21:55:01 UTC |
+| Exact source workflow/job | site-ci.yml workflow ID 371604893; job `Astro candidate site source checks` ID 110115566308; every material and cleanup step completed successfully |
+| Both workflow syntaxes | Hosted digest-pinned actionlint passed both site workflows, including reusable-call validation; archive SHA-256 OK |
+| Synthetic regressions | 13 Python tests passed; 22 Node route-local tests passed with 0 failures |
+| Locked install / Astro checks | Hosted frozen-lockfile install passed; Astro checked 10 files with 0 errors, 0 warnings, 5 retained deprecated-z hints |
+| Candidate output | Three pages built; route-local state and service boundary, both local TOCs and generated-only candidate header preparation passed |
+| Published isolation fixture | Fresh three-page published-mode build and state checks passed; source/generated headers byte-identical via successful cmp; no published deployment occurred |
+| Default branch | Repository API reports main; branch API reports the exact merge SHA above |
+| Candidate workflow registration | [site-candidate.yml on main](https://github.com/kleedaisuki/moesegfault-amail/blob/main/.github/workflows/site-candidate.yml) is present and manual-only; Actions metadata reports `Production candidate site`, ID 371555196, state active |
+| Source workflow registration | [site-ci.yml on main](https://github.com/kleedaisuki/moesegfault-amail/blob/main/.github/workflows/site-ci.yml) is present; Actions metadata reports `Candidate site CI`, ID 371604893, state active |
+
+Registration was verified with read-only repository/branch/workflow metadata
+and default-main file inspection, not by trying a dispatch. Workflow active plus
+default-branch file presence establishes the documented registration boundary;
+it does not establish production environment protections, provider capability,
+DNS/TLS readiness or an already deployed site.
+
+For this fixed main source, the reviewed manual lane's source_ci_run_id evidence
+is **36782391377**, not a pre-merge branch run or PR run. If main changes,
+including integration of this documentation-only commit, obtain successful
+site-ci.yml evidence for the new exact main SHA before dispatch. This entry is
+historical evidence about de2f150, not an exemption from exact-source checks.
+
+Still required before any separately authorized mutation: root/operator intent,
+an externally established freeze of competing site and v0.1.0 tag/publication
+writers, production capability/environment verification, and the workflow's
+fresh public-tag/published-Release preflights. This audit did not inspect or
+establish live public publication absence; the deploy lane checks that state
+again twice. Live three-route acceptance, public DNS/HTTPS and Worker version
+are post-deployment obligations, and no Mail/public-release conclusion follows.
+
+No local project tests/build/install, workflow dispatch, deploy, DNS/provider
+mutation, tag/Release creation or SMTP occurred while recording this outcome.
+The evidence-only document commit remains isolated/local for root coordination;
+it does not advance the remote main source or silently invalidate the fixed run.
