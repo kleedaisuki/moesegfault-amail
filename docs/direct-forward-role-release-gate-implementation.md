@@ -28,6 +28,10 @@ attestations are not inferred or erased.
 
 The view is reused by Rust pre-provider-call checks, global allow SQL, release
 publication readiness, and an independent `BEFORE INSERT` admission guard.
+Global policy `BEFORE INSERT`/`BEFORE UPDATE` guards also require all four static
+gates and this view whenever the resulting global state is allowed, including
+allowed-to-allowed edits. Raw SQL cannot bypass the operator's every-unhold
+predicate. Held/account updates remain independent and unconditional.
 The guard does not depend on trigger order. A second guard closes the legacy
 consumed-canary SQL alternative whenever global state is not held. Neither
 allows an allowed-but-expired public gate to fall back to a canary. Existing
@@ -106,7 +110,10 @@ pre-migration held readback, missing/expired/equal/future observations, no
 canary fallback under allow, one held canary, contract replacement/reuse,
 conflicting human evidence, provider/shape failure, bracketed drift, no blind
 retry after D1 failure, distinct route identities and GET-only/no-redirect
-capability. Release response tests now require `contact_ready=1`.
+capability. Raw global INSERT/UPDATE/reassertion tests cover every-unhold guards
+and unchanged emergency-hold/account behavior; one fixture removes only the
+unhold guard to independently verify the send-admission defense. Release
+response tests now require `contact_ready=1`.
 
 **No local tests, builds, hosted run, provider mutation or deployment was
 executed for this source change.** Hosted execution and independent review are

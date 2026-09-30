@@ -121,6 +121,24 @@ JOIN send_release_gates g ON g.id=1 AND g.abuse_contact_contract_id=p.contract_i
 WHERE p.id=1 AND p.version=1 AND g.abuse_contact_verified=1
   AND h.state='healthy' AND h.checked_at>0 AND h.checked_at<=unixepoch()
   AND unixepoch()<h.expires_at AND h.expires_at=h.checked_at+21600;
+-- Every global unhold, including direct SQL and allowed-to-allowed edits,
+-- rechecks the same database-time gate. Holds/account edits are unconditional.
+CREATE TRIGGER send_policy_direct_allow_insert BEFORE INSERT ON send_policy
+WHEN NEW.scope='global' AND NEW.state='allowed' BEGIN
+    SELECT (CASE WHEN NOT EXISTS(SELECT 1 FROM send_release_gates WHERE id=1
+        AND feedback_verified=1 AND abuse_contact_verified=1
+        AND delivery_canary_verified=1 AND preview_reviewed=1)
+        OR NOT EXISTS(SELECT 1 FROM direct_role_contact_ready)
+        THEN RAISE(ABORT,'send_held') END);
+END;
+CREATE TRIGGER send_policy_direct_allow_update BEFORE UPDATE ON send_policy
+WHEN NEW.scope='global' AND NEW.state='allowed' BEGIN
+    SELECT (CASE WHEN NOT EXISTS(SELECT 1 FROM send_release_gates WHERE id=1
+        AND feedback_verified=1 AND abuse_contact_verified=1
+        AND delivery_canary_verified=1 AND preview_reviewed=1)
+        OR NOT EXISTS(SELECT 1 FROM direct_role_contact_ready)
+        THEN RAISE(ABORT,'send_held') END);
+END;
 CREATE TRIGGER send_release_contact_attestation_guard BEFORE UPDATE ON send_release_gates
 WHEN NEW.abuse_contact_verified=1 BEGIN
     SELECT (CASE WHEN NOT EXISTS(SELECT 1 FROM role_contact_policy WHERE id=1 AND version=1

@@ -75,6 +75,30 @@ class DirectContactSqlTest(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             admit(db, "held")
 
+    def test_raw_global_unhold_is_guarded_for_insert_update_and_reassertion(self):
+        """Neither privileged raw SQL nor allowed-to-allowed edits skip readiness."""
+        db = database()
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute("UPDATE send_policy SET state='allowed' WHERE scope='global'")
+        db.execute("DELETE FROM send_policy WHERE scope='global'")
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO send_policy(scope,owner_iss,owner_sub,state,reason_code,actor,updated_at) VALUES('global','*','*','allowed','review','operator',unixepoch())")
+        db.execute("INSERT INTO send_policy(scope,owner_iss,owner_sub,state,reason_code,actor,updated_at) VALUES('global','*','*','held','review','operator',unixepoch())")
+        ready(db)
+        self.assertEqual(db.execute("UPDATE send_policy SET state='allowed',actor='other' WHERE scope='global'").rowcount, 1)
+        db.execute("UPDATE send_release_gates SET preview_reviewed=0 WHERE id=1")
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute("UPDATE send_policy SET state='allowed' WHERE scope='global'")
+        db.execute("UPDATE send_release_gates SET preview_reviewed=1 WHERE id=1")
+        db.execute("UPDATE send_policy SET state='allowed' WHERE scope='global'")
+        db.create_function("unixepoch", 0, lambda: NOW + 21600)
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute("UPDATE send_policy SET state='allowed',actor='other' WHERE scope='global'")
+        # An emergency hold and account-local policy change do not depend on
+        # contact freshness or any human release attestation.
+        db.execute("UPDATE send_policy SET state='held' WHERE scope='global'")
+        db.execute("INSERT INTO send_policy(scope,owner_iss,owner_sub,state,reason_code,actor,updated_at) VALUES('account','issuer','owner','allowed','review','operator',unixepoch())")
+
     def test_hold_readback_works_before_direct_migration_and_denies_missing_state(self):
         """Deployment hold evidence neither requires nor adopts a role contract."""
         db = sqlite3.connect(":memory:")
@@ -140,8 +164,13 @@ class DirectContactSqlTest(unittest.TestCase):
         admit(db, "first")
         with self.assertRaises(sqlite3.IntegrityError):
             admit(db, "second")
-        db.execute("UPDATE send_policy SET state='allowed' WHERE scope='global'")
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.execute("UPDATE send_policy SET state='allowed' WHERE scope='global'")
         db.execute("DELETE FROM send_requests")
+        # Force the stored state after removing only the unhold guard to
+        # independently test admission's fail-closed defense, not its order.
+        db.execute("DROP TRIGGER send_policy_direct_allow_update")
+        db.execute("UPDATE send_policy SET state='allowed' WHERE scope='global'")
         with self.assertRaises(sqlite3.IntegrityError):
             admit(db, "first")
 
