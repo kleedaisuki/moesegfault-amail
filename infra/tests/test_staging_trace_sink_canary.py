@@ -109,6 +109,38 @@ class SinkCanaryTests(unittest.TestCase):
                 hosted.execute("canary", "WRONG", R, D)
             read.assert_not_called()
 
+    def test_source_records_and_pin_changes_never_pass(self):
+        """Retained source rows or post-read deployment drift invalidate the proof."""
+        account = "a" * 32
+        for source_records, post_failure in (([{}], False), ([], True)):
+            pins = [None, legacy.CanaryError("sink_serving_pin_unverified")] if post_failure else [None, None]
+            with patch.dict(sink.os.environ, {"CLOUDFLARE_ACCOUNT_ID": account,
+                             "CF_OBSERVABILITY_TOKEN": "synthetic", "CLOUDFLARE_API_TOKEN": "synthetic"}), \
+                    patch.object(sink, "preflight", side_effect=pins), \
+                    patch.object(legacy, "under_temp", side_effect=lambda path: path), \
+                    patch.object(sink, "probe", return_value=(1000, 2000, (T, C, R), D, MARKERS)), \
+                    patch.object(sink.time, "sleep"), \
+                    patch.object(legacy, "retained_events", side_effect=[fixture(), source_records]):
+                with self.assertRaises(legacy.CanaryError):
+                    sink.execute(Path("synthetic-cli"), Path("synthetic-home"), R, D)
+
+    def test_missing_roots_requeries_same_window_without_new_traffic(self):
+        """Only readback repeats; stable row IDs and original time/service stay fixed."""
+        records = fixture()
+        with patch.dict(sink.os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+                         "CF_OBSERVABILITY_TOKEN": "synthetic", "CLOUDFLARE_API_TOKEN": "synthetic"}), \
+                patch.object(sink, "preflight"), \
+                patch.object(legacy, "under_temp", side_effect=lambda path: path), \
+                patch.object(sink, "probe", return_value=(1000, 2000, (T, C, R), D, MARKERS)) as probe, \
+                patch.object(sink.time, "sleep"), \
+                patch.object(legacy, "retained_events", side_effect=[records[:1], records, []]) as read:
+            sink.execute(Path("synthetic-cli"), Path("synthetic-home"), R, D)
+        probe.assert_called_once()
+        self.assertEqual(read.call_args_list[0].args, read.call_args_list[1].args)
+        self.assertEqual(read.call_args_list[0].kwargs, {"service": sink.SINK})
+        self.assertEqual(read.call_args_list[1].kwargs, {"service": sink.SINK})
+        self.assertEqual(read.call_args_list[0].args[2:], (1000, 122000))
+
 
 if __name__ == "__main__":
     unittest.main()
