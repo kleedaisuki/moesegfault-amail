@@ -42,7 +42,10 @@ def immutable_evidence(run_id: str, version: str) -> None:
             or not re.fullmatch(r"[0-9a-f]{40}", run.get("head_sha", ""))):
         raise ValueError("run_unverified")
     jobs = json.loads(gh("api", f"repos/{REPO}/actions/runs/{run_id}/jobs?per_page=100"))
-    if not isinstance(jobs, dict) or jobs.get("total_count") != len(jobs.get("jobs", [])):
+    if (not isinstance(jobs, dict) or not isinstance(jobs.get("jobs"), list)
+            or not all(isinstance(job, dict) for job in jobs["jobs"])
+            or type(jobs.get("total_count")) is not int
+            or jobs["total_count"] != len(jobs["jobs"])):
         raise ValueError("jobs_incomplete")
     matches = [job for job in jobs["jobs"] if job.get("name") == "Deploy isolated staging mail API"]
     if len(matches) != 1 or matches[0].get("conclusion") != "success":

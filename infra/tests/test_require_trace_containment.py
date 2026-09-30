@@ -38,6 +38,13 @@ class ContainmentTests(unittest.TestCase):
                 MODULE.immutable_evidence(RUN, VERSION)
             self.assertEqual(call.call_count, 1)
 
+    def test_malformed_job_shape_denied(self):
+        """Provider-shape drift is a fixed-label failure, not an uncaught traceback."""
+        replies = self.responses(); replies[1] = json.dumps({"total_count": 1, "jobs": ["unknown"]})
+        with patch.object(MODULE, "gh", side_effect=replies):
+            with self.assertRaisesRegex(ValueError, "jobs_incomplete"):
+                MODULE.immutable_evidence(RUN, VERSION)
+
     def test_rerun_identity_denied(self):
         """A reused run ID cannot stand in for an immutable first-attempt deployment."""
         run = json.loads(self.responses()[0]); run["run_attempt"] = 2

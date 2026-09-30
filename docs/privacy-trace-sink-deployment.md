@@ -36,7 +36,10 @@ Only fixed result labels are printed, never provider bodies or queue payloads.
    Record its 100%-serving version and use the existing serving-version pin and
    both effective settings readbacks. Do not deploy producer changes first.
 2. Only after containment is live may the producer/sink source be pushed for
-   non-deploying hosted CI. Sink/producer deployment is manual only: dispatch
+   hosted source CI without automatically deploying the new sink or API producer.
+   Established unrelated staging site, role-monitor and private-inbox jobs may
+   still redeploy on a source push; their existing deployment policy is unchanged.
+   Sink/producer deployment is manual only: dispatch
    `ci.yml` with `target=staging`, `confirm=RUN_STAGING_TRACE_SINK_ROLLOUT`,
    `trace_containment_run=<successful-run-id>` and
    `expected_worker_version=<exact-contained-version-uuid>`. The guard verifies
