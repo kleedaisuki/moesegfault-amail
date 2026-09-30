@@ -1,7 +1,12 @@
 # Hosted staging address/quota/isolation acceptance
 
-Status: **prepared harness and mock-only tests; no hosted execution, second
-principal, new route, account registration, or SMTP submission performed**.
+Status (2026-09-30): **prepared ten-address harness and hosted mock-only tests;
+no ten-address live execution or verified second principal**. The ordinary
+[staging inbound run 36682429638](validation.md) proved one principal's native
+PKCE, exact address/route, two real SMTP deliveries, ZIP/content, semantic
+search, and cleanup. That removes the previous *one-address delivery*
+uncertainty; it does **not** establish quota, reserved-name behavior, or
+cross-owner authorization. No B registration or ten-route campaign is implied.
 `infra/tests/staging_address_isolation_e2e.py` is deliberately separate from
 the existing one-principal inbound probe. Do not equate a harness test with
 deployed behavior.
@@ -28,25 +33,31 @@ Code + S256 PKCE on the same hosted Windows runner, using an independently
 verified email contact and separately protected staging Environment secrets
 `STAGING_E2E_B_USERNAME`/`STAGING_E2E_B_PASSWORD`.
 
-The existing private verification inbox Worker accepts **only**
-`amail-e2e@moesegfault.dev`; that alias is already A's verified contact.
-Therefore it cannot simply receive B's challenge. Before provisioning B,
-review/deploy an isolated second exact verification recipient and private
-inbox policy (for example `amail-e2e-b@moesegfault.dev`), with an explicit
+The private verification inbox source now has an explicit second exact
+recipient, `amail-e2e-isolation@moesegfault.dev`, while A's alias remains the
+default. **Source preparation is not a deployed-version readback or a verified
+B account.** Before provisioning B, require green hosted CI for that source,
+the staging-only Worker deployment and its private-binding/allowlist readback,
+and both exact verification routes absent. Then open an explicit
 literal route scoped to the brief verification window, private R2 UUID-keyed
 MIME, provenance check, route settle wait, route removal/readback **before**
 code completion, and object deletion. Follow
-[`staging-identity-flow.md`](staging-identity-flow.md) and
-[`staging-test-account.md`](staging-test-account.md) with B's separate contact.
-The current exact-recipient Worker policy must be changed and reviewed first;
-**do not** point a second alias at a Worker that rejects it, reuse A's contact,
+[`staging-second-principal.md`](staging-second-principal.md) and
+[`staging-identity-flow.md`](staging-identity-flow.md) with B's separate contact.
+**Do not** point the alias at an unverified deployed Worker, reuse A's contact,
 create a verified D1 row, copy a token, or register B during this probe.
 Record B's account/contact existence and verification through restricted
 Identity readback with opaque identifiers only. After the campaign, revoke or
 remove B through supported Identity account controls; if B is retained as a
 regression account, document its owner, recovery, credential rotation and
 expiry. Remove the second verification route and its private MIME regardless
-of account outcome. This prerequisite is currently **open**.
+of account outcome. This prerequisite is currently **open**. The next
+permissible state-changing action is one guarded B-registration window under
+that runbook, **not** a ten-address campaign: first obtain current green
+CI/deployed-version evidence, exact route absence and capacity, and a recovery
+operator for uncertain registration. If B's contact already exists or the
+first registration outcome is ambiguous, recover that same account instead
+of creating another.
 
 ## Hosted execution contract
 
@@ -80,10 +91,27 @@ Use a nonce privately reconstructible from protected run coordinates for
 crash cleanup; do not use a guessable public run ID alone. Pin staging Mail,
 Identity and Login deployed revisions separately from the checkout SHA.
 Before invocation, require A and B address lists empty, all ten exact
-candidate rules absent, zone capacity comfortably above ten, no concurrent
+candidate rules absent, at least **12 free routing rules on the
+`mail-staging.moesegfault.dev` domain** (ten test routes plus two reserved
+slots under the provider's 200-per-domain limit), no concurrent
 address campaigns, outbound held, and an operator ready to reconcile a
 cancelled runner. A test account with existing aliases must not have them
 deleted merely to satisfy this harness precondition.
+
+The present `ci.yml` runs the six mock-only tests in its Python discovery but
+has **no manual `staging-address-e2e` job**: the command above is a contract,
+not a dispatchable hosted acceptance. Before a one-shot ten-route run, add a
+staging Environment-protected manual job with the exact confirmation,
+independent A/B native logins, subject attestation, full paged capacity and
+candidate-rule preflight, current Mail/Ingress/Identity/Login serving pins,
+and run-owned cleanup/recovery. The Python probe itself checks candidate
+routes and authenticated homes but does **not** calculate capacity or prove
+different `(issuer, sub)` values. These must not be inferred from a green
+mock test or two directories. Prefer the lower-mutation
+[two-principal mailbox isolation](staging-two-principal-mail-isolation.md)
+first after B is verified; it reuses one already-proven route and two fixtures
+instead of consuming ten new routes. The quota campaign is a separate later
+one-shot acceptance, not a replay of the successful ordinary SMTP test.
 
 The probe checks all 25 names in the current Worker `RESERVED` list, creates ten
 `q0..q9` nonce-scoped addresses, waits for each `active`, audits every exact
