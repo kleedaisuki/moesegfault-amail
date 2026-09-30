@@ -285,3 +285,16 @@ standard GraphQL meta-field; its category alone cannot establish which field
 the older queries rejected. No category justifies blind token expansion or a
 schema patch. Synthetic tests were authored and statically inspected, not
 executed locally. No workflow wiring or live read is included in this commit.
+
+### Error-class workflow wiring (no live result)
+
+The distinct manual `staging-worker-r2-history-error` target reuses `confirm`
+without adding dispatch inputs (24 total). It requires the feature branch,
+staging Environment, exact `READ_WORKER_R2_HISTORY_ERROR_CLASS_36751791789`
+confirmation and first workflow attempt. Original-history, error-class and
+workflow synthetic suites precede the sole credential-bearing step. That step
+runs only the content-free helper pinned to original run `36751791789`; it does
+not rerun either older query or perform email, routing, R2 or Worker mutation.
+The older history/shape targets remain unchanged. Separate source and workflow
+reviews plus hosted checks are prerequisites; this wiring is not live evidence
+or authorization for any subsequent mutation.
