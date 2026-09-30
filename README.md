@@ -44,8 +44,11 @@ does not replace the CLI's own authentication or authorization checks.
 Development builds and cross-platform tests run in GitHub Actions to avoid
 requiring a local Rust/Wasm/Node toolchain or large caches on a contributor's
 machine. `.github/workflows/ci.yml` tests the CLI on Linux, Windows, and macOS,
-builds the Workers for Wasm, and checks the Astro site. Candidate pushes deploy
-isolated staging; reviewed `workflow_dispatch target=production` on `main`
+builds the Workers for Wasm, and checks the Astro site. Pushes are non-deploying
+checks; `workflow_dispatch target=checks` repeats that source-only validation.
+Isolated staging is an explicit `target=staging` promotion (the API privacy
+rollout additionally requires its documented confirmation), while reviewed
+`workflow_dispatch target=production` on `main`
 promotes the mail API, inbound transport, outbound lifecycle consumer and
 eligible release site, then probes public routes. A main push alone does not
 deploy production. `.github/workflows/release.yml` builds

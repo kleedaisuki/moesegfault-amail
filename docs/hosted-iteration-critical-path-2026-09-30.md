@@ -8,9 +8,9 @@ Evidence was read from the GitHub Actions run and job APIs on 2026-09-30. No loc
 
 ## Observed baseline
 
-| Push run | Created | First active job | Last completion | Observed wait | Worker job | Dependent deployment tail | Total |
+| Push run | Created | First active job | Workflow updated | Observed wait | Worker job | Dependent deployment tail | Total |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| [36728726698](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36728726698), `b536963` | 14:23:18 | 14:23:22 | 14:34:56 | 0:04 | 7:19 | 4:13 role monitor | 11:38 |
+| [36728726698](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36728726698), `b536963` | 14:23:18 | 14:23:22 | 14:34:56 | 0:04 | 7:19 | 4:13 failed API deploy | 11:38 |
 | [36732054850](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36732054850), `3ae8ed5` | 14:49:47 | 14:49:50 | 14:59:23 | 0:03 | 5:51 | 3:41 role monitor | 9:36 |
 | [36734170513](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36734170513), `34db41a` | 15:06:16 | 15:11:18 | 15:22:08 | 5:02 | 7:15 | 3:34 private inbox | 15:52 |
 
