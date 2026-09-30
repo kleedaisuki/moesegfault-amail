@@ -69,6 +69,10 @@ Key generation refuses Actions runners, linked session paths and existing
 sessions. The private PKCS#8 key is created only inside the new session folder:
 Windows gets a protected current-user SID-only inheritable DACL before key
 creation; Unix uses directory mode 0700 and atomic file creation mode 0600.
+Windows checks the raw descriptor, rejecting NULL/missing/empty DACLs, unknown
+or callback ACEs, non-user SIDs, denies and an unprotected session directory.
+Hosted Windows synthetic descriptor fixtures cover the allowed policy and
+NULL/empty/everyone/deny/inherited-broad alternatives without real keys.
 Public SPKI and creation timestamp share that protected folder. No private key
 is passed through command arguments/environment or stored in GitHub. Operator
 must bind the public fingerprint before setting the two repository variables;
@@ -91,6 +95,12 @@ operations, never Cloudflare or an LLM provider.
 
 Before any inspection API request, the helper records public run/SHA recovery
 intent, then stores the authenticated numeric artifact ID **before download**.
+Receipts are flushed to an exclusive exact pending file and atomically replaced;
+the existing receipt is never truncated in place. POSIX syncs the containing
+directory; Windows replacement is atomic but is not a promise against every
+power-loss/filesystem failure. A malformed/partial/pending-only receipt fails
+closed and retains the key rather than reporting cleanup. Interruption fixtures
+also check replacement failure preserves the previous usable coordinates.
 Interruption fixtures cover token/provenance/download/ZIP/envelope/decrypt/delete
 and local-cleanup boundaries, preserving key and recovery receipt. A session
 without a receipt may have been dispatched but never inspected: automatic

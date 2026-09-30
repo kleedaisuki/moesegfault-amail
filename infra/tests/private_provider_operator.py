@@ -21,7 +21,7 @@ import staging_worker_r2_delivery_history as history
 
 CATEGORIES = frozenset({"unclassified", "authentication", "authorization_or_dataset_access",
                         "schema_or_field", "arguments_or_filter", "internal", "mixed"})
-FILES = ("private.pk8", "public.spki", "created.utc", "capture.enc.json", "receipt.json")
+FILES = ("private.pk8", "public.spki", "created.utc", "capture.enc.json", "receipt.json", "receipt.next.json")
 MAX_ARCHIVE = 600_000
 JOB = "One-shot encrypted content-free provider error"
 
@@ -171,6 +171,27 @@ def cleanup(session: str) -> None:
     history.need(not path.exists(), "scope")
 
 
+def record_receipt(folder: Path, state: dict, *, first: bool = False) -> None:
+    """Flush one exact public receipt then atomically replace it; never truncate in place."""
+    receipt, pending = folder / "receipt.json", folder / "receipt.next.json"
+    history.need(not first or not receipt.exists(), "scope")
+    with pending.open("xb") as file:
+        file.write(json.dumps(state, separators=(",", ":")).encode())
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(pending, receipt)
+    # POSIX directory sync strengthens rename durability. Windows has no
+    # portable Python directory-fsync; replacement is atomic, not a promise
+    # against all power-loss/filesystem failure scenarios. Invalid receipts
+    # always retain the key and fail closed instead of claiming cleanup.
+    if os.name != "nt":
+        descriptor = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
 def retire_remote(session: str) -> None:
     """Recover interrupted remote cleanup from public, authenticated coordinates only."""
     folder = session_path(session)
@@ -228,12 +249,10 @@ def inspect(session: str, run_id: str, sha: str) -> str:
     # Persist public recovery intent before the first API/provenance request.
     # Every subsequent interruption keeps enough coordinates to retire the
     # exact artifact, including when its numeric ID has not been learned yet.
-    receipt = folder / "receipt.json"
-    with receipt.open("x") as file:
-        json.dump({"artifact_id": None, "run_id": run_id, "source_sha": sha}, file)
+    record_receipt(folder, {"artifact_id": None, "run_id": run_id, "source_sha": sha}, first=True)
     bearer = token()
     artifact = provenance(run_id, sha, bearer)
-    receipt.write_text(json.dumps({"artifact_id": artifact["id"], "run_id": run_id, "source_sha": sha}))
+    record_receipt(folder, {"artifact_id": artifact["id"], "run_id": run_id, "source_sha": sha})
     encrypted = envelope_from_zip(download(artifact, bearer))
     metadata = {"source_sha": sha, "capture_run": run_id, "capture_attempt": "1",
                 "original_run": history.RUN, "original_attempt": history.ATTEMPT,

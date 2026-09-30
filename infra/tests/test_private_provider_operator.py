@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+import urllib.error
 
 import private_provider_operator as operator
 
@@ -92,8 +93,10 @@ class OperatorTests(unittest.TestCase):
                                     "envelope_from_zip": b"ENCRYPTED", "child": b"unclassified",
                                     "github": (204, b""), "cleanup": None}
                     for name, value in replacements.items():
-                        stack.enter_context(patch.object(operator, name,
-                            side_effect=RuntimeError("PRIVATE") if name == phase else None, return_value=value))
+                        side_effect = RuntimeError("PRIVATE") if name == phase else None
+                        if name == "github" and phase != "github":
+                            side_effect = [(204, b""), urllib.error.HTTPError("https://api.github.com",404,"fixed",{},None)]
+                        stack.enter_context(patch.object(operator, name, side_effect=side_effect, return_value=value))
                     stack.enter_context(patch.object(operator.capture, "validate_envelope",
                         side_effect=RuntimeError("PRIVATE") if phase == "validate_envelope" else None))
                     with self.assertRaises(Exception):
@@ -110,6 +113,18 @@ class OperatorTests(unittest.TestCase):
         receipt.exists.return_value = False
         with patch.object(operator, "session_path", return_value=folder), self.assertRaises(Exception):
             operator.retire_remote("session")
+
+    def test_receipt_replace_failure_keeps_previous_coordinates(self):
+        root = Path(operator.__file__).resolve().parents[2] / ".temp"
+        root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as folder_name:
+            folder = Path(folder_name)
+            original = {"artifact_id": None, "run_id": "123", "source_sha": "a" * 40}
+            operator.record_receipt(folder, original, first=True)
+            with patch.object(operator.os, "replace", side_effect=OSError("synthetic")), self.assertRaises(Exception):
+                operator.record_receipt(folder, {**original, "artifact_id": 42})
+            self.assertEqual(json.loads((folder / "receipt.json").read_text()), original)
+            self.assertEqual(json.loads((folder / "receipt.next.json").read_text())["artifact_id"], 42)
 
 
 if __name__ == "__main__":

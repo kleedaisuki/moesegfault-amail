@@ -1,6 +1,21 @@
 # Encrypt confidential stdin in memory; never print exception details.
 param([ValidateSet('encrypt','synthetic','keygen','classify')][string]$Mode = 'encrypt', [string]$Session = '')
 $ErrorActionPreference = 'Stop'
+
+# Reject NULL/absent DACLs and every raw ACE not owned by this user. A NULL
+# DACL has zero enumerable access rules but grants everyone access.
+function Test-OwnerOnlyAcl($Acl, [string]$Sid, [bool]$RequireProtected) {
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($Acl.GetSecurityDescriptorBinaryForm(),0)
+    if (-not ($raw.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent) -or
+        $null -eq $raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -lt 1 -or
+        $raw.Owner.Value -ne $Sid -or ($RequireProtected -and -not $Acl.AreAccessRulesProtected)) { return $false }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+        if ($ace -isnot [Security.AccessControl.CommonAce] -or
+            $ace.IsCallback -or $ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed -or
+            $ace.SecurityIdentifier.Value -ne $Sid) { return $false }
+    }
+    return $true
+}
 try {
     if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'unsupported' }
     Add-Type -TypeDefinition @'
@@ -175,6 +190,17 @@ public static class PrivateProviderCrypto {
     if ($Mode -eq 'synthetic') {
         [PrivateProviderCrypto]::Synthetic()
         [PrivateProviderCrypto]::Boundary((Join-Path $PSScriptRoot 'private_provider_capture.py'))
+        if ($IsWindows) {
+            $sid = 'S-1-5-21-1-2-3-1001'
+            $good = [Security.AccessControl.DirectorySecurity]::new()
+            $good.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;${sid})")
+            if (-not (Test-OwnerOnlyAcl $good $sid $true)) { throw 'acl' }
+            foreach ($sddl in @("O:${sid}D:NO_ACCESS_CONTROL", "O:${sid}D:P", "O:${sid}D:P(A;;FA;;;WD)", "O:${sid}D:P(D;;FA;;;${sid})", "O:${sid}D:(A;;FA;;;${sid})")) {
+                $bad = [Security.AccessControl.DirectorySecurity]::new()
+                $bad.SetSecurityDescriptorSddlForm($sddl)
+                if (Test-OwnerOnlyAcl $bad $sid $true) { throw 'acl' }
+            }
+        }
         Write-Output 'private_capture_crypto=PASS'
         exit 0
     }
@@ -199,6 +225,7 @@ public static class PrivateProviderCrypto {
                 $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
                 $acl.AddAccessRule($rule)
                 Set-Acl -LiteralPath $folder -AclObject $acl
+                if (-not (Test-OwnerOnlyAcl (Get-Acl -LiteralPath $folder) $sid.Value $true)) { throw 'acl' }
             } else {
                 [IO.File]::SetUnixFileMode($folder, [IO.UnixFileMode]448)
             }
@@ -224,10 +251,7 @@ public static class PrivateProviderCrypto {
             if ($IsWindows) {
                 $acl = Get-Acl -LiteralPath $path
                 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-                foreach ($entry in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
-                    if ($entry.IdentityReference.Value -ne $sid -or $entry.AccessControlType -ne 'Allow') { throw 'acl' }
-                }
-                if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid) { throw 'acl' }
+                if (-not (Test-OwnerOnlyAcl $acl $sid ($path -eq $folder))) { throw 'acl' }
             } elseif (([int][IO.File]::GetUnixFileMode($path) -band 63) -ne 0) { throw 'acl' }
         }
         if ((Get-Item -LiteralPath $keyPath).Length -gt 4096) { throw 'bounded' }
