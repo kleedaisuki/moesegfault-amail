@@ -9,8 +9,8 @@ correction). This extends, rather than replaces,
 
 **GO to run the existing secret-free hosted synthetic checks. Live capture is
 NO-GO.** The original source corrections are resolved by the follow-ups below;
-additional lifecycle coverage and hosted evidence are still required before
-this operator implementation can satisfy the documented live contract.
+the evidence-gap fixtures are now present in source, but hosted evidence is
+still required before this operator implementation satisfies the live contract.
 The existing checks are safe to execute; their success must not be described as
 end-to-end operator lifecycle acceptance.
 
@@ -107,6 +107,53 @@ already wired; their hosted execution is not claimed by this static review.
 
 All three reported source findings are now resolved in the reviewed tip.
 No source finding is being kept open merely to maintain a finding count.
+
+## Follow-up review at `a948d42` (`6d78b89` fixtures)
+
+**GO for hosted secret-free synthetic checks. No new substantive source or
+fixture defect found. Live remains NO-GO pending actual hosted evidence and
+the explicit one-shot operator procedure.** This review did not execute tests,
+generate keys, download artifacts, or contact a provider.
+
+`6d78b89` closes the previously identified *source coverage* gaps with bounded
+synthetic fixtures:
+
+- Real `provenance()` and `download()` execute with only the HTTP transport
+  substituted. The fixture binds successful first-attempt run/job/artifact
+  identity, verifies the ZIP digest and checks bearer credentials on the four
+  API requests but not the signed-host request. Digest substitution and an
+  unapproved host fail closed, with exact expected request counts.
+- Real remote retirement and exact local cleanup execute via `main()` using
+  a synthetic terminal cancelled run. Exact artifact DELETE followed by a 404
+  verifies success before the local fixture disappears. DELETE 403 yields a
+  fixed failure and preserves the synthetic key. The exact DELETE URL/method
+  is asserted. This meaningfully exercises recovery rather than mocking the
+  entire recovery function.
+- Real `classify_local()` and `validate_envelope()` execute on bounded session
+  files, with the native child and session-path locator substituted. They
+  preserve the key, emit fixed `LOCAL_RETAINED` output and never call the HTTP
+  transport. Substituted header source SHA is rejected before the native child.
+  The synthetic envelope is explicitly shape-valid, **not cryptographically
+  valid**; real native crypto has its separate in-memory hosted boundary tests.
+- Successful API/download fixtures capture stdout/stderr and require no output;
+  cleanup failure and classify success fixtures assert only fixed public status
+  strings. Earlier exception fixtures cover arbitrary prose suppression.
+
+These checks do not execute actual key generation, OS filesystem permission
+changes, normal unmocked session-path discovery, or a real GitHub download.
+The documentation mostly calls these boundaries out; its phrase "mocking only
+the native child" should be read as "the classification/validation logic is
+real, while the native child and fixture path locator are substituted." This
+is a minor description precision issue, not a demonstrated defect or a new
+live blocker. Do not label these fixtures an actual authenticated provider
+capture or an executed Windows private-key lifecycle.
+
+No previously resolved source finding is reopened. When hosted checks for the
+reviewed source pass, remaining live prerequisites are procedural: bind the
+local ephemeral public fingerprint and exact reviewed SHA, retain the one-shot
+run coordinates, perform at most the approved capture, enforce the 24-hour
+local lifetime, verify remote/local cleanup and disable the live target after
+use. This static review cannot substitute for those execution records.
 
 ## Original necessary corrections (resolved by follow-ups)
 
