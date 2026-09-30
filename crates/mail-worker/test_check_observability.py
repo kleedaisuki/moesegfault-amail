@@ -53,6 +53,17 @@ class ObservabilityGateTests(unittest.TestCase):
         self.assertFalse(gate.safe_settings({**safe, "logpush": True}))
         self.assertFalse(gate.safe_settings({**safe, "tail_consumers": [{"service": "other"}]}))
 
+    def test_local_api_requires_independent_issues_off(self) -> None:
+        """Source intent explicitly disables Issues in every API realm, not the sink."""
+        for realm in gate.SCRIPT:
+            observation = copy.deepcopy(gate.local_settings(realm)["observability"])
+            self.assertEqual(observation["issues"], {"enabled": False})
+            for bad in (None, {}, {"enabled": True}):
+                observation["issues"] = bad
+                self.assertFalse(gate.safe_observability(observation))
+            del observation["issues"]
+            self.assertFalse(gate.safe_observability(observation))
+
     def test_private_sink_is_independently_safe(self) -> None:
         """Only the Queue sink retains reviewed logs; public API settings cannot mask it."""
 

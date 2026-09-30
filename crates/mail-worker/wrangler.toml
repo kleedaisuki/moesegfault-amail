@@ -54,6 +54,10 @@ invocation_logs = false
 [observability.traces]
 enabled = false
 
+# Issues captures request context independently of Logs and native traces.
+[observability.issues]
+enabled = false
+
 [[queues.producers]]
 binding = "TRACE_EVENTS"
 queue = "amail-trace-events"
@@ -115,4 +119,8 @@ enabled = false
 invocation_logs = false
 
 [env.staging.observability.traces]
+enabled = false
+
+# Explicit per-realm disabling prevents automatic error/request retention.
+[env.staging.observability.issues]
 enabled = false

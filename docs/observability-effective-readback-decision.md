@@ -352,3 +352,13 @@ conflicts, export/malformed rejection, optional expected-version enforcement,
 and deployment drift. Source AST and whitespace checks were performed only;
 unit tests are reserved for hosted CI. No live API request, deployment, local
 build/test, setting mutation, or push was performed by this implementation.
+
+
+Both Mail API Wrangler realms also explicitly set `observability.issues.enabled
+= false`; strict API local-intent validation requires it, while the private sink
+contract is unchanged. This supported source setting is not effective readback
+proof: after deployment the current Worker resource must still positively
+confirm Issues off. See the official
+[Workers Issues setup](https://developers.cloudflare.com/workers/observability/issues/)
+and [investigation documentation](https://developers.cloudflare.com/workers/observability/issues/investigate/),
+which treats issue detection separately from Workers Logs/native traces.

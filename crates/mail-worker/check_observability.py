@@ -49,6 +49,8 @@ def safe_observability(value: object, *, sink: bool = False) -> bool:
         and built_in_destinations(logs.get("destinations"))
         and isinstance(traces, dict)
         and traces.get("enabled") is False
+        and (sink or (isinstance(value.get("issues"), dict)
+                      and value["issues"].get("enabled") is False))
         and built_in_destinations(traces.get("destinations"))
     )
 
