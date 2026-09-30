@@ -1728,7 +1728,7 @@ struct SearchRequest {
     cursor: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct SearchCursor {
     version: u8,
     hash: String,
@@ -1737,6 +1737,8 @@ struct SearchCursor {
     last_time: i64,
     last_id: String,
     last_score_bits: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vector_commitment: Option<String>,
 }
 
 /// Only rank keys, not message bodies, survive a continuation boundary. / 续扫边界只持久化排序键，不持久化邮件正文。
@@ -1767,6 +1769,9 @@ struct SearchState {
     query_vector: Option<Vec<f32>>,
     #[serde(default)]
     query_model: Option<String>,
+    /// A completed semantic job retains this binding, never its raw query vector.
+    #[serde(default)]
+    vector_commitment: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -3072,6 +3077,7 @@ mod tests {
             last_time: 10,
             last_id: "z".into(),
             last_score_bits: Some(best.0.to_bits()),
+            vector_commitment: None,
         };
         let decoded: SearchCursor =
             serde_json::from_slice(&serde_json::to_vec(&cursor).unwrap()).unwrap();

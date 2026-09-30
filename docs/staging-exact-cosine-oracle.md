@@ -1,6 +1,11 @@
 # Protected staging oracle for exact semantic scores
 
-Status (2026-09-30): **design only; no live exact-cosine attestation**. This
+Status (2026-09-30): **v4 cursor source implemented; hosted tests, review, and
+live exact-cosine attestation pending**. The implementation commits to the
+256 rounded `f32` coordinates with the exact byte stream specified below,
+rejects vector drift with `search_cursor_vector_changed` (409) before any row
+scan, and retains only the digest in a completed job. No deployed result is
+inferred from this source change. This
 narrows gate 4 in [the staging E2E plan](staging-e2e-plan.md). The later
 [guarded run 36682429638](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36682429638/attempts/1)
 passed real SMTP-to-ZIP, two-message semantic ranking/filter behavior, and
@@ -38,6 +43,15 @@ same vector can recompute it; a different vector cannot plausibly collide.
 Owner/request binding avoids a reusable cross-account vector fingerprint.
 The digest is sensitive query-derived metadata: never log it, expose it in
 telemetry, or put the entire cursor in an artifact.
+
+The v4 canonical digest preimage is exactly: ASCII
+`amail-semantic-query-v4` then NUL; the 64-byte lowercase ASCII canonical
+owner/request query hash then NUL; model UTF-8 byte length as `u32` little
+endian and the model bytes; query input version `1` as `u32` little endian;
+dimension count `256` as `u32` little endian; then all 256 `f32::to_bits()`
+values as `u32` little endian in coordinate order. The cursor stores the
+lowercase 64-hex SHA-256 digest. The extra optional field is omitted entirely
+from emitted v3 lexical cursors, preserving their existing encoding.
 
 `SearchState` must retain only this digest after clearing `query_vector` at
 completion so an already-completed durable job can replay the same v4 cursor.

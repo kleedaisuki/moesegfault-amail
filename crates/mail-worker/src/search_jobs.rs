@@ -8,6 +8,8 @@ const JOB_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const JOB_LEASE_MS: i64 = 2 * 60 * 1000;
 const JOB_LIMIT: i64 = 5;
 const JOB_TOTAL_LIMIT: i64 = 256;
+const QUERY_INPUT_VERSION: u32 = 1;
+const QUERY_VECTOR_DIMENSIONS: usize = 256;
 
 /// Bound scans that require Rust text/vector filtering; indexed newest/mailbox/date/read lists stay write-free. / 限制需由 Rust 逐条文本或向量筛选的扫描；可索引的最新/邮箱/日期/已读列表保持无写入。
 fn expensive(input: &SearchRequest) -> bool {
@@ -67,6 +69,65 @@ fn query_hash(input: &SearchRequest, user: &Principal) -> AppResult<String> {
     ))
 }
 
+/// Commit to the precise rounded coordinates used by the scan, without exposing them.
+/// The canonical byte stream is domain || NUL || owner/request hash ASCII || NUL ||
+/// model length u32 LE || UTF-8 model || input version u32 LE || dimensions u32 LE ||
+/// 256 IEEE-754 f32 LE values. This is a request-scoped commitment, not encryption.
+fn vector_commitment(hash: &str, model: &str, vector: &[f32]) -> AppResult<String> {
+    vector_commitment_for_version(hash, model, QUERY_INPUT_VERSION, vector)
+}
+
+/// Keep the version tag explicit so a future change cannot silently reuse v4 digests.
+fn vector_commitment_for_version(
+    hash: &str,
+    model: &str,
+    input_version: u32,
+    vector: &[f32],
+) -> AppResult<String> {
+    if vector.len() != QUERY_VECTOR_DIMENSIONS || vector.iter().any(|x| !x.is_finite()) {
+        return Err(AppError::conflict("search_cursor_stale"));
+    }
+    let model_len =
+        u32::try_from(model.len()).map_err(|_| AppError::conflict("search_cursor_stale"))?;
+    let mut digest = Sha256::new();
+    digest.update(b"amail-semantic-query-v4\0");
+    digest.update(hash.as_bytes());
+    digest.update(b"\0");
+    digest.update(model_len.to_le_bytes());
+    digest.update(model.as_bytes());
+    digest.update(input_version.to_le_bytes());
+    digest.update((QUERY_VECTOR_DIMENSIONS as u32).to_le_bytes());
+    for value in vector {
+        digest.update(value.to_bits().to_le_bytes());
+    }
+    Ok(format!("{digest:x}"))
+}
+
+/// Reject a changed provider vector before a semantic continuation scans any row.
+fn check_vector(cursor: Option<&SearchCursor>, commitment: &str) -> AppResult<()> {
+    if cursor.is_some_and(|cursor| cursor.vector_commitment.as_deref() != Some(commitment)) {
+        return Err(AppError::conflict("search_cursor_vector_changed"));
+    }
+    Ok(())
+}
+
+/// Permit scanning only with the vector and model committed by this job.
+fn check_semantic_state(
+    cursor: Option<&SearchCursor>,
+    hash: &str,
+    state: &SearchState,
+) -> AppResult<()> {
+    let actual = vector_commitment(
+        hash,
+        state.query_model.as_deref().ok_or_else(stale)?,
+        state.query_vector.as_deref().ok_or_else(stale)?,
+    )?;
+    if state.vector_commitment.as_deref() != Some(actual.as_str()) {
+        return Err(stale());
+    }
+    check_vector(cursor, &actual)
+}
+
 fn decode_cursor(
     input: &SearchRequest,
     hash: &str,
@@ -80,8 +141,7 @@ fn decode_cursor(
         .map_err(|_| AppError::bad("invalid_cursor"))?;
     let cursor: SearchCursor =
         serde_json::from_slice(&bytes).map_err(|_| AppError::bad("invalid_cursor"))?;
-    if cursor.version != 3
-        || cursor.hash != hash
+    if cursor.hash != hash
         || cursor.high_water > now() + 60_000
         || cursor.last_time >= cursor.high_water
         || cursor.last_id.is_empty()
@@ -91,6 +151,18 @@ fn decode_cursor(
             .is_some_and(|bits| !f64::from_bits(bits).is_finite())
     {
         return Err(AppError::bad("invalid_cursor"));
+    }
+    match (cursor.version, input.semantic.is_some()) {
+        (3, false) if cursor.vector_commitment.is_none() => {}
+        (3, true) => return Err(AppError::conflict("search_cursor_stale")),
+        (4, true)
+            if cursor.vector_commitment.as_ref().is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            }) => {}
+        _ => return Err(AppError::bad("invalid_cursor")),
     }
     if cursor.generation != generation {
         return Err(AppError::conflict("search_cursor_stale"));
@@ -162,6 +234,7 @@ pub(super) async fn search(
         hits: Vec::new(),
         query_vector: None,
         query_model: None,
+        vector_commitment: None,
     };
     if !semantic && expensive(&input) {
         reserve_search_work(&database, user).await?;
@@ -240,6 +313,13 @@ pub(super) async fn search(
             })?);
             state.query_model = Some(env.var("OPENROUTER_EMBEDDING_MODEL")
                 .map_err(|_| AppError { status:503, code:"semantic_unavailable" })?.to_string());
+            let commitment = vector_commitment(
+                &hash,
+                state.query_model.as_deref().ok_or_else(stale)?,
+                state.query_vector.as_deref().ok_or_else(stale)?,
+            )?;
+            check_vector(cursor.as_ref(), &commitment)?;
+            state.vector_commitment = Some(commitment);
             let serialized = serde_json::to_string(&state).map_err(|_| AppError::bad("invalid_search"))?;
             let changed = database.prepare("UPDATE search_jobs SET state='running',state_json=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='preparing'")
                 .bind(&[bind_str(&serialized),bind_str(&id),bind_str(&user.iss),bind_str(&user.sub)])?
@@ -428,6 +508,9 @@ async fn advance_claimed(
     }
     let hash = query_hash(&input, user)?;
     let cursor = decode_cursor(&input, &hash, state.generation)?;
+    if input.semantic.is_some() {
+        check_semantic_state(cursor.as_ref(), &hash, &state)?;
+    }
     let previous_marker = state.marker.clone();
     let complete = scan_batch(database, user, &input, &mut state, cursor.as_ref()).await?;
     if !complete && state.marker == previous_marker {
@@ -607,13 +690,18 @@ async fn result_page(
     let next_cursor = if has_more {
         let last = hits.last().ok_or_else(stale)?;
         let cursor = SearchCursor {
-            version: 3,
+            version: if input.semantic.is_some() { 4 } else { 3 },
             hash: hash.to_owned(),
             high_water: state.high_water,
             generation: state.generation,
             last_time: last.time,
             last_id: last.id.clone(),
             last_score_bits: last.score_bits,
+            vector_commitment: if input.semantic.is_some() {
+                Some(state.vector_commitment.clone().ok_or_else(stale)?)
+            } else {
+                None
+            },
         };
         Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).map_err(|_| stale())?))
     } else {
@@ -679,6 +767,169 @@ pub(super) async fn cleanup(env: &Env) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Synthetic commitments are stable across job completion and reject model/vector drift.
+    #[test]
+    fn semantic_vector_commitment_is_stable_and_fail_closed() {
+        let input = SearchRequest {
+            semantic: Some("synthetic query".into()),
+            limit: Some(1),
+            ..Default::default()
+        };
+        let user = Principal {
+            iss: "test-issuer".into(),
+            sub: "test-owner".into(),
+        };
+        let hash = query_hash(&input, &user).unwrap();
+        let vector = vec![0.0625_f32; QUERY_VECTOR_DIMENSIONS];
+        let original = vector_commitment(&hash, "model-a", &vector).unwrap();
+        assert_eq!(original.len(), 64);
+        let cursor = SearchCursor {
+            version: 4,
+            hash: hash.clone(),
+            high_water: now() + 1,
+            generation: 0,
+            last_time: 1,
+            last_id: "synthetic-id".into(),
+            last_score_bits: Some(0.9_f64.to_bits()),
+            vector_commitment: Some(original.clone()),
+        };
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).unwrap());
+        let continued = SearchRequest {
+            cursor: Some(encoded),
+            ..input
+        };
+        let decoded = decode_cursor(&continued, &hash, 0).unwrap().unwrap();
+        assert!(check_vector(
+            Some(&decoded),
+            &vector_commitment(&hash, "model-a", &vector).unwrap()
+        )
+        .is_ok());
+        let checkpoint = SearchState {
+            high_water: cursor.high_water,
+            generation: 0,
+            marker: None,
+            hits: Vec::new(),
+            query_vector: None,
+            query_model: Some("model-a".into()),
+            vector_commitment: Some(original.clone()),
+        };
+        let replay: SearchState =
+            serde_json::from_slice(&serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+        assert!(replay.query_vector.is_none());
+        assert_eq!(replay.vector_commitment.as_deref(), Some(original.as_str()));
+        let checkpoint = SearchState {
+            query_vector: Some(vector.clone()),
+            ..checkpoint
+        };
+        assert!(check_semantic_state(Some(&decoded), &hash, &checkpoint).is_ok());
+        let mut changed = vector.clone();
+        changed[73] = f32::from_bits(changed[73].to_bits() + 1);
+        for other in [
+            vector_commitment(&hash, "model-a", &changed).unwrap(),
+            vector_commitment(&hash, "model-b", &vector).unwrap(),
+            vector_commitment_for_version(&hash, "model-a", 2, &vector).unwrap(),
+        ] {
+            let error = check_vector(Some(&decoded), &other).unwrap_err();
+            assert_eq!(
+                (error.status, error.code),
+                (409, "search_cursor_vector_changed")
+            );
+        }
+        let drifted_state = SearchState {
+            query_vector: Some(changed),
+            ..checkpoint
+        };
+        assert_eq!(
+            check_semantic_state(Some(&decoded), &hash, &drifted_state)
+                .err()
+                .unwrap()
+                .code,
+            "search_cursor_stale"
+        );
+    }
+
+    /// v3 list pagination remains usable, while v3 semantic scores have no vector identity.
+    #[test]
+    fn lexical_v3_works_and_semantic_v3_requires_restart() {
+        let user = Principal {
+            iss: "test-issuer".into(),
+            sub: "test-owner".into(),
+        };
+        for semantic in [None, Some("synthetic query".to_owned())] {
+            let input = SearchRequest {
+                semantic,
+                ..Default::default()
+            };
+            let hash = query_hash(&input, &user).unwrap();
+            let cursor = SearchCursor {
+                version: 3,
+                hash: hash.clone(),
+                high_water: now() + 1,
+                generation: 0,
+                last_time: 1,
+                last_id: "synthetic-id".into(),
+                last_score_bits: input.semantic.as_ref().map(|_| 0.5_f64.to_bits()),
+                vector_commitment: None,
+            };
+            let continued = SearchRequest {
+                cursor: Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).unwrap())),
+                ..input
+            };
+            let result = decode_cursor(&continued, &hash, 0);
+            if continued.semantic.is_some() {
+                let error = result.err().unwrap();
+                assert_eq!((error.status, error.code), (409, "search_cursor_stale"));
+            } else {
+                assert!(result.unwrap().is_some());
+            }
+        }
+    }
+
+    /// Malformed or altered v4 commitments never reach provider preparation.
+    #[test]
+    fn malformed_semantic_cursor_is_rejected() {
+        let user = Principal {
+            iss: "test-issuer".into(),
+            sub: "test-owner".into(),
+        };
+        let input = SearchRequest {
+            semantic: Some("synthetic query".into()),
+            ..Default::default()
+        };
+        let hash = query_hash(&input, &user).unwrap();
+        let base = SearchCursor {
+            version: 4,
+            hash: hash.clone(),
+            high_water: now() + 1,
+            generation: 0,
+            last_time: 1,
+            last_id: "synthetic-id".into(),
+            last_score_bits: Some(0.5_f64.to_bits()),
+            vector_commitment: Some("a".repeat(64)),
+        };
+        for digest in [None, Some("bad".into()), Some("A".repeat(64))] {
+            let cursor = SearchCursor {
+                vector_commitment: digest,
+                ..base.clone()
+            };
+            let continued = SearchRequest {
+                semantic: input.semantic.clone(),
+                cursor: Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).unwrap())),
+                ..Default::default()
+            };
+            let error = decode_cursor(&continued, &hash, 0).err().unwrap();
+            assert_eq!((error.status, error.code), (400, "invalid_cursor"));
+        }
+        let continued = SearchRequest {
+            cursor: Some("not/base64".into()),
+            ..input
+        };
+        assert_eq!(
+            decode_cursor(&continued, &hash, 0).err().unwrap().code,
+            "invalid_cursor"
+        );
+    }
 
     /// Indexed list predicates stay free of daily write admission; broad Rust filters do not. / 可索引列表谓词免除每日写入准入，宽泛 Rust 过滤则不免除。
     #[test]
