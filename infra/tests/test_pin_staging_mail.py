@@ -46,8 +46,8 @@ def settings() -> dict:
     """Build the minimal accepted privacy settings."""
 
     return {"observability": {
-        "enabled": True, "head_sampling_rate": 1.0, "redact_query_string": True,
-        "logs": {"enabled": True, "invocation_logs": False},
+        "enabled": False, "head_sampling_rate": 1.0, "redact_query_string": True,
+        "logs": {"enabled": False, "invocation_logs": False},
         "traces": {"enabled": False},
     }}
 
