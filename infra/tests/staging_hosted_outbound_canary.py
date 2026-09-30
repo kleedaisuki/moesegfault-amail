@@ -19,8 +19,8 @@ import time
 from staging_hosted_e2e import BUILT_BINARY, ROOT, TEMP, safe_stage_code, unique_auth_home
 from staging_canary_recovery import RecoveryError, hosted_material
 from staging_outbound_canary import (
-    ProbeFailure, config, d1, execute as canary_execute, grant_ready, inbox_ready,
-    one, preflight_controls, privacy_ready,
+    GrantWatermark, ProbeFailure, config, execute as canary_execute, grant_ready, grant_watermark,
+    inbox_ready, preflight_controls, privacy_ready,
 )
 
 
@@ -32,22 +32,21 @@ class HostedOutboundError(Exception):
     """A source-owned, bounded failure label safe for the public job log."""
 
 
-def await_operator_grant(sender: str) -> None:
+def await_operator_grant(sender: str) -> GrantWatermark:
     """Wait for a post-login, exact one-use grant without ever creating one."""
 
     values = config()
     privacy_ready(values)
     inbox_ready(values)
     preflight_controls(values, sender)
-    watermark = one(d1(values, "SELECT unixepoch() AS now", []), "canary_clock_shape").get("now")
-    if type(watermark) is not int:
-        raise HostedOutboundError("canary_clock_invalid")
+    watermark = grant_watermark(values, os.environ.get("GITHUB_RUN_ID", ""),
+                                os.environ.get("GITHUB_RUN_ATTEMPT", ""))
     print("staging_outbound_ready_for_one_use_grant")
     deadline = time.monotonic() + 600
     while time.monotonic() < deadline:
         preflight_controls(values, sender)
         if grant_ready(values, after=watermark):
-            return
+            return watermark
         time.sleep(5)
     raise HostedOutboundError("fresh_one_use_grant_timeout")
 
@@ -101,7 +100,7 @@ def run() -> None:
         except IdentityError as error:
             raise HostedOutboundError("identity_" + safe_stage_code(error)) from None
         try:
-            await_operator_grant(sender)
+            watermark = await_operator_grant(sender)
         except ProbeFailure as error:
             raise HostedOutboundError("rendezvous_" + safe_stage_code(error)) from None
         args = argparse.Namespace(
@@ -110,6 +109,7 @@ def run() -> None:
             amail=str(binary),
             run_dir=str(run_dir / "outbound"),
             sender=sender,
+            grant_watermark=watermark,
         )
         try:
             canary_execute(args)

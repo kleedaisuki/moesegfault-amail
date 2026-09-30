@@ -82,8 +82,8 @@ class CanaryTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.ProbeFailure, "canary_global_not_held"):
                 MODULE.preflight(config, "probe@mail-staging.moesegfault.dev")
 
-    def test_hosted_rendezvous_needs_grant_after_login_watermark(self) -> None:
-        """A previously issued grant cannot silently authorize the hosted run."""
+    def test_hosted_rendezvous_needs_grant_issuance_not_generic_update(self) -> None:
+        """Attestation updated_at changes cannot make an old grant fresh."""
 
         grant = {
             "canary_owner_iss": MODULE.ISSUER,
@@ -91,12 +91,26 @@ class CanaryTests(unittest.TestCase):
             "canary_recipient_sha256": MODULE.hashlib.sha256(b"probe@example.net").hexdigest(),
             "canary_expires_at": 2000,
             "canary_used_by": None,
-            "updated_at": 1000,
+            "case_ref": "amail_canary_12345_1",
             "now": 1050,
         }
-        with patch.object(MODULE, "d1", return_value=[grant]):
-            self.assertFalse(MODULE.grant_ready(values(), after=1000))
-            self.assertTrue(MODULE.grant_ready(values(), after=999))
+        watermark = MODULE.GrantWatermark(8, 2000, "amail_canary_12345_1")
+        with patch.object(MODULE, "d1", return_value=[grant]) as d1:
+            self.assertFalse(MODULE.grant_ready(values(), after=watermark))
+            d1.assert_called_once()
+        new_grant = {**grant, "canary_expires_at": 2100}
+        with patch.object(MODULE, "d1", side_effect=[[new_grant], []]):
+            self.assertFalse(MODULE.grant_ready(values(), after=watermark))
+        with patch.object(MODULE, "d1", side_effect=[[new_grant], [{"id": 9}]]):
+            self.assertTrue(MODULE.grant_ready(values(), after=watermark))
+
+    def test_grant_watermark_captures_audit_and_expiry_together(self) -> None:
+        """The ready marker follows a single atomic staging D1 snapshot."""
+
+        with patch.object(MODULE, "d1", return_value=[{"audit_id": 8, "canary_expires_at": 2000}]) as d1:
+            watermark = MODULE.grant_watermark(values(), "12345", "1")
+        self.assertEqual(watermark, MODULE.GrantWatermark(8, 2000, "amail_canary_12345_1"))
+        self.assertIn("send_release_gate_audit", d1.call_args.args[1])
 
     def test_provider_202_alone_never_verifies_delivery(self) -> None:
         """An uncorrelated event or a non-delivered outcome is insufficient."""

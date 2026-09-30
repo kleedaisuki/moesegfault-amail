@@ -11,6 +11,7 @@ from io import StringIO
 import os
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -88,24 +89,27 @@ class HostedOutboundWorkflowTests(unittest.TestCase):
         """A ready marker follows controls; polling reads but cannot grant."""
 
         output = StringIO()
-        with patch.object(HOSTED, "config", return_value={}) as config, \
+        with patch.dict(os.environ, {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}), \
+                patch.object(HOSTED, "config", return_value={}) as config, \
                 patch.object(HOSTED, "privacy_ready") as privacy, \
                 patch.object(HOSTED, "inbox_ready") as inbox, \
                 patch.object(HOSTED, "preflight_controls") as controls, \
-                patch.object(HOSTED, "d1", return_value=[{"now": 100}]) as d1, \
+                patch.object(HOSTED, "grant_watermark", return_value=SimpleNamespace(audit_id=100)) as watermark, \
                 patch.object(HOSTED, "grant_ready", side_effect=[False, True]) as grant, \
                 patch.object(HOSTED.time, "sleep") as sleep, \
                 patch.object(HOSTED.time, "monotonic", side_effect=[0, 1, 2]), \
                 redirect_stdout(output):
-            HOSTED.await_operator_grant("probe@mail-staging.moesegfault.dev")
+            observed = HOSTED.await_operator_grant("probe@mail-staging.moesegfault.dev")
+        self.assertEqual(observed.audit_id, 100)
         self.assertEqual(output.getvalue(), "staging_outbound_ready_for_one_use_grant\n")
         config.assert_called_once()
         privacy.assert_called_once()
         inbox.assert_called_once()
         self.assertEqual(controls.call_count, 3)
-        self.assertEqual(d1.call_args.args[1], "SELECT unixepoch() AS now")
+        watermark.assert_called_once()
+        self.assertEqual(watermark.call_args.args[1:], ("123", "1"))
         self.assertEqual(grant.call_count, 2)
-        self.assertTrue(all(call.kwargs == {"after": 100} for call in grant.call_args_list))
+        self.assertTrue(all(call.kwargs["after"].audit_id == 100 for call in grant.call_args_list))
         sleep.assert_called_once_with(5)
 
 

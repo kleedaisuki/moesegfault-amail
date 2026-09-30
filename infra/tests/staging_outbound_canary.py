@@ -9,6 +9,7 @@ under the caller's repository-local .temp directory.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
 import hashlib
@@ -31,6 +32,15 @@ DB = "74f35f95-42ce-482c-86e6-dffbdd35cbbe"
 ISSUER = "https://identity-staging.moesegfault.dev"
 SENDER_DOMAIN = "mail-staging.moesegfault.dev"
 MAX_MIME = 2_000_000
+
+
+@dataclass(frozen=True)
+class GrantWatermark:
+    """Atomic pre-grant audit/expiry snapshot bound to one hosted run."""
+
+    audit_id: int
+    expires_at: int | None
+    case_ref: str
 
 
 def required(name: str) -> str:
@@ -153,32 +163,51 @@ def preflight_controls(values: dict[str, str], sender: str) -> None:
         raise ProbeFailure("canary_sender_not_active")
 
 
-def grant_ready(values: dict[str, str], *, after: int | None = None) -> bool:
+def grant_watermark(values: dict[str, str], run_id: str, attempt: str) -> GrantWatermark:
+    """Snapshot the last audit ID and grant expiry before operator handoff."""
+
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", run_id) or not re.fullmatch(r"[1-9][0-9]{0,2}", attempt):
+        raise ProbeFailure("canary_run_coordinates_invalid")
+    row = one(d1(values, "SELECT canary_expires_at,(SELECT COALESCE(MAX(id),0) FROM send_release_gate_audit) AS audit_id FROM send_release_gates WHERE id=1", []), "canary_watermark_shape")
+    expiry = row.get("canary_expires_at")
+    if type(row.get("audit_id")) is not int or (expiry is not None and type(expiry) is not int):
+        raise ProbeFailure("canary_watermark_invalid")
+    return GrantWatermark(row["audit_id"], expiry, f"amail_canary_{run_id}_{attempt}")
+
+
+def grant_ready(values: dict[str, str], *, after: GrantWatermark | None = None) -> bool:
     """Check exact unused grant with at least 120 seconds remaining.
 
-    A hosted rendezvous additionally requires the grant's D1 update timestamp
-    to follow the post-login D1 server-time watermark. The standalone canary
-    still fails closed on absent, wrong, used, or nearly expired grants.
+    A hosted rendezvous requires a run-specific grant audit after the post-login
+    snapshot and a strictly newer expiry. Attestation or consumption updates to
+    the generic updated_at column cannot satisfy this issuance transition.
     """
 
-    grant = one(d1(values, "SELECT canary_owner_iss,canary_owner_sub,canary_recipient_sha256,canary_expires_at,canary_used_by,updated_at,unixepoch() AS now FROM send_release_gates WHERE id=1", []), "canary_grant_shape")
+    grant = one(d1(values, "SELECT canary_owner_iss,canary_owner_sub,canary_recipient_sha256,canary_expires_at,canary_used_by,case_ref,unixepoch() AS now FROM send_release_gates WHERE id=1", []), "canary_grant_shape")
     digest = hashlib.sha256(values["AMAIL_CANARY_RECIPIENT"].encode()).hexdigest()
-    return (grant.get("canary_owner_iss") == ISSUER and
+    eligible = (grant.get("canary_owner_iss") == ISSUER and
             grant.get("canary_owner_sub") == values["STAGING_E2E_OWNER_SUB"] and
             grant.get("canary_recipient_sha256") == digest and
             grant.get("canary_used_by") is None and
             type(grant.get("canary_expires_at")) is int and
             type(grant.get("now")) is int and
-            grant["canary_expires_at"] - grant["now"] >= 120 and
-            (after is None or
-             (type(grant.get("updated_at")) is int and grant["updated_at"] > after)))
+            grant["canary_expires_at"] - grant["now"] >= 120)
+    if not eligible:
+        return False
+    if after is None:
+        return True
+    if (grant.get("case_ref") != after.case_ref or
+            grant["canary_expires_at"] <= (after.expires_at or 0)):
+        return False
+    rows = d1(values, "SELECT id FROM send_release_gate_audit WHERE id>?1 AND case_ref=?2 AND canary_owner_iss=?3 AND canary_owner_sub=?4 AND canary_recipient_sha256=?5 AND canary_expires_at=?6 AND canary_used_by IS NULL ORDER BY id DESC LIMIT 1", [str(after.audit_id), after.case_ref, ISSUER, values["STAGING_E2E_OWNER_SUB"], digest, str(grant["canary_expires_at"])])
+    return len(rows) == 1 and type(rows[0].get("id")) is int and rows[0]["id"] > after.audit_id
 
 
-def preflight(values: dict[str, str], sender: str) -> None:
+def preflight(values: dict[str, str], sender: str, *, after: GrantWatermark | None = None) -> None:
     """Reject a held-policy violation, wrong sender, or ineligible grant."""
 
     preflight_controls(values, sender)
-    if not grant_ready(values):
+    if not grant_ready(values, after=after):
         raise ProbeFailure("canary_grant_not_ready")
 
 
@@ -339,7 +368,7 @@ def execute(args: argparse.Namespace) -> None:
         raise ProbeFailure("canary_sender_invalid")
     privacy_ready(values)
     inbox_ready(values)
-    preflight(values, sender)
+    preflight(values, sender, after=getattr(args, "grant_watermark", None))
     try:
         key, nonce = hosted_material()
     except RecoveryError:
