@@ -240,6 +240,29 @@ dependency chain. It is authored for hosted execution only. Strong cancellation,
 an interrupted process, or a provider/D1 ambiguity still requires the separately
 reviewed same-artifact recovery procedure; locking cannot undo a completed write.
 
+### Hosted inbox-workflow source guard correction
+
+Hosted Infrastructure job `110085288211` at source `c5b2fd1` failed after about
+19 seconds because `workers/identity-test-inbox/test_deploy_workflow.py` still
+used the removed `staging-role-monitor` job as a hard-coded slice terminator.
+That `ValueError` is a source-test integration defect, not evidence of a live
+inbox, route, or deployed-binding failure. The role job remains deliberately
+removed; restoring executable dead machinery would be the wrong fix.
+
+The focused correction reuses the already reviewed strict `job_block` extractor
+for both CI and standalone inbox deployment jobs. All existing assertions remain:
+two all-alias route audits, the pre/postdeploy order, and exactly one deployed
+binding check after deployment. A positive fixture omits the role job and inserts
+a credential-bearing adjacent job; a negative fixture moves the postdeploy
+route/binding guards into that neighbor and requires the inbox contract to fail.
+Adjacent jobs cannot supply or contaminate an inbox safety assertion.
+
+Only the test and this documentation are changed by the correction. Validation
+is Python AST syntax and scoped diff checking, not local test execution. Require
+independent review followed by a fresh immutable-revision hosted Infrastructure
+result and the remaining full source suites. No workflow, provider state, route,
+mail store, deployment or public-send permission is changed or authorized.
+
 ## Same-run staging deployment pin
 
 The redacted deployment helper `infra/deploy/deploy_production_mail.py` now
