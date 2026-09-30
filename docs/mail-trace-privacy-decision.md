@@ -52,6 +52,21 @@ it does not claim implementation, deployment or acceptance is complete. The
 concrete target architecture is recorded separately in
 [the Queue-sink ADR](mail-trace-queue-sink-decision.md).
 
+### First containment upload is not an effective-settings pass
+
+[CI `36725878855`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36725878855)
+at `9c0d5ab` passed core hosted tests and uploaded staging Mail version
+`759906b4-bdb9-488a-a980-a4bada8ba83e`, then returned
+`Mail observability staging: UNVERIFIED` at the effective readback. **Logs-off
+has not been proven and no safe serving pin follows from the upload.** The
+aggregate checker result cannot identify the failing setting or distinguish
+policy mismatch from unavailable/malformed readback. The [containment-attempt
+record](mail-trace-sink-remediation-options.md#containment-deployment-attempt-effective-state-still-unverified)
+preserves the exact evidence and separate private-inbox HTTP0 failure. A
+reviewed targeted fixed-bin readback diagnostic, not blind redeployment or a
+fresh privacy canary, is the next discriminator. No production/public-send or
+new mutation gate is opened by successful source tests alone.
+
 ## Original decision in one sentence (direct-source sink superseded)
 
 Retain reviewed, allowlisted **application trace events** in Cloudflare Workers Logs, linked by W3C trace/span IDs across CLI and the mail API; disable Cloudflare's automatic invocation logs and native traces for the mail API in both realms until Cloudflare can exclude sensitive automatic fields *before persistence*. This is a real causal distributed trace graph over structured events, but **not** the Cloudflare native Traces waterfall or automatic D1/R2/fetch spans.

@@ -10,6 +10,48 @@ not the offending field or producer. The second structural result below locates
 the marker in known request-context carriers and supports sink separation,
 without claiming definitive producer identity or a privacy pass.
 
+## Containment deployment attempt: effective state still unverified
+
+[Hosted CI run `36725878855`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36725878855)
+at containment source `9c0d5ab` passed the core hosted tests and uploaded the
+staging Mail Worker version
+`759906b4-bdb9-488a-a980-a4bada8ba83e`. Its subsequent effective-settings gate
+returned only **`Mail observability staging: UNVERIFIED`**. The workflow was
+therefore not a successful containment acceptance.
+
+| Evidence | What it establishes | What remains unresolved |
+| --- | --- | --- |
+| Core hosted tests passed | The covered source/test contracts passed in Actions. | Effective provider settings, serving traffic, URL non-retention and Queue-sink privacy. |
+| Version upload reported | The containment attempt produced the recorded version ID. | A single 100% serving version, effective Logs-off or a safe serving pin. |
+| Aggregate `UNVERIFIED` readback | The checker could not establish its entire reviewed predicate. | Which endpoint/field failed, whether transport/permissions/shape or a policy mismatch caused it, and whether any retained capture is actually still enabled. |
+
+At `9c0d5ab`, the verifier collapses both a false settings predicate and a
+readback `ValueError` into the same fixed failure. Its predicate additionally
+checks sampling/redaction, optional persistence/export shape and capture flags;
+therefore this label **does not identify a particular mismatch**. In particular,
+neither “Logs are still on” nor “Logs are safely off but the checker is too
+strict” follows from it. Do not weaken the gate based on speculation.
+
+**Current operational state:** effective Logs-off is **not proven**, and there
+is **no safe serving pin for this uploaded version**. An older pin cannot be
+carried forward across this upload. Keep the production privacy/public-send
+gate closed and pause fresh traffic-based privacy, B registration and mutating
+acceptance until the relevant deployment boundaries are reconciled. A targeted
+read-only fixed-bin settings diagnostic is being implemented/reviewed to locate
+the endpoint/shape/predicate branch without raw settings, identifiers from
+requests, provider errors or secrets. This result does not authorize rerunning
+the deployment, another generic canary or restoring the unsafe log sink.
+
+The same run's private Identity inbox deployment job stopped separately at
+`R2 custom-domain read failed: HTTP0`. In that checker's source, HTTP0 is the
+transport-unavailable sentinel, not an HTTP provider status or a finding that
+public/custom domains exist. It does not establish the specific transport cause
+or effective bucket exposure. This live preflight occurs before that job's
+Worker build/deploy, so this attempt did not upload the inbox replacement;
+subsequent lifecycle/deployed-binding checks are not attested by this failed
+check. Keep the current private-inbox/B gate unverified; see
+[the operational record](staging-second-principal.md#latest-deployment-attempt-private-inbox-read-not-completed).
+
 ## Second historical result: request-context retention located
 
 [Read-only run `36723490687`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36723490687),

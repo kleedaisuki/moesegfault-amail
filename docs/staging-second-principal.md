@@ -2,6 +2,34 @@
 
 Status: **hosted source path prepared, live provisioning not run**. No second route, contact, account, verification email, or CLI session has been created by this work. The first staging principal and its `amail-e2e@moesegfault.dev` contact remain untouched. Execute this runbook only after the parent E2E owner confirms the staging deployment and routing state.
 
+## Latest deployment attempt: private-inbox read not completed
+
+[CI run `36725878855`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36725878855)
+at `9c0d5ab` passed core hosted tests, but its private Identity inbox deployment
+job stopped in the live pre-deploy check with the fixed
+`R2 custom-domain read failed: HTTP0` error. The checker returns HTTP0 on
+`URLError` or timeout, so this is a **transport-unavailable sentinel**, not a
+provider HTTP response or proof of public-domain/bucket-policy drift. The
+specific transport cause is unknown. No raw provider response or domain
+inventory is reproduced here.
+
+At this workflow source, `check_config.py --live` precedes the private Email
+Worker build and `wrangler deploy`; this failed attempt therefore did not
+upload an inbox replacement. It does not invalidate historical successes, but
+those earlier successes do not prove the current private-domain, lifecycle and
+deployed-binding gate either. Do not infer R2 object permission, contact
+classification or readiness to create B from a core test pass or HTTP0.
+
+The same CI run uploaded Mail version
+`759906b4-bdb9-488a-a980-a4bada8ba83e` before Mail effective-settings readback
+returned `Mail observability staging: UNVERIFIED`. Logs-off and a safe serving
+pin remain unproven; [the privacy deployment record](mail-trace-sink-remediation-options.md#containment-deployment-attempt-effective-state-still-unverified)
+owns that separate failure. **No B registration, R2 capability mutation or
+fresh SMTP campaign is justified by this attempted deployment.** A targeted
+fixed-bin read-only diagnostic is being implemented/reviewed to distinguish
+settings/transport failures without widening data access. Do not repeat the
+unchanged deployment/probe or infer an exact mismatch from aggregate labels.
+
 Before either one-shot registration or same-account recovery, run the separate **strictly read-only** manual `staging-second-principal-preflight` target with `confirm=READ_STAGING_SECOND_PRINCIPAL_PREFLIGHT`. It uses the existing repository-level B credential Secrets to validate their shape and, through current Cloudflare credentials, checks deployed private-inbox settings/privacy, both exact routes absent, A's verified Identity contact, B's contact status and matching username, and a bounded private R2 object listing. It never opens/removes a route, launches a browser, creates an account, reads an OTP object, or deletes an object. Output is only one fixed label: `..._absent`, `..._pending_same_account`, or `..._verified_same_account` (otherwise a fixed failure). A denied D1 query and a denied R2 list return different fixed phase labels without provider response bodies. A green result proves current D1 read and R2 **list** capability, not R2 object get/delete permission, future token validity, or live Worker serving-version pin. Those remain independent prerequisites before mutation.
 
 The new manual `staging-second-principal` Windows Actions target is intentionally **not** a secret generator. Before any dispatch, place one fresh B-only username/password in repository-level `STAGING_E2E_B_USERNAME` and `STAGING_E2E_B_PASSWORD` Secrets (not duplicate environment Secrets), keep the job under the existing staging Environment gate, and independently confirm the current `CLOUDFLARE_API_TOKEN` can read Identity staging D1 and list/get/delete objects in the private verification R2 bucket. The workflow demands `confirm=RUN_STAGING_SECOND_PRINCIPAL_PROVISION`. It runs a final-schema contact preflight, both exact-route absence checks, private R2 baseline inventory, then opens only B's exact route. The existing first-party CDP registration enters a single fresh, exact-recipient Identity text-code from R2 *in memory*, closes the exact route before OTP submission, completes normal verification, performs native PKCE, and checks A/B's different registered pairwise subjects, binding B's protected login username to B's verified contact. Finally it removes B's route, deletes/readbacks the run's private MIME, and removes `.temp` browser/credential material. Logs contain fixed labels only. The contact preflight makes this job non-repeatable: **after an ambiguous registration, do not dispatch it again; recover the same B account instead**.
