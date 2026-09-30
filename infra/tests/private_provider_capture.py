@@ -16,7 +16,7 @@ import staging_worker_r2_delivery_history as history
 from staging_worker_r2_history_error import QUERY
 
 CONFIRM = "CAPTURE_PRIVATE_WORKER_R2_ERROR_36751791789_ONCE"
-WORKFLOW = ".github/workflows/private-provider-error-capture.yml"
+WORKFLOW = ".github/workflows/ci.yml"
 MAX_ENVELOPE = 400_000
 
 
@@ -93,7 +93,8 @@ def run() -> None:
                  and re.fullmatch(r"[0-9a-f]{40}", sha) is not None
                  and sha == os.environ.get("PRIVATE_CAPTURE_REVIEWED_SHA")
                  and os.environ.get("ACTIONS_RUNNER_DEBUG", "").lower() != "true"
-                 and os.environ.get("ACTIONS_STEP_DEBUG", "").lower() != "true", "identity")
+                 and os.environ.get("ACTIONS_STEP_DEBUG", "").lower() != "true"
+                 and os.environ.get("RUNNER_DEBUG", "") != "1", "identity")
     key = os.environ.get("PRIVATE_CAPTURE_PUBLIC_KEY", "")
     history.need(0 < len(key) <= 2048, "credential")
     metadata = {"source_sha": sha, "capture_run": os.environ.get("GITHUB_RUN_ID", ""),
