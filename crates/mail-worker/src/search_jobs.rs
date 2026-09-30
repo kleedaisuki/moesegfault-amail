@@ -496,8 +496,10 @@ pub(super) async fn search(
     }
     if origin.is_some() {
         if let Err(error) = reserve_search_work(&database, user).await {
-            if let Ok(query) = database.prepare("DELETE FROM search_jobs WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='running'")
-                .and_then(|query| query.bind(&[bind_str(&id),bind_str(&user.iss),bind_str(&user.sub)])) {
+            if let Ok(query) = database
+                .prepare("DELETE FROM search_jobs WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='running'")
+                .bind(&[bind_str(&id), bind_str(&user.iss), bind_str(&user.sub)])
+            {
                 let _ = query.run().await;
             }
             return Err(error);
