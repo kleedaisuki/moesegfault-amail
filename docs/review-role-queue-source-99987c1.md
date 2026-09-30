@@ -7,9 +7,9 @@ live provider read, deployment, SMTP submission, or push.
 
 ## Disposition
 
-**NO-GO for using this revision as the role deployment/acceptance gate.**
-Two concrete integration corrections are required below. Non-deploying hosted
-source CI remains useful and safe; this finding is not a prohibition on compilation.
+**Initial `99987c1`: NO-GO for using that revision as the role deployment/acceptance gate.**
+Both corrections below are closed by the scoped re-review of `05757f2` (see
+the final disposition). Non-deploying hosted source CI remains useful and safe.
 The Rust producer/schema/sink changes have no identified substantive defect in
 the examined paths. No production role cutover or privacy acceptance is implied.
 
@@ -104,3 +104,44 @@ holds this separate integration. The external forwarding/digest Inbox oracle,
 fault paths, lease expiry, and exact-route rollback remain independent gates.
 No finding here claims an observed Email privacy leak or guarantees reliable
 telemetry. D1 outbox and lease remain the operational correctness mechanism.
+
+## Scoped re-review: `05757f2` (2026-10-01)
+
+Reviewed the five-file corrective commit against the two findings above,
+including the shared deployment parser, its real callers, and authored tests.
+No local tests/builds or live actions were performed. No new substantive
+defect was identified within this correction scope.
+
+1. **Serving-capability association: resolved.**
+   `inspect_serving_bindings` requires the exact response version ID and reads
+   only `resources.bindings`, accepting a direct list or the exact reviewed
+   `{result:list}` wrapper. `inspect_deployment` now fetches the expected
+   `/versions/{id}` before auditing capabilities. Unversioned settings are
+   only legacy observability contradiction evidence. The original stable
+   single-100% deployment/version bracket remains intact.
+2. **Acceptance caller compatibility: resolved.**
+   `acceptance.preflight` requires both pins and invokes the same
+   `inspect_deployment` function. It no longer calls the obsolete arities or
+   silently supplies permissive defaults. Failure maps to fixed
+   `role_serving_privacy_unverified` before route reconciliation, marker
+   creation, ledger baseline, or SMTP. The acceptance-specific baseline is
+   preserved; it does not inherit the initial-empty-D1 deployment assumption.
+3. **Tests exercise the corrected contracts.**
+   The actual audit path is supplied independent serving and unversioned
+   fixtures. Wrong Queue/D1, missing resources, mismatched response ID, unknown
+   wrappers, split traffic, changed deployment, and absent pins are rejected.
+   The acceptance tests execute its real preflight through the shared parser,
+   additionally checking required pins and failure-before-route behavior.
+   These are source assertions, not evidence of hosted execution.
+
+**Final source disposition: GO for non-deploying hosted source checks of
+`99987c1 + 05757f2`. Both original P2 findings are closed.**
+
+**Role deployment/acceptance gate: source corrections are GO, but actual role
+deployment/cutover remains NO-GO until the separate rollout prerequisites are
+satisfied.** In particular: hosted tests, explicit shared Queue topology for
+exactly Mail API plus role monitor, guarded workflow provenance and pin
+integration, positive serving/resource capture-off readback, whole-record
+Email/Cron privacy acceptance, and the independent forwarding/digest/fault/
+lease/Inbox operational evidence. This scoped re-review neither verifies those
+unexamined integrations nor reopens previously accepted Rust behavior.
