@@ -28,6 +28,7 @@ def payload(**overrides: int) -> dict:
         "global_allowed": 1,
         "gate_rows": 1,
         "gates_ready": 1,
+        "contact_ready": 1,
     }
     row.update(overrides)
     return {"success": True, "result": [{"success": True, "results": [row]}]}
@@ -40,7 +41,7 @@ class CheckSendGateTest(unittest.TestCase):
         """成功状态必须完整且唯一。 / Require exact singleton readiness."""
 
         self.assertTrue(MODULE.release_ready(payload()))
-        for key in ("global_rows", "global_allowed", "gate_rows", "gates_ready"):
+        for key in ("global_rows", "global_allowed", "gate_rows", "gates_ready", "contact_ready"):
             with self.subTest(key=key):
                 self.assertFalse(MODULE.release_ready(payload(**{key: 0})))
                 self.assertFalse(MODULE.release_ready(payload(**{key: 2})))

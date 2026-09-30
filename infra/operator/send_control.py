@@ -23,7 +23,7 @@ CASE = re.compile(r"^[A-Za-z0-9_-]{3,96}$")
 def statement(scope: str, state: str, issuer: str, subject: str, reason: str, actor: str, case: str) -> tuple[str, list[str]]:
     """Return one constant SQL statement and bound strings, never interpolated SQL. / 返回固定 SQL 与绑定字符串，绝不拼接 SQL。"""
     if scope == "global":
-        release_guard = " AND EXISTS(SELECT 1 FROM send_release_gates WHERE id=1 AND feedback_verified=1 AND abuse_contact_verified=1 AND delivery_canary_verified=1 AND preview_reviewed=1)" if state == "allowed" else ""
+        release_guard = " AND EXISTS(SELECT 1 FROM send_release_gates WHERE id=1 AND feedback_verified=1 AND abuse_contact_verified=1 AND delivery_canary_verified=1 AND preview_reviewed=1) AND EXISTS(SELECT 1 FROM direct_role_contact_ready)" if state == "allowed" else ""
         return (
             "UPDATE send_policy SET state=?1,reason_code=?2,actor=?3,note_ref=?4,updated_at=unixepoch() WHERE scope='global' AND owner_iss='*' AND owner_sub='*'" + release_guard,
             [state, reason, actor, case],

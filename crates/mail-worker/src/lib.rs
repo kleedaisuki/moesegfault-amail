@@ -1064,27 +1064,15 @@ async fn reserve_window_quota(
     Ok(())
 }
 
-/// The role-mail monitor owns this isolated D1 row; no user-mail migration may
-/// manufacture a healthy lease. An absent binding, row, or readable lease fails closed.
-/// 角色邮件监控器独占此隔离 D1 记录；用户邮件迁移不得伪造健康租约。绑定、记录或可读租约缺失时拒绝发送。
-async fn role_monitor_healthy(env: &Env) -> bool {
-    #[derive(Deserialize)]
-    struct HealthRow {
-        lease_until: i64,
-    }
-    let Ok(database) = env.d1("ROLE_MONITOR") else {
-        return false;
-    };
+/// Require the adopted direct-forward contract, its human attestation, and a
+/// fresh configuration observation in MAIL_DB. Query/binding/schema errors
+/// deny public sends; a provider GET never manufactures a role-Worker lease.
+async fn direct_role_contact_ready(database: &D1Database) -> bool {
     let result = database
-        .prepare("SELECT lease_until FROM role_monitor_health WHERE singleton=1")
-        .first::<HealthRow>(None)
+        .prepare("SELECT contract_id FROM direct_role_contact_ready LIMIT 1")
+        .first::<serde_json::Value>(None)
         .await;
-    matches!(result, Ok(Some(row)) if lease_is_current(row.lease_until, now()))
-}
-
-/// Equality is expired; both timestamps are Unix milliseconds. / 相等即过期；两个时间戳均为 Unix 毫秒。
-fn lease_is_current(lease_until: i64, now_ms: i64) -> bool {
-    lease_until > now_ms
+    matches!(result, Ok(Some(_)))
 }
 
 /// The SQL trigger consumes a canary key only under the global hold. / SQL 触发器仅在全局停发时消费金丝雀键。
@@ -1092,13 +1080,12 @@ fn canary_fallback_available(global_state: &str) -> bool {
     global_state == "held"
 }
 
-/// Fail closed unless the manual release gates, global policy, and separately
-/// renewed role-monitor lease all permit public sending. A separately authorized
+/// Fail closed unless manual release gates, global policy, and the same-database
+/// direct-forward contact predicate all permit public sending. A separately authorized
 /// one-use canary may test delivery only while the global switch is held, which
 /// is when the SQL admission trigger atomically consumes its idempotency key.
-/// 公开发信须同时满足人工上线确认、全局策略及独立续期的角色邮件监控租约；单次金丝雀仅在全局停发时可用，由 SQL 准入触发器原子消费幂等键。
 async fn check_send_policy(
-    env: &Env,
+    _env: &Env,
     database: &D1Database,
     user: &Principal,
     draft: &Draft,
@@ -1136,12 +1123,12 @@ async fn check_send_policy(
     }
     let verified = database.prepare("SELECT 1 AS verified FROM send_release_gates WHERE id=1 AND feedback_verified=1 AND abuse_contact_verified=1 AND delivery_canary_verified=1 AND preview_reviewed=1")
         .first::<serde_json::Value>(None).await?.is_some();
-    let public_ready = global.state == "allowed" && verified && role_monitor_healthy(env).await;
+    let public_ready =
+        global.state == "allowed" && verified && direct_role_contact_ready(database).await;
     if !public_ready {
         // The SQL canary guard consumes a key only under a global hold. If the
-        // monitor fails after a public launch, do not bypass the lease with an
+        // contact check expires after a public launch, do not bypass it with an
         // unconsumed grant; first return the global switch to held.
-        // SQL 金丝雀保护仅在全局停发时消费键；上线后监控失效不得通过未消费授权绕过租约。
         if !canary_fallback_available(&global.state) {
             return Err(AppError {
                 status: 403,
@@ -2904,14 +2891,9 @@ mod tests {
         ));
     }
 
-    /// A lease must be strictly in the future, independent of the manually
-    /// attested send gates and the single-use canary exception.
-    /// 租约必须严格晚于当前时间，与人工发信确认和单次金丝雀例外相互独立。
+    /// Contact failures under global allow never become canary permission.
     #[test]
-    fn role_monitor_lease_boundary_is_fail_closed() {
-        assert!(!lease_is_current(0, 1_700_000_000_000));
-        assert!(!lease_is_current(1_700_000_000_000, 1_700_000_000_000));
-        assert!(lease_is_current(1_700_000_000_001, 1_700_000_000_000));
+    fn direct_contact_canary_fallback_requires_hold() {
         assert!(canary_fallback_available("held"));
         assert!(!canary_fallback_available("allowed"));
     }

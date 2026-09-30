@@ -26,7 +26,8 @@ SELECT
   (SELECT COUNT(*) FROM send_release_gates) AS gate_rows,
   (SELECT COUNT(*) FROM send_release_gates
      WHERE id=1 AND feedback_verified=1 AND abuse_contact_verified=1
-       AND delivery_canary_verified=1 AND preview_reviewed=1) AS gates_ready
+       AND delivery_canary_verified=1 AND preview_reviewed=1) AS gates_ready,
+  (SELECT COUNT(*) FROM direct_role_contact_ready) AS contact_ready
 """
 
 
@@ -71,7 +72,7 @@ def release_ready(payload: dict) -> bool:
         return False
     row = rows[0]
     return all(type(row.get(key)) is int and row[key] == 1 for key in (
-        "global_rows", "global_allowed", "gate_rows", "gates_ready"
+        "global_rows", "global_allowed", "gate_rows", "gates_ready", "contact_ready"
     ))
 
 
