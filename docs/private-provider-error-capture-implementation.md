@@ -4,6 +4,18 @@ Status: source implementation awaiting independent security review and hosted
 Linux/Windows synthetic checks. **Not authorized for a live capture.** No keys,
 local cryptographic tests, provider reads, or private artifacts were produced.
 
+Bounded existing hosted evidence (owner reported): exact reviewed source
+`a36d11c` passed source CI
+[36767492647](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36767492647)
+(six jobs), workflow lint
+[36767492242](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36767492242),
+and real Python-to-PowerShell synthetic encryption/decryption on Ubuntu and
+Windows in
+[36767492318](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36767492318).
+That evidence predates the operator lifecycle slice: it does **not** establish
+the newly added key ACL, native classification, authenticated artifact download
+or remote/local cleanup behavior. No real operator key was generated.
+
 ## Source contract
 
 `infra/tests/private_provider_capture.py` imports the unchanged reviewed

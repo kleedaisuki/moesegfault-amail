@@ -65,6 +65,8 @@ public static class PrivateProviderCrypto {
         string pub = Convert.ToBase64String(rsa.ExportSubjectPublicKeyInfo());
         byte[] expected = Encoding.UTF8.GetBytes("{\"http_status\":200,\"errors\":[{\"message\":\"synthetic\\nsecret\"}]}");
         string envelope = captured ?? Encrypt((byte[])expected.Clone(), pub, "{\"synthetic\":true}");
+        if (Classify(Encoding.UTF8.GetBytes(envelope), rsa.ExportPkcs8PrivateKey()) != "unclassified")
+            throw new Exception();
         using JsonDocument outer = JsonDocument.Parse(envelope);
         byte[] header = Convert.FromBase64String(outer.RootElement.GetProperty("header").GetString());
         using JsonDocument parsed = JsonDocument.Parse(header);
