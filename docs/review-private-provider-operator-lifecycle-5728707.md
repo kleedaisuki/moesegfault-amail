@@ -8,8 +8,9 @@ correction). This extends, rather than replaces,
 ## Verdict
 
 **GO to run the existing secret-free hosted synthetic checks. Live capture is
-NO-GO.** Two source corrections and additional lifecycle coverage are required
-before this operator implementation can satisfy the documented live contract.
+NO-GO.** The original source corrections are resolved by the follow-ups below;
+additional lifecycle coverage and hosted evidence are still required before
+this operator implementation can satisfy the documented live contract.
 The existing checks are safe to execute; their success must not be described as
 end-to-end operator lifecycle acceptance.
 
@@ -66,7 +67,48 @@ acceptance work, not claims that those mechanisms were run. The source additions
 improve coverage but actual hosted results are owned by the parent delivery
 record. No live acceptance is granted by this follow-up.
 
-## Necessary corrections
+## Follow-up review at `a05d374`
+
+Reviewed `bae215a` and `a05d374` by inspection only. **GO for secret-free hosted
+synthetic checks; live capture remains NO-GO.** No new substantive source defect
+was found in these narrow corrections. No local tests, keys, artifact access or
+provider requests were performed.
+
+The remaining late-upload race is resolved: `retire_remote()` now requires the
+authenticated attempt's `status == "completed"` before listing/accepting
+artifact absence or deleting local evidence. Successful conclusion is not
+required, correctly preserving cleanup of terminal failed/cancelled attempts.
+The new fixtures reject queued/in-progress/waiting/pending/requested runs before
+artifact listing and allow complete empty listings for terminal failed/cancelled
+runs. Existing main-command ordering keeps local cleanup after remote recovery,
+and a remote failure fixture asserts the local cleanup routine is not called.
+
+`bae215a` separates remote retirement from local interpretation completion.
+Successful `inspect` verifies DELETE/404 remotely but retains the bounded
+ciphertext/private-key session and emits `LOCAL_RETAINED remote=CLEANED`, not an
+incorrect all-cleaned status. Explicit `classify` checks the 24-hour local age,
+bounded receipt/ciphertext, exact provenance and public fingerprint before
+calling the existing native authenticated classifier. That implementation has
+no network call; repeated classification does not dispatch or contact
+Cloudflare/GitHub. Unknown results can now be interpreted offline without
+discarding the only diagnostic. Explicit `cleanup` still authenticates remote
+coordinates/absence before enumerated local deletion. Deadline enforcement
+remains an operator procedure, not a background task.
+
+The new `test_local_classifier_never_contacts_provider_or_github` mocks the
+entire `classify_local` function, so it verifies command routing/output, **not**
+execution of the retained-file validation/native boundary. Similarly, the
+terminal cleanup fixtures cover authenticated absence but not a successful
+exact-artifact DELETE/404 recovery sequence. The broader positive download,
+digest, recovery-deletion and retained-classify fixture gaps noted above remain
+evidence limitations to close before live acceptance, not new demonstrated
+defects. Native synthetic Classify and raw Windows descriptor policy checks are
+already wired; their hosted execution is not claimed by this static review.
+
+All three reported source findings are now resolved in the reviewed tip.
+No source finding is being kept open merely to maintain a finding count.
+
+## Original necessary corrections (resolved by follow-ups)
 
 ### P2: early interruption loses the only remote cleanup receipt
 
