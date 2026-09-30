@@ -100,7 +100,7 @@ fn vector_commitment_for_version(
     for value in vector {
         digest.update(value.to_bits().to_le_bytes());
     }
-    Ok(format!("{digest:x}"))
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 /// Reject a changed provider vector before a semantic continuation scans any row.
