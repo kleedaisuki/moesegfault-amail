@@ -81,7 +81,60 @@ GitHub helper: an out-of-band same-path write could coincide. Preserve the
 external settings freeze, and establish any actor/source correlation privately
 before attributing the event. Never print actor, token or IP identifiers.
 
-If the root authorizes implementation, add synthetic contracts and independent
-review before hosted execution. Do not fetch audit resource-change history in
-this first pass: it can contain full configuration, is unnecessary to distinguish
-request receipt/status, and expands the privacy surface.
+## Implemented bounded classifier (source only)
+
+`infra/tests/staging_settings_patch_audit.py` implements the authorized
+read-only discriminator. The existing `ci.yml` dispatch schema gains only
+`target=staging-settings-patch-audit`, using its existing `confirm` input with
+`READ_STAGING_CAPTURE_SETTINGS_PATCH_AUDIT`; no new workflow input or separate
+default-branch workflow is required. The job is manual/development-branch-only,
+uses staging Environment, requires first attempt, runs focused synthetic tests
+without credentials, then supplies the project account/deployment credential
+only to the final read-only step. It shares non-cancelable staging serialization.
+
+The reader performs at most one GET to the fixed Audit Logs v2 account endpoint
+with exactly the six-second bounds above, ascending direction and limit 100.
+It rejects redirects, uses a 15-second timeout and 1 MiB body bound, never
+retries, and never persists a response, cursor or raw exception. The classifier
+does not fetch resource-change history, invoke any Mail request, mutate any
+setting or emit a settings-v1/deployment marker.
+
+Positive page completeness requires an explicit canonical string count matching
+the bounded result length and an explicitly empty string cursor. Missing/null
+cursor is not fabricated exhaustion; nonempty cursor, unknown pagination fields,
+shape/count drift or more than 100 rows stays UNVERIFIED without continuation.
+This conservative rule may reject a legitimate optional representation, but
+the retrieved schema does not establish omission as positive exhaustion evidence.
+It does not reinterpret incomplete pages as zero matches.
+
+Rows must have typed known raw method/URI and an action timestamp strictly
+inside the immutable query interval. Any present account identity must match
+the requested account. Exact matching uses only the documented URI shape
+`/accounts/{account}/workers/scripts/amail-mail-staging/script-settings` and
+literal PATCH; no substring, URL decoding, path prefix/suffix, alternative realm
+or guessed URI representation is admitted. Unknown/missing matching status or
+action outcome denies classification. Actor and request/response payload fields
+are neither used for attribution nor printed.
+
+Output is six closed fields prefixed `staging_settings_patch_audit_`, plus a
+`CLASSIFIED`/`UNVERIFIED` aggregate. HTTP outcomes are fixed named categories
+`expected_success`, `other_success`, `client_error`, `server_error`, `other`
+or `mixed`/`unverified`: no raw numeric status is printed. Match counts are
+`zero`, `one`, `multiple` or `unverified`, never actual counts/record IDs.
+Only one fully shaped matching record can produce a provider-reported outcome.
+Zero, multiple, unknown, denied, transport or incomplete observations stay
+UNVERIFIED; zero still explicitly means historical outcome unresolved, not
+no PATCH attempt. CLASSIFIED is historical provider evidence, **not** helper
+attribution, successful client parsing, present Issues-off or rollout approval.
+
+`test_staging_settings_patch_audit.py` covers exact scope/request count, no
+redirect/retry, byte/time bounds, URI near-misses, zero/multiple records,
+missing/unknown fields, pagination/count/time/account drift, invalid statuses,
+private output, first-attempt guards and credentials-after-tests wiring.
+Only static AST/YAML and whitespace checks were performed locally. Independent
+source review and hosted tests must pass before one historical audit dispatch.
+
+Do not fetch audit resource-change history in this first pass: it can contain
+full configuration, is unnecessary to distinguish request receipt/status, and
+expands the privacy surface. Nothing in this implementation authorizes retrying
+the historical mutation or loosening effective capture-off acceptance.
