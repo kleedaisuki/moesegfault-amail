@@ -311,7 +311,7 @@ fn semantic_origin_lookup_is_owner_scoped_and_expires_at_boundary() {
 #[test]
 fn semantic_continuation_publication_requires_live_origin_and_current_generation() {
     let db = db();
-    let completion = "UPDATE search_jobs SET state='done',state_json=?1,version=version+1,lease_started_at=NULL WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='advancing' AND version=?5 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?6 AND EXISTS (SELECT 1 FROM search_jobs origin WHERE origin.id=?7 AND origin.owner_iss=?3 AND origin.owner_sub=?4 AND origin.state='done' AND origin.expires_at>?8)";
+    let completion = "UPDATE search_jobs SET state='done',state_json=?1,version=version+1,lease_started_at=NULL WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='advancing' AND version=?5 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?6 AND search_jobs.expires_at>?7 AND EXISTS (SELECT 1 FROM search_jobs origin WHERE origin.id=?8 AND origin.owner_iss=?3 AND origin.owner_sub=?4 AND origin.state='done' AND origin.expires_at>?7)";
     let publish = |page: &str, owner: &str, origin: &str, now: i64| {
         db.execute(
             completion,
@@ -322,8 +322,8 @@ fn semantic_continuation_publication_requires_live_origin_and_current_generation
                 owner,
                 0,
                 0,
-                origin,
-                now
+                now,
+                origin
             ],
         )
         .unwrap()
@@ -356,6 +356,59 @@ fn semantic_continuation_publication_requires_live_origin_and_current_generation
         )
         .unwrap();
     assert_eq!(published, ("done".into(), 1, None));
+}
+
+/// A first-page origin cannot publish a cursor once its own TTL has elapsed.
+/// The deadline is checked by the completion CAS, not just when the lease starts.
+#[test]
+fn first_page_origin_completion_rechecks_its_own_expiry() {
+    let db = db();
+    let completion = "UPDATE search_jobs SET state='done',state_json=?1,version=version+1,lease_started_at=NULL WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='advancing' AND version=?5 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?6 AND search_jobs.expires_at>?7";
+    job(&db, "origin", "alice", "advancing", 4, 1_000);
+    job(&db, "fresh-origin", "alice", "advancing", 4, 1_000);
+    db.execute(
+        "UPDATE search_jobs SET lease_started_at=1001 WHERE id='origin'",
+        [],
+    )
+    .unwrap();
+    let publish = |id: &str, owner: &str, version: i64, generation: i64, now: i64| {
+        db.execute(
+            completion,
+            params![
+                r#"{"is_origin":true,"query_vector":[1,0],"cursor_key":"private"}"#,
+                id,
+                "test-issuer",
+                owner,
+                version,
+                generation,
+                now,
+            ],
+        )
+        .unwrap()
+    };
+    let expiry = 86_401_000_i64;
+    assert_eq!(publish("origin", "bob", 4, 0, expiry - 1), 0);
+    assert_eq!(publish("origin", "alice", 3, 0, expiry - 1), 0);
+    assert_eq!(publish("origin", "alice", 4, 1, expiry - 1), 0);
+    assert_eq!(publish("origin", "alice", 4, 0, expiry), 0);
+    let still_claimed: (String, i64, Option<i64>) = db
+        .query_row(
+            "SELECT state,version,lease_started_at FROM search_jobs WHERE id='origin'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(still_claimed, ("advancing".into(), 4, Some(1_001)));
+    assert_eq!(publish("fresh-origin", "alice", 4, 0, expiry - 1), 1);
+    assert_eq!(publish("fresh-origin", "alice", 4, 0, expiry - 1), 0);
+    let done: (String, i64, Option<i64>) = db
+        .query_row(
+            "SELECT state,version,lease_started_at FROM search_jobs WHERE id='fresh-origin'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(done, ("done".into(), 5, None));
 }
 
 /// Only a first page with another page retains the query vector and private cursor key.
