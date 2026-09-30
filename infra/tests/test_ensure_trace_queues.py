@@ -1,6 +1,7 @@
 """Synthetic contracts for bounded private trace Queue deployment, executed in CI."""
 
 import importlib.util
+import hashlib
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -12,7 +13,7 @@ SPEC.loader.exec_module(MODULE)
 
 def queue(name):
     """Build explicit provider-shape fixtures, not permissive Wrangler output."""
-    return {"queue_name": name, "queue_id": ("b" if "dlq" in name else "a") * 32, "settings": {
+    return {"queue_name": name, "queue_id": ("b" * 32 if "dlq" in name else "a" * 32 if name.startswith("amail-trace-events") else hashlib.sha256(name.encode()).hexdigest()[:32]), "settings": {
         "message_retention_period": 86400, "delivery_delay": 0, "delivery_paused": False}}
 
 
@@ -35,14 +36,32 @@ class TraceQueueTests(unittest.TestCase):
 
     def test_inventory_requires_complete_pages(self):
         """Absence is meaningful only after all declared pages were read."""
-        replies = [{"result": [queue("a")], "result_info": {"page": 1, "total_pages": 2}},
-                   {"result": [queue("b")], "result_info": {"page": 2, "total_pages": 2}}]
+        first = [queue(f"q{i}") for i in range(100)]
+        replies = [{"result": first, "result_info": {"page": 1, "per_page": 100, "count": 100, "total_count": 101, "total_pages": 2}},
+                   {"result": [queue("last")], "result_info": {"page": 2, "per_page": 100, "count": 1, "total_count": 101, "total_pages": 2}}]
         with patch.object(MODULE, "request", side_effect=replies) as call:
-            self.assertEqual(len(MODULE.inventory("a", "t")), 2)
+            self.assertEqual(len(MODULE.inventory("a", "t")), 101)
             self.assertEqual(call.call_count, 2)
         with patch.object(MODULE, "request", return_value={"result": [], "result_info": {"page": 1}}):
             with self.assertRaisesRegex(ValueError, "inventory_shape"):
                 MODULE.inventory("a", "t")
+
+    def test_inventory_denies_counts_and_duplicate_identity(self):
+        """No count mismatch, omitted page or duplicate queue can attest exclusivity."""
+        safe = {"result": [queue("only")], "result_info": {
+            "page": 1, "per_page": 100, "count": 1, "total_count": 1, "total_pages": 1}}
+        bad = [{**safe, "result_info": {**safe["result_info"], "count": 0}},
+               {**safe, "result_info": {**safe["result_info"], "total_count": 2}},
+               {**safe, "result": [queue("only"), queue("only")], "result_info": {
+                   **safe["result_info"], "count": 2, "total_count": 2}}]
+        for payload in bad:
+            with self.subTest(payload=payload), patch.object(MODULE, "request", return_value=payload):
+                with self.assertRaises(ValueError):
+                    MODULE.inventory("a", "t")
+        empty = {"result": [], "result_info": {"page": 1, "per_page": 100,
+                 "count": 0, "total_count": 0, "total_pages": 0}}
+        with patch.object(MODULE, "request", return_value=empty):
+            self.assertEqual(MODULE.inventory("a", "t"), [])
 
     def test_post_timeout_not_retried(self):
         """An ambiguous create is reconciled by a later operator run, never repeated here."""
