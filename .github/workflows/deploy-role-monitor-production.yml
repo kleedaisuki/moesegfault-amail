@@ -1,93 +1,123 @@
-# 中文：仅在 main 上人工触发；部署监控 Worker，但绝不改动四条已上线的精确转发规则。
-# English: Manual main-only Worker deployment; never mutate the four live exact-forward rules.
+# This operation introduces the role producer only after accepted API/sink and
+# staged role privacy evidence. It never changes the four live role rules.
 name: Deploy production role monitor
-
 on:
   workflow_dispatch:
-
+    inputs:
+      confirm:
+        description: Enter RUN_PRODUCTION_UNROUTED_ROLE_ROLLOUT
+        required: true
+        type: string
+      freeze:
+        description: Enter FREEZE_PRODUCTION_GRAPH_WRITERS after freezing external writers
+        required: true
+        type: string
+      lifecycle:
+        description: Confirm pristine first bootstrap or pinned unrouted predecessor replacement
+        required: true
+        type: choice
+        options: [first-bootstrap, replacement]
+      phase1_run:
+        description: Successful production api-only deployment run at this exact source
+        required: true
+        type: string
+      privacy_run:
+        description: Distinct successful production whole-record API/sink privacy run
+        required: true
+        type: string
+      staged_role_run:
+        description: Exact-source complete staged Email/Cron/fault/rollback privacy acceptance
+        required: true
+        type: string
+      api_version:
+        description: Exact single-100 production API version
+        required: true
+        type: string
+      sink_version:
+        description: Exact single-100 production sink version
+        required: true
+        type: string
+      role_version:
+        description: Exact non-Queue predecessor version; empty only for first bootstrap
+        required: false
+        type: string
+      queue_id:
+        description: Independently reviewed production trace Queue identity
+        required: true
+        type: string
+      dlq_id:
+        description: Independently reviewed production trace dead-letter Queue identity
+        required: true
+        type: string
 permissions:
   contents: read
-
+  actions: read
 concurrency:
-  group: deploy-role-monitor-production
+  group: amail-production-graph-writer
   cancel-in-progress: false
-
 jobs:
   deploy:
-    name: Build and deploy unrouted private role monitor
-    if: github.ref == 'refs/heads/main'
+    name: Deploy pinned unrouted production role producer
+    if: github.ref == 'refs/heads/main' && inputs.confirm == 'RUN_PRODUCTION_UNROUTED_ROLE_ROLLOUT' && inputs.freeze == 'FREEZE_PRODUCTION_GRAPH_WRITERS'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: production
     env:
+      GH_TOKEN: ${{ github.token }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
-      ROLE_FORWARD_PHASE: audit
+      AMAIL_ROLE_ROLLOUT_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_ROLE_LIFECYCLE: ${{ inputs.lifecycle }}
+      AMAIL_PRODUCTION_PHASE1_RUN: ${{ inputs.phase1_run }}
+      AMAIL_PRODUCTION_PRIVACY_RUN: ${{ inputs.privacy_run }}
+      AMAIL_STAGED_ROLE_ACCEPTANCE_RUN: ${{ inputs.staged_role_run }}
+      AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.api_version }}
+      AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ inputs.sink_version }}
+      AMAIL_EXPECTED_ROLE_WORKER_VERSION: ${{ inputs.role_version }}
+      AMAIL_TRACE_QUEUE_ID: ${{ inputs.queue_id }}
+      AMAIL_TRACE_DLQ_ID: ${{ inputs.dlq_id }}
+      AMAIL_TRACE_TOPOLOGY: api-only
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
-      - name: Check protected configuration without displaying values
-        shell: bash
-        run: |
-          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN CF_EMAIL_ROUTING_TOKEN ROLE_FORWARD_DESTINATION CF_ZONE_ID; do
-            if [ -z "${!key}" ]; then
-              echo "::error::Missing $key"
-              exit 1
-            fi
-          done
       - uses: actions/checkout@v4
-      - name: Set up Rust Wasm target
-        run: |
-          rustup update stable
-          rustup target add wasm32-unknown-unknown
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Test role-monitor contracts on hosted runner
+      - name: Require immutable production privacy and staged role acceptance before provider mutation
+        run: python infra/deploy/require_production_role_phase1.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned tools
         run: |
-          cargo test -p amail-role-monitor --locked --all-targets
-          cargo check -p amail-role-monitor --locked --target wasm32-unknown-unknown
-          python -m unittest discover -s workers/role-monitor -p 'test_*.py' -v
-          python -m unittest discover -s infra/tests -p 'test_role_monitor_*.py' -v
-      - name: Install pinned deployment tools
-        run: |
+          rustup target add wasm32-unknown-unknown
           cargo install worker-build --version 0.8.5 --locked
           npm install --global wrangler@4.142.0
-      - name: Prove four direct-forward rules remain unchanged before deployment
-        shell: bash
+      - name: Hosted source contracts
         run: |
-          status=$(python infra/provider/ensure_role_forwarding.py)
-          if [[ "$status" != *"4/4"* ]]; then
-            echo '::error::Role rules are no longer the four exact direct-forward actions; refuse Worker replacement'
-            exit 1
-          fi
-      - name: Audit isolated production D1 before migration
-        run: python workers/role-monitor/check_staging_db.py --env production
-      - name: Apply only role-monitor production migrations
-        working-directory: workers/role-monitor
-        run: wrangler d1 migrations apply ROLE_MONITOR --remote
-      - name: Bundle private Rust Email and Cron Worker
+          cargo test -p amail-role-monitor --locked --all-targets
+          python -m unittest discover -s infra/tests -p 'test_production_role_*.py' -v
+      - name: Audit exact phase1 graph, untouched forwards, held sending and isolated storage
+        run: python infra/deploy/check_production_role_graph.py --phase before --lifecycle "$AMAIL_ROLE_LIFECYCLE"
+      - name: Apply reviewed additive migration once with redacted output
+        run: python infra/deploy/migrate_production_role.py
+      - name: Bundle private role Worker
         working-directory: workers/role-monitor
         run: worker-build --release
-      - name: Deploy unrouted Worker with protected destination and audit secrets
-        working-directory: workers/role-monitor
+      - name: Repeat phase1 graph and migrated empty state immediately before deployment
         shell: bash
         run: |
-          umask 077
-          mkdir -p ../../.temp
-          trap 'rm -f ../../.temp/role-monitor-production-secrets.json' EXIT
-          node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/role-monitor-production-secrets.json", JSON.stringify({ROLE_FORWARD_DESTINATION:process.env.ROLE_FORWARD_DESTINATION,CF_EMAIL_ROUTING_TOKEN:process.env.CF_EMAIL_ROUTING_TOKEN,CF_ACCOUNT_ID:process.env.CLOUDFLARE_ACCOUNT_ID}));'
-          wrangler deploy --secrets-file ../../.temp/role-monitor-production-secrets.json
-      - name: Confirm four direct-forward rules remain unchanged after deployment
-        shell: bash
-        run: |
-          status=$(python infra/provider/ensure_role_forwarding.py)
-          if [[ "$status" != *"4/4"* ]]; then
-            echo '::error::Production role routing drift detected after Worker deployment'
-            exit 1
-          fi
+          args=()
+          if [ "$AMAIL_ROLE_LIFECYCLE" = first-bootstrap ]; then args+=(--migrated); fi
+          python infra/deploy/check_production_role_graph.py --phase before --lifecycle "$AMAIL_ROLE_LIFECYCLE" "${args[@]}"
+      - name: Deploy one unrouted role Worker with restricted temporary secrets
+        id: role
+        run: python infra/deploy/deploy_production_role_monitor.py
+      - name: Verify exact phase2 graph without changing role routes or release policy
+        env:
+          AMAIL_TRACE_TOPOLOGY: api-role
+          AMAIL_EXPECTED_ROLE_WORKER_VERSION: ${{ steps.role.outputs.version }}
+        run: python infra/deploy/check_production_role_graph.py --phase after --lifecycle "$AMAIL_ROLE_LIFECYCLE"

@@ -20,9 +20,10 @@ UUID = r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
 CONFIRM = "RUN_STAGING_ROLE_TRACE_ROLLOUT"
 
 
-def deploy() -> str:
+def deploy(*, target: str = "staging") -> str:
     """Use a restricted temporary secrets file and never print/retry raw output."""
-    if os.getenv("AMAIL_ROLE_ROLLOUT_CONFIRM") != CONFIRM:
+    expected = {"staging": CONFIRM, "production": "RUN_PRODUCTION_UNROUTED_ROLE_ROLLOUT"}.get(target)
+    if expected is None or os.getenv("AMAIL_ROLE_ROLLOUT_CONFIRM") != expected:
         raise ValueError("confirmation_unverified")
     names = {"ROLE_FORWARD_DESTINATION": "ROLE_FORWARD_DESTINATION",
              "CF_EMAIL_ROUTING_TOKEN": "CF_EMAIL_ROUTING_TOKEN",
@@ -38,13 +39,23 @@ def deploy() -> str:
         with os.fdopen(fd, "w", encoding="utf-8") as destination:
             os.chmod(path, 0o600)
             json.dump(secrets, destination)
-        result = subprocess.run(["wrangler", "deploy", "--env", "staging", "--secrets-file", str(path)],
+        command = ["wrangler", "deploy"]
+        if target == "staging":
+            command.extend(["--env", "staging"])
+        command.extend(["--secrets-file", str(path)])
+        result = subprocess.run(command,
                                 cwd=ROOT / "workers/role-monitor", capture_output=True,
                                 text=True, check=False, timeout=600)
-        if result.returncode or len(result.stdout) + len(result.stderr) > 1_048_576:
+        if len(result.stdout) + len(result.stderr) > 1_048_576:
             raise ValueError("deployment_unverified")
         versions = re.findall(r"Current Version ID:\s*(" + UUID + r")(?=\s|$)", result.stdout + result.stderr)
-        if len(versions) != 1:
+        if result.returncode and len(versions) == 1 and os.getenv("GITHUB_OUTPUT"):
+            # A returned version is useful for reconciliation even when Wrangler
+            # exits unsuccessfully; it is not a successful deployment attestation.
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                output.write(f"version={versions[0]}\n")
+            print(f"{target}_role_deployment=recovery_version_captured version={versions[0]}")
+        if result.returncode or len(versions) != 1:
             raise ValueError("deployment_unverified")
         return versions[0]
     finally:
