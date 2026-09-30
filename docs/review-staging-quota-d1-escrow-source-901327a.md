@@ -178,3 +178,23 @@ schema/HTTP behavior, latency/shared-mail regression, malformed base64/digest
 fault injection, concurrent admission, and future receipt/watchdog/recovery
 integration. These remain separate evidence gates; they are not grounds to
 withhold hosted validation of the current dormant tests or to grant live use.
+
+## Hosted dormant-source validation (2026-09-30 UTC)
+
+The pending executable-source evidence above was subsequently obtained on
+GitHub-hosted runners; this update supersedes only the statement that those
+tests had not executed. It does **not** change the live NO-GO decision.
+
+| Exact push | Source CI and relevant test evidence | Independent source checks |
+| --- | --- | --- |
+| [`75d8448`, run 36778981920](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36778981920) | All six source jobs passed in 2:16; Infra passed in 0:15. The distinct pinned-dependency **real AES-GCM** envelope step passed four tests, including maximum-plan encrypted SQLite roundtrip/arm over 31 chunks. Broad Infra discovery passed 882 tests, including escrow admission, chunk, phase and response-shape synthetic cases. | [Workflow syntax guard 36778980847](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36778980847), [Ubuntu/Windows private-provider synthetic crypto 36778986766](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36778986766), and [candidate-site isolation 36778986743](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36778986743) passed. |
+| [`f9f67bc`, run 36779343301](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36779343301) | All six source jobs passed in 2:27; Infra passed in 0:18. The real AES-GCM step again passed four tests, including `test_real_cipher_roundtrip_through_bounded_sqlite_escrow`, whose reviewed source constructs the exact 2,000,000-byte valid plaintext plan and checks 31 chunks after sealing. Broad Infra discovery passed 886 tests, including `test_maximum_valid_manifest_roundtrips_all_31_chunks` and the added fault fixtures. | [Workflow syntax guard 36779342863](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36779342863), [Ubuntu/Windows private-provider synthetic crypto 36779346568](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36779346568), and [candidate-site isolation 36779346684](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36779346684) passed. |
+
+In each push run all 51 non-source jobs were skipped, including staging/provider
+mutation and deployment. The real-crypto tests used a bounded injected SQLite
+adapter, **not Cloudflare D1 over the control plane**. No migration, live escrow
+write/readback, key access, SMTP or quota campaign occurred. These runs validate
+the dormant source behavior and CI discovery; real D1 schema semantics,
+latency, admission integration, accountable monitoring/receipts and recovery
+remain separately gated. Only fixed test labels and aggregate results were
+inspected; no private manifest, key or provider response is recorded here.
