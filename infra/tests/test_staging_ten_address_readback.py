@@ -161,6 +161,14 @@ class ReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(manifest.ContractFailure, "r2_metadata_unverified"):
                 self.reader(request=lambda *args, **kwargs: dict(success=True, result=[item])).objects()
 
+    def test_hold_requires_actual_explicit_singleton_row(self):
+        """Missing policy may block sends, but does not supply the required observed hold."""
+        for rows in ([], [{"state": "allowed"}], [{"state": "held"}, {"state": "held"}]):
+            with self.assertRaisesRegex(manifest.ContractFailure, "global_sending_not_held"):
+                self.reader(request=lambda *args, **kwargs: envelope(rows)).sending_state()
+        reader = self.reader(request=lambda *args, **kwargs: envelope([{"state": "held"}]))
+        self.assertEqual(reader.sending_state(), "held")
+
     def test_all_message_directions_and_deleted_rows_are_counted(self):
         """Zero current API-visible mail is weaker than this whole-address aggregate."""
         calls = []

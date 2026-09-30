@@ -536,3 +536,35 @@ that remains possible after a hard cancellation. These integration phases,
 activation adapter and workflow are **not implemented or live-authorized** by
 this document; they identify the remaining minimum trustworthy work rather
 than allowing an unsafe shortcut through the dormant controller.
+
+## Source/service admission increment (still no live entry point)
+
+`staging_ten_address_provenance.py` independently reads the exact successful
+push source run, complete bounded job inventory, all six executed cross-platform/
+Worker/site/infra jobs and the explicitly successful real recovery crypto step.
+It reads the **serving** single-100% Mail, Identity and Login versions with
+version-scoped bindings and serving read brackets; split traffic, drift, omitted
+binding inventory and provider errors fail closed. Mail reuses the existing
+exact reviewed phase-aware binding checker. Identity requires the known staging
+DB/audit/avatar resources, exact issuer/first-party origins/environment, and
+constrained email sender binding; additional persistent/network/service kinds
+are rejected. Version-bound scalar vars and secret names may evolve/rotate
+without making amail own Identity's mechanism. Static Login must explicitly
+read back an empty binding inventory, not omit it.
+
+`Readback.sending_state` independently SELECTs the actual singleton global
+`send_policy` row. Only explicit `held` supplies admission; absence, an allowed
+row or malformed results do not become a fabricated hold observation. The
+three-service relation and hold are repeated before admission returns. This
+cannot reserve global services or prevent changes between reads; original
+version equality must still bracket mutation and recovery in the assembled
+workflow. CI binary artifact ID/digest validation and actual encrypted artifact
+transport remain the next source increment; this module does not attest
+uploaded/extracted binary bytes. No local test or live provider request occurred.
+
+Identity binding expectations were retrieved from the sibling repository's
+reviewed `wrangler.identity.jsonc`/`wrangler.login.jsonc` and bootstrap secret
+contract (local sibling is named `moesegfault-indentity`, matching its remote).
+The acceptance source imports no sibling runtime/config path on GitHub runners;
+protocol-critical fixed expectations are explicit here, while the exact service
+revision is obtained from provider readback and sealed by the manifest.

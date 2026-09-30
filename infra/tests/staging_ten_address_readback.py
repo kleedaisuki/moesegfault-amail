@@ -253,6 +253,13 @@ class Readback:
         except Exception:
             raise manifest.ContractFailure("readback_unverified") from None
 
+    def sending_state(self) -> str:
+        """Require the actual singleton global policy row, not an inferred absence hold."""
+        rows = self._select("SELECT state FROM send_policy WHERE scope='global' AND owner_iss='*' AND owner_sub='*'")
+        require(len(rows) == 1 and isinstance(rows[0], dict) and set(rows[0]) == {"state"}
+                and rows[0]["state"] == "held", "global_sending_not_held")
+        return "held"
+
     def storage_empty(self, resources: tuple[str, ...]) -> bool:
         """Reject any candidate message, including tombstoned/outbound deliveries.
 
