@@ -242,6 +242,70 @@ class StagingTraceCanaryTests(unittest.TestCase):
         with self.assertRaisesRegex(canary.CanaryError, "application_event_schema_unallowlisted"):
             canary.assess(records, (T, C, R), D, MARKERS)
 
+    def test_identical_indexed_message_is_one_event(self) -> None:
+        """A second encoding of the same row is not a duplicate denial."""
+
+        records = events()
+        for record in records:
+            record["$metadata"]["message"] = json.loads(record["source"])
+        canary.assess(records, (T, C, R), D, MARKERS)
+
+    def test_divergent_valid_indexed_message_fails(self) -> None:
+        """A valid indexed payload cannot be hidden by a valid source."""
+
+        records = events()
+        indexed = json.loads(records[1]["source"])
+        indexed["http_status_class"] = 2
+        records[1]["$metadata"]["message"] = json.dumps(indexed)
+        with self.assertRaisesRegex(canary.CanaryError,
+                                    "application_event_representations_conflict"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
+    def test_duplicate_denial_rows_fail_even_when_identical(self) -> None:
+        """Repeated matching records do not provide a unique denial event."""
+
+        records = events()
+        duplicate = json.loads(json.dumps(records[1]))
+        duplicate["$metadata"]["id"] = "distinct-retained-row"
+        records.append(duplicate)
+        with self.assertRaisesRegex(canary.CanaryError,
+                                    "rejected_request_event_duplicate"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
+    def test_invalid_denial_candidate_fails(self) -> None:
+        """A present but wrong-phase candidate differs from no candidate."""
+
+        records = events()
+        denied = json.loads(records[1]["source"])
+        denied["phase"] = "operation_exit"
+        records[1]["source"] = json.dumps(denied)
+        with self.assertRaisesRegex(canary.CanaryError,
+                                    "rejected_request_event_invalid"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
+    def test_missing_denial_candidate_has_distinct_label(self) -> None:
+        """No matching ID is not conflated with a malformed matching event."""
+
+        records = events()
+        records.pop()
+        with self.assertRaisesRegex(canary.CanaryError,
+                                    "rejected_request_event_missing"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
+    def test_valid_denial_cannot_hide_conflicting_candidate(self) -> None:
+        """An extra wrong-phase row cannot be overwritten into a pass."""
+
+        records = events()
+        duplicate = json.loads(json.dumps(records[1]))
+        duplicate["$metadata"]["id"] = "distinct-retained-row"
+        denied = json.loads(duplicate["source"])
+        denied["phase"] = "operation_exit"
+        duplicate["source"] = json.dumps(denied)
+        records.append(duplicate)
+        with self.assertRaisesRegex(canary.CanaryError,
+                                    "rejected_request_event_duplicate"):
+            canary.assess(records, (T, C, R), D, MARKERS)
+
     def test_routing_numeric_phase_is_allowlisted(self) -> None:
         """Current Rust routing diagnostics use fixed numeric provider facts."""
 

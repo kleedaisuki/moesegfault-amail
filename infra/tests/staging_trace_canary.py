@@ -477,12 +477,16 @@ def allowlisted_event(event: dict) -> bool:
 
 def assess(records: list[dict], ids: tuple[str, str, str], denied_id: str,
            markers: tuple[str, str]) -> None:
-    """Prove marker absence and CLI→API parentage from a complete retained window."""
+    """Prove marker absence and unique, consistent roots in a complete window.
+
+    Source and indexed message may be two encodings of one console event, not
+    independent evidence. Distinct retained rows remain independent even when
+    their application payloads happen to be identical.
+    """
 
     trace_id, cli_span, request_id = ids
     need(records, "retained_window_empty")
     safe_events: list[dict] = []
-    denied_seen = False
     for record in records:
         raw = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
         need(not any(marker in raw for marker in markers), "synthetic_url_marker_retained")
@@ -493,7 +497,6 @@ def assess(records: list[dict], ids: tuple[str, str, str], denied_id: str,
         message = metadata.get("message")
         source_events = embedded_events(source)
         message_events = embedded_events(message)
-        recognized = source_events or message_events
         # Cloudflare's event type is optional. A missing or unknown classifier
         # cannot turn arbitrary retained text into an application-schema pass.
         # No platform payload type is exempt until a separate live review.
@@ -503,11 +506,9 @@ def assess(records: list[dict], ids: tuple[str, str, str], denied_id: str,
              "unreviewed_retained_payload")
         need(all(allowlisted_event(event) for event in source_events + message_events),
              "application_event_schema_unallowlisted")
-        safe_events.extend(recognized)
-    for event in safe_events:
-        if event.get("request_id") == denied_id and event.get("phase") == "request_exit":
-            denied_seen = (event.get("http_status_class") == 4
-                           and event.get("parent_span_id") is None)
+        need(not (source_events and message_events)
+             or source_events == message_events, "application_event_representations_conflict")
+        safe_events.extend(source_events if source_events else message_events)
     roots = [event for event in safe_events if event.get("service") == "mail_api"
              and event.get("phase") == "request_exit"
              and event.get("operation") == "addresses_list"
@@ -520,7 +521,15 @@ def assess(records: list[dict], ids: tuple[str, str, str], denied_id: str,
          and root["span_id"] != cli_span
          and root.get("http_status_class") == 2,
          "cli_api_parentage_invalid")
-    need(denied_seen, "rejected_request_event_missing")
+    denied = [event for event in safe_events if event.get("request_id") == denied_id]
+    need(denied, "rejected_request_event_missing")
+    need(len(denied) == 1, "rejected_request_event_duplicate")
+    event = denied[0]
+    need(event.get("service") == "mail_api"
+         and event.get("phase") == "request_exit"
+         and event.get("http_status_class") == 4
+         and event.get("parent_span_id") is None,
+         "rejected_request_event_invalid")
     # Cloudflare may retain exceptional platform records; do not call every
     # unrelated platform field safe merely because the two markers are absent.
 
