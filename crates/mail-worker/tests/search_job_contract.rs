@@ -276,3 +276,138 @@ fn message_mutations_advance_only_owners_generation() {
     assert_eq!(generation("alice"), Some(3));
     assert_eq!(generation("bob"), None);
 }
+
+/// An origin is readable only through its immutable owner tuple and before its deadline.
+/// The handler separately validates its typed state and cursor MAC after this lookup.
+#[test]
+fn semantic_origin_lookup_is_owner_scoped_and_expires_at_boundary() {
+    let db = db();
+    job(&db, "origin", "alice", "done", 1, 1_000);
+    db.execute(
+        "UPDATE search_jobs SET state_json=?1 WHERE id='origin'",
+        [r#"{"is_origin":true,"origin_job_id":"origin","query_vector":[1,0],"cursor_key":"private"}"#],
+    )
+    .unwrap();
+    let lookup = |issuer: &str, owner: &str, now: i64| -> Option<String> {
+        db.query_row(
+            "SELECT state_json FROM search_jobs WHERE id='origin' AND owner_iss=?1 AND owner_sub=?2 AND state='done' AND expires_at>?3",
+            params![issuer, owner, now],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap()
+    };
+    assert!(lookup("test-issuer", "alice", 86_400_999).is_some());
+    assert_eq!(lookup("test-issuer", "alice", 86_401_000), None);
+    assert_eq!(lookup("test-issuer", "bob", 86_400_999), None);
+    assert_eq!(lookup("other-issuer", "alice", 86_400_999), None);
+    assert_eq!(lookup("test-issuer", "missing", 86_400_999), None);
+    db.execute("UPDATE search_jobs SET state='expired',request_json='{}',state_json='{}' WHERE id='origin'", []).unwrap();
+    assert_eq!(lookup("test-issuer", "alice", 86_400_999), None);
+}
+
+/// Publication must atomically retain the generation, lease, and live owner-scoped origin.
+/// This is the Worker's conditional v5 completion SQL, with synthetic JSON and timestamps.
+#[test]
+fn semantic_continuation_publication_requires_live_origin_and_current_generation() {
+    let db = db();
+    let completion = "UPDATE search_jobs SET state='done',state_json=?1,version=version+1,lease_started_at=NULL WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='advancing' AND version=?5 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?6 AND EXISTS (SELECT 1 FROM search_jobs origin WHERE origin.id=?7 AND origin.owner_iss=?3 AND origin.owner_sub=?4 AND origin.state='done' AND origin.expires_at>?8)";
+    let publish = |page: &str, owner: &str, origin: &str, now: i64| {
+        db.execute(
+            completion,
+            params![
+                r#"{"query_vector":null,"origin_job_id":"origin"}"#,
+                page,
+                "test-issuer",
+                owner,
+                0,
+                0,
+                origin,
+                now
+            ],
+        )
+        .unwrap()
+    };
+
+    job(&db, "origin", "alice", "done", 1, 1_000);
+    job(&db, "page", "alice", "advancing", 0, 1_000);
+    job(&db, "foreign", "bob", "done", 1, 1_000);
+    assert_eq!(publish("page", "alice", "foreign", 1_001), 0);
+    assert_eq!(publish("page", "bob", "origin", 1_001), 0);
+    assert_eq!(publish("page", "alice", "origin", 86_401_000), 0);
+    db.execute(
+        "UPDATE search_jobs SET state='expired',state_json='{}' WHERE id='origin'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(publish("page", "alice", "origin", 1_001), 0);
+    db.execute("UPDATE search_jobs SET state='done' WHERE id='origin'", [])
+        .unwrap();
+    db.execute("INSERT INTO search_generations(owner_iss,owner_sub,generation) VALUES('test-issuer','alice',1)", []).unwrap();
+    assert_eq!(publish("page", "alice", "origin", 1_001), 0);
+    db.execute("UPDATE search_generations SET generation=0 WHERE owner_iss='test-issuer' AND owner_sub='alice'", []).unwrap();
+    assert_eq!(publish("page", "alice", "origin", 1_001), 1);
+    assert_eq!(publish("page", "alice", "origin", 1_001), 0);
+    let published: (String, i64, Option<i64>) = db
+        .query_row(
+            "SELECT state,version,lease_started_at FROM search_jobs WHERE id='page'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(published, ("done".into(), 1, None));
+}
+
+/// Only a first page with another page retains the query vector and private cursor key.
+/// Later page jobs clear their temporary vector; expiry scrubs even the retained origin.
+#[test]
+fn completed_origin_retention_and_page_copy_scrub_follow_cursor_lifecycle() {
+    let db = db();
+    for id in ["multi-origin", "single-origin", "page-copy"] {
+        job(&db, id, "alice", "advancing", 0, 1_000);
+    }
+    let completed = |id: &str, is_origin: bool, has_more: bool| {
+        let retain_origin = is_origin && has_more;
+        let state = serde_json::json!({
+            "is_origin": is_origin,
+            "query_vector": retain_origin.then_some(vec![1.0_f32, 0.0]),
+            "cursor_key": retain_origin.then_some("private"),
+        });
+        db.execute(
+            "UPDATE search_jobs SET state='done',state_json=?1,version=version+1 WHERE id=?2 AND state='advancing' AND version=0",
+            params![state.to_string(), id],
+        ).unwrap();
+        if !retain_origin && id != "page-copy" {
+            // The fast first-page POST never exposed its transient job ID.
+            db.execute("DELETE FROM search_jobs WHERE id=?1", [id])
+                .unwrap();
+        }
+    };
+    completed("multi-origin", true, true);
+    completed("single-origin", true, false);
+    completed("page-copy", false, true);
+    let read = |id: &str| -> Option<serde_json::Value> {
+        db.query_row(
+            "SELECT state_json FROM search_jobs WHERE id=?1",
+            [id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .unwrap()
+        .map(|json| serde_json::from_str(&json).unwrap())
+    };
+    assert_eq!(read("single-origin"), None);
+    assert_eq!(
+        read("multi-origin").unwrap()["query_vector"],
+        serde_json::json!([1.0, 0.0])
+    );
+    let copy = read("page-copy").unwrap();
+    assert!(copy["query_vector"].is_null());
+    assert!(copy["cursor_key"].is_null());
+    assert_eq!(db.execute(
+        "UPDATE search_jobs SET state='expired',request_json='{}',state_json='{}' WHERE expires_at<=?1 AND state!='expired'",
+        [86_401_000_i64],
+    ).unwrap(), 2);
+    assert_eq!(read("multi-origin"), Some(serde_json::json!({})));
+    assert_eq!(read("page-copy"), Some(serde_json::json!({})));
+}
