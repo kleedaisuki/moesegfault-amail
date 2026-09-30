@@ -43,3 +43,89 @@ Cloudflare [Workers Logs](https://developers.cloudflare.com/workers/observabilit
 The [automatic span inventory](https://developers.cloudflare.com/workers/observability/traces/spans-and-attributes/) lists D1 `db.query.text` and outbound Fetch `url.full`/selected HTTP headers, but **does not document D1 bound argument values, Authorization headers, Email `forward_email`/`send_email` attributes, raw MIME, Subject, or custom `X-Amail-Role-Ref` as automatically captured**. Here SQL text is static with `?` placeholders; provider request URLs contain zone/account IDs and page numbers, while the routing token is in an Authorization header. Absence from the documented list is not proof of exclusion in every runtime/version or exception path. Before any future trace enablement, plant independent canary values in sender, subject, body, forwarding reference, destination-like header and staging secrets; inspect the actual Cloudflare dashboard/API logs and span attributes for one successful Email event plus D1/forward/send/Cron failures. Avoid displaying or exporting the confidential destination or canary payload in test artifacts. This is a staging-only verification, not a reason to replay the already-completed production forwarding canaries.
 
 No third-party telemetry export (OpenTelemetry, Logpush, Tail Worker) should be configured for this role monitor without a separately reviewed recipient, redaction and retention policy. Cloudflare currently describes Workers Logs as account-stored with plan-specific retention and traces as additionally billable from **2026-10-01**; automatic full traces also create a cost/volume risk unrelated to the correctness of the 5-minute lease. [Logs retention/pricing](https://developers.cloudflare.com/workers/observability/logs/workers-logs/), [traces pricing](https://developers.cloudflare.com/workers/observability/traces/).
+
+## Follow-up audit: custom-log context is not a proven Email privacy boundary (2026-09-30)
+
+**Review disposition: hold production role-Worker cutover pending containment and
+live privacy acceptance. This is an unverified confidentiality boundary, not a
+demonstrated Email-envelope leak.** No production code/configuration, deployed
+settings, mail route, private record or live telemetry query was changed or read
+by this follow-up. No local tests were run.
+
+The API-only historical classifier in run `36723490687` found a synthetic path
+marker in indexed request context and `$workers.event.request`, with a reviewed
+application-shaped `source`; event-type attribution remained unrecognized. See
+[the exact result and limitations](mail-trace-sink-remediation-options.md#second-historical-result-request-context-retention-located).
+This invalidates the general inference that reviewing `console` arguments alone
+proves the complete retained event is content-free. It does **not** establish
+that an Email-triggered record has identical enrichment, or that a reporter,
+private forwarding destination, Subject, MIME, or token has been retained.
+
+### Evidence from this source audit
+
+| Location | Established behavior | Limit |
+| --- | --- | --- |
+| `workers/role-monitor/wrangler.toml`, both observability blocks | Logs remain enabled at 100%; invocation logs and native traces are explicitly disabled. No HTTP route, workers.dev or preview exposure is configured. | Custom capture remains enabled in the original Email/Cron context. Disabling invocation logs does not document a field-level suppression guarantee for custom records. Source settings do not prove currently serving settings. |
+| `workers/role-monitor/src/lib.rs:73-130` | Email wrapper replaces errors with static text; arrival log contains only a fixed role and server-generated random UUID. Raw MIME and sender are not read or logged by this handler. | `message.to()` is read for exact role matching and the runtime necessarily receives envelope/MIME data; absence from application log arguments does not constrain platform context. |
+| `workers/role-monitor/src/lib.rs:135-174,224` | Cron emits fixed phase failures, bounded aggregate counts and static panic text. Provider errors are not formatted. | Exceptions and enriched outbound-binding/Fetch context are separate collectors, not proved safe by static text. The Cron panic preserves failure outcome and should not simply be removed to hide it. |
+| `infra/deploy/verify_role_monitor_staging.py:120-134` | Readback verifier checks effective invocation/traces settings and **requires custom Logs enabled**. | This is a configuration acceptance check, not a complete retained-record privacy oracle; it must evolve with sink containment rather than preserve an unsafe assumption. |
+| `infra/tests/test_role_monitor_config.py:58-75` | Test fixes the same current flags in both realms. | The docstring's claim that no invocation metadata is retained exceeds what those flag assertions prove. No test here inspects retained Email/Cron records. |
+
+Current official [Workers Logs documentation](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)
+describes invocation-log enrichment, Email recipient invocation messages, and
+separate custom-log capture. The [telemetry query schema](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/)
+allows `$workers` enrichment, `eventType=email`, and an optional generic `event`
+map without an Email-specific confidentiality promise. [Automatic span attributes](https://developers.cloudflare.com/workers/observability/traces/spans-and-attributes/)
+explicitly list Email envelope sender/recipient/size; native traces must remain
+off. These documents justify an unresolved-boundary finding, not an assertion
+that a particular Email field leaks. The existing
+[USENIX Security 2023 logging study](https://www.usenix.org/conference/usenixsecurity23/presentation/lyons)
+also supports auditing collectors and complete retained records; it does not
+supply Cloudflare-specific runtime evidence.
+
+### Conservative containment decision
+
+Keep the existing four production direct-forward rules and held public-send gate;
+do not deploy/cut over the role monitor with its present custom-Logs capture and
+call that private. Reuse the reviewed private Queue sink being designed for Mail
+rather than introducing a second ad hoc logger: typed role diagnostics may carry
+fixed realm/component/event/phase/role enums, bounded aggregate counts, times and
+server-generated opaque references only. Do not pass `EmailMessage`, report
+headers, envelope values, digest body/destination, provider URL/response/error,
+secrets or arbitrary strings. Role D1 arrival/outbox and the health lease remain
+the delivery/alert correctness mechanism, not Queue telemetry receipts.
+
+Switch the producer's typed handoff **and all retained Logs/native-trace settings
+off together** at a reviewed staging version, with no console fallback or unsafe
+dual logging. A Queue failure must not make accepted forwarding falsely fail,
+renew a failed health lease, or restore original-context retention. Preserve the
+static failure outcome for Cron independently of retained diagnostic payloads.
+The sink's own queue-context enrichment, envelope/DLQ retention, duplicate handling
+and failure behavior still require review and deployed acceptance; Queue isolation
+is a testable hypothesis, not a privacy attestation. Coordinate schema and failure
+semantics with the Mail Queue-sink architecture rather than copying its Fetch
+operation enum into Email-specific events.
+
+### Evidence needed before production cutover
+
+Use isolated staging role routes and synthetic values, not the owner's original
+reports or another production role canary. Record the exact producer/sink serving
+versions, effective retained-settings/destination/tail readbacks and bounded time
+window. Inspect complete, pagination-complete retained sink records and queued
+payloads for separate synthetic sender, Subject, body, header/reference and
+forwarding-destination-like values, and unexpected source-service records. Do not
+print raw values/records or publish recipient, credential or MIME artifacts.
+Absence without a positive sink event and a bounded complete query is unverified.
+Exercise normal Email forwarding and Cron digest plus before-insert,
+before/after-forward, alert-send and Cron/provider/D1 failures; verify static
+failure outcomes, arrival/outbox/lease semantics and safe diagnostics. A synthetic
+staging destination fixture is preferable to copying the actual confidential
+address into canary output. An authorized private check may compare the actual
+configured destination in memory and report only a fixed pass/fail bin.
+
+Keep separate acceptance claims: original arrival/forwarding, digest Inbox notice,
+lease expiry/fail-closed behavior and complete-record privacy. None implies the
+others. Source and hosted tests may authorize a staging experiment; only the
+pinned deployed experiment can justify production privacy/cutover. Reverting to
+direct forwarding is the production availability rollback; do not re-enable
+original-context Logs as a telemetry rollback.
