@@ -1,5 +1,29 @@
 # v0.1.0 release-site product acceptance review
 
+## Source-only cutover delta (2026-09-30)
+
+This is a focused comparison of the current Astro source, both site-deploy paths,
+and the existing reviews below; it is **not** a new build, DNS observation,
+Release download, or deployed-site acceptance. The earlier published-copy and
+published-byte bypass findings are already resolved at source level and are not
+reopened here. Unrelated in-flight test files were not modified.
+
+| Finishable before live gates | Source evidence and narrow action |
+| --- | --- |
+| **Make the static release-state check page-local.** | `site/scripts/check-release-state.mjs` still concatenates all three HTML files before checking state strings and the v0.1.0 tag substring. Navigation and TOC are page-local, but a missing status/link on the manual or changelog can be hidden by the homepage. Assert candidate/published copy and the exact tag `href` on each intended page independently; test a deliberately removed link/status so the check demonstrably fails. This is the previously identified P2 test gap, not evidence that current copy is wrong. |
+| **Make post-deploy smoke inspect all three pages.** | Both `.github/workflows/release.yml` `launch-site` and `.github/workflows/ci.yml` `deploy-site` fetch `/manual/` and `/changelog/` only for HTTP success; only `/` is inspected for published copy and `noindex`. A bounded source change can check each page's rendered state and exact Release destination, plus each production page's indexability, without another mail or DNS gate. Keep the separate staging hostname's `noindex` assertion. This detects wrong/static stale assets per route after deploy; it does not prove a user's install works. |
+| **Freeze the release date and evidence-based changelog at tagging, not now.** | `site/src/content/releases/v0.1.0.md` has `date: 2026-09-28` and `changelog.astro` renders that as the release date, yet no v0.1.0 tag/Release exists in the current launch ledger. The content is suitable candidate prose, but the date must be changed to the actual UTC publication date (or explicitly relabeled as a candidate date) in the commit to be tagged. Do not claim delivery, feedback, or production operation from source alone; summarize only acceptance actually obtained. A post-tag edit cannot correct the immutable tagged site's first build. |
+
+The larger gates remain operational, not source-ready substitutes: obtain the
+independent outbound/role/privacy oracles; deploy production mail with sending
+held and verify Custom Domain DNS/HTTPS; then attest/unhold, tag the merged
+source, verify seven published Release assets, and launch. The 2026-09-29 DNS
+snapshot found mail and site HTTP names absent before their guarded deploys;
+it does not justify placeholder A/CNAME records or a claim that today's DNS
+state was rechecked. The existing tag path already checks the same-run bundle
+manifest, while the alternate manual production-site path checks tag-bound
+attestations; do not replace those gates with page HTTP 200 checks.
+
 ## Follow-up review: native onboarding change `5bf0eef` (2026-09-29)
 
 Scope: source review of the changed site copy against `.github/workflows/release.yml`, the CLI command declarations, and the existing release gates. This did not build, deploy, visually inspect, or execute native archives. Earlier staging-route smoke evidence below is not a post-change site pass.
