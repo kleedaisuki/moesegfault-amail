@@ -1871,6 +1871,7 @@ jobs:
     outputs:
       queue_id: ${{ steps.queues.outputs.queue_id }}
       dlq_id: ${{ steps.queues.outputs.dlq_id }}
+      sink_version: ${{ steps.sink.outputs.version }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     environment: production
@@ -1899,10 +1900,12 @@ jobs:
         working-directory: workers/trace-sink
         run: worker-build --release
       - name: Deploy Queue-only trace consumer without secrets or HTTP route
+        id: sink
         working-directory: workers/trace-sink
-        run: wrangler deploy
+        run: python ../../infra/deploy/deploy_trace_sink.py --target production
       - name: Verify sink retained telemetry and private trigger boundary
         env:
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ steps.sink.outputs.version }}
           AMAIL_TRACE_QUEUE_ID: ${{ steps.queues.outputs.queue_id }}
           AMAIL_TRACE_DLQ_ID: ${{ steps.queues.outputs.dlq_id }}
         run: python crates/mail-worker/check_observability.py --realm production --mode sink
@@ -1914,6 +1917,7 @@ jobs:
     outputs:
       queue_id: ${{ steps.queues.outputs.queue_id }}
       dlq_id: ${{ steps.queues.outputs.dlq_id }}
+      sink_version: ${{ steps.sink.outputs.version }}
     permissions:
       contents: read
       actions: read
@@ -1950,10 +1954,12 @@ jobs:
         working-directory: workers/trace-sink
         run: worker-build --release
       - name: Deploy Queue-only trace consumer without secrets or HTTP route
+        id: sink
         working-directory: workers/trace-sink
-        run: wrangler deploy --env staging
+        run: python ../../infra/deploy/deploy_trace_sink.py --target staging
       - name: Verify sink retained telemetry and private trigger boundary
         env:
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ steps.sink.outputs.version }}
           AMAIL_TRACE_QUEUE_ID: ${{ steps.queues.outputs.queue_id }}
           AMAIL_TRACE_DLQ_ID: ${{ steps.queues.outputs.dlq_id }}
         run: python crates/mail-worker/check_observability.py --realm staging --mode sink
