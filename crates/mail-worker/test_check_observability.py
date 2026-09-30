@@ -31,11 +31,11 @@ class ObservabilityGateTests(unittest.TestCase):
             **safe["observability"]["traces"], "destinations": ["cloudflare"]
         }
         self.assertTrue(gate.safe_settings(cloudflare_sink))
-        for field, value in (("redact_query_string", False), ("enabled", False), ("head_sampling_rate", 0.1)):
+        for field, value in (("redact_query_string", False), ("enabled", True), ("head_sampling_rate", 0.1)):
             changed = {"observability": {**safe["observability"], field: value}}
             self.assertFalse(gate.safe_settings(changed))
         for section, field, value in (
-            ("logs", "enabled", False),
+            ("logs", "enabled", True),
             ("logs", "invocation_logs", True),
             ("logs", "persist", False),
             ("logs", "head_sampling_rate", 0.1),

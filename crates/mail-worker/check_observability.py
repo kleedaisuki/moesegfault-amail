@@ -26,19 +26,19 @@ def built_in_destinations(value: object) -> bool:
 
 
 def safe_observability(value: object) -> bool:
-    """Require explicit allowlisted app logs and no automatic request/span capture."""
+    """Require public API retention entirely disabled, even for custom safe messages."""
 
     if not isinstance(value, dict):
         return False
     logs = value.get("logs")
     traces = value.get("traces")
     return (
-        value.get("enabled") is True
+        value.get("enabled") is False
         and type(value.get("head_sampling_rate")) in (int, float)
         and value.get("head_sampling_rate") == 1.0
         and value.get("redact_query_string") is True
         and isinstance(logs, dict)
-        and logs.get("enabled") is True
+        and logs.get("enabled") is False
         and logs.get("invocation_logs") is False
         and logs.get("persist") is not False
         and logs.get("head_sampling_rate", 1.0) == 1.0

@@ -41,13 +41,13 @@ allowed_sender_addresses = ["mail@moesegfault.dev"]
 remote = true
 
 [observability]
-enabled = true
+enabled = false
 head_sampling_rate = 1.0
 redact_query_string = true
 
-# Keep only reviewed application events; automatic invocation logs include untrusted URLs.
+# Public request context must never reach retained Logs, including safe custom messages.
 [observability.logs]
-enabled = true
+enabled = false
 invocation_logs = false
 
 # Automatic root/dependency spans can retain path, SQL, and R2 metadata.
@@ -98,12 +98,12 @@ crons = ["*/5 * * * *"]
 
 # Staging does not inherit the production privacy boundary.
 [env.staging.observability]
-enabled = true
+enabled = false
 head_sampling_rate = 1.0
 redact_query_string = true
 
 [env.staging.observability.logs]
-enabled = true
+enabled = false
 invocation_logs = false
 
 [env.staging.observability.traces]
