@@ -62,6 +62,7 @@ separate source slice. All commands below are documentation, **not executed**:
 ```powershell
 python infra/tests/private_provider_operator.py keygen <lowercase-session>
 python infra/tests/private_provider_operator.py inspect <session> <capture-run-id> <reviewed-full-sha>
+python infra/tests/private_provider_operator.py classify <session>
 python infra/tests/private_provider_operator.py cleanup <session>
 ```
 
@@ -102,15 +103,19 @@ power-loss/filesystem failure. A malformed/partial/pending-only receipt fails
 closed and retains the key rather than reporting cleanup. Interruption fixtures
 also check replacement failure preserves the previous usable coordinates.
 Interruption fixtures cover token/provenance/download/ZIP/envelope/decrypt/delete
-and local-cleanup boundaries, preserving key and recovery receipt. A session
+boundaries, preserving key and recovery receipt. A session
 without a receipt may have been dispatched but never inspected: automatic
 cleanup refuses to destroy that key because remote state is uncertain. Supply
 the actual capture run/SHA through inspection to establish recovery coordinates;
 do not erase the key just to make the cleanup status green.
 
 After successful private classification, the exact numeric remote artifact is
-deleted and its absence checked before exact local file deletion. No recursive
-delete is used. On interruption, `cleanup` uses the public-only receipt to
+deleted and its absence checked. Local ciphertext/key stay in the protected
+session for inexpensive offline `classify` iterations without another provider
+read. Output explicitly says `LOCAL_RETAINED`, never `CLEANED`, until explicit
+`cleanup` retires that evidence. In particular an `unclassified` result does not
+destroy the only diagnostic and force a new live capture. No recursive delete
+is used. On interruption, `cleanup` uses the public-only receipt to
 authenticate the original run and recover remote deletion before removing local
 files. A provider cleanup failure retains only encrypted evidence and private
 key until retry/24-hour deadline; the next operator session must finish cleanup

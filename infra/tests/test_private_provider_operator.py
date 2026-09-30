@@ -81,7 +81,7 @@ class OperatorTests(unittest.TestCase):
         # All experiment files stay inside repository-root .temp, on hosted CI.
         root = Path(operator.__file__).resolve().parents[2] / ".temp"
         root.mkdir(exist_ok=True)
-        for phase in ("token", "provenance", "download", "envelope_from_zip", "validate_envelope", "child", "github", "cleanup"):
+        for phase in ("token", "provenance", "download", "envelope_from_zip", "validate_envelope", "child", "github"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory(dir=root) as folder_name:
                 folder = Path(folder_name)
                 (folder / "private.pk8").write_bytes(b"SYNTHETIC-NOT-A-KEY")
@@ -125,6 +125,21 @@ class OperatorTests(unittest.TestCase):
                 operator.record_receipt(folder, {**original, "artifact_id": 42})
             self.assertEqual(json.loads((folder / "receipt.json").read_text()), original)
             self.assertEqual(json.loads((folder / "receipt.next.json").read_text())["artifact_id"], 42)
+
+    def test_local_classifier_never_contacts_provider_or_github(self):
+        with patch.object(operator, "classify_local", return_value="unclassified"), \
+                patch.object(operator, "github") as network, \
+                patch.object(operator.sys, "argv", ["operator", "classify", "session"]), contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(operator.main(), 0)
+        network.assert_not_called()
+        self.assertEqual(output.getvalue(), "private_provider_operator=LOCAL_RETAINED errors=unclassified delivery=UNVERIFIED\n")
+
+    def test_cleanup_remote_failure_preserves_local_key(self):
+        with patch.object(operator, "retire_remote", side_effect=RuntimeError("synthetic")), \
+                patch.object(operator, "cleanup") as local, \
+                patch.object(operator.sys, "argv", ["operator", "cleanup", "session"]), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(operator.main(), 1)
+        local.assert_not_called()
 
 
 if __name__ == "__main__":

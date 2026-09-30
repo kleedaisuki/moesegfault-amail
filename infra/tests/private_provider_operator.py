@@ -239,7 +239,7 @@ def retire_remote(session: str) -> None:
 
 
 def inspect(session: str, run_id: str, sha: str) -> str:
-    """Authenticate/decrypt privately, delete remote and local evidence, then emit enum."""
+    """Authenticate/classify privately and delete remotely; retain one offline session."""
     folder = session_path(session)
     created = datetime.fromisoformat((folder / "created.utc").read_text())
     history.need(timedelta(0) <= datetime.now(timezone.utc) - created < timedelta(hours=24), "scope")
@@ -272,7 +272,30 @@ def inspect(session: str, run_id: str, sha: str) -> str:
         error.close()
     else:
         raise history.HistoryError("provider")
-    cleanup(session)
+    return category
+
+
+def classify_local(session: str) -> str:
+    """Reuse the same authenticated encrypted capture without any network request."""
+    folder = session_path(session)
+    created = datetime.fromisoformat((folder / "created.utc").read_text())
+    history.need(timedelta(0) <= datetime.now(timezone.utc) - created < timedelta(hours=24), "scope")
+    receipt = folder / "receipt.json"
+    encrypted_file = folder / "capture.enc.json"
+    history.need(receipt.stat().st_size <= 1024 and encrypted_file.stat().st_size <= capture.MAX_ENVELOPE, "scope")
+    state = json.loads(receipt.read_bytes(), object_pairs_hook=history.unique_object)
+    history.need(set(state) == {"artifact_id", "run_id", "source_sha"}
+                 and type(state["artifact_id"]) is int and state["artifact_id"] > 0
+                 and re.fullmatch(r"[1-9][0-9]{0,19}", state["run_id"]) is not None
+                 and re.fullmatch(r"[0-9a-f]{40}", state["source_sha"]) is not None, "scope")
+    metadata = {"source_sha": state["source_sha"], "capture_run": state["run_id"], "capture_attempt": "1",
+                "original_run": history.RUN, "original_attempt": history.ATTEMPT,
+                "workflow": capture.WORKFLOW, "repository": history.REPOSITORY,
+                "query_sha256": hashlib.sha256(capture.QUERY.encode()).hexdigest()}
+    encrypted = encrypted_file.read_bytes()
+    capture.validate_envelope(encrypted, metadata, (folder / "public.spki").read_text())
+    category = child("classify", session, encrypted).decode("ascii")
+    history.need(category in CATEGORIES, "schema")
     return category
 
 
@@ -293,7 +316,10 @@ def main() -> int:
             print("private_provider_operator=CLEANED")
         elif mode == "inspect" and len(args) == 4:
             category = inspect(session, args[2], args[3])
-            print("private_provider_operator=CLEANED errors=" + category + " delivery=UNVERIFIED")
+            print("private_provider_operator=LOCAL_RETAINED remote=CLEANED errors=" + category + " delivery=UNVERIFIED")
+        elif mode == "classify" and len(args) == 2:
+            category = classify_local(session)
+            print("private_provider_operator=LOCAL_RETAINED errors=" + category + " delivery=UNVERIFIED")
         else:
             raise history.HistoryError("scope")
         return 0
