@@ -20,6 +20,16 @@ import urllib.request
 import staging_r2_object_capability as R2
 
 
+def dispatch_input_names(workflow: str, required: set[str]) -> list[str]:
+    """Check platform capacity and contract names without freezing unrelated inputs."""
+    dispatch = workflow.split("  workflow_dispatch:\n", 1)[1].split(
+        "\npermissions:", 1)[0]
+    names = re.findall(r"^      ([a-z][a-z0-9_]*):$", dispatch, re.MULTILINE)
+    if len(names) > 25 or len(names) != len(set(names)) or not required.issubset(names):
+        raise ValueError("dispatch input contract is invalid")
+    return names
+
+
 SPEC = importlib.util.spec_from_file_location(
     "staging_worker_created_r2", Path(__file__).with_name("staging_worker_created_r2.py")
 )
@@ -583,17 +593,37 @@ class WorkerCreatedR2Tests(unittest.TestCase):
     def test_dispatch_input_count_stays_within_github_limit(self) -> None:
         """A 26th top-level input invalidates the entire workflow before jobs."""
 
-        for filename, expected in (("ci.yml", 23),
-                                   ("staging-worker-r2-capability.yml", 6)):
+        required_by_workflow = {
+            "ci.yml": {"target", "confirm", "expected_worker_version", "mail_deploy_freeze"},
+            "staging-worker-r2-capability.yml": {
+                "target", "confirm", "worker_r2_prior_run_id", "worker_r2_prior_run_attempt",
+                "worker_r2_prior_sha", "worker_r2_send_attest",
+            },
+        }
+        for filename, required in required_by_workflow.items():
             with self.subTest(filename=filename):
                 workflow = (MODULE.ROOT / ".github/workflows" / filename).read_text(
                     encoding="utf-8")
-                dispatch = workflow.split("  workflow_dispatch:\n", 1)[1].split(
-                    "\npermissions:", 1)[0]
-                names = re.findall(r"^      ([a-z][a-z0-9_]*):$", dispatch, re.MULTILINE)
-                self.assertEqual(len(names), expected)
-                self.assertEqual(len(names), len(set(names)))
-                self.assertLessEqual(len(names), 25)
+                dispatch_input_names(workflow, required)
+
+    def test_dispatch_count_contract_accepts_growth_but_rejects_invalid_inputs(self) -> None:
+        """Valid unrelated growth must not create another stale exact-count failure."""
+        def workflow(names: list[str]) -> str:
+            """Build only the dispatch declaration, without any executable job."""
+            return "  workflow_dispatch:\n    inputs:\n" + "".join(
+                f"      {name}:\n        type: string\n" for name in names)
+
+        names = ["target", "confirm"] + [f"extra_{index}" for index in range(23)]
+        self.assertEqual(len(dispatch_input_names(workflow(names), {"target", "confirm"})), 25)
+        for invalid, required in (
+            (names + ["overflow"], {"target"}),
+            (names[:-1] + ["target"], {"target"}),
+            (names, {"mail_deploy_freeze"}),
+        ):
+            with self.subTest(required=required, count=len(invalid)):
+                with self.assertRaises(ValueError):
+                    dispatch_input_names(workflow(invalid), required)
+
 
 
 if __name__ == "__main__":

@@ -72,7 +72,8 @@ class CurrentWorkerWorkflowTests(unittest.TestCase):
         header = self.source.split("\njobs:", 1)[0]
         dispatch = header.split("  workflow_dispatch:\n", 1)[1]
         inputs = re.findall(r"^      ([a-zA-Z0-9_]+):$", dispatch, re.MULTILINE)
-        self.assertEqual(len(inputs), 24)
+        self.assertLessEqual(len(inputs), 25)
+        self.assertEqual(len(inputs), len(set(inputs)))
         for name in ("target", "confirm", "expected_worker_version", "mail_deploy_freeze"):
             self.assertIn(name, inputs)
         legacy = job_block(self.source, "staging-containment-settings")
