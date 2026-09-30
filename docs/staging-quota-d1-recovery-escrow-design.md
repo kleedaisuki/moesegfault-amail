@@ -45,8 +45,8 @@ base64 expands it. Consequently **one giant base64 row is not acceptable**.
 | Chunk count | At most 31, with exact expected indices and lengths |
 | SQL text | Small fixed statements, under 4 KiB; ciphertext always bound params |
 | One response | One chunk plus bounded metadata, under 128 KiB |
-| Unverified escrow budget | At most four prepared/writing envelopes plus one armed envelope; approximately 13.34 MB maximum base64 payload, within an explicit 16 MB operations budget |
-| Simultaneous armed campaign | One across this staging database; never start a fresh campaign to hide unresolved old resources |
+| Total retained escrow budget | 16 MB logical escrow payload plus conservative per-row metadata allowance, including **all nonpurged writing/sealed/armed/cleanup-verified ciphertext**, not merely unverified states |
+| Outstanding envelope | **One total** across writing/sealed/armed states in this staging database; retained verified nonpurged chunks still consume the budget |
 
 These are conservative application bounds, not provider guarantees or measured
 performance. Chunking avoids giant row/response/SQL limits and gives bounded
@@ -91,7 +91,9 @@ provisioning rows; this design does not grant a replay flag or restore batching.
    binding/held/capture-off evidence, fresh synthetic A login and full baseline
    through the reviewed wrapper. Build/seal the existing manifest without alias
    mutation. Require the unverified/armed budget and exact escrow schema.
-2. Insert parent `writing` with fixed original coordinates and envelope digest.
+2. Enforce one outstanding parent across `writing`, `sealed` and `armed` with
+   a database uniqueness/conditional-admission constraint, not a caller count.
+   Insert parent `writing` with fixed original coordinates and envelope digest.
    Bind ciphertext chunks in small insert-once statements. On ambiguous writes,
    only read the exact row/chunk and compare; do not create a new run/nonce or
    replace a different value. Complete encrypted plaintext stays only in memory;
@@ -109,11 +111,17 @@ provisioning rows; this design does not grant a replay flag or restore batching.
    backup rather than an excuse to skip the original readback gate.
 5. Immediately before any alias mutation, read back sealed escrow and complete
    ciphertext/AES-GCM, source/owner/service/hold/capture-off proof. Atomically
-   transition this exact parent to `armed` **only if no other unresolved armed
-   parent exists**; use a singleton/index/conditional SQL guard rather than a
-   non-atomic caller count. Re-read exact armed relation and ciphertext before
-   granting the existing controller's add callback. A killed process after arm
-   is conservatively unknown even when it never submitted its first add.
+   transition this exact parent to `armed` only from the exact sealed relation,
+   maintaining the one-outstanding-envelope constraint. Require the original
+   current invocation's bounded successful response to report exactly one
+   conditional transition, then independently re-read armed relation/ciphertext
+   before granting add. **An ambiguous arm write, zero-change response or an
+   already-armed readback never authorizes add or DELETE.** Do not recover a
+   lost transition acknowledgement by reading `armed` and assuming this process
+   made it: another phase/invocation may have attempted an unknown mutation.
+   A killed process after arm remains conservatively unknown even when it never
+   submitted its first add. Recovery stays read-only and may only attest the
+   actual full baseline/retired state or request manual intervention.
 
 Additive D1 escrow writes mean prepare is no longer globally remote read-only:
 it remains **no account/alias/send mutation**, but creates its exact encrypted
@@ -123,11 +131,18 @@ foreign run or alert-readiness failure can be bypassed with a workflow boolean.
 
 ## Cleanup, retention and recovery after artifact expiry
 
-On a successful same-invocation campaign cleanup, obtain actual final provider/
-global-owner/R2/storage/service/held/capture-off observations and successful
-local native-session teardown before marking `cleanup_verified`. The receiver
-must construct the receipt from executed checks, not accept an operator `passed`
-input. Bind receipt to the original envelope digest/source/run and server time.
+A campaign success marker is not a terminal escrow receipt. After same-process
+cleanup, execute the separate **full independent read-only recovery attestation**
+against the exact sealed envelope: current complete provider/global-owner/R2/
+storage/service/held/capture-off observations, original baseline preservation,
+no pending/unsettled work and fresh sealed-owner identity relation. Complete
+native local-session teardown and scratch cleanup before `cleanup_verified`.
+The receiver constructs its receipt only from those executed checks, not an
+operator `passed` input, issue acknowledgement or existing database state flag.
+Bind receipt to original envelope digest/source/run and server time. If any
+attestation or local teardown is unknown, retain ciphertext and remain pending;
+an empty known readback is distinct from claiming a previously unknown DELETE
+was never attempted.
 
 Only a `cleanup_verified` row may have its encrypted chunks removed, through a
 conditional fixed SQL cleanup and exact readback. Preserve its nonprivate receipt
@@ -163,7 +178,12 @@ or DELETE. This is not a claim that the underlying account-level token is
 read-only or table-scoped. It needs no recovery key, mail content, artifact
 download, Cloudflare routing write or destructive callback. Run it on a
 conservative periodic schedule and explicit dispatch, and use an immediate
-post-failure alert attempt in the acceptance workflow when possible. The durable
+post-failure alert attempt in the acceptance workflow when possible. Do **not**
+wire Agent intake solely to `on: issues`: issues created using `GITHUB_TOKEN`
+do not trigger ordinary downstream Actions workflows. Use an independently
+proven polling/Agent intake mechanism or a specifically reviewed dispatch
+mechanism; changing credentials just to bypass recursion protection is not
+part of this design. See [GitHub workflow-triggering semantics](https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-when-your-workflow-runs/triggering-a-workflow). The durable
 D1 `armed` state covers hard cancellation when that step never runs.
 
 Issue body contains only the fixed staging category, public original Actions
@@ -179,9 +199,16 @@ retry/issue spam is not permitted.
 Set recovery due time from D1 server `armed_at + 24 hours`. An unresolved failed
 run creates an issue promptly; the watchdog catches orphaned/overdue armed rows
 and repeats/escalates the existing issue rather than inventing new campaigns.
-Require documented Agent acknowledgement and exact cleanup evidence within the
-deadline; absent acknowledgement at 24 hours is a release blocker and explicit
-owner escalation. GitHub scheduled jobs can be delayed or disabled, so their
+Require actual **Agent acknowledgement/intake within 24 hours**. This records
+responsibility and an actionable response, **not completed recovery**. Unknown
+active rows may still require restricted reconciliation; no deadline permits
+DELETE replay or receipt forgery. Exact cleanup remains pending until the full
+independent attestation and local teardown succeed; pending ciphertext/key stay
+retained indefinitely and no new campaign is admitted. Absent acknowledgement at
+24 hours is an explicit owner escalation and release blocker. An acknowledgement
+must be read back from the real handler's documented intake path; a bot posting
+its own issue or an automatic self-acknowledgement is not proof that a recovery
+Agent received the incident. GitHub scheduled jobs can be delayed or disabled, so their
 schedule alone cannot promise a hard wall-clock SLA. Check/watchdog freshness is
 part of admission, and any failure opens an actionable issue/explicit operator
 question rather than claiming silent autonomous recovery.
@@ -202,8 +229,8 @@ question rather than claiming silent autonomous recovery.
   bounded acceptance this avoids new unverified storage credentials, but it is
   not a production-grade multi-provider archive.
 * Small chunk writes share D1's single-threaded database with mail metadata.
-  Enforce the 16 MB budget, one armed campaign, fixed bounded statements and no
-  large scans; measure hosted synthetic write/read latency and normal mail
+  Enforce the 16 MB budget across **every nonpurged ciphertext state**, one
+  outstanding envelope, fixed bounded statements and no large scans; measure hosted synthetic write/read latency and normal mail
   query regression. If storage/latency/schema coupling is unacceptable, stop and
   revisit a dedicated confirmed storage mechanism instead of forcing D1.
 * Migration creates only new staging-operations tables/indexes/constraints;
@@ -221,11 +248,28 @@ Independent design review precedes source implementation. Then implement only
 an additive staging schema, fixed escrow adapter, exact wrapper gates and the
 metadata-only watchdog/issue contract in coherent source commits. Hosted tests
 must cover maximum envelope/chunk boundaries, partial write/read ambiguity,
-no-overwrite/digest/AAD errors, foreign coordinates, one armed record, budget,
-artifact expiry recovery, immutable receipt-only purge, no-key watchdog privacy
+no-overwrite/digest/AAD errors, foreign coordinates, ambiguous/already-armed
+non-admission, one outstanding envelope, total nonpurged budget, artifact expiry
+recovery, immutable receipt-only purge, no-key watchdog privacy
 and deadline/acknowledgement failures. No local test, real migration, key setup,
 issue creation, alias or live quota run is implied by this document.
 
 Until those gates are implemented and actually evidenced, existing quota source
 and workflow remain **live NO-GO**. Key creation/default-workflow registration
 must not be interpreted as granting missing escrow/escalation acceptance.
+
+## Review revision and unchanged current behavior
+
+The first review (`5e2acd4`) grants only conditional dormant-source exploration,
+not live admission. This revision closes the design ambiguities: ambiguous or
+already-armed state is never mutation permission; one outstanding envelope and
+all retained ciphertext states count toward budget; terminal purge requires
+full independent read-only recovery plus local native teardown; 24-hour receipt
+is a distinct Agent acknowledgement, not cleanup; real intake must work despite
+GITHUB_TOKEN recursion prevention; scheduled jobs alone are not a hard SLA.
+
+Preserve the current 30-day immutable GitHub artifact upload/readback semantics
+until the new escrow is migrated, permission-tested, encrypted-roundtrip-tested
+and independently accepted. Do not shorten retention, silently use D1 as an
+unimplemented fallback, register a source YAML as proof of running monitoring,
+create a new key, or dispatch a quota campaign while these gates remain open.
