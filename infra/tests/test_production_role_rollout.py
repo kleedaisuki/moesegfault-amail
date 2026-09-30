@@ -68,6 +68,23 @@ class StorageTests(unittest.TestCase):
             prepare.prepare('bootstrap')
         request.assert_not_called()
 
+    def test_bootstrap_requires_held_send_and_unset_release_gate(self):
+        """Bootstrap cannot attest policy by intent or defer denial to a later caller."""
+        environment = {"GITHUB_REF":"refs/heads/main", "AMAIL_PRODUCTION_GRAPH_FREEZE":"FREEZE_PRODUCTION_GRAPH_WRITERS",
+                       "AMAIL_PRODUCTION_GRAPH_CONFIRM":"RUN_PRODUCTION_API_ONLY_BOOTSTRAP",
+                       "CLOUDFLARE_ACCOUNT_ID":"a"*32,"CLOUDFLARE_API_TOKEN":"synthetic","AMAIL_TRACE_TOPOLOGY":"api-only"}
+        with patch.dict(os.environ,environment), patch.object(prepare,'held_send',side_effect=ValueError('held_unverified')), patch.object(prepare.role,'api_get') as provider, self.assertRaises(ValueError):
+            prepare.prepare('bootstrap')
+        provider.assert_not_called()
+        for replies in ([{"state":"active"}], [{"state":"held"}], [{"abuse_contact_verified":1}]):
+            if replies == [{"state":"held"}]:
+                continue
+            results = [replies] if 'state' in replies[0] else [[{"state":"held"}],replies]
+            with patch.object(graph,'query',side_effect=results), self.assertRaises(ValueError):
+                graph.held_send()
+        with patch.object(graph,'query',side_effect=[[{"state":"held"}],[{"abuse_contact_verified":0}]]):
+            graph.held_send()
+
 
 class RouteTests(unittest.TestCase):
     """Every mixed phase has four exact reserved literal rules and fixed action targets."""

@@ -239,7 +239,7 @@ make any gate pass. A failed provider GET is never role absence.
 Production API/sink CI lifecycle is explicit in the target:
 
 * `production` + `RUN_PRODUCTION_API_ONLY_BOOTSTRAP` requires first API/role
-  absence and bootstraps only the API-only graph. An already live API is not
+  absence, positive existing global-held/unset-role-gate D1 readback, and bootstraps only the API-only graph. A pristine Mail policy database without the reviewed hold schema is not an accepted bootstrap; initialize/reconcile that state through a separately reviewed bounded migration before this graph operation. An already live API is not
   silently replayed as bootstrap. Partial bootstrap recovery requires separate
   reconciliation and reviewed transition before another mutation.
 * `production-api-role-maintenance` +

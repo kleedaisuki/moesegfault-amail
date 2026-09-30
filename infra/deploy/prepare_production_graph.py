@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
-from check_production_role_graph import API, ROLE, ID, role, forwards, role_absent, forward_snapshot, storage, verify
+from check_production_role_graph import API, ROLE, ID, role, forwards, role_absent, forward_snapshot, storage, held_send, verify
 
 
 def prepare(phase: str) -> None:
@@ -24,6 +24,7 @@ def prepare(phase: str) -> None:
     account, token = os.getenv("CLOUDFLARE_ACCOUNT_ID", ""), os.getenv("CLOUDFLARE_API_TOKEN", "")
     if ID.fullmatch(account) is None or not token or os.getenv("AMAIL_TRACE_TOPOLOGY") != "api-only":
         raise ValueError("bootstrap_unverified")
+    held_send()
     before = role.api_get(f"/accounts/{account}/workers/scripts", token)
     if (not isinstance(before, list) or len(before) > 10000
             or not all(isinstance(row, dict) and isinstance(row.get("id"), str) for row in before)
