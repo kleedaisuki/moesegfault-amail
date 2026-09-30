@@ -68,6 +68,8 @@ jobs:
         run: |
           rustup update stable
           cargo build -p amail --locked
+          cargo build -p amail --features staging-diagnostics --bin staging-http-compare --locked
+          cargo test -p amail --features staging-diagnostics --bin staging-http-compare --locked
       - name: Check retained logs and CLI to API parentage
         if: inputs.mode == 'canary'
         env:

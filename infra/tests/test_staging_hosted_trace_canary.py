@@ -84,6 +84,7 @@ class HostedTraceSafetyTests(unittest.TestCase):
                 "deployed_privacy_settings_unverified",
                 "cli_list_not_correlatable",
                 "rejected_url_contract_failed",
+                "rejected_url_helper_missing",
                 "rejected_url_forbidden_with_worker_id",
                 "rejected_url_forbidden_without_worker_id",
                 "rejected_url_status_not_found",

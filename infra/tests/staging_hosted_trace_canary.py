@@ -46,6 +46,7 @@ RETAINED_CHILD_CODES = PREFLIGHT_CODES | frozenset({
     "cli_list_not_correlatable", "cli_trace_id_invalid", "cli_span_id_invalid",
     "cli_request_id_invalid", "cli_address_list_failed",
     "rejected_url_network_unavailable", "rejected_url_contract_failed",
+    "rejected_url_helper_missing",
     "rejected_url_forbidden_with_worker_id",
     "rejected_url_forbidden_without_worker_id", "rejected_url_status_not_found",
     "rejected_url_status_server_error", "rejected_url_status_other",

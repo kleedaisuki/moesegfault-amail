@@ -9,7 +9,6 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
@@ -93,25 +92,51 @@ class StagingTraceCanaryTests(unittest.TestCase):
                 self.assertEqual(actual, expected)
                 self.assertNotIn("private-header-value", str(actual))
 
-    def test_rejected_url_failure_has_fixed_code(self) -> None:
-        """An HTTP contract failure exposes no raw response or header."""
+    def test_run_probes_passes_exact_synthetic_url_to_private_reqwest(self) -> None:
+        """The retained-log oracle receives the private ID, never a URL dump."""
 
-        denied = HTTPError("https://private.invalid", 403, "private-message",
-                           {"x-amail-request-id": "private-header-value"}, None)
         with patch.object(canary, "journal_max", return_value=0), \
                 patch.object(canary, "journal_new", return_value=(T, C, R)), \
                 patch.object(canary.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
-                patch.object(canary, "urlopen", side_effect=denied) as http:
-            with self.assertRaisesRegex(canary.CanaryError,
-                                        "^rejected_url_forbidden_without_worker_id$"):
-                canary.run_probes(Path("private-cli"), Path("private-home"))
-        request = http.call_args.args[0]
-        target = urlsplit(request.full_url)
-        self.assertEqual(request.get_method(), "GET")
+                patch.object(canary, "reqwest_denial", return_value=D) as private:
+            _, _, _, denied_id, markers = canary.run_probes(
+                Path("private-cli"), Path("private-home"))
+        self.assertEqual(denied_id, D)
+        target = urlsplit(private.call_args.args[0])
         self.assertEqual((target.scheme, target.netloc), ("https", "mail-staging.moesegfault.dev"))
         self.assertRegex(target.path, r"^/v1/messages/amail_path_canary_[0-9a-f]{32}$")
         marker = target.path.removeprefix("/v1/messages/amail_path_canary_")
         self.assertEqual(parse_qs(target.query), {"probe": [f"amail_query_canary_{marker}"]})
+        self.assertEqual(markers, (f"amail_path_canary_{marker}",
+                                   f"amail_query_canary_{marker}"))
+
+    def test_reqwest_denial_captures_private_id_without_output(self) -> None:
+        """Only an exact successful child line may become an in-memory ID."""
+
+        good = f"staging_http_compare: private_id={D}\n".encode("ascii")
+        output = StringIO()
+        fake_bin = canary.ROOT / "target" / "debug" / "staging-http-compare.exe"
+        with patch("staging_trace_http_compare.BIN", fake_bin), \
+                patch.object(Path, "is_file", return_value=True), \
+                patch("staging_trace_http_compare.reqwest_environment", return_value={}), \
+                patch.object(canary.subprocess, "run", return_value=SimpleNamespace(
+                    returncode=0, stdout=good)) as child, redirect_stdout(output):
+            self.assertEqual(canary.reqwest_denial(
+                "https://mail-staging.moesegfault.dev/v1/messages/private"), D)
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(child.call_args.kwargs["stdout"], canary.subprocess.PIPE)
+        self.assertEqual(child.call_args.kwargs["stderr"], canary.subprocess.DEVNULL)
+        self.assertNotIn("CLOUDFLARE_API_TOKEN", child.call_args.kwargs["env"])
+        for raw, code in ((b"staging_http_compare: unverified\n", 1),
+                          (good + b"private tail", 0),
+                          (b"private-secret\n", 0), (good, 1)):
+            with self.subTest(code=code), patch("staging_trace_http_compare.BIN", fake_bin), \
+                    patch.object(Path, "is_file", return_value=True), \
+                    patch.object(canary.subprocess, "run", return_value=SimpleNamespace(
+                        returncode=code, stdout=raw)):
+                with self.assertRaisesRegex(canary.CanaryError,
+                                            "^rejected_url_contract_failed$"):
+                    canary.reqwest_denial("https://mail-staging.moesegfault.dev/private")
 
     def test_main_does_not_query_after_rejected_url_failure(self) -> None:
         """Only a fixed child code escapes, and the query stage is skipped."""

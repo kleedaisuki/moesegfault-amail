@@ -177,6 +177,37 @@ def rejected_url_failure(status: int, request_id: object) -> str | None:
     return None
 
 
+def reqwest_denial(url: str) -> str:
+    """Pass a raw app ID only through a captured pipe into this checker.
+
+    The feature-gated helper accepts only the exact synthetic staging URL,
+    requires 401 plus a canonical ID, and refuses redirects. Neither its
+    stdout nor stderr is connected to the hosted job log.
+    """
+
+    from staging_trace_http_compare import BIN, reqwest_environment
+
+    need(BIN.is_file() and BIN.resolve().is_relative_to((ROOT / "target").resolve()),
+         "rejected_url_helper_missing")
+    try:
+        result = subprocess.run(
+            [str(BIN), "--private-id"], input=(url + "\n").encode("ascii"),
+            env=reqwest_environment(), stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=35, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise CanaryError("rejected_url_network_unavailable") from None
+    # The entire captured pipe must contain exactly one reviewed line. Never
+    # interpolate its contents into an exception, test failure, or CI output.
+    match = re.fullmatch(
+        rb"staging_http_compare: private_id=([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\r?\n",
+        result.stdout,
+    ) if len(result.stdout) <= 96 else None
+    need(result.returncode == 0 and match is not None,
+         "rejected_url_contract_failed")
+    return match.group(1).decode("ascii")
+
+
 def run_probes(cli: Path, home: Path) -> tuple[int, int, tuple[str, str, str], str, tuple[str, str]]:
     """Exercise an ordinary CLI read and one anonymous rejected synthetic URL."""
 
@@ -207,19 +238,8 @@ def run_probes(cli: Path, home: Path) -> tuple[int, int, tuple[str, str, str], s
     path_marker = f"amail_path_canary_{marker}"
     query_marker = f"amail_query_canary_{marker}"
     # Use a protected read route so URL denial is not confounded with unknown-path handling.
-    request = Request(f"{API}/v1/messages/{path_marker}?probe={query_marker}", method="GET")
-    try:
-        with urlopen(request, timeout=15) as response:
-            status = response.status
-            denied_id = response.headers.get("x-amail-request-id")
-    except HTTPError as error:
-        status = error.code
-        denied_id = error.headers.get("x-amail-request-id")
-    except (URLError, TimeoutError):
-        raise CanaryError("rejected_url_network_unavailable") from None
-    failure = rejected_url_failure(status, denied_id)
-    if failure is not None:
-        raise CanaryError(failure)
+    url = f"{API}/v1/messages/{path_marker}?probe={query_marker}"
+    denied_id = reqwest_denial(url)
     end = int(time.time() * 1000) + 2_000
     return start, end, ids, denied_id, (path_marker, query_marker)
 

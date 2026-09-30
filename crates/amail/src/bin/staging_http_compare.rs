@@ -33,8 +33,16 @@ fn valid_target(raw: &str) -> Option<Url> {
     Some(url)
 }
 
-/// Match amail's reqwest blocking client and report only reviewed response facts.
-fn probe(url: Url) -> Option<String> {
+/// Facts from one request; the application ID never enters normal diagnostics.
+struct Probe {
+    status_label: &'static str,
+    request_id: Option<String>,
+    ray_present: bool,
+    redirected: bool,
+}
+
+/// Match amail's reqwest blocking client without following a synthetic redirect.
+fn probe(url: Url) -> Option<Probe> {
     let redirected = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&redirected);
     let client = Client::builder()
@@ -48,14 +56,20 @@ fn probe(url: Url) -> Option<String> {
     let response = client.get(url).send().ok()?;
     let status = response.status().as_u16();
     let request_id = response.headers().get_all("x-amail-request-id");
-    let valid_id = request_id.iter().count() == 1
-        && request_id
-            .iter()
-            .next()
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| {
-                uuid::Uuid::parse_str(value).is_ok_and(|id| id.hyphenated().to_string() == value)
-            });
+    let valid_id = (request_id.iter().count() == 1)
+        .then(|| {
+            request_id
+                .iter()
+                .next()
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| {
+                    uuid::Uuid::parse_str(value)
+                        .ok()
+                        .filter(|id| id.hyphenated().to_string() == value)
+                        .map(|_| value.to_owned())
+                })
+        })
+        .flatten();
     let ray = response.headers().get_all("cf-ray");
     let ray_present =
         ray.iter().count() == 1 && ray.iter().next().is_some_and(|value| !value.is_empty());
@@ -68,14 +82,31 @@ fn probe(url: Url) -> Option<String> {
         500..=599 => "5xx",
         _ => "other",
     };
-    Some(format!(
-        "status={status_label} id={valid_id} ray={ray_present} redirect={}",
-        redirected.load(Ordering::Relaxed)
-    ))
+    Some(Probe {
+        status_label,
+        request_id: valid_id,
+        ray_present,
+        redirected: redirected.load(Ordering::Relaxed),
+    })
+}
+
+/// Release the ID only for an exact Worker-contract denial without redirect.
+fn private_denial_id(facts: &Probe) -> Option<&str> {
+    (facts.status_label == "401" && !facts.redirected)
+        .then_some(facts.request_id.as_deref())
+        .flatten()
 }
 
 /// Consume the URL on stdin so no synthetic marker appears in process arguments.
 fn main() {
+    let private_id = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
+        [] => false,
+        [flag] if flag.as_str() == "--private-id" => true,
+        _ => {
+            println!("staging_http_compare: unverified");
+            std::process::exit(1);
+        }
+    };
     let mut raw = String::new();
     if io::stdin().take(256).read_to_string(&mut raw).is_err() {
         println!("staging_http_compare: unverified");
@@ -83,8 +114,23 @@ fn main() {
     }
     let result = valid_target(raw.trim_end_matches(['\r', '\n'])).and_then(probe);
     match result {
-        Some(facts) => println!("staging_http_compare: {facts}"),
-        None => {
+        Some(facts) if private_id => {
+            if let Some(request_id) = private_denial_id(&facts) {
+                // Stdout is an anonymous pipe captured by the Python checker, not a CI log.
+                println!("staging_http_compare: private_id={request_id}");
+            } else {
+                println!("staging_http_compare: unverified");
+                std::process::exit(1);
+            }
+        }
+        Some(facts) if !private_id => println!(
+            "staging_http_compare: status={} id={} ray={} redirect={}",
+            facts.status_label,
+            facts.request_id.is_some(),
+            facts.ray_present,
+            facts.redirected
+        ),
+        _ => {
             println!("staging_http_compare: unverified");
             std::process::exit(1);
         }
@@ -93,7 +139,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_target;
+    use super::{private_denial_id, valid_target, Probe};
 
     /// No arbitrary host, route, marker, fragment, or query can be probed.
     #[test]
@@ -109,5 +155,25 @@ mod tests {
         ] {
             assert!(valid_target(&bad).is_none());
         }
+    }
+
+    /// A 403, redirect, or missing ID can never release a private correlation ID.
+    #[test]
+    fn private_id_requires_exact_denial_contract() {
+        let mut facts = Probe {
+            status_label: "401",
+            request_id: Some("11111111-1111-4111-8111-111111111111".to_owned()),
+            ray_present: false,
+            redirected: false,
+        };
+        assert!(private_denial_id(&facts).is_some());
+        facts.status_label = "403";
+        assert!(private_denial_id(&facts).is_none());
+        facts.status_label = "401";
+        facts.redirected = true;
+        assert!(private_denial_id(&facts).is_none());
+        facts.redirected = false;
+        facts.request_id = None;
+        assert!(private_denial_id(&facts).is_none());
     }
 }
