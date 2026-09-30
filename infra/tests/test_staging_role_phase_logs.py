@@ -107,10 +107,18 @@ class RolePhaseLogTests(unittest.TestCase):
         with patch.object(probe, "read_json", return_value=shifted):
             with self.assertRaisesRegex(probe.ProbeError, "query_incomplete_or_echo_unverified"):
                 probe.retained_events("a" * 32, "opaque")
+        complete_row = row("role monitor healthy pending=0")
+        complete_row["$metadata"]["id"] = "event-1"
         partial = {**envelope, "result": {**envelope["result"],
-                                           "events": {"count": 2, "events": [row("role monitor healthy pending=0")]}}}
+                                           "events": {"count": 2, "events": [complete_row]}}}
         with patch.object(probe, "read_json", return_value=partial):
             with self.assertRaisesRegex(probe.ProbeError, "events_page_incomplete"):
+                probe.retained_events("a" * 32, "opaque")
+        missing_cursor = {**partial, "result": {**partial["result"],
+                                                 "events": {"count": 2,
+                                                            "events": [row("role monitor healthy pending=0")]}}}
+        with patch.object(probe, "read_json", return_value=missing_cursor):
+            with self.assertRaisesRegex(probe.ProbeError, "events_cursor_unverified"):
                 probe.retained_events("a" * 32, "opaque")
 
     def test_historical_run_pin(self) -> None:
