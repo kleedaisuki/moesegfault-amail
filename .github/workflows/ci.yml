@@ -12,7 +12,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging, staging-containment-settings, staging-current-worker-capture-off, staging-capture-preflight, staging-settings-patch-audit, staging-settings-audit-shape, staging-containment-readback, staging-worker-resource-readback, staging-role-queue-rollout, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-worker-r2-delivery-history, staging-worker-r2-history-shape, staging-worker-r2-history-error, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production, production-api-role-maintenance]
+        options: [checks, staging, staging-containment-settings, staging-current-worker-capture-off, staging-capture-preflight, staging-settings-patch-audit, staging-settings-audit-shape, staging-containment-readback, staging-worker-resource-readback, staging-role-queue-rollout, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-worker-r2-delivery-history, staging-worker-r2-history-shape, staging-worker-r2-history-error, staging-private-provider-error-capture, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production, production-api-role-maintenance]
       confirm:
         description: Staging E2E, semantic query, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -373,6 +373,67 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_worker_r2_history_error.py "$HISTORY_CONFIRM" 36751791789
+
+  staging-private-provider-error-capture:
+    name: One-shot encrypted content-free provider error
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-private-provider-error-capture' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Require reviewed immutable source and first attempt
+        env:
+          CAPTURE_CONFIRM: ${{ inputs.confirm }}
+          REVIEWED_SHA: ${{ vars.PRIVATE_PROVIDER_CAPTURE_REVIEWED_SHA }}
+          ACTIONS_RUNNER_DEBUG: ${{ secrets.ACTIONS_RUNNER_DEBUG }}
+          ACTIONS_STEP_DEBUG: ${{ secrets.ACTIONS_STEP_DEBUG }}
+        shell: bash
+        run: |
+          if [[ "$CAPTURE_CONFIRM" != 'CAPTURE_PRIVATE_WORKER_R2_ERROR_36751791789_ONCE' || "$GITHUB_RUN_ATTEMPT" != '1' || "$GITHUB_SHA" != "$REVIEWED_SHA" || "${ACTIONS_RUNNER_DEBUG,,}" == 'true' || "${ACTIONS_STEP_DEBUG,,}" == 'true' ]]; then
+            echo 'Private capture guard rejected' >&2
+            exit 1
+          fi
+      - name: Verify native crypto and offline confidentiality contracts without secrets
+        env:
+          PRIVATE_CAPTURE_SYNTHETIC_HOSTED: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s infra/tests -p 'test_private_provider_capture.py' -v
+      - name: Capture one bounded encrypted error envelope
+        env:
+          PRIVATE_CAPTURE_CONFIRM: ${{ inputs.confirm }}
+          PRIVATE_CAPTURE_PUBLIC_KEY: ${{ vars.PRIVATE_PROVIDER_CAPTURE_PUBLIC_KEY }}
+          PRIVATE_CAPTURE_REVIEWED_SHA: ${{ vars.PRIVATE_PROVIDER_CAPTURE_REVIEWED_SHA }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ACTIONS_RUNNER_DEBUG: ${{ secrets.ACTIONS_RUNNER_DEBUG }}
+          ACTIONS_STEP_DEBUG: ${{ secrets.ACTIONS_STEP_DEBUG }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/private_provider_capture.py
+      - name: Upload only the encrypted exact file
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: private-provider-error-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .temp/private-provider-diag/capture.enc.json
+          include-hidden-files: true
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+          if-no-files-found: error
+      - name: Remove exact ciphertext on all outcomes
+        if: always()
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/private_provider_capture.py cleanup
 
   staging-second-principal-preflight:
     name: Read-only second-principal Identity, routing and private-R2 preflight
