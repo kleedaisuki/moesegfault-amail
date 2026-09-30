@@ -1,6 +1,6 @@
 # Decision: production role-monitor rollout is a graph transition
 
-Date: 2026-10-01. Status: **design/runbook, not implementation or live acceptance**.
+Date: 2026-10-01. Status: **guarded source implementation; independent review and hosted checks pending, no live acceptance**.
 No provider request, deployment, route change or local test was performed for
 this artifact. Public sending and `abuse_contact_verified` remain held/unset.
 The confidential destination stays in project Secrets and restricted memory;
@@ -212,3 +212,95 @@ the full-record privacy and external Inbox properties remain empirical gates.
 Current release/HTTP/DNS evidence is in [the release gap audit](release-gap-audit.md)
 and [the DNS snapshot](production-dns-readiness-2026-09-29.md). This runbook
 neither refreshes those observations nor authorizes deployment or release.
+
+
+## Source implementation update (2026-10-01)
+
+The original unsafe standalone role dispatch is replaced with an unrouted,
+fail-closed operation. It requires exact production API/sink deployment and a
+**distinct** production complete-record privacy run, plus exact-source staged
+Email/Cron/fault/rollback privacy acceptance. All three historical inventories
+must identify this repository, workflow, branch, first successful attempt,
+unique successful jobs and exact realm-specific markers. The consumer in
+`infra/deploy/require_production_role_phase1.py` intentionally cannot mint those
+markers or accept a staging marker as production evidence.
+
+`check_production_role_graph.py` provides bracketed production graph readback,
+independently pinned Queue/DLQ identities, single-100 serving deployments,
+immutable API/role bindings, current all-capture-off policy, private role
+surfaces, verified private destination, exact full role rule snapshots and held
+send policy. First bootstrap requires complete successful Worker absence and
+pristine isolated D1. An unrouted replacement requires a pinned non-Queue role
+predecessor, exact role schema/indexes, zero arrivals and an expired lease
+(measured against D1 time in milliseconds). A successful additive migration
+must leave the singleton initial lease and empty ledger. No row is deleted to
+make any gate pass. A failed provider GET is never role absence.
+
+Production API/sink CI lifecycle is explicit in the target:
+
+* `production` + `RUN_PRODUCTION_API_ONLY_BOOTSTRAP` requires first API/role
+  absence and bootstraps only the API-only graph. An already live API is not
+  silently replayed as bootstrap. Partial bootstrap recovery requires separate
+  reconciliation and reviewed transition before another mutation.
+* `production-api-role-maintenance` +
+  `RUN_PRODUCTION_API_ROLE_MAINTENANCE` requires strict existing API-plus-role
+  readback before/after sink and API replacement. It never invokes Queue create
+  or the permissive Queue initialization contract. It preserves nonempty role
+  ledgers, requires the reviewed role routing count (0..4), verifies exact mixed
+  rules and keeps sending held. It does not implicitly deploy ingress, replace
+  lifecycle subscriptions or publish the website.
+* Both use the single added `production_graph_freeze` input with
+  `FREEZE_PRODUCTION_GRAPH_WRITERS`; together with the standalone role workflow
+  they share workflow-level `amail-production-graph-writer`, cancellation off.
+  Dependent sink/API jobs do not take that same job-level lock. The workflow
+  remains within GitHub's 25 dispatch-input limit.
+
+Maintenance pins come from independently reviewed project variables
+`AMAIL_MAIL_VERSION_PRODUCTION`, `AMAIL_TRACE_SINK_VERSION_PRODUCTION`,
+`AMAIL_ROLE_MONITOR_VERSION_PRODUCTION`, `AMAIL_TRACE_QUEUE_ID_PRODUCTION`,
+`AMAIL_TRACE_DLQ_ID_PRODUCTION`, and `AMAIL_ROLE_ROUTED_COUNT_PRODUCTION`.
+Successful deployment outputs carry the exact new version only for their
+corresponding post-check. They do not overwrite reviewed variables or permit
+an inferred/latest serving pin. The private destination remains a Secret.
+
+Production deploy/migration wrappers suppress provider output, use repository
+`.temp` restricted secret files with cleanup on every result, never replay an
+ambiguous operation, and preserve a uniquely parsed returned version as recovery
+information even if Wrangler subsequently reports failure. A timeout without a
+returned version remains an explicit reconciliation obligation, not a retry.
+The existing staging deploy default retains its prior command contract.
+
+`production_role_routes.py` adds pure exact 0..4 mixed-route predicates and
+full-snapshot one-action transition/restoration comparisons. It does **not**
+issue a PUT, send a canary, or expose a route-cutover workflow. Therefore this
+source update does not complete P3/P4 or authorize live routing changes.
+
+### Intentionally closed prerequisites / remaining implementation
+
+The production complete-record API/sink canary workflow and the combined staged
+role Email/Cron/fault/rollback whole-record acceptance workflow are not yet
+implemented. The evidence consumer reserves exact contracts
+`.github/workflows/production-trace-privacy.yml` and
+`.github/workflows/staging-role-acceptance.yml` respectively; absent workflows,
+missing outcomes, duplicate markers, stale source or failed attempts reject
+phase-two deployment. Before implementing either emitter, review its complete
+record scope, opaque correlation, retention window and failure paths. Do not
+weaken the consumer to make the dormant rollout executable.
+
+A dedicated one-rule live cutover/restoration runner still needs its privately
+persisted original snapshots, exact mixed-phase pins, provider ambiguity
+reconciliation and external SMTP/destination/digest acceptance. The pure route
+predicates are necessary source contracts, not that live runner. Source-only
+fixtures cover first versus replacement storage, absence/error distinctions,
+live lease/pending ledger, strict production bindings, mixed-route conflict,
+one-rule restoration, shared workflow locks, missing historical evidence and
+dispatch limits. These tests run on GitHub Actions; no local test/build,
+provider request, production deploy or route mutation was performed.
+
+Official provider references retrieved for implementation: documented
+[SinglePage Worker script inventory](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/list/),
+[Workers deployment error codes](https://developers.cloudflare.com/workers/observability/errors/),
+[rollback/resource separation](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/),
+and [Workers production practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/).
+The design chooses successful inventory rather than treating error 10007 as
+absence, because that code also covers a missing workers.dev subdomain.
