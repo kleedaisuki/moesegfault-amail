@@ -275,3 +275,69 @@ private exposure/trigger/bindings checker is still separately in progress, so
 **live Queue creation/rollout remains unapproved** pending that source review,
 actual hosted green result and accepted immutable containment evidence. Canary
 wiring remains a guarded manual path, not an automatic privacy approval.
+
+## Queue API and recovery review (`813869e`, `f56d244`, `2627983`)
+
+Static review, 2026-09-30. Also accounted for `ae8fb14`, `da75085`, `701d8d9`
+and the latest committed rollout wiring. No local tests/builds, live calls,
+provisioning or push. Concurrent uncommitted strict-sink edits are outside this
+infra verdict and remain with their independent reviewer.
+
+### Source assessment
+
+- `ae8fb14` removes the misplaced release-gate YAML keys; the deterministic
+  workflow syntax finding is closed by inspection of the exact correction.
+- The official Cloudflare Python SDK independently confirms bare Queue list is
+  `SyncSinglePage`, create accepts `queue_name`/optional jurisdiction, and partial
+  settings update is PATCH. `813869e` does not invent paging parameters;
+  bounded response, unique identities and contradictory pagination/truncation
+  guards retain fail-closed behavior.
+- `f56d244` uses name-only POST then settings PATCH **only on the exact ID just
+  returned by that POST**. Existing resources are read/attested but not updated.
+  Both resource identities and ownership are validated before peer creation.
+- `2627983` records only realm, fixed queue name and exact fresh Queue ID before
+  PATCH, in a mode-0600 workspace `.temp` file. Always-upload uses an exact path
+  and three-day retention; no credential, provider body or Queue payload is in
+  the artifact. Actions artifacts inherit repository access rules: mode 0600
+  does not make an uploaded artifact a secret store. These non-secret resource
+  IDs are intentionally operator recovery evidence, not private mail data.
+- The sink deploy helper captures provider output privately and propagates the
+  sole generated version to `AMAIL_EXPECTED_TRACE_SINK_VERSION`; Queue step IDs
+  enter the same checker call. Interface matches the strict checker names.
+  Independent canary uses reviewed project Queue IDs. Staging API/sink remain
+  manual-only; immutable first-attempt successful containment evidence and
+  stable100 checks remain in place.
+
+### P2: recover cannot inspect the exact failed-PATCH partial state
+
+`ensure_trace_queues.py::reconcile` requires `bounded_queue(row)` before exact
+ID/detail validation in **all** phases, including `recover`. If name-only POST
+succeeds and PATCH fails/not-applied, the newly recorded queue keeps provider
+default retention rather than 86400. Recovery rejects it at the initial
+inventory with `queue_settings_drift`, never performs its exact-ID detail GET,
+and cannot distinguish pending settings from identity/attachment drift. This
+is the very interruption the new recovery artifact is intended to resolve.
+The existing partial-recovery test models only already-correct retention.
+
+Correction: for read-only recovery, validate exact reviewed identity first,
+then GET its detail regardless of retention drift and classify it with fixed
+non-ready categories. Do not return provisioning/readiness success for pending
+settings, do not POST/PATCH/DELETE, and do not print raw settings or payloads.
+Add a default-retention/failed-PATCH synthetic fixture asserting GET-only and
+explicit non-ready classification. Normal queues/readback phases must retain
+strict one-day gating. Implementer/root have been notified.
+
+### Decision
+
+**GO for non-deploying hosted source CI in this infra scope.** No known remaining
+syntax or fixture failure is asserted; only actual hosted execution can prove
+that. **NO-GO for live Queue creation at this revision** until failed-PATCH
+recovery is usable, the strict-sink source review is GO, hosted integrated CI is
+green and actual containment evidence passes the exact gate. Source agreement
+with documented API shapes is not a live permission/provider-response proof.
+No settings/ownership result alone grants whole-record privacy approval.
+
+Additional official sources retrieved independently:
+- [Cloudflare Queue SDK resource](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/resources/queues/queues.py).
+- [Create parameter schema](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/types/queues/queue_create_params.py).
+- [PATCH parameter schema](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/types/queues/queue_edit_params.py).
