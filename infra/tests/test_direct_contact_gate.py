@@ -336,6 +336,24 @@ class DirectContactProviderTest(unittest.TestCase):
         with self.assertRaises(health.HealthError):
             health.optional_held_policy(db)
 
+    def test_optional_idle_schema_executes_actual_view_and_health_columns(self):
+        """Matching catalog names cannot disguise unusable or nonempty readiness."""
+        for malformed in ("nonzero_view", "broken_view", "broken_health"):
+            db = FakeDatabase(adopted=False)
+            if malformed == "nonzero_view":
+                db.db.execute("DROP VIEW direct_role_contact_ready")
+                db.db.execute("CREATE VIEW direct_role_contact_ready AS SELECT 1 AS contract_id")
+                expected_error = health.HealthError
+            elif malformed == "broken_view":
+                db.db.execute("DROP VIEW direct_role_contact_ready")
+                db.db.execute("CREATE VIEW direct_role_contact_ready AS SELECT contract_id FROM absent_synthetic_table")
+                expected_error = sqlite3.OperationalError
+            else:
+                db.db.execute("DROP TABLE role_contact_health")
+                db.db.execute("CREATE TABLE role_contact_health(id INTEGER PRIMARY KEY)")
+                expected_error = sqlite3.OperationalError
+            with self.subTest(malformed=malformed), self.assertRaises(expected_error):
+                health.optional_held_policy(db)
     def test_optional_pre_migration_skip_never_treats_provider_errors_as_absence(self):
         """Catalog absence is queried positively; all errors still fail closed."""
         db = FakeDatabase(adopted=False)

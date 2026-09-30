@@ -42,6 +42,7 @@ SELECT (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
  (SELECT COUNT(*) FROM sqlite_master WHERE type='view' AND name='direct_role_contact_ready') AS contact_views,
  (SELECT COUNT(*) FROM pragma_table_info('send_release_gates') WHERE name='abuse_contact_contract_id') AS contact_columns
 """
+IDLE_READY_SQL = "SELECT COUNT(*) AS ready_rows FROM direct_role_contact_ready"
 
 
 class HealthError(Exception):
@@ -189,6 +190,13 @@ def optional_held_policy(database: DatabaseClient) -> dict | None:
         actual = one_row(database.query("SELECT COUNT(*) AS policy_rows FROM role_contact_policy"))
         if type(actual.get("policy_rows")) is not int or actual["policy_rows"] != len(rows):
             raise HealthError("contract_invalid")
+        if policy is None:
+            # Catalog names alone cannot prove that the view and referenced
+            # health columns are usable. Compile/execute the real predicate
+            # before calling an upgraded empty schema a safe idle state.
+            readiness = one_row(database.query(IDLE_READY_SQL))
+            if type(readiness.get("ready_rows")) is not int or readiness != {"ready_rows": 0}:
+                raise HealthError("schema_invalid")
     else:
         raise HealthError("schema_invalid")
     if policy is None and not held(one_row(database.query(HOLD_SQL))):

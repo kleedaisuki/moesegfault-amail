@@ -87,7 +87,10 @@ failure when the relevant identities/shape remain identical.
 An explicit `INPUT_SKIP_UNADOPTED_HELD=true` enables a safe hourly no-adoption
 path: a catalog query must positively establish the pre-0009 contact schema is
 absent, or the expected v1 schema has no policy row; an exact legacy global-held
-readback must then succeed. Partial schema, unknown version, malformed/provider
+readback must then succeed. In the upgraded idle path, the real readiness view
+is also compiled/executed and must return an exact integer count of zero, so
+matching object names cannot conceal a malformed view or missing health
+columns. Partial schema, unknown version, malformed/provider
 errors or allowed/missing global policy never become a skip. This path needs
 the existing D1 credentials but no routing token/private destination and makes
 no routing GET. It prints only `direct_contact_health=unadopted_held`.
@@ -144,6 +147,7 @@ unhold guard to independently verify the send-admission defense. Release
 response tests now require `contact_ready=1`.
 Additional tests cover atomic expected-current adoption, pre-0009/empty-policy
 held skips without routing Secrets, partial-schema/provider-denied skip,
+same-named malformed/nonzero readiness views and missing health columns,
 already-zero repeated revocation, unaffected unrelated gates and suppression
 of a caller's provider mutation after ambiguous D1 invalidation.
 
