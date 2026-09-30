@@ -498,3 +498,25 @@ present, no add/address DELETE and all chunks retained. Existing maximum-size
 real AES/SQLite loader coverage remains a separate bounded source test, not real
 Cloudflare D1 behavior. No local test, migration, provider call or live recovery
 was executed for this slice.
+
+### Final ciphertext-retention readback correction
+
+Independent D1-only review identified that a prior `cleanup_verified` parent
+could skip complete escrow readback after native recovery/teardown. Another
+receipt-authorized storage actor could remove all or some chunks after the
+initial authenticated observation, yet the coordinator would incorrectly emit
+its ciphertext-retained label. Both newly written and previously existing
+terminal branches now perform final complete stable `Escrow.read`, compare exact
+original ciphertext and parent status, and validate the bound immutable terminal
+receipt immediately before retained success. This is read-only validation, not
+repair of a lost transition ACK or permission to purge.
+
+Synthetic fixtures resume an unchanged prior terminal receipt without rewriting
+it, and interleave zero/partial chunk loss after native recovery for a prior
+receipt or immediately after a new finalizer's authenticated return. All four
+loss cases reject retained success; immutable receipt metadata remains, remaining
+chunks are preserved and the coordinator sends no purge. Tests use real isolated
+SQLite receipt-gated deletion to model a separate actor, not fabricated source
+success flags. No local test/provider/migration/workflow operation occurred.
+The final observation does not promise future immunity from privileged deletion;
+same-repository concurrency and independent staging writer exclusion still apply.

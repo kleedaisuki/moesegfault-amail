@@ -271,8 +271,15 @@ def _execute(args: argparse.Namespace, *, terminal: bool = False, transport: str
     row = terminal_client.parent(original_run)
     require(row is not None, "escrow_parent_missing")
     if row["state"] != "cleanup_verified":
-        terminal_client._finalize(original_run,secret,generation,current_run,sha,downloaded)
+        row = terminal_client._finalize(original_run,secret,generation,current_run,sha,downloaded)
     if transport == "escrow":
+        # A prior terminal status cannot prove ciphertext still exists after
+        # native checks. Reauthenticate every chunk and immutable receipt now,
+        # for both new and resumed terminal states, before claiming retention.
+        final,actual = terminal_client.read(original_run,secret,generation)
+        _,binding = escrow.binding(downloaded,secret,original_run,generation)
+        terminal_client._terminal(final,binding)
+        require(actual == downloaded and final == row, "escrow_terminal_retention_unverified")
         # Expiry recovery must not create a destructive partial-envelope window.
         # Atomic all-chunk purge is a separate reviewed/provider-tested contract.
         return ("ten_address_escrow_receipt_retained",)

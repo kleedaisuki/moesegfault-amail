@@ -66,7 +66,8 @@ class PhaseTests(unittest.TestCase):
                 terminal=False, teardown_failure=False, scratch_failure=False, post_teardown_drift=False,
                 tombstones=False, final_drift="", transport="artifact", historical_sha=SHA,
                 original_status="completed", original_record_sha=None, same_run=False,
-                selected_generation=GEN, selected_key=KEY, corrupt_chunk=False, original_missing=False):
+                selected_generation=GEN, selected_key=KEY, corrupt_chunk=False, original_missing=False,
+                prior_terminal=False, late_chunk_loss=""):
         """Run controller with synthetic authenticated envelopes and no environment tools."""
         world, reader, services, cli, native, artifacts, values = self.setup_world()
         terminal = terminal or transport == "escrow"
@@ -78,8 +79,12 @@ class PhaseTests(unittest.TestCase):
                 baseline = manifest.Snapshot({"foreign@example.test":row(owner="foreign",saved="foreign-rule",local_part="foreign",created=1)},
                                              [rule("foreign@example.test","foreign-rule")],1)
             value = plan(baseline)
+            if late_chunk_loss == "partial":
+                # Two legal encrypted chunks suffice to expose partial retention;
+                # maximum-size transport has its own explicit real-cipher check.
+                value["baseline"]["objects"] = {f"synthetic-{index}-" + "x"*900:"a"*64 for index in range(100)}
             value["checkout"] = historical_sha
-            world.snapshot = copy.deepcopy(baseline)
+            world.snapshot = copy.deepcopy(manifest.Snapshot(**value["baseline"]))
             # Real campaigns require a fresh manifest timestamp from prepare.
             import time
             value["created_at"] = int(time.time() * 1000)
@@ -118,10 +123,22 @@ class PhaseTests(unittest.TestCase):
                     world.snapshot.rows[value["allowed"][0]]["owner_sub"] = "foreign"
                 elif final_drift == "tombstone-unsettled":
                     world.snapshot.rows[value["allowed"][0]]["needs_reconcile"] = 1
+                if late_chunk_loss and prior_terminal:
+                    # Simulate another receipt-authorized storage actor after
+                    # initial full escrow readback and native recovery. The
+                    # coordinator itself must not send a purge or claim retained.
+                    lose_chunks()
                 if teardown_failure:
                     raise manifest.ContractFailure("native_session_cleanup_required")
             database = Database()
             self.addCleanup(database.db.close)
+            def lose_chunks():
+                """Model a separate receipt-gated actor, never a coordinator purge call."""
+                sql = f"DELETE FROM {target.escrow.PARTS} WHERE original_run=?"
+                if late_chunk_loss == "partial":
+                    sql += " AND chunk_index=0"
+                database.db.execute(sql,(RUN,))
+                database.db.commit()
             def query(sql,params):
                 if sql in (target.escrow.SQL["receipt"],target.escrow.SQL["purge"]):
                     self.assertTrue(native_state["closed"])
@@ -131,6 +148,18 @@ class PhaseTests(unittest.TestCase):
             if terminal:
                 escrow_client.put(blob,KEY,RUN,GEN)
                 escrow_client.attach(RUN,KEY,GEN,"123",blob)
+            if prior_terminal:
+                # Seed only synthetic SQL metadata, never real recovery proof.
+                seed = target.escrow.Escrow("a"*32,"synthetic",query=database.query)
+                self.prior_receipt = seed._finalize(RUN,KEY,GEN,"8888888","b"*40,blob)
+            if late_chunk_loss and not prior_terminal:
+                original_finalize = escrow_client._finalize
+                def finalized_then_lost(*args):
+                    receipt = original_finalize(*args)
+                    self.prior_receipt = receipt
+                    lose_chunks()
+                    return receipt
+                escrow_client._finalize = finalized_then_lost
             if corrupt_chunk:
                 original_query = escrow_client._query
                 def corrupt(sql,params):
@@ -288,6 +317,33 @@ class PhaseTests(unittest.TestCase):
                 self.assertEqual(client.parent(RUN)["state"],"sealed")
                 self.assertFalse(any(sql in (target.escrow.SQL["receipt"],target.escrow.SQL["purge"])
                                      for sql,params in database.calls))
+
+    def test_d1_terminal_resume_reauthenticates_full_ciphertext_without_rewriting_receipt(self):
+        """Historical terminal metadata still requires fresh recovery and final retained bytes."""
+        result,world,artifacts,privacy,cli = self.execute("recover",transport="escrow",prior_terminal=True,tombstones=True)
+        client,database,native_state = self.last_terminal
+        self.assertEqual(result,("ten_address_escrow_receipt_retained",))
+        self.assertEqual(client.parent(RUN),self.prior_receipt)
+        self.assertEqual(client.parent(RUN)["cleanup_verifier_run"],"8888888")
+        self.assertEqual(sum(sql == target.escrow.SQL["receipt"] for sql,params in database.calls),1)
+        self.assertFalse(any(sql == target.escrow.SQL["purge"] for sql,params in database.calls))
+        self.assertTrue(native_state["closed"])
+        artifacts.content.assert_not_called()
+        cli.add.assert_not_called(); cli.delete.assert_not_called()
+
+    def test_d1_terminal_late_zero_or_partial_loss_cannot_claim_ciphertext_retained(self):
+        """Receipt-gated storage loss after initial readback is rejected at the final boundary."""
+        for prior,loss in ((True,"zero"),(True,"partial"),(False,"zero"),(False,"partial")):
+            with self.subTest(prior=prior,loss=loss):
+                with self.assertRaisesRegex(manifest.ContractFailure,"escrow_chunks_incomplete"):
+                    self.execute("recover",transport="escrow",prior_terminal=prior,late_chunk_loss=loss)
+                client,database,native_state = self.last_terminal
+                self.assertTrue(native_state["closed"])
+                self.assertEqual(client.parent(RUN),self.prior_receipt)
+                self.assertEqual(sum(sql == target.escrow.SQL["receipt"] for sql,params in database.calls),1)
+                self.assertFalse(any(sql == target.escrow.SQL["purge"] for sql,params in database.calls))
+                chunks = database.query(target.escrow.SQL["aggregate"],(RUN,)).rows[0]["n"]
+                self.assertEqual(chunks,0 if loss == "zero" else self.prior_receipt["chunk_count"]-1)
 
     def test_terminal_coordinator_native_or_scratch_failure_preserves_ciphertext(self):
         """Incomplete local teardown never emits terminal SQL despite clean remote baseline."""
