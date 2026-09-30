@@ -162,6 +162,9 @@ def surfaces_private(account: str, token: str, script: str, readback) -> bool:
 
 def queue_trigger_exact(account: str, token: str, realm: str, script: str) -> bool:
     """Require only the reviewed Queue subscription, never another Queue or DLQ."""
+    topology=os.getenv("AMAIL_TRACE_TOPOLOGY", "api-only")
+    if topology not in queues.TOPOLOGIES:
+        return False
     suffix="-staging" if realm == "staging" else ""
     main_name,dlq_name=f"amail-trace-events{suffix}",f"amail-trace-dlq{suffix}"
     expected=os.getenv("AMAIL_TRACE_QUEUE_ID","")
@@ -190,7 +193,10 @@ def queue_trigger_exact(account: str, token: str, realm: str, script: str) -> bo
             return False
         if queue_id in (expected,expected_dlq):
             name=main_name if queue_id == expected else dlq_name
-            queues.validate_detail(detail,name,queue_id,suffix,"queues")
+            # Initial sink installation may precede the sole API producer. The
+            # explicit role phase never inherits that empty-producer allowance.
+            phase="readback" if topology == "api-role" else "queues"
+            queues.validate_detail(detail,name,queue_id,suffix,phase,topology)
             if queue_id == expected and len(consumers) != 1:
                 return False
         elif any(item["script_name"] == script for item in consumers):

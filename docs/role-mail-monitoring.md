@@ -1,5 +1,70 @@
 # Architecture finding: monitored system-role mail after the Junk-folder canary
 
+## Source-only staged shared-Queue rollout contract (2026-10-01)
+
+**Implementation is not deployed acceptance.** The reviewed typed role producer
+shares the private trace sink with Mail, but role deployment is now a distinct
+`staging-role-queue-rollout` manual target rather than an automatic consequence
+of a broad staging deployment. Production's four exact direct forwards are
+unchanged, `abuse_contact_verified=0` and public sending remain held. No role
+SMTP/Cron delivery or retained-record privacy success is claimed here.
+
+| Stage | Exact events-Queue producers | Consumer | Required evidence |
+| --- | --- | --- | --- |
+| Initial sink provisioning | Empty, then sole `amail-mail-staging` | Sole `amail-trace-sink-staging` | Existing bounded create/readback and original-context capture-off containment |
+| Phase1 accepted before role mutation | **Exactly** `amail-mail-staging` | Same sole sink, same reviewed Queue/DLQ IDs | Successful immutable phase1 API/sink rollout plus a separate actual bounded retained-record privacy canary |
+| Phase2 readback after one role deployment | **Exactly** Mail API and `amail-role-monitor-staging` | Same sole sink, same reviewed Queue/DLQ IDs | Stable single-100 API/sink/new-role versions, exact serving resources, strict role capture-off, absent synthetic route, empty isolated ledger and expired lease |
+
+`ensure_trace_queues.py --phase readback --topology api-only` remains the strict
+default. `--topology api-role` is legal **only** for readback, never provisioning
+or partial recovery. The producer array count and exact script set reject
+duplicates, missing peers, cross-realm names and arbitrary extras. Both stages
+preserve one-day retention, the sole sink's bounded retries and an unattached
+DLQ. No topology checker reads, purges or consumes Queue bodies. The shared
+sink's explicit `AMAIL_TRACE_TOPOLOGY=api-role` also uses strict readback rather
+than inheriting the empty-producer initialization allowance.
+
+The role manual target requires `RUN_STAGING_ROLE_TRACE_ROLLOUT`, the existing
+`role_deploy_run` as phase1 provenance, a distinct `trace_sink_canary_run`, the
+reviewed API/sink/current-old-role versions, and repository variables
+`AMAIL_TRACE_QUEUE_ID_STAGING` / `AMAIL_TRACE_DLQ_ID_STAGING`. Historical evidence
+must come from completed successful **first-attempt**, branch-local runs of this
+workflow at the exact promoted source SHA, with successful exact API/sink jobs
+and a distinct canary job. Same-source promotion is intentional: API, role and
+sink share a closed schema; a newer role must not silently use an older sink
+whose schema has not been proved compatible. A marker from a preflight or a
+configuration-only check is not whole-record privacy acceptance. The sink's
+non-secret version/Queue marker is emitted only after its isolation readback;
+the separate bounded-privacy marker only after the real retained-record canary.
+
+`check_role_trace_rollout.py` brackets **all three** serving deployment/version
+identities around exact Queue-ID/topology and effective capture checks, and
+rechecks Queue topology as well. Mail's Queue binding comes from the pinned
+immutable version resources, not `/settings`. The default
+`pin_staging_mail.py --phase pre-queue` remains strict for the historical
+settings-only containment version; new Queue-capable callers must explicitly
+select `--phase queue-api` and supply `AMAIL_EXPECTED_TRACE_QUEUE_ID`. Missing
+pins fail before provider access; a default pin never silently adopts a new
+Queue capability.
+
+The role deployment captures only its exact new version, never raw Wrangler
+output, and uses one restricted secrets file under repository `.temp`, deleted
+after every outcome. It never automatically retries an ambiguous deploy. A
+captured new version is a recovery pin, not a successful phase2 attestation.
+On any later readback failure, do not rerun deployment: inspect the exact new
+version and Queue attachments read-only, keep the synthetic route absent and
+sending held, and reconcile deliberately. External deployment/configuration
+writers must remain frozen through each transition; read brackets detect drift
+at their observations, not an atomic provider transaction or changes that occur
+and revert between reads. Role Email/Cron full-record canaries, operational
+lease/fault tests and external original/digest delivery still precede production
+cutover. The original production-forward rollback policy remains authoritative.
+
+The documented Cloudflare [Queue detail contract](https://developers.cloudflare.com/api/resources/queues/methods/get/)
+exposes explicit producer/consumer arrays and totals, and [version readback](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/get/)
+supplies immutable resources. Unknown response shapes remain unverified rather
+than being treated as equivalent to a configured source declaration.
+
 Status (2026-09-29): **the separate monitor and mail-API lease check are implemented in this branch, but have not passed hosted CI, been deployed, or been accepted**. Four exact `abuse`/`postmaster` rules at the apex and receiving mail subdomain still forward directly to one confidential owner-controlled external mailbox; this branch does not cut them over. Cloudflare reported 4/4 controlled canaries as forwarded/delivered, and the owner confirmed all four arrived **in Junk**. The destination must not be written here or in public logs. Reachability is proved; timely notice and response are not. Keep `abuse_contact_verified=0` and public sending held.
 
 ## Why analytics polling cannot be the primary arrival alarm

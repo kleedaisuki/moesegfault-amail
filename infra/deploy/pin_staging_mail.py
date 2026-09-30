@@ -7,6 +7,7 @@ tokens, account identifiers, or an unexpected version ID.
 from __future__ import annotations
 
 import json
+import argparse
 import os
 import re
 import sys
@@ -22,6 +23,7 @@ ACCOUNT = re.compile(r"[0-9a-f]{32}\Z")
 CONFIG = Path(__file__).resolve().parents[2] / "crates/mail-worker/wrangler.toml"
 API = "https://api.cloudflare.com/client/v4"
 LIMIT = 262_144
+PHASES = ("pre-queue", "queue-api")
 
 
 def fetch(account: str, token: str, suffix: str) -> dict:
@@ -72,12 +74,15 @@ def serving_deployment(result: dict) -> tuple[str, str] | None:
     return deployment_id, version_id
 
 
-def expected_bindings() -> dict[str, tuple[str, str | None]]:
+def expected_bindings(phase: str = "pre-queue", queue_id: str = "") -> dict[str, tuple[str, str | None]]:
     """Derive staging resource values from reviewed config, not copied IDs."""
+
+    if phase not in PHASES:
+        raise ValueError("pin_phase_unreviewed")
 
     with CONFIG.open("rb") as source:
         stage = tomllib.load(source)["env"]["staging"]
-    return {
+    expected = {
         "MAIL_DB": ("d1", stage["d1_databases"][0]["database_id"]),
         "ROLE_MONITOR": ("d1", stage["d1_databases"][1]["database_id"]),
         "MAIL_BODIES": ("r2_bucket", stage["r2_buckets"][0]["bucket_name"]),
@@ -87,9 +92,16 @@ def expected_bindings() -> dict[str, tuple[str, str | None]]:
         "INGRESS_SECRET": ("secret_text", None),
         **{name: ("plain_text", value) for name, value in stage["vars"].items()},
     }
+    if phase == "queue-api":
+        if (ACCOUNT.fullmatch(queue_id) is None or stage.get("queues", {}).get("producers") != [
+                {"binding": "TRACE_EVENTS", "queue": "amail-trace-events-staging"}]):
+            raise ValueError("queue_pin_unreviewed")
+        expected["TRACE_EVENTS"] = ("queue", queue_id)
+    return expected
 
 
-def bindings_match(version: dict, expected_version: str) -> bool:
+def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-queue",
+                   queue_id: str = "") -> bool:
     """Check exact resource bindings on the identified serving version."""
 
     resources = version.get("resources")
@@ -101,7 +113,7 @@ def bindings_match(version: dict, expected_version: str) -> bool:
     # as an empty binding set or fall back to unversioned /settings.
     if isinstance(actual, dict) and set(actual) == {"result"}:
         actual = actual["result"]
-    expected = expected_bindings()
+    expected = expected_bindings(phase, queue_id)
     if not isinstance(actual, list) or len(actual) != len(expected):
         return False
     seen: set[str] = set()
@@ -123,6 +135,8 @@ def bindings_match(version: dict, expected_version: str) -> bool:
             return False
         if kind == "send_email" and binding.get("destination_address") is not None:
             return False
+        if kind == "queue" and binding.get("queue_id", binding.get("id")) != value:
+            return False
     return seen == set(expected)
 
 
@@ -132,8 +146,13 @@ def fetch_worker(account: str, token: str) -> dict:
     return worker_readback(account, token, SCRIPT)
 
 
-def run(account: str, token: str, expected: str) -> str:
+def run(account: str, token: str, expected: str, *, phase: str = "pre-queue",
+        queue_id: str = "") -> str:
     """Check serving version twice around settings to detect concurrent rollout."""
+
+    # Validate the selected contract before any provider access. Historical
+    # settings-only callers retain the strict pre-Queue default unchanged.
+    expected_bindings(phase, queue_id)
 
     # This function is also called in-process by guarded staging jobs, not only
     # by this file's __main__. The sibling module must be importable in both cases.
@@ -153,7 +172,7 @@ def run(account: str, token: str, expected: str) -> str:
     worker = fetch_worker(account, token)
     if not effective_api_settings(worker, SCRIPT, settings, script_settings):
         return "privacy_unverified"
-    if not bindings_match(version, expected):
+    if not bindings_match(version, expected, phase=phase, queue_id=queue_id):
         return "bindings_mismatch"
     second = serving_deployment(fetch(account, token, "deployments?per_page=1&page=1"))
     return "match" if second == first else "deployment_changed"
@@ -162,6 +181,9 @@ def run(account: str, token: str, expected: str) -> str:
 def main() -> int:
     """Print one fixed result and fail closed without exposing Cloudflare data."""
 
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--phase", choices=PHASES, default="pre-queue")
+    args = parser.parse_args()
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
     token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
     expected = os.environ.get("AMAIL_EXPECTED_WORKER_VERSION", "")
@@ -169,7 +191,8 @@ def main() -> int:
         result = "invalid_input"
     else:
         try:
-            result = run(account, token, expected)
+            result = run(account, token, expected, phase=args.phase,
+                         queue_id=os.getenv("AMAIL_EXPECTED_TRACE_QUEUE_ID", ""))
         except (ValueError, KeyError, TypeError, OSError):
             result = "unavailable"
     print(f"staging_mail_serving_pin={result}")

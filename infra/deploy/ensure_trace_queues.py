@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 API = "https://api.cloudflare.com/client/v4"
 RETENTION = 86400
 LIMIT = 262144
+TOPOLOGIES = ("api-only", "api-role")
 
 
 def request(account: str, token: str, path: str, body: dict | None = None, *, method: str | None = None):
@@ -94,8 +95,16 @@ def bounded_queue(row: dict) -> bool:
             and settings.get("delivery_paused", False) is False)
 
 
-def validate_detail(detail: object, name: str, queue_id: str, suffix: str, phase: str) -> None:
-    """Require complete exact attachment ownership before mutating any peer resource."""
+def validate_detail(detail: object, name: str, queue_id: str, suffix: str, phase: str,
+                    topology: str = "api-only") -> None:
+    """Require exact staged ownership; adding the role producer is never implicit.
+
+    Provision/recovery retains its historical empty-producer allowance. A strict
+    readback never does: phase one has the sole API producer and phase two has
+    exactly API plus role, with no duplicate, unknown, or cross-realm script.
+    """
+    if topology not in TOPOLOGIES or (topology != "api-only" and phase != "readback"):
+        raise ValueError("topology_unreviewed")
     if (not isinstance(detail, dict) or (phase != "recover" and not bounded_queue(detail))
             or detail.get("queue_id") != queue_id or detail.get("queue_name") != name):
         raise ValueError("queue_settings_drift")
@@ -125,9 +134,13 @@ def validate_detail(detail: object, name: str, queue_id: str, suffix: str, phase
         raise ValueError("consumer_drift")
     if phase in ("queues", "recover") and not producers:
         return
-    if (len(producers) != 1 or not isinstance(producers[0], dict)
-            or producers[0].get("type") != "worker"
-            or producers[0].get("script") != f"amail-mail{suffix}"):
+    expected = {f"amail-mail{suffix}"}
+    if topology == "api-role":
+        expected.add(f"amail-role-monitor{suffix}")
+    if (len(producers) != len(expected)
+            or not all(isinstance(item, dict) and item.get("type") == "worker"
+                       and isinstance(item.get("script"), str) for item in producers)
+            or {item["script"] for item in producers} != expected):
         raise ValueError("producer_drift")
 
 
@@ -147,8 +160,11 @@ def record_creation(target: str, name: str, queue_id: str) -> None:
     path.chmod(0o600)
 
 
-def reconcile(account: str, token: str, target: str, phase: str) -> None:
+def reconcile(account: str, token: str, target: str, phase: str,
+              topology: str = "api-only") -> None:
     """Create only absent resources; readback never mutates or consumes messages."""
+    if topology not in TOPOLOGIES or (topology != "api-only" and phase != "readback"):
+        raise ValueError("topology_unreviewed")
     suffix = "-staging" if target == "staging" else ""
     rows = inventory(account, token)
     names = (f"amail-trace-dlq{suffix}", f"amail-trace-events{suffix}")
@@ -170,7 +186,7 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
     if phase == "queues":
         for name, queue_id in identities.items():
             detail = request(account, token, f"queues/{queue_id}").get("result")
-            validate_detail(detail, name, queue_id, suffix, phase)
+            validate_detail(detail, name, queue_id, suffix, phase, topology)
     for name in names:
         if name in identities or phase != "queues":
             continue
@@ -198,7 +214,7 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
         if row is None or (phase != "recover" and not bounded_queue(row)) or row["queue_id"] != identities[name]:
             raise ValueError("queue_settings_drift")
         detail = request(account, token, f"queues/{row['queue_id']}").get("result")
-        validate_detail(detail, name, row["queue_id"], suffix, phase)
+        validate_detail(detail, name, row["queue_id"], suffix, phase, topology)
         if phase == "recover":
             print("trace_queue_recovery_retention=" + ("within_boundary" if bounded_queue(detail) else "not_ready"))
     output = os.getenv("GITHUB_OUTPUT")
@@ -213,6 +229,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True, choices=("staging", "production"))
     parser.add_argument("--phase", required=True, choices=("queues", "readback", "recover"))
+    parser.add_argument("--topology", choices=TOPOLOGIES, default="api-only")
     args = parser.parse_args()
     account, token = os.getenv("CLOUDFLARE_ACCOUNT_ID", ""), os.getenv("CLOUDFLARE_API_TOKEN", "")
     if not re.fullmatch(r"[0-9a-f]{32}", account) or not token:
@@ -221,7 +238,7 @@ def main() -> int:
     try:
         if args.phase == "queues" and not os.getenv("GITHUB_WORKSPACE"):
             raise ValueError("recovery_workspace_missing")
-        reconcile(account, token, args.target, args.phase)
+        reconcile(account, token, args.target, args.phase, args.topology)
     except ValueError as error:
         print(f"trace_queue={error}", file=sys.stderr)
         return 1
