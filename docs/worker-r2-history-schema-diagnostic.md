@@ -298,3 +298,31 @@ not rerun either older query or perform email, routing, R2 or Worker mutation.
 The older history/shape targets remain unchanged. Separate source and workflow
 reviews plus hosted checks are prerequisites; this wiring is not live evidence
 or authorization for any subsequent mutation.
+
+### One content-free error-class read: still unresolved; stop automatic queries
+
+The reviewed [error-class run 36764602999](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36764602999)
+at 0c18c78 returned the owner's fixed observation:
+CLASSIFIED, delivery UNVERIFIED, HTTP ok, errors unclassified, scope unscoped,
+data unverified. No raw provider message or identifier is available in this
+record. HTTP ok means HTTP 200, not successful GraphQL execution. Unclassified
+means no recognized public template or supported category established the
+cause; unscoped does not establish a root-level error. Data unverified is not
+evidence of delivery absence.
+
+**Stop condition reached for this diagnostic sequence.** Do not repeat any
+unchanged historical query, expand the historical time window, add speculative
+message-prefix matches, print raw errors, resend mail or register B on this
+result. Neither authentication, authorization, schema/field, arguments/filter,
+rate-limit nor service failure is established. The original failed delivery and
+B's existing-object GET/DELETE capability remain unresolved; B remains NO-GO.
+A source/CI success and successful classification exit do not alter that state.
+
+The next decision belongs to the owner and architecture review: either stop
+this investigation pending a different trusted evidence source, or separately
+design and review a narrowly scoped private diagnostic channel (for example,
+encrypted evidence with an explicit access/retention contract). That evaluation
+is not implemented or authorized here. No further private request is included
+in this documentation update. If such a channel is later approved, its evidence
+handling and one-request scope must be established before collection rather
+than retrofitted after raw data has entered logs or artifacts.
