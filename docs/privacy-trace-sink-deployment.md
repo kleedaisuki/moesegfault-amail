@@ -36,7 +36,14 @@ Only fixed result labels are printed, never provider bodies or queue payloads.
    Record its 100%-serving version and use the existing serving-version pin and
    both effective settings readbacks. Do not deploy producer changes first.
 2. Only after containment is live may the producer/sink source be pushed for
-   normal hosted CI. Sink deployment is a prerequisite of API deployment.
+   non-deploying hosted CI. Sink/producer deployment is manual only: dispatch
+   `ci.yml` with `target=staging`, `confirm=RUN_STAGING_TRACE_SINK_ROLLOUT`,
+   `trace_containment_run=<successful-run-id>` and
+   `expected_worker_version=<exact-contained-version-uuid>`. The guard verifies
+   immutable successful run/SHA/deploy-job/version output, historical safe TOML,
+   stable 100% serving deployment and current effective safe settings. It does
+   not accept a mutable repository variable as deployment provenance. Sink
+   deployment is a prerequisite of API deployment.
    The staging sink job checks API containment before queue creation. The API
    job checks containment again immediately before migration/build/deploy.
 3. Provision one-day queues, deploy the queue-only sink, then read back private

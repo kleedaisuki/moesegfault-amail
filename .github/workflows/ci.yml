@@ -41,6 +41,10 @@ on:
         description: For role SMTP enter FREEZE_STAGING_ROLE_DEPLOYS after enforcing external deploy freeze
         required: false
         type: string
+      trace_containment_run:
+        description: Successful immutable staging CI deploy run proving contained API version
+        required: false
+        type: string
       trace_sink_version:
         description: Reviewed 100-percent serving Queue trace sink version UUID
         required: false
@@ -1536,8 +1540,11 @@ jobs:
 
   staging-worker:
     name: Deploy isolated staging mail API
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/amail-v0.1.0' && inputs.confirm == 'RUN_STAGING_TRACE_SINK_ROLLOUT'
     needs: [cli, worker, site, dns, provider-live, staging-trace-sink]
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: staging
@@ -1550,6 +1557,7 @@ jobs:
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
@@ -1594,7 +1602,7 @@ jobs:
         working-directory: .
         run: python infra/provider/probe_routing.py
       - name: Require separately deployed API privacy containment
-        run: python check_observability.py --realm staging
+        run: python ../../infra/deploy/require_trace_containment.py --run "${{ inputs.trace_containment_run }}" --version "${{ inputs.expected_worker_version }}"
       - name: Apply staging D1 migrations only
         run: wrangler d1 migrations apply MAIL_DB --remote --env staging
       - name: Build Rust Worker bundle
@@ -1886,8 +1894,11 @@ jobs:
 
   staging-trace-sink:
     name: Deploy private staging privacy trace sink
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/amail-v0.1.0' && inputs.confirm == 'RUN_STAGING_TRACE_SINK_ROLLOUT'
     needs: [worker, dns]
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 35
     environment: staging
@@ -1897,6 +1908,7 @@ jobs:
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       AMAIL_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
       AMAIL_TRACE_DLQ_ID: ${{ vars.AMAIL_TRACE_DLQ_ID_STAGING }}
     steps:
@@ -1905,7 +1917,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Require separately deployed API privacy containment
-        run: python crates/mail-worker/check_observability.py --realm staging
+        run: python infra/deploy/require_trace_containment.py --run "${{ inputs.trace_containment_run }}" --version "${{ inputs.expected_worker_version }}"
       - name: Install pinned private sink deployment tools
         run: |
           rustup target add wasm32-unknown-unknown
@@ -1921,3 +1933,5 @@ jobs:
         run: wrangler deploy --env staging
       - name: Verify sink retained telemetry and private trigger boundary
         run: python crates/mail-worker/check_observability.py --realm staging --mode sink
+      - name: Recheck containment pin after sink deployment
+        run: python infra/deploy/require_trace_containment.py --run "${{ inputs.trace_containment_run }}" --version "${{ inputs.expected_worker_version }}"
