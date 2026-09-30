@@ -411,6 +411,54 @@ fn first_page_origin_completion_rechecks_its_own_expiry() {
     assert_eq!(done, ("done".into(), 5, None));
 }
 
+/// A stale completed origin loses its private vector and MAC only under its owner/version CAS.
+#[test]
+fn completed_origin_scrub_is_owner_and_version_scoped() {
+    let db = db();
+    job(&db, "origin", "alice", "done", 7, 1_000);
+    let request = r#"{"semantic":"private query"}"#;
+    let state = r#"{"query_vector":[1,0],"cursor_key":"private"}"#;
+    db.execute(
+        "UPDATE search_jobs SET request_json=?1,state_json=?2 WHERE id='origin'",
+        params![request, state],
+    )
+    .unwrap();
+    let scrub = |issuer: &str, owner: &str, version: i64| {
+        db.execute(
+            "UPDATE search_jobs SET state='stale',request_json='{}',state_json='{}',version=version+1 WHERE id=?1 AND state='done' AND version=?2 AND owner_iss=?3 AND owner_sub=?4",
+            params!["origin", version, issuer, owner],
+        )
+        .unwrap()
+    };
+    assert_eq!(scrub("test-issuer", "bob", 7), 0);
+    assert_eq!(scrub("other-issuer", "alice", 7), 0);
+    assert_eq!(scrub("test-issuer", "alice", 6), 0);
+    let saved: (String, String, String, i64) = db
+        .query_row(
+            "SELECT state,request_json,state_json,version FROM search_jobs WHERE id='origin'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(saved, ("done".into(), request.into(), state.into(), 7));
+    // The handler calls this CAS after detecting that the account generation changed.
+    db.execute(
+        "INSERT INTO search_generations(owner_iss,owner_sub,generation) VALUES('test-issuer','alice',1)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(scrub("test-issuer", "alice", 7), 1);
+    assert_eq!(scrub("test-issuer", "alice", 7), 0);
+    let cleared: (String, String, String, i64) = db
+        .query_row(
+            "SELECT state,request_json,state_json,version FROM search_jobs WHERE id='origin'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(cleared, ("stale".into(), "{}".into(), "{}".into(), 8));
+}
+
 /// Only a first page with another page retains the query vector and private cursor key.
 /// Later page jobs clear their temporary vector; expiry scrubs even the retained origin.
 #[test]
