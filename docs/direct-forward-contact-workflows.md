@@ -17,7 +17,7 @@ This document extends the held-only contract implemented in `a93fe58` and
 | --- | --- | --- |
 | `direct-contact-adopt.yml` | Explicit `main` manual dispatch; protected staging/production Environment; exact current contract (`NONE` for absence), provider destination ID and four rule IDs. New UUID, held state, stale-input rejection. | No human commitment, provider configuration proof, deployment, route mutation or public allow. |
 | `direct-contact-attest.yml` | Explicit `main` manual dispatch; same protected Environment. Verification requires exact adopted UUID and `ACCEPT_INBOX_JUNK_AND_24H_CLOUDFLARE_RESPONSE`; default is unconditional revoke. | The phrase records a human assertion, not proof of mailbox visits. No machine lease, route repair or public allow. |
-| `direct-contact-health.yml` | Every hour at UTC minute 17 for production; optional manual staging/production observation on `main`. GET-only bounded routing/destination reads and scoped D1 health update. | No human acceptance, mailbox access, verification request, routing write, SMTP probe, deployment or automatic unhold. |
+| `direct-contact-health.yml` | Opt-in hourly production observation at UTC minute 17 only when repository variable `AMAIL_CONTACT_HEALTH_ACTIVE=true`; optional manual staging/production observation on `main` regardless of that variable. GET-only bounded routing/destination reads and scoped D1 health update. | No human acceptance, mailbox access, verification request, routing write, SMTP probe, deployment or automatic unhold. |
 
 All three use existing **repository-level Secrets**. Manual jobs retain the
 existing Environment protection boundary, but this source does not prove that
@@ -35,6 +35,47 @@ identifiers, not an email address. Helpers emit fixed status labels, never pins,
 UUIDs, destination addresses or provider bodies. There is no artifact upload or
 step-summary export. Review opaque case references before dispatch; GitHub
 inputs are not an appropriate place for confidential text.
+
+## Default-off schedule activation
+
+The `refresh` job admits scheduled events only when
+`vars.AMAIL_CONTACT_HEALTH_ACTIVE == 'true'`, and both scheduled and manual
+events still require `refs/heads/main`. Set this **repository-level Actions
+variable**, not a Secret or an Environment variable, to the canonical string
+`true` only after production migration/schema and global-held readback are
+confirmed, and the owner has established continuing Inbox/Junk review and
+24-hour Cloudflare-notice response coverage. Obtain a successful controlled
+manual production health observation before activating recurring refresh.
+Missing readiness or unresolved failures mean keep the variable absent or
+`false`; staging readiness alone does not authorize the production schedule.
+This variable is operational scheduling permission, not contact adoption,
+human attestation, release permission or evidence of provider health.
+
+GitHub returns an empty string for an unset configuration variable, so absence
+is default-off. Reserve this name for repository activation; if a same-named
+organization variable is inherited, set repository `false` explicitly until
+ready rather than assuming repository absence disables it.
+The gate is at job level: a skipped schedule runs no checkout,
+helper, secret-bearing step, D1 query or provider read. `workflow_dispatch`
+remains available for controlled staging/production diagnosis without first
+enabling recurring access. GitHub string equality ignores case; use `true`
+and `false` consistently rather than relying on case distinctions.
+[GitHub contexts reference](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#vars-context)
+and [expression comparisons](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#operators).
+
+After the held source landed on `main` at `de2caf2`, manual production run
+`36787473601` failed with the fixed status `direct_contact_health=not_committed`
+before a supported contact schema/global-held proof was established. It is
+not successful health or release evidence. The default-off gate prevents an
+unready hourly schedule from repeatedly accessing provider infrastructure;
+it does not turn that manual failure into success or suppress helper errors.
+
+To stop recurring observations, unset the repository variable or set `false`.
+That affects future job admission, not a run already admitted. It does not
+revoke an existing health lease immediately: use the existing explicit
+revocation/hold controls where required and own the expiry response. Disabling
+the schedule cannot renew health, and no activation or successful refresh can
+unhold global sending or bypass the existing release predicates.
 
 ## Quiet before adoption, strict after adoption
 

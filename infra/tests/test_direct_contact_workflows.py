@@ -4,6 +4,7 @@ Workflow syntax is checked independently by the existing hosted YAML guard.
 These assertions preserve authorization, privacy and pre-mutation ordering.
 """
 
+from itertools import product
 from pathlib import Path
 import re
 import unittest
@@ -95,6 +96,48 @@ class DirectContactWorkflowTests(unittest.TestCase):
                           "attest_gate.py", "send_control.py", "ensure_role_forwarding.py",
                           "direct_contact_policy.py", "GITHUB_STEP_SUMMARY", "wrangler"):
             self.assertNotIn(forbidden, block)
+
+    def test_health_schedule_requires_activation_but_manual_does_not(self):
+        """Evaluate the source predicate against synthetic events, never providers.
+
+        The narrow source grammar fixes precedence and job-level placement.
+        GitHub compares strings case-insensitively and missing vars are empty.
+        This is a contract model, not a replacement for hosted workflow lint.
+        """
+        block = job_block(source("direct-contact-health.yml"), "refresh")
+        guards = re.findall(r"^    if: (.+)$", block, re.M)
+        self.assertEqual(len(guards), 1)
+        predicate = re.fullmatch(
+            r"github\.ref == '([^']+)' && "
+            r"\(github\.event_name == '([^']+)' \|\| "
+            r"\(github\.event_name == '([^']+)' && "
+            r"vars\.AMAIL_CONTACT_HEALTH_ACTIVE == '([^']+)'\)\)",
+            guards[0],
+        )
+        self.assertIsNotNone(predicate)
+        main, manual, scheduled, active = predicate.groups()
+        self.assertEqual((main, manual, scheduled, active),
+                         ("refs/heads/main", "workflow_dispatch", "schedule", "true"))
+        cases = product(
+            ("refs/heads/main", "refs/heads/candidate", "refs/tags/v1"),
+            ("schedule", "workflow_dispatch", "push", "pull_request"),
+            (None, "", "false", "1", "yes", " true ", "true", "TRUE"),
+        )
+        for ref, event, value in cases:
+            with self.subTest(ref=ref, event=event, activation=value):
+                variable = "" if value is None else value
+                observed = ref.casefold() == main.casefold() and (
+                    event.casefold() == manual.casefold() or (
+                        event.casefold() == scheduled.casefold()
+                        and variable.casefold() == active.casefold()
+                    )
+                )
+                expected = ref == "refs/heads/main" and (
+                    event == "workflow_dispatch" or (
+                        event == "schedule" and value in ("true", "TRUE")
+                    )
+                )
+                self.assertEqual(observed, expected)
 
     def test_all_contact_mutation_paths_share_a_non_canceling_realm_lock(self):
         """A health job cannot refresh concurrently with provider mutation/unhold."""
