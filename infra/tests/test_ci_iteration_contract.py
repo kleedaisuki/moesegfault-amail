@@ -41,7 +41,10 @@ class IterationContractTests(unittest.TestCase):
         selector = "github.event_name != 'workflow_dispatch' || inputs.target == 'checks'"
         self.assertIn(f"({selector}) && 'checks-' || ''", header)
         self.assertIn("cancel-in-progress: ${{ " + selector + " }}", header)
-        self.assertIn("${{ github.ref }}", header)
+        self.assertIn("format('ci-{0}{1}',", header)
+        self.assertIn("github.ref)", header)
+        self.assertIn("inputs.target == 'production-api-role-maintenance'", header)
+        self.assertIn("'amail-production-graph-writer'", header)
 
     def test_protected_jobs_require_manual_invocation(self) -> None:
         """All staging and production jobs remain unreachable from push or PR."""
