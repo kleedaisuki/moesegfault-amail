@@ -8,6 +8,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import unittest
 from unittest.mock import patch
@@ -18,6 +19,15 @@ from infra.tests import staging_worker_r2_delivery_history as history
 START = datetime(2026, 10, 1, 1, 0, tzinfo=timezone.utc)
 END = START + timedelta(minutes=12)
 WINDOW = (START, END)
+
+
+def workflow_job(source: str, name: str) -> str:
+    """Extract exactly one top-level job independent of neighboring job names."""
+    pattern = rf"^  {re.escape(name)}:\n(.*?)(?=^  [a-zA-Z0-9_-]+:\n|\Z)"
+    matches = re.findall(pattern, source, re.MULTILINE | re.DOTALL)
+    if len(matches) != 1:
+        raise ValueError("workflow job missing or duplicated")
+    return matches[0]
 
 
 def send(status: str = "sent", cause: str | None = None,
@@ -187,13 +197,28 @@ class DeliveryHistoryTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         self.assertNotIn("private", stdout.getvalue() + stderr.getvalue())
 
+    def test_workflow_job_boundary_ignores_inserted_neighbor(self) -> None:
+        """A newly adjacent credential-bearing job cannot pollute per-job checks."""
+        name = "staging-worker-r2-delivery-history"
+        owned = "    steps:\n      - env:\n          CF_OBSERVABILITY_TOKEN: owned\n"
+        source = "jobs:\n  " + name + ":\n" + owned + (
+            "  arbitrary-inserted-job:\n    steps:\n      - env:\n"
+            "          CF_OBSERVABILITY_TOKEN: unrelated\n"
+            "  staging-second-principal-preflight:\n    steps: []\n")
+        self.assertEqual(workflow_job(source, name), owned)
+        self.assertEqual(workflow_job(source, name).count("CF_OBSERVABILITY_TOKEN"), 1)
+        self.assertEqual(workflow_job("jobs:\n  " + name + ":\n" + owned, name), owned)
+        for invalid in ("jobs:\n", source + "  " + name + ":\n" + owned):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    workflow_job(invalid, name)
+
     def test_workflow_is_manual_staging_and_tests_before_secrets(self) -> None:
         """Keep the historical read separate from every mutating probe target."""
 
         workflow = (Path(__file__).resolve().parents[2] / ".github" / "workflows" /
                     "ci.yml").read_text(encoding="utf-8")
-        block = workflow.split("  staging-worker-r2-delivery-history:\n", 1)[1].split(
-            "\n  staging-second-principal-preflight:", 1)[0]
+        block = workflow_job(workflow, "staging-worker-r2-delivery-history")
         self.assertIn("github.event_name == 'workflow_dispatch'", block)
         self.assertIn("github.ref == 'refs/heads/codex/amail-v0.1.0'", block)
         self.assertIn("environment: staging", block)
