@@ -6,9 +6,11 @@ Baseline: independently corrected terminal source `63f9d11`, correction review
 
 ## Decision and execution limits
 
-**NO-GO for accepting the current coordinator source slice: correct the P2
-below before the next acceptance-oriented hosted source validation. Live
-remains NO-GO.** This is a functional recovery-path defect, not a request for
+**After correction `9890d48`: GO for the bounded dormant coordinator and hosted
+source-only validation; live remains NO-GO.** The initial `4e7929e` assessment
+was NO-GO pending the P2 below; the independent follow-up at the end resolves
+it without removing its failure mechanism. This is a functional recovery-path
+defect, not a request for
 live execution or additional alias mutation. No local tests/builds, executable
 harness invocation, provider requests, migration, key access, artifact download,
 workflow dispatch, or production-source changes were performed. Inspected
@@ -135,3 +137,44 @@ acknowledgement/freshness, current source/binary/native/provider/storage/hold/
 service/capture-off admission and separately authorized recovery all remain
 live gates. No migration, campaign, key retirement, acknowledgement-based
 purge, schema drop, replay or live workflow dispatch is authorized by this review.
+
+## Independent correction review: `9890d48`
+
+Inspected the complete three-file correction and the reused `reconcile`,
+`recovery_actions`, row/rule builders and full composition fixture. **P2
+resolved. GO for hosted dormant source validation; no additional substantive
+defect found in this bounded correction. Live remains NO-GO.** No local
+tests/builds, provider requests, migration, key access or dispatch occurred.
+Fixtures were inspected, not executed; hosted results are still required.
+
+The post-teardown call now passes `reader.read`, literal `None` for deletion,
+and the owner obtained from the already completed fresh native authentication
+to the established `manifest.reconcile`. That oracle accepts only exact
+owner/time/name-bound settled tombstones, and retains the complete baseline
+checks for unrelated rows, provider rules, R2 objects and global count. The
+separate storage and effective privacy checks remain after it; service/hold
+checking remains before it. No rows are hidden or deleted to force equality,
+and no mutation callback or broader recovery capability was introduced.
+
+The new success fixture constructs ten manifest-eligible owner-bound retired
+rows with null provider IDs, no rule, zero pending reconciliation and an old
+`next_reconcile_at`. This accurately represents the persistent journal relation
+that the original prefix assertion rejected. It traverses the real coordinator
+and existing isolated SQLite escrow, while the shared query callback requires
+native exit and binary scratch absence before receipt/purge. It asserts all
+ten tombstones remain and native add/delete are never called. This is a
+structural source regression fixture, not evidence that a live campaign ran.
+
+Four adversarial fixtures first supply valid recovery state, then mutate only
+after native context exit: an unrelated baseline row owner, an unrelated rule
+raw digest, a candidate tombstone owner, or its pending-reconciliation flag.
+They require failure after observed teardown with the parent still sealed and
+no receipt/purge SQL. The shared harness inserts authenticated nonterminal
+ciphertext before invocation, so no terminal query means that ciphertext is
+retained. Existing active-row, native/scratch failure and final capture-off
+cases remain. Coordinator partial-purge resumption, expired artifacts and
+real-provider semantics are still outside this narrow correction's evidence.
+
+The documentation now describes the same cleanup-state oracle and labels the
+new fixtures as awaiting hosted execution. All live gates and artifact-expiry/
+partial-purge limitations above remain unchanged.
