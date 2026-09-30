@@ -1,9 +1,7 @@
 """Hosted synthetic encrypted D1 escrow contracts; never live/migrate/run locally."""
 
 import base64
-import copy
-import hashlib
-from pathlib import Path
+import json
 import sqlite3
 import unittest
 from unittest import mock
@@ -11,6 +9,31 @@ from unittest import mock
 import staging_ten_address_escrow as target
 import staging_ten_address_manifest as manifest
 from test_staging_ten_address_manifest import KEY, RUN, GEN, plan, SyntheticAEAD
+
+
+def maximum_plan():
+    """Fill a valid object baseline to the exact existing manifest plaintext limit."""
+    value = plan()
+    objects = value["baseline"]["objects"]
+    remaining = manifest.LIMIT - len(manifest.canonical(value))
+    digest = "a" * 64
+    index = 0
+    while remaining > 1900:
+        key = f"synthetic-object-{index:04d}-" + "x" * 900
+        cost = len(manifest.canonical({key: digest})) - 2 + bool(objects)
+        objects[key] = digest
+        remaining -= cost
+        index += 1
+    for prefix, amount in (("synthetic-final-a-", remaining // 2),
+                           ("synthetic-final-b-", remaining - remaining // 2)):
+        cost = len(manifest.canonical({prefix: digest})) - 2 + 1
+        key = prefix + "x" * (amount - cost)
+        if not 1 <= len(key) <= 1024 or amount < cost:
+            raise AssertionError("synthetic maximum-size fixture invalid")
+        objects[key] = digest
+    if len(manifest.canonical(value)) != manifest.LIMIT:
+        raise AssertionError("synthetic maximum-size fixture length invalid")
+    return value
 
 
 class Database:
@@ -106,6 +129,61 @@ class EscrowTests(unittest.TestCase):
             self.client.arm(RUN, KEY, GEN, "123", self.blob)
         self.assertEqual(self.client.read(RUN, KEY, GEN)[0]["state"], "armed")
 
+    def test_competing_arm_has_only_one_known_transition(self):
+        """Interleave a competing caller after sealed readback but before the UPDATE."""
+        self.prepare()
+        winner = []
+        competitor = target.Escrow("a" * 32, "synthetic-token", query=self.world.query)
+        original = self.client._query
+        def competing(sql, params):
+            if sql == target.SQL["arm"] and not winner:
+                winner.append(competitor.arm(RUN, KEY, GEN, "123", self.blob))
+            return original(sql, params)
+        self.client._query = competing
+        with self.assertRaisesRegex(manifest.ContractFailure, "escrow_arm_ack_unverified"):
+            self.client.arm(RUN, KEY, GEN, "123", self.blob)
+        self.assertEqual(len(winner), 1)
+        self.assertEqual(self.client.read(RUN, KEY, GEN)[0]["state"], "armed")
+        self.assertEqual(sum(sql == target.SQL["arm"] for sql, params in self.world.calls), 2)
+
+    def test_lost_create_chunk_and_seal_responses_stop_without_retry(self):
+        """Committed preparation loss preserves exact data but supplies no arm authority."""
+        for operation in ("create", "part_create", "seal"):
+            with self.subTest(operation=operation):
+                world = Database()
+                try:
+                    client = target.Escrow("a" * 32, "synthetic-token", query=world.query)
+                    world.ambiguous = target.SQL[operation]
+                    with self.assertRaisesRegex(manifest.ContractFailure, "escrow_query_unverified"):
+                        client.put(self.blob, KEY, RUN, GEN)
+                    self.assertEqual(sum(sql == target.SQL[operation] for sql, params in world.calls), 1)
+                    self.assertFalse(any(sql == target.SQL["arm"] for sql, params in world.calls))
+                    parent = client.parent(RUN)
+                    self.assertEqual(parent["state"], "sealed" if operation == "seal" else "writing")
+                    self.assertIsNone(parent["armed_at"])
+                    # A separately initiated durability operation may finish matching
+                    # preparation; it cannot synthesize or replay an arm result.
+                    self.assertEqual(client.put(self.blob, KEY, RUN, GEN)["state"], "sealed")
+                    self.assertEqual(client.read(RUN, KEY, GEN)[1], self.blob)
+                    self.assertFalse(any(sql == target.SQL["arm"] for sql, params in world.calls))
+                finally:
+                    world.db.close()
+
+    def test_maximum_valid_manifest_roundtrips_all_31_chunks(self):
+        """Exercise actual 2MB plaintext serialization, all chunk INSERTs and repeat reads."""
+        blob = manifest.seal(maximum_plan(), KEY, RUN, GEN)
+        self.assertGreater(len(blob), manifest.LIMIT)
+        self.assertLessEqual(len(blob), target.MAX_ENVELOPE)
+        row = self.client.put(blob, KEY, RUN, GEN)
+        self.assertEqual(row["chunk_count"], 31)
+        self.client.attach(RUN, KEY, GEN, "123", blob)
+        self.client.arm(RUN, KEY, GEN, "123", blob)
+        self.assertEqual(self.client.read(RUN, KEY, GEN)[1], blob)
+        inserts = [params for sql, params in self.world.calls if sql == target.SQL["part_create"]]
+        self.assertEqual([params[1] for params in inserts], list(range(31)))
+        self.assertTrue(all(len(params[-1]) <= 87_384 for params in inserts))
+        self.assertEqual(sum(params[2] for params in inserts), len(blob))
+
     def test_different_ciphertext_or_artifact_never_overwrites(self):
         """Existing coordinates are not a namespace for replacement content."""
         self.prepare()
@@ -187,6 +265,23 @@ class BoundaryTests(unittest.TestCase):
         self.assertLessEqual(max(((size+2)//3)*4 for size in chunks), 87_384)
         self.assertLess(87_384 + 4096, target.MAX_RESPONSE)
         self.assertTrue(all(len(sql.encode()) < 4096 for sql in target.SQL.values()))
+
+    def test_real_http_contract_rejects_missing_or_malformed_changes(self):
+        """The REST adapter never treats absent, boolean or string counters as one ACK."""
+        client = target.Escrow("a" * 32, "synthetic-token")
+        for meta in (None, {}, {"changes": None}, {"changes": True},
+                     {"changes": "1"}, {"changes": -1}, {"changes": 1.0}):
+            with self.subTest(meta=meta):
+                result = {"success": True, "results": [], "meta": meta}
+                payload = json.dumps({"success": True, "result": [result]}).encode()
+                with mock.patch.object(target, "request", return_value=payload) as request:
+                    with self.assertRaisesRegex(manifest.ContractFailure, "escrow_response_unverified"):
+                        client._http(target.SQL["arm"], (RUN,"a"*64,"123"))
+                self.assertEqual(request.call_count, 1)
+        payload = json.dumps({"success": True, "result": [
+            {"success": True, "results": [], "meta": {"changes": 1}}]}).encode()
+        with mock.patch.object(target, "request", return_value=payload):
+            self.assertEqual(client._http(target.SQL["arm"], (RUN,"a"*64,"123")).changes, 1)
 
     def test_budget_includes_verified_nonpurged_ciphertext(self):
         """A terminal state flag cannot remove retained chunks from reserved accounting."""

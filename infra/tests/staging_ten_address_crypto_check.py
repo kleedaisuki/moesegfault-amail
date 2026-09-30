@@ -32,12 +32,12 @@ class RealCryptoTests(unittest.TestCase):
     def test_real_cipher_roundtrip_through_bounded_sqlite_escrow(self):
         """Verify real AEAD survives insert/seal/readback/arm without provider calls."""
         from staging_ten_address_escrow import Escrow
-        from test_staging_ten_address_escrow import Database
+        from test_staging_ten_address_escrow import Database, maximum_plan
         database = Database()
         try:
-            blob = target.seal(plan(), KEY, RUN, GEN)
+            blob = target.seal(maximum_plan(), KEY, RUN, GEN)
             client = Escrow("a" * 32, "synthetic-token", query=database.query)
-            client.put(blob, KEY, RUN, GEN)
+            self.assertEqual(client.put(blob, KEY, RUN, GEN)["chunk_count"], 31)
             client.attach(RUN, KEY, GEN, "123", blob)
             client.arm(RUN, KEY, GEN, "123", blob)
             self.assertEqual(client.read(RUN, KEY, GEN)[1], blob)

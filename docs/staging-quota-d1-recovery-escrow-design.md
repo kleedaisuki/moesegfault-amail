@@ -313,3 +313,22 @@ CI check now also exercises its actual ciphertext through this in-memory escrow
 insert/seal/readback/arm boundary. Missing library still fails, never skips. This
 closes only a source integration test once its containing CI passes, not actual
 Cloudflare D1 behavior, migration acceptance, accountable escalation or quota.
+
+## Escrow boundary and ambiguous-response coverage
+
+The follow-up source fixtures serialize a structurally valid baseline to the
+existing exact 2,000,000-byte plaintext limit, authenticate/seal it and exercise
+all 31 ciphertext chunks through insert, seal, repeated download and one-time
+arm. The explicit real AES-GCM hosted check uses this same maximum valid manifest,
+not fabricated ciphertext or a smaller substitute. The conservative envelope
+transport upper bound remains 2,000,256 bytes; actual cipher overhead is smaller.
+
+Additional synthetic cases exercise missing/null/boolean/string/negative/float
+REST `meta.changes`, committed-but-lost create/chunk/seal responses, retained
+partial preparation, and two callers interleaved immediately before the
+conditional arm UPDATE. A losing caller sees zero changes and fails even when
+another caller obtained the sole known transition. No fault case auto-retries
+its failed write or supplies alias authority. An explicitly separate matching
+preparation can finish durability work; it cannot recover a lost arm ACK.
+These are dormant source tests pending hosted execution, not provider behavior
+or live mutation permission.
