@@ -126,7 +126,9 @@ class NativeTests(unittest.TestCase):
     def test_native_scope_cleanups_partial_persisted_login(self):
         """A failure after token persistence still attempts logout for that exact home."""
         identity = ModuleType("staging_identity_cdp")
+        created = []
         def login(run_dir, binary, expected_address):
+            created.append(run_dir)
             (run_dir / "amail-home-synthetic").mkdir()
             raise RuntimeError("synthetic browser teardown failure")
         identity.native_login = login
@@ -134,7 +136,7 @@ class NativeTests(unittest.TestCase):
         from staging_second_principal import FIRST
         fake_cli = mock.Mock()
         contacts = {FIRST: ("synthetic-principal", OWNER, "verified", "synthetic_username")}
-        with mock.patch.object(target.os, "name", "nt"), mock.patch.dict(sys.modules, {"staging_identity_cdp": identity}), \
+        with mock.patch.object(target, "os", SimpleNamespace(name="nt")), mock.patch.dict(sys.modules, {"staging_identity_cdp": identity}), \
                 mock.patch("staging_second_principal.identity_contacts", return_value=contacts), \
                 mock.patch.object(target, "Cli", return_value=fake_cli):
             with self.assertRaisesRegex(RuntimeError, "synthetic browser teardown failure"):
@@ -142,4 +144,5 @@ class NativeTests(unittest.TestCase):
                                            "a" * 32, "private-token", self.allowed):
                     self.fail("partial login must not yield campaign capability")
         fake_cli.logout.assert_called_once()
-        self.assertEqual(list(target.TEMP.glob("ten-address-native-*")), [])
+        self.assertEqual(len(created), 1)
+        self.assertFalse(created[0].exists())
