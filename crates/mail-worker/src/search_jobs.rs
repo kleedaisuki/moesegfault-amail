@@ -174,11 +174,12 @@ fn cursor_mac(
 }
 
 /// Load a cursor origin without revealing whether another account owns its UUID.
+/// Return state, expiry, row version, and current account generation for CAS scrubbing.
 async fn origin_state(
     database: &D1Database,
     user: &Principal,
     cursor: &SearchCursor,
-) -> AppResult<(SearchState, i64)> {
+) -> AppResult<(SearchState, i64, i64, i64)> {
     let id = cursor.origin_job_id.as_deref().ok_or_else(stale)?;
     let row = load_job(database, user, id).await.map_err(|error| {
         if error.status == 404 {
@@ -193,7 +194,7 @@ async fn origin_state(
             code: "search_cursor_expired",
         });
     }
-    if row.state != "done" || row.current_generation != cursor.generation {
+    if row.state != "done" {
         return Err(AppError::conflict("search_cursor_stale"));
     }
     let input: SearchRequest = serde_json::from_str(&row.request_json).map_err(|_| stale())?;
@@ -211,7 +212,7 @@ async fn origin_state(
         return Err(AppError::conflict("search_cursor_stale"));
     }
     check_semantic_state(None, &cursor.hash, &state).map_err(|_| stale())?;
-    Ok((state, row.expires_at))
+    Ok((state, row.expires_at, row.version, row.current_generation))
 }
 
 /// Verify a v5 token before admission or any row scan, then return the exact origin vector.
@@ -220,7 +221,8 @@ async fn verified_origin(
     user: &Principal,
     cursor: &SearchCursor,
 ) -> AppResult<(SearchState, i64)> {
-    let (state, expires_at) = origin_state(database, user, cursor).await?;
+    let (state, expires_at, version, current_generation) =
+        origin_state(database, user, cursor).await?;
     let expected = cursor_mac(
         cursor,
         state.query_model.as_deref().ok_or_else(stale)?,
@@ -231,7 +233,30 @@ async fn verified_origin(
     if provided.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() != 1 {
         return Err(AppError::bad("invalid_cursor"));
     }
+    // Only an authenticated origin token may revoke its retained private state.
+    if current_generation != cursor.generation {
+        scrub_done(
+            database,
+            user,
+            cursor.origin_job_id.as_deref().ok_or_else(stale)?,
+            version,
+        )
+        .await?;
+        return Err(AppError::conflict("search_cursor_stale"));
+    }
     Ok((state, expires_at))
+}
+
+/// Best-effort privacy scrub after a trusted generation check detects mutation.
+async fn scrub_invalidated_origin(
+    database: &D1Database,
+    user: &Principal,
+    cursor: Option<&SearchCursor>,
+) {
+    if let Some(cursor) = cursor.filter(|cursor| cursor.version == 5) {
+        // The verifier authenticates the MAC before any origin-row mutation.
+        let _ = verified_origin(database, user, cursor).await;
+    }
 }
 
 fn decode_cursor(
@@ -302,7 +327,10 @@ fn decode_cursor_at(
     if cursor.version != 5 && (cursor.origin_job_id.is_some() || cursor.cursor_mac.is_some()) {
         return Err(AppError::bad("invalid_cursor"));
     }
-    if cursor.generation != generation {
+    // v5 checks generation only after the owner-scoped origin and MAC are verified,
+    // so a real invalidation can scrub the private vector without enabling
+    // forged origin UUIDs to revoke another user's valid cursor.
+    if cursor.version != 5 && cursor.generation != generation {
         return Err(AppError::conflict("search_cursor_stale"));
     }
     Ok(Some(cursor))
@@ -455,6 +483,7 @@ pub(super) async fn search(
         .await?;
     if inserted.meta()?.and_then(|meta| meta.changes).unwrap_or(0) != 1 {
         if generation(&database, user).await? != epoch {
+            scrub_invalidated_origin(&database, user, cursor.as_ref()).await;
             return Err(stale());
         }
         return Err(AppError {
@@ -625,13 +654,18 @@ async fn release(database: &D1Database, id: &str, version: i64, error: &AppError
     }
 }
 
-async fn scrub_done(database: &D1Database, id: &str, version: i64) {
-    if let Ok(query) = database
-        .prepare("UPDATE search_jobs SET state='stale',request_json='{}',state_json='{}',version=version+1 WHERE id=?1 AND state='done' AND version=?2")
-        .bind(&[bind_str(id),bind_num(version)])
-    {
-        let _ = query.run().await;
-    }
+/// Clear a completed job's private state only if its owner and version still match.
+async fn scrub_done(
+    database: &D1Database,
+    user: &Principal,
+    id: &str,
+    version: i64,
+) -> AppResult<()> {
+    database
+        .prepare("UPDATE search_jobs SET state='stale',request_json='{}',state_json='{}',version=version+1 WHERE id=?1 AND state='done' AND version=?2 AND owner_iss=?3 AND owner_sub=?4")
+        .bind(&[bind_str(id),bind_num(version),bind_str(&user.iss),bind_str(&user.sub)])?
+        .run().await?;
+    Ok(())
 }
 
 async fn advance(
@@ -647,21 +681,24 @@ async fn advance(
     if row.state == "done" {
         let input: SearchRequest = serde_json::from_str(&row.request_json).map_err(|_| stale())?;
         let state: SearchState = serde_json::from_str(&row.state_json).map_err(|_| stale())?;
+        let hash = query_hash(&input, user)?;
+        let cursor = decode_cursor(&input, &hash, state.generation)?;
         if row.current_generation != state.generation {
-            scrub_done(&database, id, row.version).await;
+            scrub_invalidated_origin(&database, user, cursor.as_ref()).await;
+            let _ = scrub_done(&database, user, id, row.version).await;
             return Err(stale());
         }
-        let hash = query_hash(&input, user)?;
         let result = match result_page(&database, user, &input, &state, &hash, request_id).await {
             Ok(result) => result,
             Err(error) if error.code == "search_job_stale" => {
-                scrub_done(&database, id, row.version).await;
+                let _ = scrub_done(&database, user, id, row.version).await;
                 return Err(error);
             }
             Err(error) => return Err(error),
         };
         if generation(&database, user).await? != state.generation {
-            scrub_done(&database, id, row.version).await;
+            scrub_invalidated_origin(&database, user, cursor.as_ref()).await;
+            let _ = scrub_done(&database, user, id, row.version).await;
             return Err(stale());
         }
         let retain_origin = state.is_origin && state.query_vector.is_some();
@@ -682,24 +719,25 @@ async fn advance_claimed(
 ) -> AppResult<(Response, bool, bool)> {
     let input: SearchRequest = serde_json::from_str(&row.request_json).map_err(|_| stale())?;
     let mut state: SearchState = serde_json::from_str(&row.state_json).map_err(|_| stale())?;
-    if generation(database, user).await? != state.generation {
-        return Err(stale());
-    }
     let hash = query_hash(&input, user)?;
     let cursor = decode_cursor(&input, &hash, state.generation)?;
+    if let Some(cursor) = cursor.as_ref().filter(|cursor| cursor.version == 5) {
+        let (origin, _) = verified_origin(database, user, cursor).await?;
+        if !origin
+            .query_vector
+            .as_deref()
+            .zip(state.query_vector.as_deref())
+            .is_some_and(|(left, right)| same_vector(left, right))
+        {
+            return Err(stale());
+        }
+    }
+    if generation(database, user).await? != state.generation {
+        scrub_invalidated_origin(database, user, cursor.as_ref()).await;
+        return Err(stale());
+    }
     if input.semantic.is_some() {
         check_semantic_state(cursor.as_ref(), &hash, &state)?;
-        if let Some(cursor) = cursor.as_ref().filter(|cursor| cursor.version == 5) {
-            let (origin, _) = verified_origin(database, user, cursor).await?;
-            if !origin
-                .query_vector
-                .as_deref()
-                .zip(state.query_vector.as_deref())
-                .is_some_and(|(left, right)| same_vector(left, right))
-            {
-                return Err(stale());
-            }
-        }
     }
     let previous_marker = state.marker.clone();
     let complete = scan_batch(database, user, &input, &mut state, cursor.as_ref()).await?;
@@ -710,11 +748,13 @@ async fn advance_claimed(
         });
     }
     if generation(database, user).await? != state.generation {
+        scrub_invalidated_origin(database, user, cursor.as_ref()).await;
         return Err(stale());
     }
     if complete {
         let result = result_page(database, user, &input, &state, &hash, request_id).await?;
         if generation(database, user).await? != state.generation {
+            scrub_invalidated_origin(database, user, cursor.as_ref()).await;
             return Err(stale());
         }
         let retain_origin = state.is_origin && result["next_cursor"].is_string();
@@ -724,9 +764,9 @@ async fn advance_claimed(
         }
         let serialized = serde_json::to_string(&state).map_err(|_| stale())?;
         let sql = if cursor.as_ref().is_some_and(|cursor| cursor.version == 5) {
-            "UPDATE search_jobs SET state='done',state_json=?1,version=version+1,lease_started_at=NULL WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='advancing' AND version=?5 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?6 AND EXISTS (SELECT 1 FROM search_jobs origin WHERE origin.id=?7 AND origin.owner_iss=?3 AND origin.owner_sub=?4 AND origin.state='done' AND origin.expires_at>?8)"
+            "UPDATE search_jobs SET state='done',state_json=?1,version=version+1,lease_started_at=NULL WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='advancing' AND version=?5 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?6 AND search_jobs.expires_at>?7 AND EXISTS (SELECT 1 FROM search_jobs origin WHERE origin.id=?8 AND origin.owner_iss=?3 AND origin.owner_sub=?4 AND origin.state='done' AND origin.expires_at>?7)"
         } else {
-            "UPDATE search_jobs SET state='done',state_json=?1,version=version+1,lease_started_at=NULL WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='advancing' AND version=?5 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?6"
+            "UPDATE search_jobs SET state='done',state_json=?1,version=version+1,lease_started_at=NULL WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='advancing' AND version=?5 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?6 AND search_jobs.expires_at>?7"
         };
         let mut binds = vec![
             bind_str(&serialized),
@@ -735,10 +775,10 @@ async fn advance_claimed(
             bind_str(&user.sub),
             bind_num(row.version),
             bind_num(state.generation),
+            bind_num(now()),
         ];
         if let Some(cursor) = cursor.as_ref().filter(|cursor| cursor.version == 5) {
             binds.push(bind_str(cursor.origin_job_id.as_deref().ok_or_else(stale)?));
-            binds.push(bind_num(now()));
         }
         let changed = database
             .prepare(sql)
@@ -749,6 +789,12 @@ async fn advance_claimed(
             .and_then(|meta| meta.changes)
             .unwrap_or(0);
         if changed != 1 {
+            if row.expires_at <= now() {
+                return Err(AppError {
+                    status: 410,
+                    code: "search_job_expired",
+                });
+            }
             return Err(stale());
         }
         return Ok((Response::from_json(&result)?, true, retain_origin));
@@ -935,7 +981,19 @@ async fn result_page(
             let key = if state.is_origin {
                 state.cursor_key.clone().ok_or_else(stale)?
             } else {
-                let (origin, _) = origin_state(database, user, &cursor).await?;
+                let (origin, _, version, current_generation) =
+                    origin_state(database, user, &cursor).await?;
+                if current_generation != cursor.generation {
+                    // This cursor is generated from a trusted persisted page job.
+                    scrub_done(
+                        database,
+                        user,
+                        cursor.origin_job_id.as_deref().ok_or_else(stale)?,
+                        version,
+                    )
+                    .await?;
+                    return Err(AppError::conflict("search_cursor_stale"));
+                }
                 origin.cursor_key.ok_or_else(stale)?
             };
             cursor.cursor_mac = Some(cursor_mac(
@@ -1228,6 +1286,9 @@ mod tests {
             ..input
         };
         assert!(decode_cursor_at(&continued, &hash, 3, SYNTHETIC_NOW).is_ok());
+        // Only v5 defers a generation mismatch to owner-scoped MAC verification,
+        // where the retained origin can be scrubbed without forged UUID revocation.
+        assert!(decode_cursor_at(&continued, &hash, 4, SYNTHETIC_NOW).is_ok());
         for altered in [
             SearchCursor {
                 last_score_bits: Some(0.74_f64.to_bits()),
