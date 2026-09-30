@@ -1,6 +1,15 @@
 # Staging semantic-search verification boundary
 
 Status: integrated as an **opt-in hosted stage**, **not deployed evidence**.
+The bounded [guarded exact-oracle run 36699356379](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36699356379)
+at `11127a8` passed native PKCE, two real SMTP fixtures, ZIP, and the basic
+two-message semantic behavior check. Its separate exact-cosine phase stopped
+before the first CLI page because independently repeated OpenRouter query
+vectors disagreed at `f32` bits (`query_vector_unstable`). The exact route was
+retired and cleanup reported `none`. Thus this run supports the small-corpus
+behavior result but **not** v4 cursor/two-page or exact-score acceptance; the
+precondition failure does not diagnose the Worker's cosine arithmetic. See
+[the protected oracle](staging-exact-cosine-oracle.md) for the evidence boundary.
 The independent helper `infra/tests/staging_semantic_e2e.py` does not send mail,
 access credentials, mutate messages, or change a release gate. Its mock-only
 tests are in `infra/tests/test_staging_semantic_e2e.py`; hosted integration

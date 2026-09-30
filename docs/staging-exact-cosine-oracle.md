@@ -1,8 +1,19 @@
 # Protected staging oracle for exact semantic scores
 
 Status (2026-09-30): **v4 cursor source implemented; hosted tests, review, and
-live exact-cosine attestation pending**. The implementation commits to the
-256 rounded `f32` coordinates with the exact byte stream specified below,
+live exact-cosine attestation pending**. A guarded live attempt at
+[`11127a8`, run 36699356379](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36699356379)
+aborted with fixed label `query_vector_unstable`: its two independent
+OpenRouter query embeddings differed in rounded `f32` bits, before the first
+exact-oracle CLI page. This is an oracle precondition failure, **not** a
+measured Worker cosine failure. No v4 cursor, second page, score comparison,
+or exact-cosine acceptance was obtained. Native PKCE, two SMTP fixtures,
+ZIP retrieval, and the basic two-message semantic check passed in that run;
+the exact route was retired and cleanup reported `none`. Do not repeat those
+passed stages merely to turn this aborted oracle green.
+
+The implementation commits to the 256 rounded `f32` coordinates with the
+exact byte stream specified below,
 rejects vector drift with `search_cursor_vector_changed` (409) before any row
 scan, and retains only the digest in a completed job. No deployed result is
 inferred from this source change. This
