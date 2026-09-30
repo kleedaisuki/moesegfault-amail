@@ -305,6 +305,48 @@ before that diagnosis, infer the PATCH outcome from unchanged bins, accept the
 failed run as an attestation, or open Queue rollout/public sending. No active
 privacy pass or Queue rollout follows from either run.
 
+### Fixed read-only phase diagnosis (source only)
+
+`infra/deploy/diagnose_staging_capture_preflight.py` and its focused synthetic
+contracts implement the next discriminator without invoking the correction
+helper's `apply`/PATCH path. Dispatch `ci.yml` on the reviewed source branch with
+`target=staging-capture-preflight`,
+`confirm=READ_STAGING_CAPTURE_SETTINGS_PREFLIGHT` and the same literal expected
+c3f Version ID. The dedicated job requires first attempt and runs synthetic
+contracts before credentials. Source review and hosted execution are still
+required; no diagnostic was deployed or run in this source change.
+
+After exact source-policy validation and the initial expected single100 pin,
+the only provider operations are six bounded GETs: deployment, immutable
+version, legacy settings, script-settings, exact current Worker resource, and
+deployment again. Each uses the existing no-redirect/no-retry bounded reader.
+The version and three settings resources are inspected even if one independent
+phase fails, avoiding repeated narrow diagnostic runs. A failed read is never
+retried. An observed final deployment change discards the collected bins.
+
+Output is a closed list of fixed categorical fields prefixed
+`staging_capture_preflight_`: source, serving, version read/bindings and a fixed
+binding mismatch cause, per-endpoint read status, independent normalized-policy
+phases, unaffected projection shape, closing serving pin and aggregate
+preflight. No provider binding names, identifiers, values, counts, source text,
+error bodies, credentials or retained records are output. Transport/timeout,
+HTTP denial/not-found/5xx and provider-envelope failures have fixed categories.
+No `settings-v1` or `Current Version ID` attestation marker is emitted.
+
+`diagnosed` means the bounded reads were complete under the serving bracket,
+not that containment is safe. `preflight=pass` means only that the existing
+helper's **Issues-relaxed pre-correction** predicates currently pass. Missing
+Issues still fails actual all-capture-off acceptance. The synthetic fixture
+matching the reported dormant defaults, missing Issues and null legacy
+observability passes that relaxed preflight while failing the actual full
+policy; those bins alone therefore do not establish a helper source bug.
+
+The diagnostic may identify a current blocker; it cannot establish which
+phase the historical failed run reached or whether its PATCH was attempted.
+Even a current preflight pass does not authorize retrying the mutation. Keep
+the failed run, absent Issues and closed rollout state until a reviewed next
+step resolves the actual failure.
+
 ## Evidence boundary
 
 Public API schema was retrieved on 2026-09-30. Repository files inspected by
