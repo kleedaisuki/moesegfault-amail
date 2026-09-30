@@ -13,7 +13,8 @@ def jobs(source: str) -> dict[str, str]:
 
     A body ends at the next sibling job, not a caller-selected later job. A
     subsequent top-level mapping also ends the jobs section. Nested step names
-    and shell text cannot become siblings at their deeper indentation.
+    and shell text cannot become siblings at their deeper indentation. Unsupported
+    shallow layout fails closed rather than absorbing an unrecognized sibling.
     """
     source = source.replace("\r\n", "\n")
     sections = list(re.finditer(r"^jobs:[ \t]*$", source, re.MULTILINE))
@@ -23,6 +24,16 @@ def jobs(source: str) -> dict[str, str]:
     end = re.search(r"^[A-Za-z_][A-Za-z0-9_-]*:", body, re.MULTILINE)
     if end:
         body = body[:end.start()]
+    for line in body.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if line[indent:].startswith("\t") or indent in (0, 1, 3):
+            raise ValueError("workflow job indentation unsupported")
+        if indent == 2 and not re.fullmatch(
+            r"  [A-Za-z_][A-Za-z0-9_-]*:[ \t]*(?:#.*)?", line
+        ):
+            raise ValueError("workflow job must use a plain block mapping key")
     starts = list(re.finditer(r"^  ([A-Za-z_][A-Za-z0-9_-]*):([^\n]*)$", body, re.MULTILINE))
     result = {}
     for index, item in enumerate(starts):

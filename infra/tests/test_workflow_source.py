@@ -42,6 +42,20 @@ class WorkflowSourceTests(unittest.TestCase):
             with self.subTest(source=source), self.assertRaises(ValueError):
                 job_block(source, target)
 
+    def test_unsupported_sibling_cannot_supply_missing_guard(self) -> None:
+        """Quoted keys and shallow layout must fail, not extend the target body."""
+        prefix = "jobs:\n  read-only:\n    runs-on: ubuntu-latest\n"
+        for header in (
+            '  "unrelated":\n', "  'unrelated':\n", "  unrelated.key:\n",
+            "  unrelated: {}\n", " unrelated:\n", "   unrelated:\n",
+            "\tunrelated:\n", "  ? unrelated\n", "  :\n",
+        ):
+            source = prefix + header + "    if: manual\n"
+            with self.subTest(header=header), self.assertRaises(ValueError):
+                job_block(source, "read-only")
+        plain = prefix + "  unrelated: # valid sibling\n    if: manual\n"
+        self.assertNotIn("if: manual", job_block(plain, "read-only"))
+
 
 if __name__ == "__main__":
     unittest.main()
