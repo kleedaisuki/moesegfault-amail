@@ -99,3 +99,31 @@ repository `.temp`, before syntax checking the two allowlisted workflows.
 This adds no provider permission or local install; unexpected upstream bytes
 fail checksum before execution. See [actionlint](https://github.com/rhysd/actionlint)
 for workflow syntax, expressions and reusable-workflow validation scope.
+
+## First hosted source/syntax acceptance
+
+[Candidate site CI run 36781340287](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36781340287),
+attempt 1, push event, source `c88c0a983cfef2a9d1d3319d69b0c3d7652d0f24`,
+completed successfully at 2026-09-30 21:44:55 UTC. Exact job
+`Astro candidate site source checks` (110112069033) passed all material steps.
+This is hosted source acceptance, **not** deployed/public/Mail acceptance.
+
+| Check | Observed hosted result |
+| --- | --- |
+| Pinned actionlint and both workflow syntaxes | Archive checksum OK; exact two workflow syntax/expression/reusable-call checks passed |
+| Python candidate/gate/workflow regressions | 13 tests passed, fully synthetic |
+| Locked site dependencies | Installation succeeded on Ubuntu 24.04.5, Node 22.23.2, workflow-pinned pnpm 12.4.1 |
+| Astro source checks | 10 files, 0 errors, 0 warnings, 5 hints about deprecated `z` import, retained from reviewed source |
+| Node route-local regressions | 22 tests passed, 0 failures |
+| Candidate build and prepare | Three pages built; route-local candidate/service copy, both TOCs and generated-only noindex/source preparation passed |
+| Published compatibility | Three pages built, published state checks passed, final headers byte-identical to source via successful cmp |
+
+Runner logs also report dependency deprecation notices and older action Node 20
+runtimes being forced to Node 24 by the hosted platform. These did not fail the
+run; no silent dependency/action upgrade was folded into this bounded import.
+Later toolchain maintenance should address them independently. No Cloudflare
+credentials, deployment, provider/DNS operation or tag/Release occurred.
+
+This evidence covers the stated immutable source SHA. A subsequent docs-only
+commit, PR merge/squash, or any other new SHA still requires its own exact hosted
+source result before being represented as the gate's deployment evidence.
