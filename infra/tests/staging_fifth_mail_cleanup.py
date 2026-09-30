@@ -15,11 +15,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 from staging_fifth_mail_audit import ATTEMPT, RUN, aggregate, fixture_subjects
 from staging_prior_alias_reconcile import alias, required, route_absent, rules
 from staging_hosted_e2e import BUILT_BINARY, ROOT, TEMP, safe_stage_code, unique_auth_home
-from staging_mail_e2e import SENDER, cli_env
+from staging_mail_e2e import PNG, SENDER, ProbeFailure, cli_env, provider_receipt
 
 
 CONFIRM = "DELETE_FIFTH_MAIL_EXACT_FIXTURES"
@@ -164,14 +165,12 @@ def control_any(account: str, token: str, route_token: str, mailbox: str) -> dic
 
 
 def verify_row(binary: Path, env: dict[str, str], msg_id: str, mailbox: str,
-               subject: str, signal: bool) -> None:
-    """Corroborate each exact get field; reveal only fixed mismatch categories."""
+               subject: str, signal: bool) -> dict:
+    """Corroborate each exact get field and retain delivered-header metadata privately."""
 
     rows = success(binary, env, "get", msg_id)
     require(len(rows) == 1, "get_shape_unverified")
     row = rows[0]
-    nonce = subject.split("-")[2]
-    suffix = "signal" if signal else "distractor"
     metadata = row.get("metadata")
     # Keep each predicate independent so the hosted log identifies the failed
     # contract without emitting any received header, subject, or message ID.
@@ -187,9 +186,76 @@ def verify_row(binary: Path, env: dict[str, str], msg_id: str, mailbox: str,
     require(row.get("attachment_count") == (2 if signal else 0),
             "fixture_get_attachment_count_mismatch")
     require(isinstance(metadata, dict), "fixture_get_metadata_shape_mismatch")
-    require(metadata.get("message_id") ==
-            f"<amail-e2e-{nonce}-{suffix}@mail-staging.moesegfault.dev>",
-            "fixture_get_message_id_mismatch")
+    delivered_id = metadata.get("message_id")
+    require(isinstance(delivered_id, str) and delivered_id.isascii() and
+            len(delivered_id) <= 256, "fixture_get_message_id_mismatch")
+    try:
+        provider_receipt(f"2.0.0 Ok {delivered_id}".encode("ascii"))
+    except ProbeFailure:
+        raise CleanupFailure("fixture_get_message_id_mismatch") from None
+    require(isinstance(row.get("received_at"), str) and
+            1 <= len(row["received_at"]) <= 40, "fixture_get_received_at_mismatch")
+    return row
+
+
+def verify_archive(binary: Path, env: dict[str, str], run_dir: Path,
+                   msg_id: str, mailbox: str, subject: str, signal: bool,
+                   row: dict) -> None:
+    """Use native amail ZIP handling and validate both fixture identities and MIME content.
+
+    The provider owns the delivered Message-ID. Its equality across get and
+    manifest checks storage consistency, not SMTP source-header provenance.
+    """
+
+    suffix = "signal" if signal else "distractor"
+    nonce = subject.split("-")[2]
+    archive = run_dir / f"{suffix}.zip"
+    dest = run_dir / suffix
+    read = success(binary, env, "read", msg_id, "-o", str(archive))
+    require(len(read) == 1 and read[0].get("id") == msg_id and
+            read[0].get("unpacked") is False and
+            read[0].get("path") == str(archive) and archive.is_file() and
+            0 < archive.stat().st_size <= 5 * 1024 * 1024,
+            "fixture_archive_download_unverified")
+    unpacked = success(binary, env, "unpack", str(archive), "-o", str(dest))
+    require(len(unpacked) == 1 and unpacked[0].get("unpacked") is True and
+            unpacked[0].get("path") == str(dest) and dest.is_dir(),
+            "fixture_archive_unpack_unverified")
+    entries = list(dest.rglob("*"))
+    require(len(entries) <= 8 and all(not entry.is_symlink() and
+            dest in entry.resolve().parents for entry in entries),
+            "fixture_archive_path_unverified")
+    files = {entry.relative_to(dest).as_posix() for entry in entries if entry.is_file()}
+    assets = ([
+        {"path": "assets/1-chart.png", "content_type": "image/png",
+         "disposition": "inline", "cid": f"chart-{nonce}", "filename": "chart.png"},
+        {"path": "assets/2-payload.bin", "content_type": "application/octet-stream",
+         "disposition": "attachment", "filename": "payload.bin"},
+    ] if signal else [])
+    expected_files = {"manifest.toml", "body.txt"} | {asset["path"] for asset in assets}
+    if signal:
+        expected_files.add("body.html")
+    require(files == expected_files, "fixture_archive_files_mismatch")
+    try:
+        manifest = tomllib.loads((dest / "manifest.toml").read_text(encoding="utf-8"))
+        body = (dest / "body.txt").read_text(encoding="utf-8")
+        html = (dest / "body.html").read_text(encoding="utf-8") if signal else None
+        inline = (dest / "assets/1-chart.png").read_bytes() if signal else None
+        attachment = (dest / "assets/2-payload.bin").read_bytes() if signal else None
+    except (OSError, ValueError, UnicodeDecodeError):
+        raise CleanupFailure("fixture_archive_parse_unverified") from None
+    expected = {"version": 1, "id": msg_id, "direction": "inbound",
+                "from": SENDER, "to": [mailbox], "subject": subject,
+                "received_at": row["received_at"],
+                "message_id": row["metadata"]["message_id"], "assets": assets}
+    require(manifest == expected, "fixture_archive_manifest_mismatch")
+    phrase = f"NebulaInvariant-{nonce}" if signal else f"HarborOpposite-{nonce}"
+    require(phrase in body, "fixture_archive_body_mismatch")
+    if signal:
+        require(phrase in html and f"cid:chart-{nonce}" in html and
+                "onerror" not in html.lower(), "fixture_archive_html_mismatch")
+        require(inline == PNG, "fixture_archive_inline_mismatch")
+        require(len(attachment) == 73, "fixture_archive_attachment_mismatch")
 
 
 def not_found(binary: Path, env: dict[str, str], msg_id: str) -> None:
@@ -283,7 +349,8 @@ def execute() -> str:
                     "title_inventory_mismatch")
             msg_id = next(iter(matches))
             require(full[msg_id].get("subject") == subject, "title_inventory_mismatch")
-            verify_row(binary, env, msg_id, mailbox, subject, signal)
+            detail = verify_row(binary, env, msg_id, mailbox, subject, signal)
+            verify_archive(binary, env, run_dir, msg_id, mailbox, subject, signal, detail)
         control(account, token, route_token, mailbox, len(full))
         require(inventory(binary, env, mailbox) == full, "inventory_changed")
         pin(account, token, version)

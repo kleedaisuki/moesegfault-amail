@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -53,9 +54,10 @@ class CleanupGuardTests(unittest.TestCase):
                "subject": SUBJECT, "from": cleanup.SENDER, "to": [MAILBOX],
                "has_text": True, "has_html": True, "has_attachments": True,
                "attachment_count": 2,
-               "metadata": {"message_id": "<amail-e2e-0123456789abcdef-signal@mail-staging.moesegfault.dev>"}}
+               "received_at": "2026-09-29T15:20:00Z",
+               "metadata": {"message_id": "<provider-123@mx.cloudflare.net>"}}
         with patch.object(cleanup, "success", return_value=[row]):
-            cleanup.verify_row(Path("amail"), {}, "known_1", MAILBOX, SUBJECT, True)
+            self.assertEqual(cleanup.verify_row(Path("amail"), {}, "known_1", MAILBOX, SUBJECT, True), row)
         cases = (
             ("id", "other", "fixture_get_id_mismatch"),
             ("mailbox", "other", "fixture_get_mailbox_mismatch"),
@@ -69,6 +71,7 @@ class CleanupGuardTests(unittest.TestCase):
             ("attachment_count", 1, "fixture_get_attachment_count_mismatch"),
             ("metadata", "other", "fixture_get_metadata_shape_mismatch"),
             ("metadata", {"message_id": "other"}, "fixture_get_message_id_mismatch"),
+            ("received_at", None, "fixture_get_received_at_mismatch"),
         )
         for field, value, label in cases:
             with self.subTest(field=field, label=label), \
@@ -84,12 +87,93 @@ class CleanupGuardTests(unittest.TestCase):
                "subject": subject, "from": cleanup.SENDER, "to": [MAILBOX],
                "has_text": True, "has_html": False, "has_attachments": False,
                "attachment_count": 0,
-               "metadata": {"message_id": "<amail-e2e-0123456789abcdef-distractor@mail-staging.moesegfault.dev>"}}
+               "received_at": "2026-09-29T15:20:00Z",
+               "metadata": {"message_id": "<provider-456@mx.cloudflare.net>"}}
         with patch.object(cleanup, "success", return_value=[row]):
             cleanup.verify_row(Path("amail"), {}, "known_2", MAILBOX, subject, False)
         with patch.object(cleanup, "success", return_value=[{**row, "has_html": True}]):
             with self.assertRaisesRegex(cleanup.CleanupFailure, "^fixture_get_html_mismatch$"):
                 cleanup.verify_row(Path("amail"), {}, "known_2", MAILBOX, subject, False)
+
+    def test_archive_corrobates_both_fixtures_before_delete(self) -> None:
+        """Native CLI ZIP output must match exact manifest, text, MIME, and asset shape."""
+
+        cleanup.TEMP.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=cleanup.TEMP) as directory:
+            root = Path(directory)
+            for signal in (True, False):
+                with self.subTest(signal=signal):
+                    suffix = "signal" if signal else "distractor"
+                    subject = SUBJECT if signal else SUBJECT.replace("Signal", "Distractor")
+                    phrase = ("NebulaInvariant-" if signal else "HarborOpposite-") + "0123456789abcdef"
+                    msg_id = "known_1" if signal else "known_2"
+                    delivered = "<provider-123@mx.cloudflare.net>"
+                    row = {"received_at": "2026-09-29T15:20:00Z",
+                           "metadata": {"message_id": delivered}}
+                    archive = root / f"{suffix}.zip"
+                    archive.write_bytes(b"synthetic")
+                    dest = root / suffix
+                    dest.mkdir()
+                    (dest / "body.txt").write_text(phrase, encoding="utf-8")
+                    manifest = (f'version = 1\nid = "{msg_id}"\ndirection = "inbound"\n'
+                                f'from = "{cleanup.SENDER}"\nto = ["{MAILBOX}"]\n'
+                                f'subject = "{subject}"\nreceived_at = "{row["received_at"]}"\n'
+                                f'message_id = "{delivered}"\n')
+                    if signal:
+                        assets = dest / "assets"
+                        assets.mkdir()
+                        (dest / "body.html").write_text(
+                            f'<p>{phrase}</p><img src="cid:chart-0123456789abcdef">', encoding="utf-8")
+                        (assets / "1-chart.png").write_bytes(cleanup.PNG)
+                        (assets / "2-payload.bin").write_bytes(b"x" * 73)
+                        manifest += ('\n[[assets]]\npath = "assets/1-chart.png"\n'
+                                     'content_type = "image/png"\ndisposition = "inline"\n'
+                                     'cid = "chart-0123456789abcdef"\nfilename = "chart.png"\n'
+                                     '\n[[assets]]\npath = "assets/2-payload.bin"\n'
+                                     'content_type = "application/octet-stream"\n'
+                                     'disposition = "attachment"\nfilename = "payload.bin"\n')
+                    (dest / "manifest.toml").write_text(manifest, encoding="utf-8")
+                    outputs = [[{"id": msg_id, "path": str(archive), "unpacked": False}],
+                               [{"path": str(dest), "unpacked": True}]]
+                    with patch.object(cleanup, "success", side_effect=outputs) as cli:
+                        cleanup.verify_archive(Path("amail"), {}, root, msg_id,
+                                               MAILBOX, subject, signal, row)
+                        self.assertEqual([call.args[2] for call in cli.call_args_list],
+                                         ["read", "unpack"])
+                    manifest_path = dest / "manifest.toml"
+                    manifest_path.write_text(manifest.replace(f'id = "{msg_id}"',
+                                                              'id = "wrong"'), encoding="utf-8")
+                    with patch.object(cleanup, "success", side_effect=outputs):
+                        with self.assertRaisesRegex(cleanup.CleanupFailure,
+                                                    "^fixture_archive_manifest_mismatch$"):
+                            cleanup.verify_archive(Path("amail"), {}, root, msg_id,
+                                                   MAILBOX, subject, signal, row)
+                    manifest_path.write_text(manifest, encoding="utf-8")
+                    if signal:
+                        html_path = dest / "body.html"
+                        html_path.write_text(f'<p>{phrase}</p><img onerror="alert(1)" '
+                                             'src="cid:chart-0123456789abcdef">', encoding="utf-8")
+                        with patch.object(cleanup, "success", side_effect=outputs):
+                            with self.assertRaisesRegex(cleanup.CleanupFailure,
+                                                        "^fixture_archive_html_mismatch$"):
+                                cleanup.verify_archive(Path("amail"), {}, root, msg_id,
+                                                       MAILBOX, subject, signal, row)
+                        html_path.write_text(f'<p>{phrase}</p><img '
+                                             'src="cid:chart-0123456789abcdef">', encoding="utf-8")
+                        asset_path = dest / "assets/2-payload.bin"
+                        asset_path.write_bytes(b"x" * 72)
+                        with patch.object(cleanup, "success", side_effect=outputs):
+                            with self.assertRaisesRegex(cleanup.CleanupFailure,
+                                                        "^fixture_archive_attachment_mismatch$"):
+                                cleanup.verify_archive(Path("amail"), {}, root, msg_id,
+                                                       MAILBOX, subject, signal, row)
+                        asset_path.write_bytes(b"x" * 73)
+                    (dest / "body.txt").write_text("wrong", encoding="utf-8")
+                    with patch.object(cleanup, "success", side_effect=outputs):
+                        with self.assertRaisesRegex(cleanup.CleanupFailure,
+                                                    "^fixture_archive_body_mismatch$"):
+                            cleanup.verify_archive(Path("amail"), {}, root, msg_id,
+                                                   MAILBOX, subject, signal, row)
 
     def test_control_refuses_extra_mail_and_duplicate_fixture(self) -> None:
         """Only the exact two historical rows, active or deleted, are acceptable."""
