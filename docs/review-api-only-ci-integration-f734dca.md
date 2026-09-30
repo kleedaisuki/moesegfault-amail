@@ -112,3 +112,57 @@ Internal basis: [deployment contract](direct-forward-api-deployment.md),
 [realm-safe deployment review](review-staging-exact-deploy-wrapper-d3f8eba.md),
 [direct gate review](review-direct-forward-contact-gate-a93fe58.md), and
 [quota workflow review](review-ten-address-workflow-4c6dde3.md).
+
+## Hosted correction: omitted worker-suite delimiter dependency
+
+Hosted source run `36773432805` subsequently reported an Infrastructure failure
+in `workers/identity-test-inbox/test_deploy_workflow.py`. Source inspection
+confirms that its job slice ends with
+`ci.index("\n  staging-role-monitor:", start)`, although this integration
+deliberately removed that job. The resulting `ValueError` prevents the existing
+all-alias interlock and deployed-binding assertions from executing. This is a
+demonstrated test integration defect, not a live deployment/privacy failure.
+
+**F1 (source acceptance blocker): update the private-inbox workflow test to
+extract the exact named inbox job independently of an unrelated following
+job.** Preserve both workflow paths and every pre/post all-alias and deployed-
+binding assertion; do not restore the retired deployment job or relax the
+interlock. Use the existing reviewed source extractor where practical.
+
+This was a review miss: the earlier legacy-reference search covered
+`infra/tests` but omitted the separately discovered worker suite. The initial
+statement that no substantive delta defect was found is superseded for this
+specific test-integration boundary. Pushing a corrective source revision for
+hosted checks remains appropriate, but `f734dca` alone has not passed its source
+acceptance gate. No local test/build/live action was performed to investigate.
+Remaining jobs in that hosted run were still running when the failure was
+reported; this artifact does not infer their eventual results.
+
+### Narrow correction review: cddf427
+
+Independently inspected exact commit
+`cddf427fdf2613175826d262d8516ab1293a428e`, including its two-file diff and
+the existing `workflow_source.py` extractor. **F1 is closed at source level;
+GO for a containing corrective source push and fresh hosted checks.** No
+production behavior or deployment workflow was changed by this correction.
+
+The inbox suite now imports the existing strict extractor through the explicit
+repository `infra/tests` path and selects `staging-identity-test-inbox` in CI
+and `deploy` in the standalone workflow. This removes the nonexistent-successor
+dependency and narrows both assertions to the actual target job. The extracted
+assertion helper preserves all original counts and pre/post deployment ordering
+for both all-alias interlocks and immutable deployed-binding readback.
+
+New synthetic fixtures exercise the deleted successor, unrelated neighboring
+credential/body isolation, CRLF normalization, and rejection when postdeploy
+guards are moved into another job. The negative fixture currently trips the
+all-alias count first; the real contract also retains the deployed-binding count
+and ordering assertion, so this fixture detail is not a weakening or blocker.
+The reused extractor rejects missing/duplicate job keys and unsupported shallow
+layout rather than broadening the slice to neighboring jobs.
+
+The documentation accurately records the hosted failure without inventing a
+production incident or claiming local test success. No local tests/builds/live
+actions were run during this correction review. Actual suite success and other
+jobs' outcomes must be established by fresh hosted evidence at a containing
+immutable revision; source closure alone is not a green-run claim.
