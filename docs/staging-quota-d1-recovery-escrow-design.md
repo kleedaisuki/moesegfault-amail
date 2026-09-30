@@ -454,3 +454,47 @@ Post-teardown changes to foreign baseline row/rule, tombstone ownership or
 pending reconciliation all fail before any receipt or purge SQL and retain
 ciphertext. Tests are source fixtures pending hosted execution, not live mail
 or cleanup evidence; watchdog and expiry work remains paused for re-review.
+
+## Dormant explicit D1-only receipt recovery (no purge)
+
+Following `staging-quota-d1-artifact-expiry-recovery-architecture.md`, the
+source-only `finalize_escrow_recovery(args)` deliberately selects D1 ciphertext
+transport and reuses the corrected concrete coordinator. It is recover-only,
+rejects a supplied original artifact-ID input, and has no CLI/workflow entrypoint.
+There is no catch-all artifact-error fallback: original artifact download is
+never attempted in this path, while the independently tested **current Windows
+binary artifact** remains mandatory. Existing artifact recovery behavior is
+unchanged.
+
+The original invocation must be a distinct **completed** GitHub manual run
+attempt independently admitted by `dispatch_record`, not an invented D1
+coordinate. Complete existing `Escrow.read` reconstructs/authenticates the exact
+original envelope and stable parent/chunks. Its authenticated original checkout
+must match the original GitHub run SHA; current checkout/source/binary/verifier
+SHA remains separately checked and may differ. Existing v2 AAD remains unchanged:
+canonical `[repository, original_run_string, "1", 2, generation]`. Current
+source supports only the fixed `ten-address-v1` protected generation mapping;
+D1 input never selects arbitrary Secrets or causes resealing/key rotation.
+A genuine null historical artifact relation can remain null; an existing ID
+is retained unchanged and is not represented as historical ZIP-digest proof.
+
+The same held/service/binding/effective privacy, fresh native verified owner,
+full read-only baseline/provider/storage recovery, native/session/binary teardown
+and corrected post-teardown cleanup oracle precede the private terminal receipt.
+Already terminal complete ciphertext still requires that new concrete sequence;
+receipt metadata alone cannot skip checks. This D1-only seam **never calls
+purge**: every original encrypted chunk is retained after a new or existing
+receipt. It emits only `ten_address_escrow_receipt_retained`, not fresh-deletion
+or destroyed-data claims. Atomic all-chunk purge is a later separately reviewed
+and provider-validated slice; no public purge toggle is introduced.
+
+Hosted synthetic composition covers historical/current SHA separation, exact
+retained original artifact relation, ten settled tombstones, complete unchanged
+encrypted readback, missing/unsettled/same original invocation, wrong original
+SHA, unsupported generation, wrong key, altered chunk digest and active-alias
+manual intervention. Every failure precedes receipt/purge SQL. Successful D1
+recovery asserts original artifact download absent, current tested binary lookup
+present, no add/address DELETE and all chunks retained. Existing maximum-size
+real AES/SQLite loader coverage remains a separate bounded source test, not real
+Cloudflare D1 behavior. No local test, migration, provider call or live recovery
+was executed for this slice.

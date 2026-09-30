@@ -64,15 +64,21 @@ class PhaseTests(unittest.TestCase):
 
     def execute(self, mode, *, privacy="match", tampered=False, active_recovery=False,
                 terminal=False, teardown_failure=False, scratch_failure=False, post_teardown_drift=False,
-                tombstones=False, final_drift=""):
+                tombstones=False, final_drift="", transport="artifact", historical_sha=SHA,
+                original_status="completed", original_record_sha=None, same_run=False,
+                selected_generation=GEN, selected_key=KEY, corrupt_chunk=False, original_missing=False):
         """Run controller with synthetic authenticated envelopes and no environment tools."""
         world, reader, services, cli, native, artifacts, values = self.setup_world()
+        terminal = terminal or transport == "escrow"
+        values["AMAIL_TEN_ADDRESS_KEY_GENERATION"] = selected_generation
+        values["AMAIL_TEN_ADDRESS_RECOVERY_KEY"] = selected_key
         with mock.patch.object(manifest, "_cipher", SyntheticAEAD):
             baseline = manifest.Snapshot({},[],0)
             if final_drift.startswith("unrelated"):
                 baseline = manifest.Snapshot({"foreign@example.test":row(owner="foreign",saved="foreign-rule",local_part="foreign",created=1)},
                                              [rule("foreign@example.test","foreign-rule")],1)
             value = plan(baseline)
+            value["checkout"] = historical_sha
             world.snapshot = copy.deepcopy(baseline)
             # Real campaigns require a fresh manifest timestamp from prepare.
             import time
@@ -95,7 +101,7 @@ class PhaseTests(unittest.TestCase):
                 destination = target.prepared_file(RUN)
                 destination.parent.mkdir()
                 destination.write_bytes(blob + b"tampered" if tampered else blob)
-            current = RUN if mode != "recover" else "9999999"
+            current = RUN if mode != "recover" or same_run else "9999999"
             native_state = {"closed":False}
             @contextmanager
             def observed_native(*args,**kwargs):
@@ -125,32 +131,51 @@ class PhaseTests(unittest.TestCase):
             if terminal:
                 escrow_client.put(blob,KEY,RUN,GEN)
                 escrow_client.attach(RUN,KEY,GEN,"123",blob)
+            if corrupt_chunk:
+                original_query = escrow_client._query
+                def corrupt(sql,params):
+                    result = original_query(sql,params)
+                    if sql == target.escrow.SQL["part"] and result.rows:
+                        result.rows[0]["chunk_sha"] = "f"*64
+                    return result
+                escrow_client._query = corrupt
             self.last_terminal = escrow_client,database,native_state
+            def dispatch_record(run,token,*,checkout_sha=None):
+                if checkout_sha is None and original_missing:
+                    raise manifest.ContractFailure("dispatch_provenance_unverified")
+                return ({"head_sha":SHA,"status":"in_progress"} if checkout_sha is not None else
+                        {"head_sha":original_record_sha or historical_sha,"status":original_status})
             with mock.patch.object(target, "environment", return_value=values), \
                     mock.patch.object(target, "checkout", return_value=SHA), \
                     mock.patch.dict(target.os.environ, {"GITHUB_RUN_ID": current}), \
-                    mock.patch.object(target, "dispatch_record", return_value={"head_sha": SHA}), \
+                    mock.patch.object(target, "dispatch_record", side_effect=dispatch_record), \
                     mock.patch.object(target.provenance, "successful_source") as source, \
                     mock.patch.object(target.artifact, "Artifacts", return_value=artifacts), \
                     mock.patch.object(target, "Readback", return_value=reader), \
                     mock.patch.object(target.provenance, "Services", return_value=services) as service_factory, \
                     mock.patch.object(target.provenance.mail_pin, "run", return_value=privacy) as private, \
                     mock.patch.object(target.native, "native_account", observed_native), \
-                    mock.patch.object(target.escrow,"Escrow",return_value=escrow_client) as escrow_factory:
+                    mock.patch.object(target.escrow,"Escrow",return_value=escrow_client) as escrow_factory, \
+                    mock.patch.object(target,"ESCROW_GENERATION",GEN):
                 if isinstance(privacy,list):
                     private.side_effect = privacy
                 if scratch_failure:
                     remove = mock.patch.object(target.shutil,"rmtree",side_effect=OSError("synthetic private error"))
                     remove.start()
                 try:
-                    result = (target.finalize_recovery(self.args(mode)) if terminal else target.execute(self.args(mode)))
+                    args = self.args(mode)
+                    if transport == "escrow":
+                        args.artifact_id = ""
+                        result = target.finalize_escrow_recovery(args)
+                    else:
+                        result = (target.finalize_recovery(args) if terminal else target.execute(args))
                 finally:
                     if scratch_failure:
                         remove.stop()
                     if mode == "recover":
                         cli.add.assert_not_called()
                         cli.delete.assert_not_called()
-                    self.assertEqual(escrow_factory.call_count,int(terminal))
+                    self.assertLessEqual(escrow_factory.call_count,int(terminal))
             self.assertEqual(source.call_count, 1)
             self.assertIs(service_factory.call_args.args[2], reader.sending_state)
             self.assertEqual(list(target.TEMP.glob("ten-address-hosted-*")), [])
@@ -230,6 +255,40 @@ class PhaseTests(unittest.TestCase):
                 self.assertFalse(any(sql in (target.escrow.SQL["receipt"],target.escrow.SQL["purge"])
                                      for sql,params in database.calls))
 
+    def test_explicit_d1_recovery_preserves_historical_sha_and_all_ciphertext(self):
+        """Expired-artifact transport is deliberately absent; current verifier SHA stays distinct."""
+        result,world,artifacts,privacy,cli = self.execute("recover",transport="escrow",
+                                                       historical_sha="c"*40,tombstones=True)
+        self.assertEqual(result,("ten_address_escrow_receipt_retained",))
+        artifacts.content.assert_not_called()
+        self.assertEqual(artifacts.binary.call_args.args[:2],("789",SHA))
+        client,database,native_state = self.last_terminal
+        retained = client.parent(RUN)
+        self.assertEqual(retained["source_sha"],"c"*40)
+        self.assertEqual(retained["cleanup_verifier_sha"],SHA)
+        self.assertEqual(retained["cleanup_verifier_run"],"9999999")
+        self.assertEqual(retained["artifact_id"],"123")
+        self.assertEqual(retained["state"],"cleanup_verified")
+        self.assertEqual(database.query(target.escrow.SQL["aggregate"],(RUN,)).rows[0]["n"],retained["chunk_count"])
+        self.assertFalse(any(sql == target.escrow.SQL["purge"] for sql,params in database.calls))
+        with mock.patch.object(manifest,"_cipher",SyntheticAEAD):
+            self.assertEqual(client.read(RUN,KEY,GEN)[0],retained)
+        cli.add.assert_not_called(); cli.delete.assert_not_called()
+
+    def test_d1_transport_rejects_unknown_original_or_generation_and_ciphertext(self):
+        """Independent original identity and exact full encrypted content cannot be replaced."""
+        for options in ({"original_status":"in_progress"},{"same_run":True},
+                        {"original_record_sha":"d"*40},{"selected_generation":"other-generation"},
+                        {"selected_key":"cd"*32},{"original_missing":True},
+                        {"corrupt_chunk":True},{"active_recovery":True}):
+            with self.subTest(options=options):
+                with self.assertRaises(manifest.ContractFailure):
+                    self.execute("recover",transport="escrow",**options)
+                client,database,native_state = self.last_terminal
+                self.assertEqual(client.parent(RUN)["state"],"sealed")
+                self.assertFalse(any(sql in (target.escrow.SQL["receipt"],target.escrow.SQL["purge"])
+                                     for sql,params in database.calls))
+
     def test_terminal_coordinator_native_or_scratch_failure_preserves_ciphertext(self):
         """Incomplete local teardown never emits terminal SQL despite clean remote baseline."""
         for option,code in (("teardown_failure","native_session_cleanup_required"),
@@ -287,6 +346,15 @@ class EntryTests(unittest.TestCase):
             with self.assertRaisesRegex(manifest.ContractFailure,"quota_terminal_recovery_only"):
                 target.finalize_recovery(argparse.Namespace(mode="campaign"))
             environment.assert_not_called()
+
+    def test_explicit_escrow_seam_cannot_be_campaign_or_artifact_fallback(self):
+        """No existing artifact-ID input or mutation phase can select D1 transport."""
+        for args in (argparse.Namespace(mode="campaign",artifact_id=""),
+                     argparse.Namespace(mode="recover",artifact_id="123")):
+            with mock.patch.object(target,"environment") as environment:
+                with self.assertRaisesRegex(manifest.ContractFailure,"quota_escrow_recovery_only"):
+                    target.finalize_escrow_recovery(args)
+                environment.assert_not_called()
 
     def test_manual_intervention_is_a_fixed_failure_not_a_success_marker(self):
         """No unreviewed opt-in can turn unknown cross-run deletion into a replay."""
