@@ -12,9 +12,9 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-security-events, production]
+        options: [staging, staging-e2e, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-security-events, production]
       confirm:
-        description: Staging E2E, role SMTP, or trace canary requires its documented RUN_* confirmation
+        description: Staging E2E, semantic query, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
         type: string
       role_deploy_run:
@@ -153,6 +153,48 @@ jobs:
           CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_hosted_e2e.py
+
+  staging-semantic-query-only:
+    name: Hosted native PKCE empty-mail semantic query without SMTP
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-semantic-query-only' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: windows-latest
+    environment: staging
+    timeout-minutes: 30
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require one-shot semantic-query confirmation
+        env:
+          AMAIL_SEMANTIC_QUERY_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if ($env:AMAIL_SEMANTIC_QUERY_CONFIRM -ne 'RUN_STAGING_SEMANTIC_QUERY_ONLY') {
+            throw 'Explicit staging semantic-query confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install native browser and DPAPI adapters
+        run: python -m pip install pywin32==312 websocket-client==1.9.2
+      - name: Build tested native CLI on hosted Windows
+        run: |
+          rustup update stable
+          cargo test -p amail --locked --all-targets
+          cargo build -p amail --locked
+      - name: Probe only empty owner inventory and semantic query
+        env:
+          AMAIL_SEMANTIC_QUERY_CONFIRM: ${{ inputs.confirm }}
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_semantic_query_only.py
 
   staging-prior-alias-reconcile:
     name: Read-only reconciliation of two prior staging aliases
