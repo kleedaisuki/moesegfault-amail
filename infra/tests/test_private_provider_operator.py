@@ -11,6 +11,8 @@ import unittest
 from unittest.mock import patch
 import zipfile
 import urllib.error
+import hashlib
+import base64
 
 import private_provider_operator as operator
 
@@ -24,6 +26,24 @@ def archive(names):
             entry.external_attr = (stat.S_IFREG | 0o600) << 16
             file.writestr(entry, b"ENCRYPTED")
     return buffer.getvalue()
+
+
+class Response(io.BytesIO):
+    """Bounded in-memory API response; never contacts GitHub or a provider."""
+    def __init__(self, status, value=b""):
+        super().__init__(value if isinstance(value, bytes) else json.dumps(value).encode())
+        self.status = status
+
+
+def encrypted_fixture(metadata, public):
+    """Shape-valid synthetic ciphertext for exercising real envelope/provenance checks."""
+    header = {"algorithm": "RSA-3072-OAEP-SHA256+A256GCM",
+              "fingerprint": hashlib.sha256(base64.b64decode(public)).hexdigest(),
+              "nonce": base64.b64encode(bytes(12)).decode(),
+              "wrapped_key": base64.b64encode(bytes(384)).decode(), "provenance": metadata}
+    return json.dumps({"version": 1, "header": base64.b64encode(json.dumps(header).encode()).decode(),
+                       "ciphertext": base64.b64encode(bytes(262144)).decode(),
+                       "tag": base64.b64encode(bytes(16)).decode()}).encode()
 
 
 class OperatorTests(unittest.TestCase):
@@ -164,6 +184,102 @@ class OperatorTests(unittest.TestCase):
                                                                            {"total_count": 0, "artifacts": []}]) as api:
                 operator.retire_remote("session")
             self.assertEqual(api.call_count, 2)
+
+    def test_authenticated_positive_provenance_and_download_digest(self):
+        sha, run_id = "a" * 40, "123"
+        data = archive(["capture.enc.json"])
+        artifact = {"id": 42, "name": "private-provider-error-123-1", "size_in_bytes": len(data),
+                    "expired": False, "created_at": datetime.now(timezone.utc).isoformat(),
+                    "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+                    "workflow_run": {"id": 123, "head_sha": sha, "head_branch": operator.history.BRANCH}}
+        run = {"id": 123, "run_attempt": 1, "head_sha": sha, "head_branch": operator.history.BRANCH,
+               "event": "workflow_dispatch", "status": "completed", "conclusion": "success", "path": operator.capture.WORKFLOW}
+        job = {"name": operator.JOB, "head_sha": sha, "run_id": 123, "status": "completed", "conclusion": "success"}
+        redirect = urllib.error.HTTPError("https://api.github.com", 302, "fixed",
+                                          {"Location": "https://synthetic.blob.core.windows.net/archive?synthetic=1"}, None)
+        outcomes = [Response(200, run), Response(200, {"total_count": 1, "jobs": [job]}),
+                    Response(200, {"total_count": 1, "artifacts": [artifact]}), redirect, Response(200, data)]
+        with patch.object(operator.history.OPENER, "open", side_effect=outcomes) as transport, \
+                contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
+            proven = operator.provenance(run_id, sha, "SYNTHETIC-TOKEN")
+            self.assertEqual(operator.download(proven, "SYNTHETIC-TOKEN"), data)
+        self.assertEqual(transport.call_count, 5)
+        self.assertTrue(all(call.args[0].get_header("Authorization") == "Bearer SYNTHETIC-TOKEN" for call in transport.call_args_list[:4]))
+        self.assertIsNone(transport.call_args_list[4].args[0].get_header("Authorization"))
+        self.assertEqual(stdout.getvalue() + stderr.getvalue(), "")
+
+    def test_download_tamper_and_host_fail_closed(self):
+        for location, digest, expected_calls in (
+                ("https://synthetic.blob.core.windows.net/archive", "0" * 64, 2),
+                ("https://evil.invalid/archive", "0" * 64, 1)):
+            redirect = urllib.error.HTTPError("https://api.github.com",302,"fixed",{"Location": location},None)
+            with self.subTest(calls=expected_calls), patch.object(operator.history.OPENER, "open",
+                    side_effect=[redirect, Response(200,b"CIPHERTEXT")]) as transport, self.assertRaises(Exception):
+                operator.download({"id":42,"digest":"sha256:"+digest},"SYNTHETIC-TOKEN")
+            self.assertEqual(transport.call_count,expected_calls)
+
+    def test_real_cleanup_delete_absence_and_failure_key_retention(self):
+        root = Path(operator.__file__).resolve().parents[2] / ".temp"
+        root.mkdir(exist_ok=True)
+        for delete_status in (204, 403):
+            with self.subTest(delete_status=delete_status), tempfile.TemporaryDirectory(dir=root) as name:
+                folder = Path(name)
+                (folder / "private.pk8").write_bytes(b"SYNTHETIC-NOT-A-KEY")
+                operator.record_receipt(folder, {"artifact_id":42,"run_id":"123","source_sha":"a"*40}, first=True)
+                run = {"id":123,"head_sha":"a"*40,"head_branch":operator.history.BRANCH,
+                       "run_attempt":1,"event":"workflow_dispatch","status":"completed","conclusion":"cancelled"}
+                artifact = {"id":42,"name":"private-provider-error-123-1",
+                            "workflow_run":{"id":123,"head_sha":"a"*40}}
+                deletion = Response(204) if delete_status == 204 else urllib.error.HTTPError("https://api.github.com",403,"fixed",{},None)
+                outcomes = [Response(200,run),Response(200,{"total_count":1,"artifacts":[artifact]}),deletion,
+                            urllib.error.HTTPError("https://api.github.com",404,"fixed",{},None)]
+                with patch.object(operator,"session_path",return_value=folder), patch.object(operator,"token",return_value="SYNTHETIC"), \
+                        patch.object(operator.history.OPENER,"open",side_effect=outcomes) as transport, \
+                        patch.object(operator.sys,"argv",["operator","cleanup","session"]), contextlib.redirect_stdout(io.StringIO()) as output:
+                    result = operator.main()
+                if delete_status == 204:
+                    self.assertEqual(result,0)
+                    self.assertFalse(folder.exists())
+                    self.assertEqual(output.getvalue(),"private_provider_operator=CLEANED\n")
+                    self.assertEqual(transport.call_count,4)
+                else:
+                    self.assertEqual(result,1)
+                    self.assertTrue((folder / "private.pk8").exists())
+                    self.assertEqual(output.getvalue(),"private_provider_operator=UNVERIFIED cleanup=UNVERIFIED\n")
+                    self.assertEqual(transport.call_count,3)
+                self.assertEqual(transport.call_args_list[2].args[0].get_method(),"DELETE")
+                self.assertEqual(transport.call_args_list[2].args[0].full_url,
+                                 f"https://api.github.com/repos/{operator.history.REPOSITORY}/actions/artifacts/42")
+
+    def test_real_local_classification_checks_envelope_without_network(self):
+        root = Path(operator.__file__).resolve().parents[2] / ".temp"
+        root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as name:
+            folder = Path(name)
+            public = base64.b64encode(b"SYNTHETIC-PUBLIC").decode()
+            (folder / "private.pk8").write_bytes(b"SYNTHETIC-NOT-A-KEY")
+            (folder / "created.utc").write_text(datetime.now(timezone.utc).isoformat())
+            (folder / "public.spki").write_text(public)
+            operator.record_receipt(folder,{"artifact_id":42,"run_id":"123","source_sha":"a"*40},first=True)
+            metadata = {"source_sha":"a"*40,"capture_run":"123","capture_attempt":"1","original_run":operator.history.RUN,
+                        "original_attempt":operator.history.ATTEMPT,"workflow":operator.capture.WORKFLOW,
+                        "repository":operator.history.REPOSITORY,"query_sha256":hashlib.sha256(operator.capture.QUERY.encode()).hexdigest()}
+            encrypted = encrypted_fixture(metadata,public)
+            (folder / "capture.enc.json").write_bytes(encrypted)
+            with patch.object(operator,"session_path",return_value=folder), patch.object(operator,"child",return_value=b"unclassified") as native, \
+                    patch.object(operator.history.OPENER,"open") as network, \
+                    patch.object(operator.sys,"argv",["operator","classify","session"]),contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(operator.main(),0)
+            network.assert_not_called()
+            native.assert_called_once_with("classify","session",encrypted)
+            self.assertTrue((folder / "private.pk8").exists())
+            self.assertEqual(output.getvalue(),"private_provider_operator=LOCAL_RETAINED errors=unclassified delivery=UNVERIFIED\n")
+            # Metadata substitution fails before invoking native decryption.
+            bad = encrypted_fixture({**metadata,"source_sha":"b"*40},public)
+            (folder / "capture.enc.json").write_bytes(bad)
+            with patch.object(operator,"session_path",return_value=folder),patch.object(operator,"child") as native,self.assertRaises(Exception):
+                operator.classify_local("session")
+            native.assert_not_called()
 
 
 if __name__ == "__main__":
