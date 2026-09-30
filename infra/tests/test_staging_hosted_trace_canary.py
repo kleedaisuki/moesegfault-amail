@@ -95,7 +95,10 @@ class HostedTraceSafetyTests(unittest.TestCase):
                 "observability_events_view_absent",
                 "unreviewed_retained_payload",
                 "application_event_schema_unallowlisted",
+                "application_event_representations_conflict",
                 "cli_api_parentage_invalid",
+                "rejected_request_event_duplicate",
+                "rejected_request_event_invalid",
                 "local_probe_unavailable",
         ):
             with self.subTest(code=code):
