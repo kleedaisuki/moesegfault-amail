@@ -88,3 +88,9 @@ What remains serialized: reviewed staged rollout, shared alias/account/route cre
 ## Status
 
 Source implementation and hosted cold/warm validation are complete for the exact unchanged-Worker-input path above; one changed-Rust-source/project-cache-miss, bundler-hit run is also measured. Broader workload performance remains uncertain. No public sending or privacy gate is relaxed by this change.
+
+## Structural workflow contracts (2026-10-01)
+
+Two later hosted feedback failures were test-fixture coupling, not regressions in provider behavior: a hardcoded dispatch-input count and a job slice ending at a particular later job. Adding a safe manual diagnostic changed those unrelated assumptions. The demonstrated named-successor and staging-substring job-source contracts now share `infra/tests/workflow_source.py`: extraction is bounded by actual two-space sibling job headers inside the single top-level `jobs` block, rather than an expected successor name. Duplicate/missing jobs and unsupported inline job mappings fail closed. This intentionally follows the repository's block-style workflow layout; it is not a general YAML parser. Raw job source remains available for exact manual-event, confirmation, branch, environment, secret-scope and execution-order assertions.
+
+The synthetic adjacent-job fixture includes a credential-bearing unrelated job, an underscore identifier, a nested shell step, a final job and a following top-level mapping. It asserts that inserting the unrelated job cannot satisfy or contaminate the preceding job's safety assertions. Existing assertions were retained, with only their source extraction replaced. The independently owned Worker R2 creation/delivery-history tests are excluded from this change. Local verification is limited to Python AST parsing and diff inspection; executable tests remain on GitHub-hosted runners.

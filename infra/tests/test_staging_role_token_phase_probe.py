@@ -16,6 +16,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import staging_role_token_phase_probe as probe
 
+from workflow_source import job_block
+
 
 DEST = "private@example.net"
 TOKEN = "secret-never-print"
@@ -176,7 +178,7 @@ class RoleTokenPhaseProbeTests(unittest.TestCase):
         """Only a confirmed manual staging job receives provider secrets."""
 
         workflow = (HERE.parents[1] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        job = workflow.split("  staging-role-token-phase-probe:\n", 1)[1].split("\n  staging-trace-canary:", 1)[0]
+        job = job_block(workflow, "staging-role-token-phase-probe")
         self.assertIn("inputs.target == 'staging-role-token-phase-probe'", job)
         self.assertIn("READ_FIRST_ROLE_TOKEN_PERMISSIONS", job)
         self.assertIn(probe.RUN, job)

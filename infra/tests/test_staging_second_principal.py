@@ -17,6 +17,8 @@ import types
 import unittest
 from unittest.mock import patch
 
+from workflow_source import job_block
+
 
 SPEC = importlib.util.spec_from_file_location(
     "staging_second_principal", Path(__file__).with_name("staging_second_principal.py")
@@ -150,9 +152,7 @@ class SecondPrincipalTests(unittest.TestCase):
         """No push path may provision a principal or embed B credentials."""
 
         workflow = (MODULE.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        job = workflow.split("  staging-second-principal:\n", 1)[1].split(
-            "\n  staging-semantic-query-only:", 1
-        )[0]
+        job = job_block(workflow, "staging-second-principal")
         self.assertIn("github.event_name == 'workflow_dispatch'", job)
         self.assertIn("inputs.target == 'staging-second-principal'", job)
         self.assertIn("environment: staging", job)
@@ -167,9 +167,7 @@ class SecondPrincipalTests(unittest.TestCase):
         """The permission discriminator must stop before any mutation."""
 
         workflow = (MODULE.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        job = workflow.split("  staging-second-principal-preflight:\n", 1)[1].split(
-            "\n  staging-second-principal:", 1
-        )[0]
+        job = job_block(workflow, "staging-second-principal-preflight")
         self.assertIn("github.event_name == 'workflow_dispatch'", job)
         self.assertIn("READ_STAGING_SECOND_PRINCIPAL_PREFLIGHT", job)
         self.assertIn("AMAIL_SECOND_PRINCIPAL_MODE: preflight", job)

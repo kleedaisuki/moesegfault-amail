@@ -14,6 +14,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from workflow_source import job_block
+
 
 SPEC = importlib.util.spec_from_file_location(
     "staging_hosted_e2e", Path(__file__).with_name("staging_hosted_e2e.py")
@@ -92,7 +94,7 @@ class HostedHarnessSafetyTests(unittest.TestCase):
         self.assertIsNotNone(semantic)
         self.assertIn("default: false", semantic.group(1))
         self.assertIn("type: boolean", semantic.group(1))
-        job = workflow.split("  staging-e2e:\n", 1)[1].split("\n  staging-routing-policy:", 1)[0]
+        job = job_block(workflow, "staging-e2e")
         self.assertIn("inputs.target == 'staging-e2e'", job)
         self.assertIn(
             "AMAIL_STAGING_SEMANTIC_E2E: ${{ inputs.semantic && '1' || '0' }}", job
@@ -105,9 +107,7 @@ class HostedHarnessSafetyTests(unittest.TestCase):
         """Fail before login if the bounded D1 readback cannot be authenticated."""
 
         workflow = (HARNESS.ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        job = workflow.split("  staging-e2e:\n", 1)[1].split(
-            "\n  staging-prior-alias-reconcile:", 1
-        )[0]
+        job = job_block(workflow, "staging-e2e")
         execution = "      - name: Execute staging native and inbound-mail acceptance\n"
         before, step = job.split(execution, 1)
         self.assertIn("CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}", step)

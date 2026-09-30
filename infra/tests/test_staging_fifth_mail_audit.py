@@ -15,6 +15,8 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 import staging_fifth_mail_audit as audit
 
+from workflow_source import job_block
+
 
 def result(**changes: object) -> dict:
     """Build a complete synthetic D1 aggregate row without message data."""
@@ -112,8 +114,7 @@ class FifthMailAuditTests(unittest.TestCase):
         """Both exact-run jobs expose credentials only to their final execution step."""
 
         workflow = (HERE.parents[1] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        job = workflow.split("  staging-fifth-mail-audit:\n", 1)[1].split(
-            "\n  staging-fifth-mail-cleanup:", 1)[0]
+        job = job_block(workflow, "staging-fifth-mail-audit")
         self.assertIn("inputs.target == 'staging-fifth-mail-audit'", job)
         self.assertIn("READ_FIFTH_MAIL_AGGREGATES", job)
         self.assertIn("36589042183", job)
@@ -124,8 +125,7 @@ class FifthMailAuditTests(unittest.TestCase):
             "      - name: Read exact D1 aggregates and route absence only", 1)[0])
         self.assertNotIn("wrangler", job)
 
-        cleanup = workflow.split("  staging-fifth-mail-cleanup:\n", 1)[1].split(
-            "\n  staging-routing-write-probe:", 1)[0]
+        cleanup = job_block(workflow, "staging-fifth-mail-cleanup")
         self.assertIn("inputs.target == 'staging-fifth-mail-cleanup'", cleanup)
         self.assertIn("DELETE_FIFTH_MAIL_EXACT_FIXTURES", cleanup)
         self.assertIn("36589042183", cleanup)

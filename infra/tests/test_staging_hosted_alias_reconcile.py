@@ -11,6 +11,8 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from workflow_source import job_block
+
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
@@ -96,7 +98,7 @@ class HostedAliasReconciliationTests(unittest.TestCase):
         """Reject accidental job-wide secret scope or mutation permission."""
 
         workflow = (HERE.parents[1] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        job = workflow.split("  staging-hosted-alias-reconcile:\n", 1)[1].split("\n  staging-routing-policy:", 1)[0]
+        job = job_block(workflow, "staging-hosted-alias-reconcile")
         self.assertIn("inputs.target == 'staging-hosted-alias-reconcile'", job)
         self.assertIn("READ_ONE_STAGING_ALIAS", job)
         self.assertIn("secrets.STAGING_E2E_PASSWORD", job)

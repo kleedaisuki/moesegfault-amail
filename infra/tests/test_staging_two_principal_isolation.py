@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from workflow_source import job_block
+
 
 TESTS = Path(__file__).parent
 sys.path.insert(0, str(TESTS))
@@ -109,9 +111,7 @@ class IsolationContracts(unittest.TestCase):
         """The A SMTP confirmation must not silently enable B operations."""
 
         workflow = (TESTS.parents[1] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        job = workflow.split("  staging-e2e:\n", 1)[1].split(
-            "\n  staging-second-principal:", 1
-        )[0]
+        job = job_block(workflow, "staging-e2e")
         self.assertIn("AMAIL_STAGING_ISOLATION_CONFIRM: ${{ inputs.isolation_confirm }}", job)
         self.assertIn("AMAIL_STAGING_ISOLATION_E2E: ${{ inputs.isolation && '1' || '0' }}", job)
 

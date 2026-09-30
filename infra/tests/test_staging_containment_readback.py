@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import staging_containment_readback as subject
 
+from workflow_source import job_block
+
 VERSION = "759906b4-bdb9-488a-a980-a4bada8ba83e"
 DEPLOYMENT = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -96,7 +98,7 @@ class ReadbackTests(unittest.TestCase):
     def test_workflow_guard_and_secret_order(self):
         """Manual branch-only diagnostics run source contracts before credentials."""
         text = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
-        job = text.split("  staging-containment-readback:\n", 1)[1].split("\n  staging-", 1)[0]
+        job = job_block(text, "staging-containment-readback")
         self.assertIn("github.event_name == 'workflow_dispatch'", job)
         self.assertIn("github.ref == 'refs/heads/codex/amail-v0.1.0'", job)
         self.assertNotIn("refs/heads/main", job)

@@ -14,6 +14,8 @@ sys.path.insert(0, str(ROOT / "infra/deploy"))
 import require_role_trace_phase1 as provenance
 import trace_rollout_attestation as attest
 
+from workflow_source import job_block
+
 SHA = "a" * 40
 SOURCE = "11111111-1111-4111-8111-111111111111"
 SINK = "22222222-2222-4222-8222-222222222222"
@@ -114,7 +116,7 @@ class ProvenanceTests(unittest.TestCase):
     def test_phase2_workflow_is_manual_and_markers_follow_their_oracles(self) -> None:
         """No push/general staging deployment introduces role; preflight has no privacy marker."""
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        role = workflow.split("\n  staging-role-monitor:\n", 1)[1].split("\n  deploy-trace-sink:\n", 1)[0]
+        role = job_block(workflow, "staging-role-monitor")
         self.assertIn("inputs.target == 'staging-role-queue-rollout'", role)
         self.assertIn("github.event_name == 'workflow_dispatch'", role)
         self.assertIn("RUN_STAGING_ROLE_TRACE_ROLLOUT", role)
@@ -123,7 +125,7 @@ class ProvenanceTests(unittest.TestCase):
         self.assertLess(role.index("require_role_trace_phase1.py"), role.index("wrangler d1 migrations apply"))
         self.assertLess(role.index("check_role_trace_rollout.py --phase before"), role.index("deploy_staging_role_monitor.py"))
         self.assertLess(role.index("deploy_staging_role_monitor.py"), role.index("check_role_trace_rollout.py --phase after"))
-        sink = workflow.split("\n  staging-trace-sink:\n", 1)[1]
+        sink = job_block(workflow, "staging-trace-sink")
         self.assertLess(sink.index("--mode sink"), sink.index("trace_rollout_attestation.py --kind sink-deploy"))
         canary = (ROOT / ".github/workflows/staging-trace-sink-canary.yml").read_text(encoding="utf-8")
         self.assertIn("if: inputs.mode == 'canary'", canary)
@@ -133,7 +135,7 @@ class ProvenanceTests(unittest.TestCase):
     def test_smtp_caller_wires_both_required_readback_pins(self) -> None:
         """The legacy hosting wrapper passes exact immutable-role and reviewed-Queue pins."""
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        smtp = workflow.split("\n  staging-role-smtp:\n", 1)[1].split("\n  staging-role-timeout-audit:\n", 1)[0]
+        smtp = job_block(workflow, "staging-role-smtp")
         step = smtp.split("      - name: Check deployed provenance and run one ID-bound SMTP probe\n", 1)[1]
         self.assertIn("AMAIL_EXPECTED_ROLE_WORKER_VERSION: ${{ inputs.role_version }}", step)
         self.assertIn("AMAIL_EXPECTED_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}", step)

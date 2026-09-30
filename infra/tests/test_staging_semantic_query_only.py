@@ -9,6 +9,8 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from workflow_source import job_block
+
 
 sys.path.insert(0, str(Path(__file__).parent))
 SPEC = importlib.util.spec_from_file_location(
@@ -27,9 +29,7 @@ class SemanticQueryOnlyTests(unittest.TestCase):
 
         workflow = (PROBE.ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertIn("staging-semantic-query-only", workflow.split("  workflow_dispatch:", 1)[1])
-        job = workflow.split("  staging-semantic-query-only:\n", 1)[1].split(
-            "\n  staging-prior-alias-reconcile:", 1
-        )[0]
+        job = job_block(workflow, "staging-semantic-query-only")
         self.assertIn("inputs.target == 'staging-semantic-query-only'", job)
         self.assertIn("group: staging-native-mail-acceptance", job)
         self.assertIn("RUN_STAGING_SEMANTIC_QUERY_ONLY", job)

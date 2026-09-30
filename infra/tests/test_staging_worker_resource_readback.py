@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import staging_worker_resource_readback as subject
 
+from workflow_source import job_block
+
 VERSION = "759906b4-bdb9-488a-a980-a4bada8ba83e"
 DEPLOYMENT = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -155,7 +157,7 @@ class ResourceReadbackTests(unittest.TestCase):
     def test_workflow_is_branch_only_and_tests_precede_secrets(self):
         """Only the distinct manually confirmed target receives credentials."""
         text = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
-        job = text.split("  staging-worker-resource-readback:\n", 1)[1].split("\n  staging-", 1)[0]
+        job = job_block(text, "staging-worker-resource-readback")
         for clause in ["github.event_name == 'workflow_dispatch'",
             "inputs.target == 'staging-worker-resource-readback'",
             "github.ref == 'refs/heads/codex/amail-v0.1.0'", subject.CONFIRM,

@@ -11,6 +11,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from workflow_source import job_block
+
 
 SPEC = importlib.util.spec_from_file_location(
     "staging_r2_object_capability", Path(__file__).with_name("staging_r2_object_capability.py")
@@ -242,9 +244,7 @@ class R2ObjectCapabilityTests(unittest.TestCase):
         """No push, PR, or B registration path can execute the probe."""
 
         workflow = (MODULE.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        job = workflow.split("  staging-r2-object-capability:\n", 1)[1].split(
-            "\n  staging-second-principal-preflight:", 1
-        )[0]
+        job = job_block(workflow, "staging-r2-object-capability")
         self.assertIn("github.event_name == 'workflow_dispatch'", job)
         self.assertIn("github.ref == 'refs/heads/codex/amail-v0.1.0'", job)
         self.assertIn("environment: staging", job)
