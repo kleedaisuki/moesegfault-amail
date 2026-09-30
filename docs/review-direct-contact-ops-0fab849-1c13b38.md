@@ -22,7 +22,13 @@ tree changes are outside this review. Actual repository Secret provenance,
 Environment configuration, default-branch registration and live state were not
 examined.
 
-## Finding: catalog presence is not executable readiness-schema validation
+## Resolved finding: catalog presence is not executable readiness-schema validation
+
+**Resolved by `9cd9c4b859dde08bb8c7d877ffe91db4d2a62a18`, independently
+re-reviewed by source inspection on 2026-10-01.** The following explanation
+describes the original two-commit candidate, not the corrected integrated
+candidate. No substantive unresolved source defect was identified after this
+correction; hosted source-check GO and operational NO-GO remain unchanged.
 
 **Medium-priority assurance defect; high confidence by source inspection; not
 a demonstrated send bypass.** Location:
@@ -75,7 +81,7 @@ do not claim global distributed locking from a repository concurrency key.
 1. Run the exact integrated candidate's normal non-mutating hosted suite and
    independent workflow syntax guard. Source-string assertions do not establish
    provider execution or Actions protection configuration.
-2. Correct/re-review migrated idle validation, then obtain real held D1
+2. Obtain real held D1
    migration/splitting/trigger acceptance. Source changes to an already-applied
    migration would need an additive follow-up; no deployment is assumed here.
 3. Register reviewed workflows on default main; privately verify existing
@@ -113,3 +119,28 @@ The established distinction between control-plane configuration evidence and
 user/human outcomes remains central (the existing architecture's Gray Failure
 research framing). No speculative new academic scheduler or agent machinery
 would remove pending human ownership or make Actions an emergency SLA.
+
+## Correction review: 9cd9c4b
+
+The empty-policy migrated branch now executes fixed `IDLE_READY_SQL` against
+the actual readiness view before the legacy held proof. `one_row` enforces a
+singleton object; exact dictionary equality plus `type(...) is int` rejects
+extra keys, missing keys, booleans, string counts and nonzero readiness. A view
+or referenced health-column preparation/execution error reaches `main`'s fixed
+failure exit rather than becoming absence. Pre-0009 idle behavior remains
+unchanged and does not query a nonexistent contact view. Adopted policy still
+uses the strict normal observation path, not this idle assertion.
+
+Added synthetic fixtures preserve matching catalog names while substituting
+a nonzero view, a view referencing an absent relation, or a health table missing
+the view's required fields. These test the failure mechanism rather than merely
+checking presence of the new SQL string. They were inspected, not executed.
+Existing tests provide the valid empty-policy/pre-migration held path. The
+correction does not add routing access, D1 writes, acceptance or unhold.
+
+**GO for the corrected integrated candidate's non-mutating hosted source checks.
+NO-GO for actual adoption/live activation/public unhold remains unchanged.**
+Runtime proof of migration definitions remains necessary; executing the view is
+not cryptographic authentication of every schema object against arbitrary
+privileged rewriting. No new issue warrants reopening the settled 212cfe0
+every-global-unhold source correction.
