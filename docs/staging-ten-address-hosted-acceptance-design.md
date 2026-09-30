@@ -152,6 +152,14 @@ manifest in a protected durable store before expiry, with no plaintext logs.
 The manifest-upload step must complete successfully **before** a later step
 can load mutation credentials and start the campaign. A write in `finally`
 or a post-job artifact upload is insufficient: a killed runner skips it.
+Use an exact reviewed ciphertext-file path, never a directory or wildcard;
+require `include-hidden-files: true` for that file under `.temp`,
+`if-no-files-found: error`, a nonempty returned artifact ID and immutable
+no-overwrite semantics. Download the exact artifact ID and authenticate its
+envelope, then compare the complete manifest with the in-memory baseline
+before mutation. A successful upload step alone does not establish durable
+content: [upload-artifact's documented defaults](https://github.com/actions/upload-artifact#inputs)
+exclude hidden files and only warn on missing files.
 Full candidate scope, not a best-effort list of acknowledged successes, covers
 an unexpectedly successful reserved or eleventh-name call. Secret-free logs
 can show only manifest-present/version/validated booleans and fixed labels.
@@ -207,6 +215,14 @@ creation time not before the manifest's preflight, and current rule is either
 absent or the expected exact API-owned staging ingress rule bound by D1. A
 foreign owner, altered provider action, inconsistent rule ID or unowned orphan
 requires manual reconciliation, **never direct blanket provider deletion**.
+The **complete current exact-match rule set** must be empty or exactly one
+expected enabled API-owned ingress rule, with the saved D1 rule ID bound to
+that rule (or independently confirmed absent when the match set is empty).
+Any additional rule, foreign/disabled rule, duplicate or action mismatch
+blocks CLI deletion: `delete_address` enumerates all exact matching rules and
+the saved ID, so checking one good rule while ignoring another can destroy
+unrelated provider state. A saved ID pointing to another extant rule likewise
+blocks deletion even when no address matcher remains.
 For candidates with any preexisting D1 row or provider rule, preserve the
 baseline and require its unchanged readback. In particular do not delete an
 operational `abuse` or `postmaster` rule after a reserved-name regression.
@@ -258,6 +274,9 @@ must contact no live service. Required failures and positive contracts:
   generating a new plan or repeating `add`;
 * recovery rejects altered ciphertext, wrong run/owner, baseline operational
   rules, foreign rows and action/rule-ID mismatches; no wildcard deletion;
+* missing/hidden ciphertext, empty artifact ID or failed authenticated
+  download/readback blocks mutation; duplicate or foreign current exact-match
+  rules block CLI deletion, including a saved ID bound to unrelated state;
 * retired tombstones are accepted only with zero live slots, no exact route,
   no pending reconciliation and unchanged unrelated/operational state;
 * fixed-label failures never print mocked secrets, aliases or provider bodies.
