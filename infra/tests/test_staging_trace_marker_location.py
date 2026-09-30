@@ -186,7 +186,7 @@ class MarkerLocationTests(unittest.TestCase):
                        "CF_OBSERVABILITY_TOKEN": "private-query-token"}
         output = StringIO()
         with patch.dict(target.os.environ, environment), \
-                patch.object(target.sys, "argv", ["diagnostic", "--confirm", target.CONFIRM]), \
+                patch.object(sys, "argv", ["diagnostic", "--confirm", target.CONFIRM]), \
                 patch.object(target, "preflight"), \
                 patch.object(target, "retained_events", return_value=[row(metadata_url=PATH_MARKER)]), \
                 redirect_stdout(output):
@@ -197,7 +197,7 @@ class MarkerLocationTests(unittest.TestCase):
         self.assertNotIn(SUFFIX, output.getvalue())
         output = StringIO()
         with patch.dict(target.os.environ, environment), \
-                patch.object(target.sys, "argv", ["diagnostic", "--confirm", target.CONFIRM]), \
+                patch.object(sys, "argv", ["diagnostic", "--confirm", target.CONFIRM]), \
                 patch.object(target, "preflight"), \
                 patch.object(target, "retained_events", side_effect=RuntimeError("private-provider-text")), \
                 redirect_stdout(output):
