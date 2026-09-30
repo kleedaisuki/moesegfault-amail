@@ -20,6 +20,7 @@ import tempfile
 import time
 
 import staging_ten_address_artifact as artifact
+import staging_ten_address_escrow as escrow
 import staging_ten_address_hosted as hosted
 import staging_ten_address_manifest as manifest
 import staging_ten_address_native as native
@@ -112,7 +113,25 @@ def activation(reader: Readback, allowed: tuple[str, ...]) -> manifest.Snapshot:
 
 
 def execute(args: argparse.Namespace) -> tuple[str, ...]:
-    """Compose independently observed admission, immutable recovery and exact CLI cleanup."""
+    """Run existing workflow phases without granting any terminal escrow capability."""
+    return _execute(args)
+
+
+def finalize_recovery(args: argparse.Namespace) -> tuple[str, ...]:
+    """Dormant concrete read-only recovery/teardown coordinator; no CLI/workflow entry.
+
+    Reuse actual admission and native recovery, never a caller success token.
+    Only after every check and local teardown succeeds may private operations
+    receipt/purge run. Existing execute/main never activate this source seam.
+    Original immutable artifact remains mandatory; expiry fallback is not wired.
+    """
+    require(args.mode == "recover", "quota_terminal_recovery_only")
+    return _execute(args,terminal=True)
+
+
+def _execute(args: argparse.Namespace, *, terminal: bool = False) -> tuple[str, ...]:
+    """Compose concrete observed checks; terminal enables work, never asserts success."""
+    require(not terminal or args.mode == "recover", "quota_terminal_recovery_only")
     values = environment(args.mode)
     sha = checkout()
     current_run = os.environ["GITHUB_RUN_ID"]
@@ -126,11 +145,25 @@ def execute(args: argparse.Namespace) -> tuple[str, ...]:
     now = datetime.now(timezone.utc)
     artifacts = artifact.Artifacts(token)
     plan, downloaded = None, None
+    terminal_client = None
     if args.mode != "prepare":
         original = dispatch_record(original_run, token)
         downloaded = artifacts.content(args.artifact_id, original_run, original["head_sha"], now, recovery=True)
         plan = manifest.open_manifest(downloaded, secret, original_run, generation)
         require(plan["checkout"] == original["head_sha"], "recovery_original_source_mismatch")
+    if terminal:
+        terminal_client = escrow.Escrow(values["CLOUDFLARE_ACCOUNT_ID"],values["CLOUDFLARE_API_TOKEN"])
+        terminal_client.schema()
+        _,binding = escrow.binding(downloaded,secret,original_run,generation)
+        retained = terminal_client._same(terminal_client.parent(original_run),binding)
+        require(retained["artifact_id"] == args.artifact_id, "escrow_artifact_unverified")
+        if retained["state"] == "cleanup_verified":
+            # A prior lost receipt/purge ACK is metadata, not external evidence.
+            # We still run the complete fresh native read-only recovery below.
+            terminal_client._terminal(retained,binding)
+        else:
+            require(terminal_client.read(original_run,secret,generation)[1] == downloaded,
+                    "escrow_envelope_mismatch")
     allowed = tuple(manifest.candidates(secret, original_run))
     resources = tuple(sorted(set(allowed) | {part.lower() + "@" + manifest.DOMAIN for part in manifest.submissions()}))
     reader = Readback(values["CLOUDFLARE_ACCOUNT_ID"], values["CLOUDFLARE_ZONE_ID"],
@@ -181,24 +214,41 @@ def execute(args: argparse.Namespace) -> tuple[str, ...]:
                 require(provenance.mail_pin.run(values["CLOUDFLARE_ACCOUNT_ID"], values["CLOUDFLARE_API_TOKEN"],
                                                 pins.mail, phase=args.mail_phase, queue_id=args.queue_id) == "match",
                         "quota_effective_privacy_unverified")
-                return ("ten_address_recovery_verified",)
-            require(plan["checkout"] == sha, "campaign_manifest_mismatch")
-            local_path = prepared_file(original_run)
-            require(local_path.resolve() == local_path and local_path.is_file() and not local_path.is_symlink(),
-                    "campaign_local_manifest_unverified")
-            local = local_path.read_bytes()
-            labels = hosted.campaign(evidence, local, downloaded, args.artifact_id, secret, generation,
-                                     int(datetime.now(timezone.utc).timestamp() * 1000), adapter)
-            require(provenance.mail_pin.run(values["CLOUDFLARE_ACCOUNT_ID"], values["CLOUDFLARE_API_TOKEN"],
-                                            pins.mail, phase=args.mail_phase, queue_id=args.queue_id) == "match",
-                    "quota_effective_privacy_unverified")
-            return labels
+                if not terminal:
+                    return ("ten_address_recovery_verified",)
+            else:
+                require(plan["checkout"] == sha, "campaign_manifest_mismatch")
+                local_path = prepared_file(original_run)
+                require(local_path.resolve() == local_path and local_path.is_file() and not local_path.is_symlink(),
+                        "campaign_local_manifest_unverified")
+                local = local_path.read_bytes()
+                labels = hosted.campaign(evidence, local, downloaded, args.artifact_id, secret, generation,
+                                         int(datetime.now(timezone.utc).timestamp() * 1000), adapter)
+                require(provenance.mail_pin.run(values["CLOUDFLARE_ACCOUNT_ID"], values["CLOUDFLARE_API_TOKEN"],
+                                                pins.mail, phase=args.mail_phase, queue_id=args.queue_id) == "match",
+                        "quota_effective_privacy_unverified")
+                return labels
     finally:
         require(TEMP in work.parents and work.name.startswith("ten-address-hosted-"), "quota_cleanup_path_unverified")
         try:
             shutil.rmtree(work)
         except Exception:
             raise manifest.ContractFailure("quota_local_cleanup_required") from None
+    # Reaching this point proves both native context teardown and owned binary
+    # scratch removal returned normally. Any exception/cancellation bypasses it.
+    require(terminal and terminal_client is not None, "quota_terminal_recovery_unverified")
+    services.check(pins)
+    manifest.assert_prefix(plan,reader.read(),0,secret,original_run,generation)
+    require(reader.storage_empty(tuple(plan["resources"])) is True, "unexpected_message_storage")
+    require(provenance.mail_pin.run(values["CLOUDFLARE_ACCOUNT_ID"],values["CLOUDFLARE_API_TOKEN"],
+                                    pins.mail,phase=args.mail_phase,queue_id=args.queue_id) == "match",
+            "quota_effective_privacy_unverified")
+    row = terminal_client.parent(original_run)
+    require(row is not None, "escrow_parent_missing")
+    if row["state"] != "cleanup_verified":
+        terminal_client._finalize(original_run,secret,generation,current_run,sha,downloaded)
+    terminal_client._purge(original_run,secret,generation,downloaded)
+    return ("ten_address_terminal_receipt_verified",)
 
 
 def main() -> int:

@@ -388,3 +388,48 @@ Synthetic interleavings cover both races and assert original ciphertext remains
 readable, lifecycle changes belong only to the competing operation, and all
 terminal receipt fields remain absent. Coordinator work stays paused pending
 independent correction review; no local or live tests were executed.
+
+## Dormant concrete recovery/teardown coordinator
+
+`staging_ten_address_acceptance.finalize_recovery(args)` is a source-only,
+recover-only function with **no command-line option or workflow entrypoint**.
+The ordinary `execute`/`main` phases remain incapable of terminal escrow writes.
+The helper reuses the actual protected hosted environment, current/original
+manual-run and successful source observations, immutable Windows binary bytes,
+original artifact coordinates/exact authenticated ciphertext, held send state,
+three-service pins/bindings/effective capture-off, fresh synthetic A native PKCE
+and independent owner/baseline/provider/storage read-only recovery. No caller
+attestation token, success boolean, fabricated passed record or campaign-success
+label grants receipt permission. Add and address DELETE remain forbidden.
+
+Before recovery it binds the exact escrow header/artifact relation to the
+authenticated original ciphertext. A nonterminal escrow must provide complete
+matching authenticated readback; an existing terminal receipt is only metadata
+and never skips fresh external checks. The recovery returns through the native
+context, proves local logout/home teardown, removes the exact owned Windows
+binary scratch, and only then rechecks full baseline/provider/storage, service
+versions/hold and effective capture-off. Any failure, cancellation, active alias,
+privacy drift or local teardown error bypasses the terminal SQL section.
+
+Only this completed concrete sequence can call the private receipt finalizer and
+exact receipt-only chunk purge. A previous terminal receipt from a lost response
+can be observed without rewriting it, but still requires the entire new recovery
+and teardown before any remaining ciphertext is removed. Receipt evidence is
+about verified cleanup, not campaign acceptance or remote refresh-token revocation;
+normal logout proves local session removal and only attempts remote revocation.
+
+Synthetic composition exercises real controller recovery with injected provider/
+native primitives and real isolated SQLite escrow. Receipt/purge callbacks assert
+the native context exited and owned binary directory is already absent. Active
+alias, final capture-off failure, post-teardown allocation drift, native cleanup
+failure and binary scratch-removal failure retain nonterminal ciphertext without
+issuing receipt/purge SQL. These tests remain hosted-only; no live call was made.
+
+Original 30-day immutable artifact remains mandatory in this dormant function.
+Artifact-expiry full-ciphertext recovery is **not implemented by this slice**.
+If purge partially completed and the artifact later expires, remaining D1 chunks
+cannot reconstruct the original full baseline; stop rather than invent another
+manifest or substitute a receipt for external attestation. A separate reviewed
+storage-settlement/expiry composition is required before operational acceptance.
+Real D1 schema/parameter/latency behavior, watchdog/real Agent intake and actual
+24-hour acknowledgement/freshness remain live NO-GO gates.
