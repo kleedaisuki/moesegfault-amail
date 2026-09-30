@@ -1,5 +1,11 @@
 # Staging role Routing token permission discriminator
 
+## First live read-only result (2026-09-30)
+
+[Manual run 36676551506](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36676551506) on source `da86b13` reported the fixed labels `role_token_addresses=forbidden`, `role_token_rules=accessible`, `role_token_destination=not_checked`, `role_token_standard_rules=four_direct`, `role_token_disposable_route=absent`, `role_token_worker_version=match`, and `role_token_probe=inconclusive`. The same repository routing token can currently read zone Routing Rules but cannot read account destination addresses. The destination could not be checked because its inventory GET was forbidden; `four_direct` describes the current rule shape, not successful delivery or verification of the confidential destination.
+
+This **current permission split** makes an account Addresses-read scope defect actionable to investigate. It does not prove that the token had the same permissions during historical SMTP run `36603362864`, nor does it establish that the historical Cron stopped in `audit_destination`: the token or deployed secret could have changed, and no historical phase log was observed by this probe. It also provides no destination Inbox/Junk evidence. Keep public sending held; resolve the historical phase with the separately scoped fixed-phase log oracle rather than replaying SMTP or treating this read-only result as acceptance.
+
 ## Scope and invocation
 
 The first guarded role SMTP run, `36603362864`, failed machine-side acceptance;
@@ -56,5 +62,6 @@ gate held; do not replay SMTP on the strength of this probe.
 `infra/tests/test_staging_role_token_phase_probe.py` supplies synthetic 200,
 independent 403, redirect, missing/pending/duplicate, rule-mismatch, truncated
 page, and version-drift cases, plus workflow secret-scope assertions. Hosted CI
-must execute these tests before a manual provider probe. No live provider
-request has been made by this implementation or its synthetic tests.
+must execute these tests before a manual provider probe. The synthetic tests
+make no live provider request; the first separately guarded live GET result is
+recorded above.
