@@ -143,7 +143,14 @@ def object_inventory(account: str, token: str) -> set[str]:
         batch = value.get("result")
         require(isinstance(batch, list), "r2_result_invalid")
         require(len(batch) <= 100, "r2_page_size_invalid")
+        info = value.get("result_info")
+        if "result_info" in value:
+            require(isinstance(info, dict), "r2_result_info_invalid")
+            if "is_truncated" in info:
+                require(type(info["is_truncated"]) is bool, "r2_result_info_invalid")
         if not batch:
+            require(not (isinstance(info, dict) and info.get("is_truncated") is True),
+                    "r2_empty_page_truncated")
             return keys
         for item in batch:
             require(isinstance(item, dict), "r2_object_entry_invalid")

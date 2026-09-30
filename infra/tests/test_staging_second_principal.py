@@ -72,6 +72,12 @@ class SecondPrincipalTests(unittest.TestCase):
 
         first, second = self.r2_key(1), self.r2_key(2)
         cases = (
+            ([self.r2_page([], result_info={"is_truncated": True, "cursor": "more"})],
+             "r2_empty_page_truncated"),
+            ([self.r2_page([], result_info={"is_truncated": "true"})],
+             "r2_result_info_invalid"),
+            ([self.r2_page([], result_info=[])], "r2_result_info_invalid"),
+            ([self.r2_page([first], result_info=None)], "r2_result_info_invalid"),
             ([self.r2_page([first, first])], "r2_duplicate_key"),
             ([self.r2_page([second, first])], "r2_key_order_invalid"),
             ([self.r2_page([first]), self.r2_page([first])], "r2_duplicate_key"),
