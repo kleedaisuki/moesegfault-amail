@@ -21,6 +21,7 @@ source, tests or documentation:
 | `7b707bb65cd45e844974fa149cb79fbabdc1086e` | `3d3ac75` | R2 submission/recovery truthfulness |
 | `5d99147a80607b58127c0bad48adcde30c4b5c9d` | `6d126fa` | Frozen historical binding policy |
 | `2b57e7d4189c30327b635b4c4ddd3458e1290910` | `f27c727` | Native D1 synthetic proof and independent review |
+| `56f636a29804e48e8e50adb86ded2a5116939ee1` | `f7dfb1b` | Default-branch proof-workflow registration prerequisite |
 
 The quota parent `b373c35` is already an ancestor of the base. Neither its old
 source chain nor any site/main reconciliation commit was re-imported.
@@ -54,6 +55,9 @@ behavior. This matches the prior failure lesson recorded in
   evidence; old empty recovery does not prove existing-object capability.
 - Only the new manual D1 workflow is added. Existing CI, candidate/site lanes,
   release helpers, Worker runtime/configuration and packaged Skills are unchanged.
+- The new workflow must be independently registered on default `main` before
+  a feature-ref manual event is available. Registration and provider dispatch
+  need separate review/authorization; feature source CI alone grants neither.
 - No main/candidate-site synchronization is attempted here. The existing hourly
   contact-health workflow implication remains in the base review and is not
   removed or newly authorized by this batch.
@@ -64,6 +68,11 @@ Checks are source-only: Git object/diff/status inspection, AST parsing, YAML
 parsing and `git diff --check`. No local project test/build, dependency install,
 workflow dispatch, provider operation, migration, mail submission, private
 artifact/log/body read, deployment, tag/Release, main change or push occurred.
+After the scalar correction, all 16 changed Python files passed AST parsing,
+and all 22 checked-in workflow YAML documents passed static PyYAML parsing.
+Parsing is syntax evidence, not actionlint semantics or executed-test evidence.
+The complete base-relative diff and index passed whitespace checks; isolated
+worktree status was clean after each integrated commit.
 
 A bounded committed-tree pattern scan found no PEM private-key block, GitHub
 token, OpenRouter token or long JWT-shaped match; only match paths would be
