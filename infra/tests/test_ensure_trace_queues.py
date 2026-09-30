@@ -62,6 +62,16 @@ class TraceQueueTests(unittest.TestCase):
         with patch.object(MODULE, "request", return_value=empty):
             self.assertEqual(MODULE.inventory("a", "t"), [])
 
+    def test_inventory_unknown_continuation_denied(self):
+        """Closed endpoint metadata cannot conceal cursors in unknown wrappers."""
+        for payload in [{"result": [], "next_cursor": "opaque"},
+                        {"result": [], "result_info": {"cursors": {"after": "opaque"}}},
+                        {"result": [], "result_info": {"unknown": False}},
+                        {"result": [], "truncated": True}]:
+            with self.subTest(payload=payload), patch.object(MODULE, "request", return_value=payload):
+                with self.assertRaisesRegex(ValueError, "inventory_incomplete"):
+                    MODULE.inventory("a", "t")
+
     def test_post_timeout_not_retried(self):
         """An ambiguous create is reconciled by a later operator run, never repeated here."""
         with patch.object(MODULE, "inventory", return_value=[]), patch.object(
@@ -131,6 +141,23 @@ class TraceQueueTests(unittest.TestCase):
             self.assertEqual(call.call_count, 1)
             self.assertEqual(len(call.call_args.args), 3)
             self.assertEqual(call.call_args.args[2], "queues/" + "b" * 32)
+
+    def test_failed_patch_recovery_inspects_exact_nonready_identity(self):
+        """Fresh default-retention resources remain inspectable without adopting settings."""
+        dlq = {**queue("amail-trace-dlq-staging"), "settings": {"message_retention_period": 345600}}
+        detail = {**dlq, "consumers": [], "producers": [],
+                  "consumers_total_count": 0, "producers_total_count": 0}
+        with patch.object(MODULE, "inventory", return_value=[dlq]), patch.dict(MODULE.os.environ,
+                {"AMAIL_TRACE_DLQ_ID": "b" * 32}), patch.object(MODULE, "request", return_value={"result": detail}) as call, patch("builtins.print") as output:
+            MODULE.reconcile("a", "t", "staging", "recover")
+            self.assertEqual(call.call_args.args[2], "queues/" + "b" * 32)
+            self.assertEqual(len(call.call_args.args), 3)
+            output.assert_called_once_with("trace_queue_recovery_retention=not_ready")
+        with patch.object(MODULE, "inventory", return_value=[dlq]), patch.dict(MODULE.os.environ,
+                {"AMAIL_TRACE_DLQ_ID": "b" * 32}), patch.object(MODULE, "request") as call:
+            with self.assertRaisesRegex(ValueError, "queue_settings_drift"):
+                MODULE.reconcile("a", "t", "staging", "queues")
+            call.assert_not_called()
 
     def test_readback_requires_exact_owner(self):
         """Extra consumers/producers, bad DLQ and wrong retry settings are rejected."""

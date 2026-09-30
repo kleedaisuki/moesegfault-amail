@@ -39,6 +39,8 @@ def request(account: str, token: str, path: str, body: dict | None = None, *, me
 def inventory(account: str, token: str) -> list[dict]:
     """Read the documented unfiltered SyncSinglePage endpoint with bounded completeness guards."""
     payload = request(account, token, "queues")
+    if set(payload) - {"success", "errors", "messages", "result", "result_info", "truncated"}:
+        raise ValueError("inventory_incomplete")
     rows = payload.get("result")
     if not isinstance(rows, list) or len(rows) > 10000 or not all(isinstance(row, dict) for row in rows):
         raise ValueError("inventory_shape")
@@ -46,6 +48,8 @@ def inventory(account: str, token: str) -> list[dict]:
     if info is not None:
         if not isinstance(info, dict):
             raise ValueError("inventory_shape")
+        if set(info) - {"page", "count", "total_count", "total_pages", "per_page", "cursor", "next_cursor", "next_page", "has_more"}:
+            raise ValueError("inventory_incomplete")
         for field, expected in (("page", 1), ("count", len(rows)), ("total_count", len(rows))):
             if field in info and (type(info[field]) is not int or info[field] != expected):
                 raise ValueError("inventory_incomplete")
@@ -96,7 +100,7 @@ def bounded_queue(row: dict) -> bool:
 
 def validate_detail(detail: object, name: str, queue_id: str, suffix: str, phase: str) -> None:
     """Require complete exact attachment ownership before mutating any peer resource."""
-    if (not isinstance(detail, dict) or not bounded_queue(detail)
+    if (not isinstance(detail, dict) or (phase != "recover" and not bounded_queue(detail))
             or detail.get("queue_id") != queue_id or detail.get("queue_name") != name):
         raise ValueError("queue_settings_drift")
     consumers, producers = detail.get("consumers"), detail.get("producers")
@@ -110,7 +114,7 @@ def validate_detail(detail: object, name: str, queue_id: str, suffix: str, phase
         if consumers or producers:
             raise ValueError("dlq_consumer_unreviewed")
         return
-    if phase == "queues" and not consumers and not producers:
+    if phase in ("queues", "recover") and not consumers and not producers:
         return
     if len(consumers) != 1 or not isinstance(consumers[0], dict):
         raise ValueError("consumer_drift")
@@ -123,7 +127,7 @@ def validate_detail(detail: object, name: str, queue_id: str, suffix: str, phase
                 "batch_size": 10, "max_wait_time_ms": 1000, "max_retries": 3,
                 "retry_delay": 30, "max_concurrency": 2}.items())):
         raise ValueError("consumer_drift")
-    if phase == "queues" and not producers:
+    if phase in ("queues", "recover") and not producers:
         return
     if (len(producers) != 1 or not isinstance(producers[0], dict)
             or producers[0].get("type") != "worker"
@@ -160,7 +164,7 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
             if phase == "readback":
                 raise ValueError("queue_missing")
             continue
-        if not bounded_queue(row):
+        if phase != "recover" and not bounded_queue(row):
             raise ValueError("queue_settings_drift")
         key = "AMAIL_TRACE_DLQ_ID" if name.startswith("amail-trace-dlq") else "AMAIL_TRACE_QUEUE_ID"
         expected = os.getenv(key, "")
@@ -195,10 +199,12 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
     rows = inventory(account, token)
     for name in identities:
         row = exact_queue(rows, name)
-        if row is None or not bounded_queue(row) or row["queue_id"] != identities[name]:
+        if row is None or (phase != "recover" and not bounded_queue(row)) or row["queue_id"] != identities[name]:
             raise ValueError("queue_settings_drift")
         detail = request(account, token, f"queues/{row['queue_id']}").get("result")
-        validate_detail(detail, name, row["queue_id"], suffix, "queues" if phase == "recover" else phase)
+        validate_detail(detail, name, row["queue_id"], suffix, phase)
+        if phase == "recover":
+            print("trace_queue_recovery_retention=" + ("within_boundary" if bounded_queue(detail) else "not_ready"))
     output = os.getenv("GITHUB_OUTPUT")
     if phase == "queues" and output:
         # Non-secret resource IDs connect the authorized create step to this exact rollout.
