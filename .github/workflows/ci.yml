@@ -1038,6 +1038,12 @@ jobs:
         run: |
           rustup update stable
           rustup target add wasm32-unknown-unknown
+      - name: Run privacy trace schema and sink contracts
+        run: |
+          cargo test -p amail-trace-schema --locked --all-targets
+          cargo test -p amail-trace-sink --locked --all-targets
+      - name: Compile privacy trace sink target
+        run: cargo check -p amail-trace-sink --locked --target wasm32-unknown-unknown
       - name: Run Rust Worker unit tests
         run: cargo test -p amail-worker --locked --all-targets
       - name: Run Rust Email ingress contract tests
@@ -1060,6 +1066,9 @@ jobs:
         run: cargo check -p amail-role-monitor --locked --target wasm32-unknown-unknown
       - name: Install workers-rs bundler
         run: cargo install worker-build --version 0.8.5 --locked
+      - name: Bundle privacy trace sink
+        working-directory: workers/trace-sink
+        run: worker-build --release
       - name: Bundle Worker for Wrangler
         working-directory: crates/mail-worker
         run: worker-build --release
@@ -1163,7 +1172,7 @@ jobs:
   deploy-worker:
     name: Deploy mail API
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
-    needs: [cli, worker, site, dns, provider-live]
+    needs: [cli, worker, site, dns, provider-live, deploy-trace-sink]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: production
@@ -1228,6 +1237,9 @@ jobs:
           trap 'rm -f ../../.temp/worker-secrets.json' EXIT
           node -e 'const fs = require("fs"); const keys = ["OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "INGRESS_SECRET"]; fs.writeFileSync("../../.temp/worker-secrets.json", JSON.stringify(Object.fromEntries(keys.map(key => [key, process.env[key]]))));'
           wrangler deploy --secrets-file ../../.temp/worker-secrets.json
+      - name: Verify private trace producer and consumer ownership
+        working-directory: .
+        run: python infra/deploy/ensure_trace_queues.py --target production --phase readback
       - name: Verify deployed mail API observability privacy boundary
         run: python check_observability.py --realm production
       - name: Smoke test deployed API
@@ -1507,7 +1519,7 @@ jobs:
   staging-worker:
     name: Deploy isolated staging mail API
     if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
-    needs: [cli, worker, site, dns, provider-live]
+    needs: [cli, worker, site, dns, provider-live, staging-trace-sink]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: staging
@@ -1563,6 +1575,8 @@ jobs:
       - name: Verify staging runtime Email Routing Rules read access
         working-directory: .
         run: python infra/provider/probe_routing.py
+      - name: Require separately deployed API privacy containment
+        run: python check_observability.py --realm staging
       - name: Apply staging D1 migrations only
         run: wrangler d1 migrations apply MAIL_DB --remote --env staging
       - name: Build Rust Worker bundle
@@ -1575,6 +1589,9 @@ jobs:
           trap 'rm -f ../../.temp/worker-staging-secrets.json' EXIT
           node -e 'const fs = require("fs"); const keys = ["OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "INGRESS_SECRET"]; fs.writeFileSync("../../.temp/worker-staging-secrets.json", JSON.stringify(Object.fromEntries(keys.map(key => [key, process.env[key]]))));'
           wrangler deploy --env staging --secrets-file ../../.temp/worker-staging-secrets.json
+      - name: Verify private trace producer and consumer ownership
+        working-directory: .
+        run: python infra/deploy/ensure_trace_queues.py --target staging --phase readback
       - name: Verify deployed staging mail API observability privacy boundary
         run: python check_observability.py --realm staging
       - name: Smoke test staging API
@@ -1812,3 +1829,73 @@ jobs:
             echo '::error::Staging role route changed unexpectedly'
             exit 1
           fi
+
+  deploy-trace-sink:
+    name: Deploy private production privacy trace sink
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
+    needs: [worker, dns]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: production
+    concurrency:
+      group: deploy-trace-sink-production
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned private sink deployment tools
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Ensure one-day trace Queue and dead-letter Queue
+        run: python infra/deploy/ensure_trace_queues.py --target production --phase queues
+      - name: Build private Rust trace consumer
+        working-directory: workers/trace-sink
+        run: worker-build --release
+      - name: Deploy Queue-only trace consumer without secrets or HTTP route
+        working-directory: workers/trace-sink
+        run: wrangler deploy
+      - name: Verify sink retained telemetry and private trigger boundary
+        run: python crates/mail-worker/check_observability.py --realm production --mode sink
+
+  staging-trace-sink:
+    name: Deploy private staging privacy trace sink
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    needs: [worker, dns]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: staging
+    concurrency:
+      group: deploy-trace-sink-staging
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require separately deployed API privacy containment
+        run: python crates/mail-worker/check_observability.py --realm staging
+      - name: Install pinned private sink deployment tools
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Ensure one-day trace Queue and dead-letter Queue
+        run: python infra/deploy/ensure_trace_queues.py --target staging --phase queues
+      - name: Build private Rust trace consumer
+        working-directory: workers/trace-sink
+        run: worker-build --release
+      - name: Deploy Queue-only trace consumer without secrets or HTTP route
+        working-directory: workers/trace-sink
+        run: wrangler deploy --env staging
+      - name: Verify sink retained telemetry and private trigger boundary
+        run: python crates/mail-worker/check_observability.py --realm staging --mode sink
