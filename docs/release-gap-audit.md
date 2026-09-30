@@ -18,13 +18,19 @@ journeys. Actions timestamps below may fall on 2026-09-30 UTC.
 | Outbound / production / publication | No independent external-inbox delivery/feedback acceptance, production Mail cutover, v0.1.0 tag or GitHub Release exists. Candidate site source is independently reviewed and hosted checks passed, but default `main` still lacks the site/CI substrate; the minimal backport was stopped. The production `amail.moesegfault.dev` site/domain has not been deployed. | Keep send held. Candidate publication requires a separately reviewed coherent main integration or standalone bootstrap, not forced partial backport; it must remain explicitly candidate and cannot imply downloadable v0.1.0 or accepted production Mail. Genuine release still needs independent privacy/direct-contact/outbound and production evidence, published-byte verification and truthful pages. See [candidate/main split](candidate-site-main-split-decision-2026-10-01.md) and [candidate lane](site-production-candidate-lane.md). |
 
 The next useful work is **phase-discriminating evidence**, not another full mail
-journey: resolve the provider-accepted current-resource PATCH/readback mismatch
-without repeating the mutation and establish positive current Issues-off, localize the original Worker-created probe through
-its reviewed historical event window, and reconcile the changed role serving
-version before accepting monitor health. The historical audit page observation
-and current token scope are now narrower resolved facts, not release approvals.
-Neither investigation authorizes broader queries, repeated synthetic sends or unholding
-public sending. Publication remains downstream of real production acceptance.
+journey: establish positive current Issues-off through authoritative readback,
+the provider dashboard, or other provider-supported evidence without retrying
+either PATCH. Advance the reviewed **direct-forward-only** held migration and
+API-only topology with independent serving/privacy checks, then obtain genuine
+human Inbox/Junk coverage, accountable response within 24 hours, and scheduled
+health evidence; an old role-Worker version or lease is not this contract.
+B remains **NO-GO** after the unclassified, fully retired capture: stop adaptive
+provider queries and do not resend or provision B from that result. Complete
+the dormant quota escrow's source integration and separately gated real D1
+schema/durability, admission, monitoring and recovery acceptance before a quota
+campaign. Production/site integration and cutover remain later independent
+steps, not substitutes for these gates. No source pass, dashboard observation
+or diagnostic cleanup alone authorizes public sending or publication.
 
 ## Historical launch gate map (2026-09-30; superseded by the 2026-10-01 delta)
 
