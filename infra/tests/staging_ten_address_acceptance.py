@@ -33,6 +33,7 @@ TEMP = ROOT / ".temp"
 require = manifest.require
 CONFIRMS = {"prepare": "RUN_STAGING_TEN_ADDRESSES", "campaign": "RUN_STAGING_TEN_ADDRESSES",
             "recover": "RECOVER_STAGING_TEN_ADDRESSES"}
+ESCROW_GENERATION = "ten-address-v1"
 
 
 def checkout() -> str:
@@ -129,9 +130,22 @@ def finalize_recovery(args: argparse.Namespace) -> tuple[str, ...]:
     return _execute(args,terminal=True)
 
 
-def _execute(args: argparse.Namespace, *, terminal: bool = False) -> tuple[str, ...]:
+def finalize_escrow_recovery(args: argparse.Namespace) -> tuple[str, ...]:
+    """Dormant explicit D1-only recovery; verify receipt while retaining ALL ciphertext.
+
+    This deliberate transport is never an artifact-error fallback. It cannot
+    prepare/campaign, download the original artifact, purge chunks or replace
+    missing original GitHub run provenance. There is no CLI/workflow entrypoint.
+    """
+    require(args.mode == "recover" and args.artifact_id == "", "quota_escrow_recovery_only")
+    return _execute(args,terminal=True,transport="escrow")
+
+
+def _execute(args: argparse.Namespace, *, terminal: bool = False, transport: str = "artifact") -> tuple[str, ...]:
     """Compose concrete observed checks; terminal enables work, never asserts success."""
     require(not terminal or args.mode == "recover", "quota_terminal_recovery_only")
+    require(transport == "artifact" or transport == "escrow" and terminal and args.mode == "recover",
+            "quota_transport_unreviewed")
     values = environment(args.mode)
     sha = checkout()
     current_run = os.environ["GITHUB_RUN_ID"]
@@ -148,15 +162,24 @@ def _execute(args: argparse.Namespace, *, terminal: bool = False) -> tuple[str, 
     terminal_client = None
     if args.mode != "prepare":
         original = dispatch_record(original_run, token)
-        downloaded = artifacts.content(args.artifact_id, original_run, original["head_sha"], now, recovery=True)
+        if transport == "escrow":
+            require(original_run != current_run and original.get("status") == "completed",
+                    "escrow_original_invocation_unsettled")
+            require(generation == ESCROW_GENERATION, "escrow_generation_unsupported")
+            terminal_client = escrow.Escrow(values["CLOUDFLARE_ACCOUNT_ID"],values["CLOUDFLARE_API_TOKEN"])
+            _,downloaded = terminal_client.read(original_run,secret,generation)
+        else:
+            downloaded = artifacts.content(args.artifact_id, original_run, original["head_sha"], now, recovery=True)
         plan = manifest.open_manifest(downloaded, secret, original_run, generation)
         require(plan["checkout"] == original["head_sha"], "recovery_original_source_mismatch")
     if terminal:
-        terminal_client = escrow.Escrow(values["CLOUDFLARE_ACCOUNT_ID"],values["CLOUDFLARE_API_TOKEN"])
+        if terminal_client is None:
+            terminal_client = escrow.Escrow(values["CLOUDFLARE_ACCOUNT_ID"],values["CLOUDFLARE_API_TOKEN"])
         terminal_client.schema()
         _,binding = escrow.binding(downloaded,secret,original_run,generation)
         retained = terminal_client._same(terminal_client.parent(original_run),binding)
-        require(retained["artifact_id"] == args.artifact_id, "escrow_artifact_unverified")
+        require(transport == "escrow" or retained["artifact_id"] == args.artifact_id,
+                "escrow_artifact_unverified")
         if retained["state"] == "cleanup_verified":
             # A prior lost receipt/purge ACK is metadata, not external evidence.
             # We still run the complete fresh native read-only recovery below.
@@ -248,7 +271,18 @@ def _execute(args: argparse.Namespace, *, terminal: bool = False) -> tuple[str, 
     row = terminal_client.parent(original_run)
     require(row is not None, "escrow_parent_missing")
     if row["state"] != "cleanup_verified":
-        terminal_client._finalize(original_run,secret,generation,current_run,sha,downloaded)
+        row = terminal_client._finalize(original_run,secret,generation,current_run,sha,downloaded)
+    if transport == "escrow":
+        # A prior terminal status cannot prove ciphertext still exists after
+        # native checks. Reauthenticate every chunk and immutable receipt now,
+        # for both new and resumed terminal states, before claiming retention.
+        final,actual = terminal_client.read(original_run,secret,generation)
+        _,binding = escrow.binding(downloaded,secret,original_run,generation)
+        terminal_client._terminal(final,binding)
+        require(actual == downloaded and final == row, "escrow_terminal_retention_unverified")
+        # Expiry recovery must not create a destructive partial-envelope window.
+        # Atomic all-chunk purge is a separate reviewed/provider-tested contract.
+        return ("ten_address_escrow_receipt_retained",)
     terminal_client._purge(original_run,secret,generation,downloaded)
     return ("ten_address_terminal_receipt_verified",)
 

@@ -166,3 +166,45 @@ The controlling uncertainty is source ownership and integration evidence, not
 an unresolved research algorithm. Production-proven Git ancestry and explicit
 workflow contracts directly resolve it; unrelated academic machinery would not
 establish readiness of the remaining 601-file Mail proposal.
+
+## Root-authorized latest-feature integration follow-up
+
+After the initial local merge `aa00f17db297875f44863be64858952abdea8d61`,
+independent review returned a bounded GO and committed its artifact at
+`95b02ccbcdb50368f276e6245478cc50c5fc34d5`. Root then explicitly requested
+integration of current reviewed primary feature source
+`b373c35ad3eeb6b548f83d5d7f3a02d81e82c767` in this same isolated branch,
+without push, tests/builds or provider operations.
+
+Its common ancestor with the reconciled branch is the original fixed feature
+`6cb7e09`. The complete newer delta contains six paths, all disjoint from the
+main site reconciliation paths:
+
+| Incoming latest-feature path | Integration |
+| --- | --- |
+| `docs/release-gap-audit.md` | Exact latest feature blob, including live candidate-only status |
+| `docs/review-staging-quota-d1-expiry-recovery-bec6263.md` | Exact latest feature review artifact |
+| `docs/staging-quota-d1-artifact-expiry-recovery-architecture.md` | Exact latest feature architecture |
+| `docs/staging-quota-d1-recovery-escrow-design.md` | Exact latest feature recovery contract |
+| `infra/tests/staging_ten_address_acceptance.py` | Exact latest feature recovery implementation |
+| `infra/tests/test_staging_ten_address_acceptance.py` | Exact latest feature regression source |
+
+The no-commit merge completed automatically with **zero conflicts**. No quota
+code or test was hand-edited. All six incoming paths compare byte-identically
+to b373c35; all preserved main paths except `.gitignore` still compare
+byte-identically to c08a1b6. Runtime/CLI/Identity/Skills, `.agents`, Mail CI,
+release workflow and `.gitignore` remain identical to b373c35. The only authored
+follow-up change is this integration record. `git diff --cached --check` passed
+and the unresolved-path list was empty before committing.
+
+The supplemental review must check the exact resulting merge, not assume the
+prior aa00f17 verdict approves arbitrary future resolutions. Initial aa00f17
+reconciliation reduced the fixed-main three-dot diff to 565 files; the initial
+review artifact made it 566. Newer source and supplementary review artifacts
+may increase that scope. Neither automatic integration nor static blob identity
+replaces fresh hosted checks or substantive review of the complete Mail PR.
+
+The resulting ancestry includes both current reviewed feature source and the
+fixed main candidate evidence. Root may later choose a reviewed fast-forward of
+the existing feature branch, but no shared branch/ref is moved here and no
+remote push is authorized or performed by this follow-up.
