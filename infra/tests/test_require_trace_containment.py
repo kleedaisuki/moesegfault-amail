@@ -18,7 +18,7 @@ class ContainmentTests(unittest.TestCase):
 
     def responses(self):
         """Use minimal safe historical TOML and exact successful deployment evidence."""
-        source = '[env.staging.observability]\nenabled=false\n[env.staging.observability.logs]\nenabled=false\ninvocation_logs=false\n[env.staging.observability.traces]\nenabled=false\n'
+        source = '[env.staging.observability]\nenabled=false\nhead_sampling_rate=1.0\nredact_query_string=true\n[env.staging.observability.logs]\nenabled=false\ninvocation_logs=false\n[env.staging.observability.traces]\nenabled=false\n'
         return [json.dumps({"id": 123, "run_attempt": 1, "status": "completed", "conclusion": "success",
                 "head_branch": "codex/amail-v0.1.0", "path": ".github/workflows/ci.yml", "head_sha": "a" * 40}),
                 json.dumps({"total_count": 1, "jobs": [{"id": 456, "name": "Deploy isolated staging mail API", "conclusion": "success"}]}),

@@ -1379,6 +1379,8 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
+      AMAIL_TRACE_CONTAINMENT_RUN: ${{ inputs.trace_containment_run }}
+      AMAIL_TRACE_CONTAINMENT_VERSION: ${{ inputs.expected_worker_version }}
         shell: bash
         run: |
           version=$(python -c 'import json; print(json.load(open("site/package.json"))["version"])')
@@ -1562,6 +1564,8 @@ jobs:
       AMAIL_TRACE_QUEUE_ID: ${{ needs.staging-trace-sink.outputs.queue_id }}
       AMAIL_TRACE_DLQ_ID: ${{ needs.staging-trace-sink.outputs.dlq_id }}
       GH_TOKEN: ${{ github.token }}
+      AMAIL_TRACE_CONTAINMENT_RUN: ${{ inputs.trace_containment_run }}
+      AMAIL_TRACE_CONTAINMENT_VERSION: ${{ inputs.expected_worker_version }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
@@ -1606,7 +1610,7 @@ jobs:
         working-directory: .
         run: python infra/provider/probe_routing.py
       - name: Require separately deployed API privacy containment
-        run: python ../../infra/deploy/require_trace_containment.py --run "${{ inputs.trace_containment_run }}" --version "${{ inputs.expected_worker_version }}"
+        run: python ../../infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION"
       - name: Apply staging D1 migrations only
         run: wrangler d1 migrations apply MAIL_DB --remote --env staging
       - name: Build Rust Worker bundle
@@ -1920,6 +1924,8 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       GH_TOKEN: ${{ github.token }}
+      AMAIL_TRACE_CONTAINMENT_RUN: ${{ inputs.trace_containment_run }}
+      AMAIL_TRACE_CONTAINMENT_VERSION: ${{ inputs.expected_worker_version }}
       AMAIL_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
       AMAIL_TRACE_DLQ_ID: ${{ vars.AMAIL_TRACE_DLQ_ID_STAGING }}
     steps:
@@ -1928,7 +1934,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Require separately deployed API privacy containment
-        run: python infra/deploy/require_trace_containment.py --run "${{ inputs.trace_containment_run }}" --version "${{ inputs.expected_worker_version }}"
+        run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION"
       - name: Install pinned private sink deployment tools
         run: |
           rustup target add wasm32-unknown-unknown
@@ -1946,4 +1952,4 @@ jobs:
       - name: Verify sink retained telemetry and private trigger boundary
         run: python crates/mail-worker/check_observability.py --realm staging --mode sink
       - name: Recheck containment pin after sink deployment
-        run: python infra/deploy/require_trace_containment.py --run "${{ inputs.trace_containment_run }}" --version "${{ inputs.expected_worker_version }}"
+        run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION"
