@@ -640,16 +640,38 @@ async fn claim(
     Ok(Some(row))
 }
 
-async fn release(database: &D1Database, id: &str, version: i64, error: &AppError) {
-    let sql = if matches!(error.code, "search_job_stale" | "search_resource_limit") {
-        "UPDATE search_jobs SET state='stale',request_json='{}',state_json='{}',version=version+1,lease_started_at=NULL WHERE id=?1 AND state='advancing' AND version=?2"
+/// Errors that cannot resume the same rank order must erase a page job's vector.
+fn terminal_job_error(code: &str) -> bool {
+    matches!(
+        code,
+        "search_job_stale"
+            | "search_job_expired"
+            | "search_resource_limit"
+            | "search_cursor_stale"
+            | "search_cursor_expired"
+            | "search_cursor_vector_changed"
+    )
+}
+
+/// Release a leased job using its owner and version; terminal errors scrub account data.
+async fn release(
+    database: &D1Database,
+    user: &Principal,
+    id: &str,
+    version: i64,
+    error: &AppError,
+) {
+    let sql = if terminal_job_error(error.code) {
+        "UPDATE search_jobs SET state='stale',request_json='{}',state_json='{}',version=version+1,lease_started_at=NULL WHERE id=?1 AND state='advancing' AND version=?2 AND owner_iss=?3 AND owner_sub=?4"
     } else {
-        "UPDATE search_jobs SET state='running',version=version+1,lease_started_at=NULL WHERE id=?1 AND state='advancing' AND version=?2"
+        "UPDATE search_jobs SET state='running',version=version+1,lease_started_at=NULL WHERE id=?1 AND state='advancing' AND version=?2 AND owner_iss=?3 AND owner_sub=?4"
     };
-    if let Ok(query) = database
-        .prepare(sql)
-        .bind(&[bind_str(id), bind_num(version)])
-    {
+    if let Ok(query) = database.prepare(sql).bind(&[
+        bind_str(id),
+        bind_num(version),
+        bind_str(&user.iss),
+        bind_str(&user.sub),
+    ]) {
         let _ = query.run().await;
     }
 }
@@ -690,7 +712,7 @@ async fn advance(
         }
         let result = match result_page(&database, user, &input, &state, &hash, request_id).await {
             Ok(result) => result,
-            Err(error) if error.code == "search_job_stale" => {
+            Err(error) if terminal_job_error(error.code) => {
                 let _ = scrub_done(&database, user, id, row.version).await;
                 return Err(error);
             }
@@ -706,7 +728,7 @@ async fn advance(
     }
     let work = advance_claimed(&database, user, &row, request_id).await;
     if let Err(error) = &work {
-        release(&database, id, row.version, error).await;
+        release(&database, user, id, row.version, error).await;
     }
     work
 }
@@ -1374,6 +1396,24 @@ mod tests {
                 .err()
                 .unwrap();
             assert_eq!((error.status, error.code), (400, "invalid_cursor"));
+        }
+    }
+
+    /// A cursor-origin failure is terminal for a page job holding copied vectors.
+    #[test]
+    fn cursor_failures_scrub_page_jobs() {
+        for code in [
+            "search_job_stale",
+            "search_job_expired",
+            "search_resource_limit",
+            "search_cursor_stale",
+            "search_cursor_expired",
+            "search_cursor_vector_changed",
+        ] {
+            assert!(terminal_job_error(code), "{code}");
+        }
+        for code in ["semantic_unavailable", "semantic_index_incomplete"] {
+            assert!(!terminal_job_error(code), "{code}");
         }
     }
 
