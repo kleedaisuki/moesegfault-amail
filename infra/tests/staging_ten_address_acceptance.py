@@ -238,7 +238,9 @@ def _execute(args: argparse.Namespace, *, terminal: bool = False) -> tuple[str, 
     # scratch removal returned normally. Any exception/cancellation bypasses it.
     require(terminal and terminal_client is not None, "quota_terminal_recovery_unverified")
     services.check(pins)
-    manifest.assert_prefix(plan,reader.read(),0,secret,original_run,generation)
+    # Final cleanup legitimately retains owned settled retired tombstones.
+    # Reuse the complete read-only cleanup oracle, not active-prefix semantics.
+    manifest.reconcile(plan,reader.read,None,owner,secret,original_run,generation)
     require(reader.storage_empty(tuple(plan["resources"])) is True, "unexpected_message_storage")
     require(provenance.mail_pin.run(values["CLOUDFLARE_ACCOUNT_ID"],values["CLOUDFLARE_API_TOKEN"],
                                     pins.mail,phase=args.mail_phase,queue_id=args.queue_id) == "match",

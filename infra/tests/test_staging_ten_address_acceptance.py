@@ -1,6 +1,7 @@
 """Hosted synthetic full quota phase composition; no real login, CLI or providers."""
 
 import argparse
+import copy
 from contextlib import contextmanager
 import json
 from pathlib import Path
@@ -11,7 +12,7 @@ from unittest import mock
 import staging_ten_address_acceptance as target
 import staging_ten_address_manifest as manifest
 import staging_ten_address_provenance as provenance
-from test_staging_ten_address_manifest import KEY, RUN, GEN, OWNER, plan, provenance as identity_provenance, SyntheticAEAD
+from test_staging_ten_address_manifest import KEY, RUN, GEN, OWNER, plan, row, rule, provenance as identity_provenance, SyntheticAEAD
 from test_staging_ten_address_hosted import World, VERSION
 from test_staging_ten_address_escrow import Database
 
@@ -62,15 +63,25 @@ class PhaseTests(unittest.TestCase):
         return world, reader, services, cli, native, artifacts, values
 
     def execute(self, mode, *, privacy="match", tampered=False, active_recovery=False,
-                terminal=False, teardown_failure=False, scratch_failure=False, post_teardown_drift=False):
+                terminal=False, teardown_failure=False, scratch_failure=False, post_teardown_drift=False,
+                tombstones=False, final_drift=""):
         """Run controller with synthetic authenticated envelopes and no environment tools."""
         world, reader, services, cli, native, artifacts, values = self.setup_world()
         with mock.patch.object(manifest, "_cipher", SyntheticAEAD):
-            value = plan()
+            baseline = manifest.Snapshot({},[],0)
+            if final_drift.startswith("unrelated"):
+                baseline = manifest.Snapshot({"foreign@example.test":row(owner="foreign",saved="foreign-rule",local_part="foreign",created=1)},
+                                             [rule("foreign@example.test","foreign-rule")],1)
+            value = plan(baseline)
+            world.snapshot = copy.deepcopy(baseline)
             # Real campaigns require a fresh manifest timestamp from prepare.
             import time
             value["created_at"] = int(time.time() * 1000)
             blob = manifest.seal(value, KEY, RUN, GEN)
+            if tombstones:
+                for index,address in enumerate(value["allowed"][:10]):
+                    world.snapshot.rows[address] = row(state="retired",created=value["created_at"]+1,
+                            local_part=address.split("@",1)[0],slot=index,next_reconcile_at=123456789)
             original_create = world.create
             def create(part):
                 result = original_create(part)
@@ -93,6 +104,14 @@ class PhaseTests(unittest.TestCase):
                 native_state["closed"] = True
                 if post_teardown_drift:
                     world.create(value["allowed"][0].split("@")[0])
+                if final_drift == "unrelated-row":
+                    world.snapshot.rows["foreign@example.test"]["owner_sub"] = "changed-foreign"
+                elif final_drift == "unrelated-rule":
+                    world.snapshot.rules[0]["raw_digest"] = "c"*64
+                elif final_drift == "tombstone-owner":
+                    world.snapshot.rows[value["allowed"][0]]["owner_sub"] = "foreign"
+                elif final_drift == "tombstone-unsettled":
+                    world.snapshot.rows[value["allowed"][0]]["needs_reconcile"] = 1
                 if teardown_failure:
                     raise manifest.ContractFailure("native_session_cleanup_required")
             database = Database()
@@ -187,6 +206,29 @@ class PhaseTests(unittest.TestCase):
         self.assertEqual(privacy.call_count,3)
         cli.add.assert_not_called(); cli.delete.assert_not_called()
         self.assertEqual(world.calls,[])
+
+    def test_terminal_coordinator_accepts_ten_exact_settled_retired_tombstones(self):
+        """Production cleanup keeps owner tombstones and old reconciliation scheduling metadata."""
+        result,world,artifacts,privacy,cli = self.execute("recover",terminal=True,tombstones=True)
+        self.assertEqual(result,("ten_address_terminal_receipt_verified",))
+        self.assertEqual(len(world.snapshot.rows),10)
+        self.assertEqual(world.snapshot.global_count,0)
+        self.assertTrue(all(record["state"] == "retired" and record["next_reconcile_at"] == 123456789
+                            for record in world.snapshot.rows.values()))
+        self.assertEqual(world.calls,[])
+        cli.add.assert_not_called(); cli.delete.assert_not_called()
+
+    def test_post_teardown_unrelated_or_tombstone_drift_retains_ciphertext(self):
+        """Read-only cleanup accepts legitimate tombstones but rejects changed baselines/ownership."""
+        for kind in ("unrelated-row","unrelated-rule","tombstone-owner","tombstone-unsettled"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(manifest.ContractFailure):
+                    self.execute("recover",terminal=True,tombstones=True,final_drift=kind)
+                client,database,native_state = self.last_terminal
+                self.assertTrue(native_state["closed"])
+                self.assertEqual(client.parent(RUN)["state"],"sealed")
+                self.assertFalse(any(sql in (target.escrow.SQL["receipt"],target.escrow.SQL["purge"])
+                                     for sql,params in database.calls))
 
     def test_terminal_coordinator_native_or_scratch_failure_preserves_ciphertext(self):
         """Incomplete local teardown never emits terminal SQL despite clean remote baseline."""

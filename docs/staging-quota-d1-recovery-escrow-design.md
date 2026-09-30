@@ -433,3 +433,24 @@ manifest or substitute a receipt for external attestation. A separate reviewed
 storage-settlement/expiry composition is required before operational acceptance.
 Real D1 schema/parameter/latency behavior, watchdog/real Agent intake and actual
 24-hour acknowledgement/freshness remain live NO-GO gates.
+
+### Post-teardown cleanup oracle correction
+
+Independent coordinator review caught an incorrect reuse of active-prefix-zero
+semantics after teardown: real cleanup retains settled owner tombstones, so
+`assert_prefix(..., 0)` rejects a legitimate ten-address campaign even when the
+prior native read-only recovery passed. The coordinator now repeats the exact
+existing `manifest.reconcile(..., delete=None, verified_owner)` final cleanup
+oracle. This accepts only owned, sufficiently recent, correctly named retired
+rows with no rule, no saved provider ID and no pending reconciliation; old
+`next_reconcile_at` metadata is legal when needs_reconcile=0. It preserves full
+foreign baseline-row/rule/object and global allocation-count checks, with
+storage, held/service and effective privacy checks still separate. It cannot
+issue DELETE and does not invent a looser special-case oracle.
+
+New hosted synthetic composition starts from ten legitimate settled retired
+tombstones and reaches terminal receipt only after native/binary teardown.
+Post-teardown changes to foreign baseline row/rule, tombstone ownership or
+pending reconciliation all fail before any receipt or purge SQL and retain
+ciphertext. Tests are source fixtures pending hosted execution, not live mail
+or cleanup evidence; watchdog and expiry work remains paused for re-review.
