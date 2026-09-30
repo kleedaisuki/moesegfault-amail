@@ -150,3 +150,57 @@ IncompleteRead during bounded read, requiring exactly the seven fixed failure
 lines, empty stderr and one request. No query, pagination, matching or acceptance
 policy changed. These are source changes awaiting hosted execution and re-review,
 not a claim that the exception occurred in any historical live run.
+
+## First live audit result and second shape-only discriminator
+
+The parent reports bounded audit run
+[`36754040787`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36754040787)
+at source `b74130f` produced fixed `read=shape`, `complete=unverified` and
+`historical=unresolved`. This was not an observed permission denial and does not
+identify a PATCH outcome. The result was reused, not independently repeated.
+`shape` can arise from a JSON/container/envelope discrepancy, a count/type
+contract, or unsupported result-info representation; another identical outcome
+classifier run would not discriminate those cases.
+
+The approved next source slice is
+`infra/tests/staging_settings_audit_shape.py`, invoked by existing `ci.yml`
+`target=staging-settings-audit-shape` and
+`confirm=READ_STAGING_CAPTURE_SETTINGS_AUDIT_SHAPE`. It retains the same literal
+historical six-second window, account Audit v2 endpoint, ascending order and
+100-row limit. There is still at most one GET, no retry, redirect, pagination,
+expanded time range, Mail call, PATCH or persisted response.
+
+A shared `read_audit_payload` transport now returns only the bounded parsed JSON
+value so this diagnostic can distinguish envelope types. The original
+`read_audit` wrapper retains its object guard and original outcome classifier's
+strict envelope/string-count/cursor/row policy. Existing parser exception
+normalization and original focused tests remain in the manual job alongside
+the new shape contracts, all before credential-bearing execution.
+
+All emitted keys are fixed source enums. Type bins are missing/null/object/array/
+string/boolean/number/other, with mixed/no_rows for bounded row aggregates.
+Predetermined envelope fields include success/errors/result/result_info and the
+standard `messages` type only; unknown provider keys are reported merely as
+`unknown`, never printed. The discriminator reports count representation and
+relation to bounded rows, cursor representation/empty-versus-populated state,
+and aggregated row/action/raw known-key/type bins. Selected action time/result
+and raw method/URI/status fields are inspected for **type only**. Actor, ID,
+timestamp, URI, method, status number, arbitrary names and payload values are
+never emitted or used to match a historical request.
+
+The conservative frame rejects oversized rows, unknown continuation/container
+fields, mismatching/unusable count, nonempty/missing/null cursor, failed original
+envelope intent and malformed/unknown row containers. Only safe bounded frame
+observations can produce `SHAPE_DIAGNOSED`; rejected frames still show approved
+type bins under `UNVERIFIED`, with no record inspection beyond the 100-row cap.
+A numeric count can be reported as `integer_number` and compared privately to
+the row length solely to expose the original **string-only** mismatch; this does
+not change or satisfy original audit acceptance. Neither aggregate is audit
+coverage, PATCH receipt, helper attribution, settings success or privacy proof.
+
+Synthetic tests cover scalar/malformed envelopes, string versus numeric count,
+unknown standard envelope shape, cursor/pagination/count drift, bounded mixed
+row shapes, fixed private output, original object-policy preservation and real
+HTTP parser failure normalization. Static AST/YAML/whitespace checks are the
+only local verification; source review and hosted CI must precede one live
+shape discriminator. No new live request is claimed here.

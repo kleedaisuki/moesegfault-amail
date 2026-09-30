@@ -45,8 +45,12 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def read_audit(account: str, token: str) -> dict:
-    """Issue exactly one fixed account-scoped GET with no retry or pagination."""
+def read_audit_payload(account: str, token: str) -> object:
+    """Read one bounded JSON value for fixed-endpoint classification or shape bins.
+
+    This transport boundary does not assert a response schema. The historical
+    outcome classifier retains its independent object/envelope/page policy.
+    """
     if not re.fullmatch(r"[0-9a-f]{32}", account) or not token:
         raise AuditReadError("shape")
     query = urlencode({"since": SINCE, "before": BEFORE, "limit": LIMIT, "direction": "asc"})
@@ -67,6 +71,12 @@ def read_audit(account: str, token: str) -> dict:
         payload = json.loads(raw)
     except (ValueError, UnicodeDecodeError, RecursionError):
         raise AuditReadError("shape") from None
+    return payload
+
+
+def read_audit(account: str, token: str) -> dict:
+    """Preserve the outcome classifier's original required object response shape."""
+    payload = read_audit_payload(account, token)
     if not isinstance(payload, dict):
         raise AuditReadError("shape")
     return payload
