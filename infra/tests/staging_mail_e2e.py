@@ -609,8 +609,28 @@ def provider_receipt(reply: bytes) -> str:
     return value
 
 
-def smtp_send(token: str, address: str,
-              fixtures: list[tuple[EmailMessage, dict]]) -> None:
+def smtp_send(token: str, address: str, messages: list[EmailMessage]) -> None:
+    """Submit legacy role/isolation probes without changing their public helper contract.
+
+    This helper intentionally does not claim provider receipt provenance. The
+    mail E2E's stronger oracle lives in ``smtp_send_receipts`` below.
+    """
+
+    try:
+        with smtplib.SMTP_SSL(
+            "smtp.mx.cloudflare.net", 465, timeout=30, context=ssl.create_default_context()
+        ) as smtp:
+            smtp.login("api_token", token)
+            for message in messages:
+                check(not smtp.sendmail(SENDER, [address], message.as_bytes()), "smtp_recipient_refused")
+    except ProbeFailure:
+        raise
+    except Exception:
+        raise ProbeFailure("smtp_submission_failed") from None
+
+
+def smtp_send_receipts(token: str, address: str,
+                       fixtures: list[tuple[EmailMessage, dict]]) -> None:
     """Submit each MIME once and retain its private DATA receipt in the same oracle."""
 
     try:
@@ -1095,7 +1115,7 @@ def main() -> int:
         mail_oracles = {rich_oracle["subject"]: rich_oracle,
                         distractor_oracle["subject"]: distractor_oracle}
         smtp_attempted = True
-        smtp_send(smtp_token, address, [(rich, rich_oracle), (distractor, distractor_oracle)])
+        smtp_send_receipts(smtp_token, address, [(rich, rich_oracle), (distractor, distractor_oracle)])
         print("smtp_submitted")
         messages = await_messages(binary, env, {rich_oracle["subject"], distractor_oracle["subject"]})
         delivery_confirmed = True

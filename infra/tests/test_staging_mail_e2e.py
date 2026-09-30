@@ -45,7 +45,7 @@ class SmtpReceiptTests(unittest.TestCase):
         connection.__enter__.return_value = smtp
         output = StringIO()
         with patch.object(HARNESS.smtplib, "SMTP_SSL", return_value=connection), redirect_stdout(output):
-            HARNESS.smtp_send("private", address, fixtures)
+            HARNESS.smtp_send_receipts("private", address, fixtures)
         self.assertEqual(output.getvalue(), "")
         self.assertEqual([oracle["provider_message_id"] for _, oracle in fixtures],
                          ["<first@provider.example>", "<second@provider.example>"])
@@ -68,7 +68,7 @@ class SmtpReceiptTests(unittest.TestCase):
         connection.__enter__.return_value = smtp
         with patch.object(HARNESS.smtplib, "SMTP_SSL", return_value=connection):
             with self.assertRaises(HARNESS.ProbeFailure) as caught:
-                HARNESS.smtp_send("private", address, fixtures)
+                HARNESS.smtp_send_receipts("private", address, fixtures)
         self.assertEqual(str(caught.exception), "smtp_recipient_refused")
         self.assertEqual(fixtures[0][1]["provider_message_id"], "<first@provider.example>")
         self.assertIsNone(fixtures[1][1]["provider_message_id"])
@@ -100,10 +100,23 @@ class SmtpReceiptTests(unittest.TestCase):
         connection.__enter__.return_value = smtp
         with patch.object(HARNESS.smtplib, "SMTP_SSL", return_value=connection):
             with self.assertRaises(HARNESS.ProbeFailure) as caught:
-                HARNESS.smtp_send("private", address, fixtures)
+                HARNESS.smtp_send_receipts("private", address, fixtures)
         self.assertEqual(str(caught.exception), "smtp_receipt_unverified")
         self.assertEqual(fixtures[0][1]["provider_message_id"], "<first@provider.example>")
         self.assertIsNone(fixtures[1][1]["provider_message_id"])
+
+    def test_legacy_role_and_isolation_callers_keep_message_list_contract(self) -> None:
+        """Do not break existing probes that submit a plain EmailMessage list."""
+
+        address = "fixture@" + HARNESS.DOMAIN
+        message, _ = HARNESS.make_mail(address, "a" * 16, True)
+        smtp = MagicMock()
+        smtp.sendmail.return_value = {}
+        connection = MagicMock()
+        connection.__enter__.return_value = smtp
+        with patch.object(HARNESS.smtplib, "SMTP_SSL", return_value=connection):
+            HARNESS.smtp_send("private", address, [message])
+        smtp.sendmail.assert_called_once_with(HARNESS.SENDER, [address], message.as_bytes())
 
     def test_receipt_mismatch_precedes_archive_or_cleanup(self) -> None:
         """Neither API metadata nor ZIP self-consistency can replace DATA evidence."""
@@ -976,7 +989,7 @@ class CleanupTests(unittest.TestCase):
                     ), patch.object(HARNESS, "cf_rules", return_value=[]), patch.object(
                         HARNESS, "assert_route"
                     ), patch.object(HARNESS, "assert_staging_sender"), patch.object(
-                        HARNESS, "smtp_send", side_effect=subprocess.TimeoutExpired("smtp", 30)
+                        HARNESS, "smtp_send_receipts", side_effect=subprocess.TimeoutExpired("smtp", 30)
                     ), patch.object(HARNESS, "cleanup_run", side_effect=cleanup_failure) as cleanup, patch.object(
                         HARNESS, "print_snapshot", return_value=("route_absent", "row_absent")
                     ), patch.object(
