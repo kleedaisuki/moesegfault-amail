@@ -3096,6 +3096,8 @@ mod tests {
             last_id: "z".into(),
             last_score_bits: Some(best.0.to_bits()),
             vector_commitment: None,
+            origin_job_id: None,
+            cursor_mac: None,
         };
         let decoded: SearchCursor =
             serde_json::from_slice(&serde_json::to_vec(&cursor).unwrap()).unwrap();
