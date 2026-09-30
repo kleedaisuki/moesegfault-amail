@@ -218,7 +218,7 @@ class R2ObjectCapabilityTests(unittest.TestCase):
         self.assertIn("AMAIL_R2_PRIOR_RUN_ID: ${{ inputs.r2_prior_run_id }}", job)
         self.assertIn("AMAIL_R2_PRIOR_RUN_ATTEMPT: ${{ inputs.r2_prior_run_attempt }}", job)
         self.assertEqual(job.count("secrets.CLOUDFLARE_API_TOKEN"), 1)
-        self.assertLess(job.index("Require explicit object-operation confirmation"),
+        self.assertLess(job.index("if ($env:R2_CONFIRM -ne $expected)"),
                         job.index("secrets.CLOUDFLARE_API_TOKEN"))
         self.assertNotIn("STAGING_E2E_B_PASSWORD", job)
         self.assertNotIn("--apply", job)
