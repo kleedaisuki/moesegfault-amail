@@ -162,8 +162,11 @@ already in-flight send.
    [GitHub manual workflow registration](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
 3. Verify existing repository Secret names/source and actual Environment
    protections privately. Run the supported held migration/runtime acceptance;
-   prove held before/after changes. The newly registered hourly lane should
-   report only the positive unadopted-held idle result until adoption.
+   prove held before/after changes. Keep the hourly lane skipped while schedule
+   activation is absent or `false`. A controlled manual health observation may
+   prove the positive unadopted-held idle result; it is not adoption or health
+   evidence. Activate recurring refresh only after the readiness conditions in
+   **Default-off schedule activation** above are satisfied.
 4. **Stop here while human coverage is pending.** Registration is not adoption.
    After explicit owner acceptance and independent operational review, select
    exact existing rule/destination record IDs privately and dispatch adoption
