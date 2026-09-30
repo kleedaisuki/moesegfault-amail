@@ -57,3 +57,63 @@ pagination, irreversible DELETE denial, uncertain writes and cleanup order:
 This review does not reopen its resolved defects or certify real send grants,
 provider delivery, private Worker binding state, cleanup after process death,
 or production readiness.
+
+## Corrective integration review: `371ade7`
+
+**GO for nondeploying hosted source CI of the corrective commit. Live remains
+NO-GO until default-branch workflow registration, exact-SHA hosted success and
+separate mutation approval are established.** No local tests, live operations,
+dispatch or push were performed in this follow-up.
+
+The previous review missed a material platform admission constraint: adding
+four inputs raised `ci.yml` from 23 to 27 dispatch inputs, so run
+`36748735128` had zero jobs. Its earlier GO did not establish workflow validity.
+GitHub currently documents a maximum of 25 top-level inputs and requires the
+workflow file on the default branch for manual dispatch:
+[official workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatchinputs).
+These obligations are now explicitly inspected rather than deferred to job
+execution.
+
+Changes inspected at `371ade7a8d78abb282b8ef8fd299d10802faf730`:
+
+- `ci.yml` again declares exactly 23 top-level inputs; the dedicated
+  `.github/workflows/staging-worker-r2-capability.yml:6-31` declares exactly
+  six, with unique names. Static PowerShell text enumeration independently
+  confirmed both counts; no project test was executed locally. The new
+  synthetic count contract at
+  `infra/tests/test_staging_worker_created_r2.py:583-597` checks 23/6, unique
+  names and the 25-input ceiling. Its indentation-based matcher is appropriate
+  to the actual workflow layout, not a general YAML validator.
+- The dedicated workflow has only `workflow_dispatch` (`:4-5`); both exact
+  target/branch/Environment/Ubuntu guards (`:43-49,88-97`), confirmations and
+  current attempt 1 (`:55-66,103-118`), tests-before-provider-secrets
+  (`:70-84,122-139`), 20-minute budgets and noncanceling native-acceptance job
+  groups (`:49-52,97-100`) are preserved. Recovery retains Actions read and no
+  B credentials/send attestation. No automatic or production mutation trigger
+  was introduced.
+- `staging_worker_created_r2.py:189-192` now accepts only the dedicated
+  canonical or reviewed branch-qualified workflow path. Job/step names remain
+  unchanged and exactly aligned (`workflow:42,74`). The canonical and qualified
+  provenance fixtures move with the source; the existing wrong-workflow,
+  wrong-job/SHA/run and skipped-step rejection fixtures remain in place. No
+  live probe ran under the invalid integrated workflow, so rejecting its old
+  path does not strand an existing Worker-created recovery object.
+- `docs/staging-second-principal.md:88-92` now names the dedicated workflow,
+  records the zero-job failure and clearly identifies default-branch
+  registration as an unsatisfied operational prerequisite. Availability on a
+  feature branch is not treated as dispatchability.
+
+**Concurrency scope changed and must not be overstated.** Dedicated workflow
+group `staging-worker-r2-${{ github.ref }}` (`:36-38`) differs from `ci.yml`'s
+manual workflow group. The preserved repository-wide job group serializes
+native acceptance/provisioning/probes across workflows, but does not lock the
+separate staging deployment jobs. Thus the split no longer inherits the old
+single-workflow serialization against a manual staging deploy. Before live
+use, the owner must explicitly freeze staging inbox/deployment changes as
+already required by the review; otherwise a deploy could change bindings or
+privacy policy after probe preflight. This does not block nonmutating hosted
+source checks, and it is not evidence that such a race has occurred. If future
+unattended dispatch is intended, enforce a shared state-lane lock rather than
+relying only on operator coordination.
+
+All source-level cleanup limits and the NO-GO for B remain unchanged.
