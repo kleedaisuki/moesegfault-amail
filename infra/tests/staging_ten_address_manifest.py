@@ -275,7 +275,7 @@ def rule_safe(snapshot: Snapshot, address: str, row: dict) -> bool:
         return False
     rule = matches[0]
     return (rule["enabled"] is True and rule["source"] == "api"
-            and rule["name"] == f"amail {address}" and rule["worker"] == "amail-ingress-staging")
+            and rule["name"] == f"amail {address}" and rule["worker"] == "amail-inbound-staging")
 
 
 def recovery_actions(plan: dict, current: Snapshot, verified_owner: str,

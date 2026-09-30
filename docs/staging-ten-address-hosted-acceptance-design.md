@@ -7,6 +7,40 @@ The assignment's safe-design fallback is used because B has not yet completed
 normal verification and the hosted two-principal isolation acceptance has not
 passed. No input boolean can substitute for either fact.
 
+Source increment (2026-10-01): `staging_ten_address_hosted.py` implements the
+dormant campaign controller: structured execution/provenance gate contracts,
+pre-mutation sealing, exact immutable artifact readback, strict native CLI
+HTTP-409/code/empty-stdout oracles, 28 reserved submissions, ten serial adds,
+one eleventh denial, complete prefix/global/provider/owner readback and
+full-manifest reconciliation in `finally`. Success labels are returned only
+after exact cleanup and final serving-pin/storage readback. Captured outputs
+and adapter exception text are never emitted. Cooperative interruption enters
+cleanup; a killed process still requires external same-artifact recovery.
+
+The existing recovery oracle incorrectly named `amail-ingress-staging`;
+source config and deployed acceptance adapters name `amail-inbound-staging`.
+The oracle and fixtures now use the actual configured ingress, with a hosted
+synthetic test binding it to `crates/mail-worker/wrangler.toml`. This fixes a
+false unsafe-rule rejection; it does not broaden deletion eligibility.
+
+`test_staging_ten_address_hosted.py` adds synthetic positive/denial, provenance,
+durability, ambiguous-create, reserved regression, eleventh success, capacity
+denial, cancellation and cleanup contracts. These tests remain pending hosted
+execution; only static AST parsing and diff whitespace checks were performed
+locally. Synthetic AEAD remains deliberately authentication-only.
+
+There is still **no live entry point, complete Cloudflare/D1 adapter, normal
+PKCE wrapper, trusted prior-isolation attestation reader, artifact uploader/
+downloader or workflow dispatch target**. `Evidence` describes observations
+that a reviewed wrapper must independently obtain, not authorization for an
+operator to supply booleans or arbitrary provenance. The manifest currently
+seals the Mail pin but not Identity/Login revisions or username: extending the
+authenticated provenance contract is required before exposing mutation.
+The wrapper must also validate a CI-built Windows binary, staging bindings,
+full provider matcher/action inventory and independent message/R2 absence.
+Pinned `cryptography` installation and real AES-GCM integration tests remain
+required. No live run, cleanup or quota pass is claimed by this increment.
+
 Source increment: `infra/tests/staging_ten_address_manifest.py` now implements
 the dormant, side-effect-free candidate/manifest envelope, private artifact
 readback gate, complete normalized snapshot contracts, prefix/drift checks and

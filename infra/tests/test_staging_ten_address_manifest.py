@@ -31,7 +31,7 @@ def rule(address, identity="synthetic-rule"):
     """Construct the only exact rule shape eligible for supported deletion."""
 
     return {"id": identity, "address": address, "enabled": True,
-            "source": "api", "name": f"amail {address}", "worker": "amail-ingress-staging"}
+            "source": "api", "name": f"amail {address}", "worker": "amail-inbound-staging"}
 
 
 def plan(snapshot=None):
