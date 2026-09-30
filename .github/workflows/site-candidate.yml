@@ -123,7 +123,7 @@ jobs:
           pnpm build
           pnpm check:release-state candidate
           python ../infra/release/candidate_site.py prepare "$GITHUB_SHA"
-      - name: Recheck Release absence immediately before site mutation
+      - name: Recheck public tag and published Release before site mutation
         working-directory: .
         env:
           SOURCE_CI_RUN_ID: ${{ inputs.source_ci_run_id }}

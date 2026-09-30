@@ -2,6 +2,7 @@
 
 Required environment: GH_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA, GITHUB_REF,
 SOURCE_CI_RUN_ID. No Mail, D1, sending policy or Cloudflare state is accessed.
+The contents:read token checks public publication state, not draft inventory.
 """
 
 import json
@@ -12,7 +13,11 @@ from urllib.request import Request, urlopen
 
 
 def github(path, allow_missing=False):
-    """Read a fixed repository API route; only explicit 404 may mean absent."""
+    """Read a fixed API route; explicit 404 means no token-visible resource.
+
+    In particular, a Release 404 does not prove absence of an internal draft.
+    The candidate contract excludes public tags/published Releases, not drafts.
+    """
     request = Request(
         f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/{path}",
         headers={
@@ -45,8 +50,18 @@ def check_run(run, workflow_id, sha):
         raise ValueError("exact-source successful hosted CI run required")
 
 
+def check_release(release):
+    """Reject published Release state, without claiming internal drafts are absent."""
+    if release is None:
+        return
+    if not isinstance(release, dict) or not isinstance(release.get("draft"), bool):
+        raise ValueError("GitHub Release publication metadata invalid")
+    if not release["draft"]:
+        raise ValueError("v0.1.0 published Release exists; candidate deployment forbidden")
+
+
 def main():
-    """Reject existing Release/tag and unverified source without logging responses."""
+    """Reject public tag/published Release and unverified source with read access."""
     try:
         if os.environ.get("GITHUB_REF") != "refs/heads/main":
             raise ValueError("production candidate deploy requires main")
@@ -63,12 +78,13 @@ def main():
         # Any tag blocks a candidate downgrade, including an in-flight release.
         if github("git/ref/tags/v0.1.0", allow_missing=True) is not None:
             raise ValueError("v0.1.0 tag exists; use the gated published-site lane")
-        if github("releases/tags/v0.1.0", allow_missing=True) is not None:
-            raise ValueError("v0.1.0 Release exists; candidate deployment forbidden")
+        # Read access cannot inventory untagged drafts. A hidden draft is not a
+        # published Release and does not make truthful candidate copy incorrect.
+        check_release(github("releases/tags/v0.1.0", allow_missing=True))
     except (KeyError, ValueError) as error:
         message = str(error) if isinstance(error, ValueError) else "required GitHub metadata unavailable"
         raise SystemExit(f"candidate_site_gate: {message}") from None
-    print("candidate_site_gate=ready source_ci=passed release=absent tag=absent")
+    print("candidate_site_gate=ready source_ci=passed published_release=not_visible tag=absent")
 
 
 if __name__ == "__main__":

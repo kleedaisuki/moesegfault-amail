@@ -28,9 +28,11 @@ Before v0.1.0 publication, a separate reviewed, main-only manual
 production hostname without changing Mail/send/release gates. It adds
 production noindex/nofollow and an opaque source revision **only to generated
 candidate dist headers**, never to source `_headers`; a fresh published build
-must not inherit them. Exact-source hosted CI, absence of any v0.1.0 tag/Release,
-and three-route truthfulness/TOC/header smoke are mandatory. Independent review
-and a freeze of other site/tag writers are operator prerequisites. See
+must not inherit them. Exact-source hosted CI, absence of a public v0.1.0 tag or
+published Release, and three-route truthfulness/TOC/header smoke are mandatory.
+Independent review
+and a freeze of other site/tag writers are operator prerequisites. The read-only
+token does not inventory internal untagged draft Releases. See
 [the candidate lane contract](../docs/site-production-candidate-lane.md).
 
 `node scripts/check-release-state.mjs candidate|published` checks each rendered

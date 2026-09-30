@@ -22,7 +22,7 @@ def run():
 
 
 class CandidateGateTests(unittest.TestCase):
-    """Never infer CI from a run ID alone or Release absence from transport errors."""
+    """Do not infer CI from a run ID or draft absence from read-token visibility."""
 
     def test_exact_source_run(self):
         """Only successful source evidence for the exact immutable SHA passes."""
@@ -36,13 +36,18 @@ class CandidateGateTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 gate.check_run(modified, 7, SHA)
 
-    def test_gate_rejects_existing_tag_release_or_skipped_site(self):
-        """Existing publication state blocks a downgrade even if Mail is held."""
+    def test_gate_rejects_public_tag_published_release_or_skipped_site(self):
+        """Public publication blocks a downgrade; untagged drafts are not releases."""
         jobs = {"jobs": [{"name": "Astro release site", "conclusion": "success"}]}
         for responses, passes in (
+            # None can mean an internal draft is hidden from the read token;
+            # passing this case proves no public publication was observed.
             ([{"id": 7}, run(), jobs, None, None], True),
+            # A visible untagged draft is also not a published Release.
+            ([{"id": 7}, run(), jobs, None, {"draft": True}], True),
             ([{"id": 7}, run(), jobs, {"ref": "refs/tags/v0.1.0"}], False),
             ([{"id": 7}, run(), jobs, None, {"draft": False}], False),
+            ([{"id": 7}, run(), jobs, None, {"draft": "false"}], False),
             ([{"id": 7}, run(), {"jobs": []}], False),
             ([{"id": 7}, run(), {"jobs": [{"name": "Astro release site", "conclusion": "skipped"}]}], False),
         ):
@@ -53,6 +58,13 @@ class CandidateGateTests(unittest.TestCase):
                     with self.assertRaises(SystemExit):
                         gate.main()
 
+    def test_release_visibility_is_not_draft_inventory(self):
+        """Both an invisible resource and an explicitly draft resource are allowed."""
+        gate.check_release(None)
+        gate.check_release({"draft": True})
+        with self.assertRaises(ValueError):
+            gate.check_release({"draft": False})
+
     def test_main_only_and_bad_metadata(self):
         """Dispatch source/ID errors are rejected before any HTTP access."""
         for key, value in (("GITHUB_REF", "refs/heads/codex/amail-v0.1.0"), ("SOURCE_CI_RUN_ID", "not-a-run"), ("GITHUB_SHA", "short")):
@@ -62,7 +74,7 @@ class CandidateGateTests(unittest.TestCase):
                 request.assert_not_called()
 
     def test_api_failure_never_means_absent(self):
-        """A denied/unavailable metadata read is an error, not candidate authority."""
+        """Explicit denial/transport errors fail; a Release 404 is visibility only."""
         with patch.dict(gate.os.environ, ENV, clear=True), patch.object(gate, "github", side_effect=ValueError("GitHub preflight request unavailable")):
             with self.assertRaises(SystemExit):
                 gate.main()
