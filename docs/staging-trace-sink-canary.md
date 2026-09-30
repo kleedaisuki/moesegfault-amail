@@ -79,3 +79,18 @@ require at-least-once-aware deduplication, and its
 [Workers Logs documentation](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)
 distinguishes invocation records from custom Logs. Those platform descriptions
 motivate this design but do not replace a complete retained-data canary.
+
+### Independent review correction: exact wire-domain mirror
+
+Review `45e3c58` identified schema drift in the first harness: the older API
+checker accepted incompatible service/phase/status/error combinations and used a
+smaller byte bucket maximum; the maintenance check rejected valid operation-scoped
+warning children. The new `safe_event` now mirrors `trace-schema Event::valid`
+from Rust revision `728f2c3` directly rather than delegating to that legacy
+validator. It enforces RFC4122 UUIDv4, exact ten CLI operations, service/phase
+field combinations, request outcome/error/status coherence, nullable optional
+legacy CLI IDs, standalone versus operation-parented diagnostics, provider fields
+only on routing-create dependencies, and power-of-two byte buckets up to 2^32.
+Positive and negative synthetic tests cover these boundaries. Existing old trace
+canary behavior is unchanged. This correction is source-only until hosted CI;
+it does not change or attest a deployed retained record.

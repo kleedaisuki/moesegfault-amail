@@ -109,6 +109,68 @@ class SinkCanaryTests(unittest.TestCase):
                 hosted.execute("canary", "WRONG", R, D)
             read.assert_not_called()
 
+    def test_request_status_error_and_service_phase_constraints(self):
+        """A safe-field vocabulary alone cannot bless an impossible causal event."""
+        event = json.loads(fixture()[0]["source"])
+        for change in ({"http_status_class": 4}, {"error_code": "dependency_failure"},
+                       {"error_code": "unauthorized"}, {"span_id": None},
+                       {"request_id": None}, {"response_bytes_bucket": 1},
+                       {"provider_http_status": 200}, {"phase": "operation_exit"},
+                       {"service": "mail_cli"}, {"operation": "maintenance"}):
+            with self.subTest(change=change):
+                self.assertFalse(sink.safe_event(dict(event, **change)))
+        for status in (1, 2, 3):
+            self.assertTrue(sink.safe_event(dict(event, http_status_class=status)))
+        for status, outcome, error in ((4, "client_error", "unauthorized"),
+                                       (5, "server_error", "service_unavailable")):
+            self.assertTrue(sink.safe_event(dict(event, http_status_class=status,
+                                                 outcome=outcome, error_code=error)))
+
+    def test_maintenance_standalone_and_operation_scoped_parent(self):
+        """Shared schema supports both Cron diagnostics and request warning children."""
+        event = json.loads(fixture()[0]["source"])
+        event.pop("http_status_class")
+        event.update(phase="maintenance", outcome="phase_failure", error_code="dependency_failure",
+                     diagnostic_code="storage_ledger_state_deferred")
+        self.assertTrue(sink.safe_event(event))
+        standalone = dict(event, operation="maintenance", parent_span_id=None)
+        self.assertTrue(sink.safe_event(standalone))
+        for bad in (dict(event, parent_span_id=None), dict(standalone, parent_span_id=C),
+                    dict(event, diagnostic_code=None), dict(event, outcome="success"),
+                    dict(event, request_bytes_bucket=0), dict(event, provider_error_code=0)):
+            self.assertFalse(sink.safe_event(bad))
+
+    def test_byte_buckets_up_to_four_gib_and_closed_provider_fields(self):
+        """The mirror preserves Rust's 2^32 byte bound and routing-only provider data."""
+        event = json.loads(fixture()[0]["source"])
+        for bucket in (0, 1, 1 << 30, 1 << 31, 1 << 32):
+            self.assertTrue(sink.safe_event(dict(event, request_bytes_bucket=bucket)))
+        for bucket in (True, -1, 3, (1 << 32) + 1, 1 << 33):
+            self.assertFalse(sink.safe_event(dict(event, request_bytes_bucket=bucket)))
+        dependency = dict(event, phase="routing_create", http_status_class=None,
+                          provider_http_status=200, provider_error_code=0)
+        self.assertTrue(sink.safe_event(dependency))
+        self.assertFalse(sink.safe_event(dict(dependency, phase="d1_read")))
+        self.assertFalse(sink.safe_event(dict(dependency, parent_span_id=None)))
+        self.assertFalse(sink.safe_event(dict(dependency, provider_error_code=True)))
+        self.assertFalse(sink.safe_event(dict(dependency, provider_error_code=1 << 32)))
+        self.assertFalse(sink.safe_event(dict(dependency, provider_http_status=600)))
+
+    def test_client_exact_operation_set_and_legacy_optional_ids(self):
+        """Only ten CLI wire operations permit legacy optional span/request fields."""
+        event = json.loads(fixture()[0]["source"])
+        event.update(service="mail_cli", phase="operation_exit", parent_span_id=None,
+                     response_bytes_bucket=1 << 32, span_id=None, request_id=None)
+        for operation in sink.CLI_OPERATIONS:
+            self.assertTrue(sink.safe_event(dict(event, operation=operation)))
+        for operation in ("unknown", "health", "inbound", "search_poll", "telemetry_upload", "maintenance"):
+            self.assertFalse(sink.safe_event(dict(event, operation=operation)))
+        self.assertTrue(sink.safe_event(dict(event, http_status_class=0, outcome="server_error")))
+        self.assertFalse(sink.safe_event(dict(event, response_bytes_bucket=None)))
+        self.assertFalse(sink.safe_event(dict(event, error_code="other_server")))
+        self.assertFalse(sink.safe_event(dict(event, parent_span_id=C)))
+        self.assertFalse(sink.canonical_uuid("11111111-1111-4111-7111-111111111111"))
+
     def test_source_records_and_pin_changes_never_pass(self):
         """Retained source rows or post-read deployment drift invalidate the proof."""
         account = "a" * 32

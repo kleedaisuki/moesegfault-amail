@@ -105,15 +105,58 @@ DIAGNOSTIC_CODES = frozenset({
 })
 
 
+CLI_OPERATIONS = frozenset({
+    "addresses_list", "addresses_add", "addresses_delete", "messages_list",
+    "messages_search", "messages_send", "messages_get", "messages_archive",
+    "messages_mark", "messages_delete",
+})
+CLIENT_ERRORS = frozenset({"invalid_request", "unauthorized", "forbidden", "not_found",
+                           "conflict", "rate_limited", "other_client"})
+PROVIDER_FIELDS = ("provider_http_status", "provider_error_code")
+
+
 def canonical_uuid(value: object) -> bool:
-    """Match the producer's canonical lower-case UUIDv4 domain."""
-    return isinstance(value, str) and legacy.UUID.fullmatch(value) is not None and uuid.UUID(value).version == 4
+    """Match the producer's canonical lower-case RFC4122 UUIDv4 domain."""
+    if not isinstance(value, str) or legacy.UUID.fullmatch(value) is None:
+        return False
+    parsed = uuid.UUID(value)
+    return parsed.version == 4 and parsed.variant == uuid.RFC_4122
+
+
+def absent(event: dict, *fields: str) -> bool:
+    """Serde optional fields permit either omission or explicit JSON null."""
+    return all(event.get(key) is None for key in fields)
+
+
+def status_outcome(event: dict, *, cli: bool = False) -> bool:
+    """Mirror the shared Rust status hundred-class/outcome combinations."""
+    status, outcome = event.get("http_status_class"), event.get("outcome")
+    return ((status in (1, 2, 3) and outcome == "success")
+            or (status == 4 and outcome == "client_error")
+            or (status == 5 and outcome == "server_error")
+            or (cli and status == 0 and outcome == "server_error"))
 
 
 def safe_event(event: dict) -> bool:
-    """Mirror the strict typed wire domain, not merely JSON parseability."""
-    if not canonical_uuid(event.get("event_id")) or type(event.get("schema_version")) is not int:
+    """Mirror trace-schema Event::valid, including service/phase field invariants.
+
+    This deliberately does not call the pre-migration legacy.allowlisted_event:
+    that older checker has different bucket limits and causal field constraints.
+    Update this mirror and its contract tests together when the Rust wire evolves.
+    """
+    if (not set(event).issubset(legacy.EVENT_KEYS | {"event_id", "diagnostic_code"})
+            or type(event.get("schema_version")) is not int or event["schema_version"] != 1
+            or not canonical_uuid(event.get("event_id"))):
         return False
+    for key, values in (("service", legacy.EVENT_SERVICES),
+                        ("operation", legacy.EVENT_OPERATIONS | {"maintenance"}),
+                        ("phase", legacy.EVENT_PHASES | {"maintenance"}),
+                        ("outcome", legacy.EVENT_OUTCOMES)):
+        if not isinstance(event.get(key), str) or event[key] not in values:
+            return False
+    for key, values in (("error_code", legacy.EVENT_ERRORS), ("diagnostic_code", DIAGNOSTIC_CODES)):
+        if event.get(key) is not None and (not isinstance(event[key], str) or event[key] not in values):
+            return False
     if not canonical_uuid(event.get("request_id")) and event.get("request_id") is not None:
         return False
     for key, width in (("trace_id", 32), ("span_id", 16), ("parent_span_id", 16)):
@@ -127,20 +170,41 @@ def safe_event(event: dict) -> bool:
         if (key == "duration_ms_bucket" or value is not None) and (
                 type(value) is not int or not 0 <= value <= maximum or (value and value & (value - 1))):
             return False
-    status = event.get("http_status_class")
-    if status is not None and (type(status) is not int or not 0 <= status <= 5):
+    for key, minimum, maximum in (("http_status_class", 0, 5),
+                                   ("provider_http_status", 100, 599),
+                                   ("provider_error_code", 0, 0xFFFFFFFF)):
+        value = event.get(key)
+        if value is not None and (type(value) is not int or not minimum <= value <= maximum):
+            return False
+    phase, operation = event["phase"], event["operation"]
+    if event["service"] == "mail_cli":
+        return (phase == "operation_exit" and operation in CLI_OPERATIONS
+                and absent(event, "parent_span_id", "error_code", "request_bytes_bucket",
+                           "diagnostic_code", *PROVIDER_FIELDS)
+                and event.get("response_bytes_bucket") is not None and status_outcome(event, cli=True))
+    if event.get("span_id") is None or event.get("request_id") is None:
         return False
-    stripped = {key: value for key, value in event.items() if key != "event_id"}
-    if event.get("phase") == "maintenance":
-        return set(stripped).issubset(legacy.EVENT_KEYS | {"diagnostic_code"}) and (
-            event.get("schema_version") == 1 and event.get("service") == "mail_api"
-            and event.get("operation") == "maintenance" and event.get("span_id") is not None
-            and event.get("request_id") is not None and event.get("parent_span_id") is None
-            and event.get("outcome") == "phase_failure" and event.get("error_code") == "dependency_failure"
-            and event.get("diagnostic_code") in DIAGNOSTIC_CODES
-            and all(event.get(key) is None for key in ("http_status_class", "request_bytes_bucket",
-                        "response_bytes_bucket", "provider_http_status", "provider_error_code")))
-    return legacy.allowlisted_event(stripped)
+    if phase == "maintenance":
+        return (((operation == "maintenance" and event.get("parent_span_id") is None)
+                 or (operation != "maintenance" and event.get("parent_span_id") is not None))
+                and event["outcome"] == "phase_failure" and event.get("error_code") == "dependency_failure"
+                and event.get("diagnostic_code") is not None
+                and absent(event, "http_status_class", "request_bytes_bucket",
+                           "response_bytes_bucket", *PROVIDER_FIELDS))
+    if operation == "maintenance" or phase == "operation_exit":
+        return False
+    if phase == "request_exit":
+        error = event.get("error_code")
+        valid_error = ((event["outcome"] == "success" and error is None)
+                       or (event["outcome"] == "client_error" and error in CLIENT_ERRORS)
+                       or (event["outcome"] == "server_error" and error in ("service_unavailable", "other_server")))
+        return (absent(event, "response_bytes_bucket", "diagnostic_code", *PROVIDER_FIELDS)
+                and status_outcome(event) and valid_error)
+    return (event.get("parent_span_id") is not None
+            and absent(event, "http_status_class", "request_bytes_bucket", "response_bytes_bucket", "diagnostic_code")
+            and (phase == "routing_create" or absent(event, *PROVIDER_FIELDS))
+            and ((event["outcome"] == "success" and event.get("error_code") is None)
+                 or (event["outcome"] == "phase_failure" and event.get("error_code") == "dependency_failure")))
 
 
 def assess(records: list[dict], ids: tuple[str, str, str], denied_id: str,
