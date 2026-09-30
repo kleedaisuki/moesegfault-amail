@@ -170,6 +170,16 @@ hosted. Focused synthetic contracts cover sibling invariance, Worker/global
 permission invalidation, each declared object/config absence, unknown layouts,
 unique unsaved fallbacks and the current workflow's cacheability.
 
+Independent review identified a conditional-build omission in the initial v2
+implementation: removing every indented `if:` from runtime-expression validation
+would accept a compiler setup gated by a runtime variable. The correction
+removes only the three exact existing bundler-install/cache-save conditions,
+bound to their named steps and existing install/save operations. Any other conditional setup, including folded/plain
+runtime-variable expressions or a known cache condition on a different step,
+now disables project-cache reuse. The full guard text remains in the hashed
+contract. Synthetic regression fixtures cover rejection and supported guards;
+hosted tests and re-review are still required before claiming acceptance.
+
 Reproduce via run/job APIs and filter the **secret-free Worker job logs only**
 for `Cache restored from key`, `Cache not found for input keys`, and `Cache saved
 with key`. Compare committed inputs with `git rev-parse <sha>:Cargo.toml

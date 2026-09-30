@@ -88,6 +88,33 @@ class WorkerCacheKeyTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertRegex(first, r"^uncacheable-[0-9a-f]{32}$")
 
+    def test_runtime_conditional_setup_is_uncacheable(self) -> None:
+        """A conditional compiler setup must not vanish during validation."""
+        for guard in (
+            "vars.ENABLE_SPECIAL_FLAGS == 'true'",
+            "${{ vars.ENABLE_SPECIAL_FLAGS == 'true' }}",
+            "github.ref == 'refs/heads/main'",
+            "steps.worker-bundler-cache.outputs.cache-hit != 'true'",
+            ">-\n          vars.ENABLE_SPECIAL_FLAGS == 'true'",
+        ):
+            source = fixture().replace(
+                "      - name: test\n",
+                "      - name: Set compiler flags\n        if: " + guard + "\n",
+            )
+            with self.subTest(guard=guard), self.assertRaises(ValueError):
+                KEY.workflow_contract(source)
+        for name, guard in KEY.STEP_GUARDS.items():
+            source = fixture().replace(
+                "      - name: test\n", f"      - name: {name}\n        if: {guard}\n",
+            ).replace("        run: cargo test --locked", KEY.STEP_OPERATIONS[name])
+            self.assertIn(guard, KEY.workflow_contract(source))
+            changed = source.replace("        if: " + guard, "        if: vars.FLAGS == 'true'")
+            with self.subTest(step=name), self.assertRaises(ValueError):
+                KEY.workflow_contract(changed)
+            changed = source.replace(KEY.STEP_OPERATIONS[name], "        run: echo compiler setup")
+            with self.subTest(operation=name), self.assertRaises(ValueError):
+                KEY.workflow_contract(changed)
+
     def test_committed_records_cover_nested_inputs_and_absence(self) -> None:
         """The actual Git adapter binds exact objects, never working-tree edits."""
         rows = "\0".join(f"100644 blob {'1' * 40}\t{name}" for name in KEY.REQUIRED) + "\0"

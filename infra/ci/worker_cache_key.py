@@ -29,6 +29,42 @@ REQUIRED = (
 )
 OPTIONAL = (".cargo", "rust-toolchain", "rust-toolchain.toml")
 TOP_LEVEL = {"name", "run-name", "on", "permissions", "concurrency", "jobs"}
+# Only these existing cache/tool steps may depend on execution state. New
+# conditional build/setup steps must disable reuse until explicitly reviewed.
+STEP_GUARDS = {
+    "Install workers-rs bundler": "steps.worker-bundler-cache.outputs.cache-hit != 'true'",
+    "Save trusted exact Worker check build cache": (
+        "github.event_name == 'push' && (github.ref == 'refs/heads/main' || "
+        "github.ref == 'refs/heads/codex/amail-v0.1.0') && "
+        "steps.worker-cache-key.outputs.cacheable == 'true' && "
+        "steps.worker-check-cache.outputs.cache-hit != 'true'"
+    ),
+    "Save trusted pinned check bundler": (
+        "github.event_name == 'push' && (github.ref == 'refs/heads/main' || "
+        "github.ref == 'refs/heads/codex/amail-v0.1.0') && "
+        "steps.worker-bundler-cache.outputs.cache-hit != 'true'"
+    ),
+}
+STEP_OPERATIONS = {
+    "Install workers-rs bundler": '        run: cargo install worker-build --version 0.8.5 --locked --root "$GITHUB_WORKSPACE/.cache/worker-build-check"',
+    "Save trusted exact Worker check build cache": "        uses: actions/cache/save@v4",
+    "Save trusted pinned check bundler": "        uses: actions/cache/save@v4",
+}
+
+
+def execution_without_cache_guards(source: str) -> str:
+    """Remove only exact existing cache guards; reject all other conditions."""
+    result = []
+    for block in re.split(r"(?m)(?=^      - )", source):
+        lines = block.splitlines()
+        conditions = [line for line in lines if re.match(r"^ +if:", line)]
+        if conditions:
+            step = lines[0].removeprefix("      - name: ")
+            guard = STEP_GUARDS.get(step)
+            if guard is None or conditions != ["        if: " + guard] or STEP_OPERATIONS[step] not in lines:
+                raise ValueError("unsupported conditional build step")
+        result.extend(line for line in lines if line not in conditions)
+    return "\n".join(result)
 
 
 def workflow_contract(source: str) -> str:
@@ -76,7 +112,7 @@ def workflow_contract(source: str) -> str:
     without_guard = re.sub(r"(?m)^    if:.*\n(?:      .*\n)*", "", worker + "\n", count=1)
     if re.search(r"\binputs\.", without_guard):
         raise ValueError("dynamic dispatch build inputs")
-    execution = re.sub(r"(?m)^ +if:.*$", "", without_guard)
+    execution = execution_without_cache_guards(without_guard)
     expressions = re.findall(r"\$\{\{(.*?)\}\}", execution)
     allowed = re.compile(r"(?:steps\.worker-(?:cache-key|check-cache|bundler-cache)\.outputs\.[a-z-]+|runner\.(?:os|arch))")
     if any(not allowed.fullmatch(item.strip()) for item in expressions):
