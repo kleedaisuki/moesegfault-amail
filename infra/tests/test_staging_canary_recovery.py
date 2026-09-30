@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -77,13 +77,14 @@ class RecoveryTests(unittest.TestCase):
             "STAGING_E2E_OWNER_SUB": "synthetic-owner",
             "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
             "CLOUDFLARE_API_TOKEN": "fake-read-token",
-        }, clear=True), patch.object(canary, "d1", side_effect=[
-            [{"state": "held"}],
-            [{"state": "unknown", "provider_id": None, "message_id": "opaque"}],
-            [{"canary_used_by": recovery.material("12345", "1", SECRET)[0]}],
-        ]) as d1:
+        }, clear=True):
+            d1 = Mock(side_effect=[
+                [{"state": "held"}],
+                [{"state": "unknown", "provider_id": None, "message_id": "opaque"}],
+                [{"canary_used_by": recovery.material("12345", "1", SECRET)[0]}],
+            ])
             self.assertEqual(
-                recovery.inspect("12345", "1"),
+                recovery.inspect("12345", "1", read_d1=d1),
                 "request_unknown_grant_consumed_provider_id_absent_delivered_event_absent",
             )
         self.assertEqual(d1.call_count, 3)
