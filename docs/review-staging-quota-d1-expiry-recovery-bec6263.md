@@ -6,13 +6,15 @@ settlement correction `9890d48` / independent follow-up `6cb7e09`.
 
 ## Decision and limits
 
-**NO-GO for approving the source seam as complete pending the P2 below.** Hosted
-source-only tests may investigate and verify the bounded correction; this is not
-a prohibition on running synthetic CI. **Live remains NO-GO**, independently of
-this finding, because real D1 transport/schema/key and actual Agent intake proof
-remain absent. No local tests/builds, executable harness invocation, private
+**After independently reviewing correction `6bcf05c`: GO for the bounded dormant
+source seam and hosted source-only validation.** The original `bec6263` decision
+was NO-GO pending the P2 below; the follow-up at the end closes it while retaining
+the original failure mechanism. **Live remains NO-GO**, independently of this
+resolved finding, because real D1 transport/schema/key and actual Agent intake
+proof remain absent. No local tests/builds, executable harness invocation, private
 provider/account request, migration, key access, artifact download or workflow
-dispatch was performed. Source fixtures are inspected evidence, not test results.
+dispatch was performed in either review. Source fixtures are inspected evidence,
+not test results.
 
 The change correctly separates explicit D1 transport from artifact fallback,
 historical identity from current implementation, and read-only recovery from
@@ -28,6 +30,8 @@ purge callers. Unrelated worktree changes are excluded. Only this review documen
 is written; production source and tests are not modified.
 
 ## P2: terminal resume omits final authenticated ciphertext/receipt readback
+
+Status: **resolved by `6bcf05c` after independent static follow-up below**.
 
 **Location:** `infra/tests/staging_ten_address_acceptance.py:270-278`, especially
 the `cleanup_verified` skip and the immediate D1 retained-result return.
@@ -150,3 +154,69 @@ of recovery state. Its exactly-once RPC machinery does not supply missing addres
 DELETE history here. The project's simpler retained-envelope/read-only model is
 appropriate; the final observation should preserve its actual contract rather
 than accepting old receipt metadata as proof of presently complete recovery data.
+
+## Independent correction follow-up: `6bcf05c`
+
+Reviewed complete three-file diff of
+`6bcf05c6e126faa95290f2c58b581792b63cb052`, the surrounding final coordinator
+boundary, unchanged `Escrow.read` / `_finalize` / `_terminal` contracts, the
+synthetic database/fixture setup and namespaced migration deletion constraints.
+No local test/build or deployment was performed. No new substantive finding was
+identified in this bounded correction; the original P2 is closed.
+
+The correction at `staging_ten_address_acceptance.py:271-284` assigns the exact
+validated parent returned by `_finalize` to `row` when creating a new receipt.
+Both that path and an existing terminal parent now pass through one common D1
+final observation:
+
+1. `Escrow.read(original_run, secret, generation)` repeats schema, exhaustive
+   aggregate/index/canonical chunk validation, full envelope hash/length,
+   authentication, immutable binding and stable complete parent/chunk readback.
+2. `binding(downloaded, ...)` reconstructs the authenticated original envelope
+   relation; `_terminal(final, binding)` checks terminal state, immutable original
+   relation, verifier fields/check-set and exact receipt hash.
+3. `actual == downloaded` compares full original ciphertext, not just receipt
+   status or a parent hash. `final == row` compares the complete parent to the
+   observed existing terminal parent or the exact acknowledged newly created
+   receipt. Mismatch raises the fixed failure before the retained result.
+
+The new-receipt helper still requires this invocation's known one-change ACK and
+its own exact authenticated return. If that ACK is lost or zero, it raises before
+the common final read; readback is not used to repair the lost acknowledgement.
+An already-terminal path does not rewrite its historical receipt or substitute
+the current verifier identity. If another valid verifier completed the terminal
+transition before the final parent read, the common boundary validates that
+current terminal relation after this invocation's full fresh recovery; it does
+not claim this invocation wrote the receipt.
+
+The final D1 validation contains no write or purge call. Its exceptions propagate
+before the success return, and do not fall through to the artifact `_purge` below
+the branch. Partial/zero chunks therefore fail in `read`; altered exact content,
+parent/receipt relation or unstable readback also cannot produce the retained
+label. The other admission, fresh-native, settled-tombstone, teardown and
+postcheck boundaries are unchanged.
+
+Inspected new source fixtures:
+
+| Case | Evidence expected by the fixture |
+| --- | --- |
+| Prior terminal, complete ciphertext | Full fresh native recovery/teardown, same historical receipt/verifier, only the synthetic seeded receipt write, no artifact content download, add, address DELETE or purge. |
+| Prior terminal, zero/partial late loss | Separate receipt-authorized SQLite actor removes chunks at native exit, after initial loading; final complete aggregate rejects, old receipt unchanged, no coordinator receipt rewrite/purge. |
+| New receipt, zero/partial late loss | Wrapper first completes real synthetic `_finalize` and its authenticated return, then the separate SQLite actor removes chunks; the new common final read rejects, acknowledged receipt unchanged, no purge. |
+
+For partial-loss fixtures, 100 bounded baseline object keys and SHA-shaped
+metadata enlarge the authenticated envelope beyond one 65,536-byte chunk while
+remaining legal under `Snapshot.validate`. The live synthetic world receives
+that same baseline so the remote recovery oracle does not fail prematurely on
+invented baseline drift. Deletion uses the schema's legitimate terminal gate,
+not an impossible mutation of immutable ciphertext. Receipt-call counting
+includes the synthetic seed and proves no second write on resume. These are
+discriminating regression fixtures for the previously missing boundary, not
+executed test evidence or a replacement for existing real-cipher/provider gates.
+
+The result is an authenticated final observation, not a perpetual guarantee
+against later privileged deletion. Existing workflow/staging writer exclusion,
+separately reviewed atomic purge, retained generation key, D1 REST parameter and
+metadata proof, and actual Agent intake/acknowledgement remain the independent
+live requirements stated above. This follow-up grants no migration, provider
+operation, key use, workflow wiring, dispatch or live campaign authorization.
