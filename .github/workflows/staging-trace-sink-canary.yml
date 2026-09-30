@@ -72,6 +72,8 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          AMAIL_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
+          AMAIL_TRACE_DLQ_ID: ${{ vars.AMAIL_TRACE_DLQ_ID_STAGING }}
           STAGING_E2E_USERNAME: ${{ inputs.mode == 'canary' && secrets.STAGING_E2E_USERNAME || '' }}
           STAGING_E2E_PASSWORD: ${{ inputs.mode == 'canary' && secrets.STAGING_E2E_PASSWORD || '' }}
           TRACE_MODE: ${{ inputs.mode }}
