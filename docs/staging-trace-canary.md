@@ -4,6 +4,36 @@ Status: **hosted canary attempted, retained-log acceptance still unverified** (2
 
 ## Hosted run diagnostic boundary (updated 2026-09-30)
 
+### Same-run urllib versus reqwest transport discriminator (source ready; not run)
+
+`infra/tests/staging_trace_http_compare.py` and the feature-gated Rust binary
+`staging-http-compare` provide a separate, explicit staging-only diagnostic.
+Dispatch `CI and deploy` with `target=staging-trace-http-compare` and
+`confirm=RUN_STAGING_TRACE_HTTP_COMPARE` only after source review. The hosted
+Windows job builds the Rust helper using the same `reqwest::blocking::Client`
+crate/configuration as amail's API transport, verifies the deployed Mail Worker
+privacy settings and Observability service key, then sends exactly one
+unauthenticated synthetic protected-route GET through Python `urllib` and one
+through Rust reqwest from the **same runner**, using the same random path/query
+marker. It does **not** log in, access a mailbox, mutate mail/routing, or query
+retained logs. The URL is piped on stdin to the helper, not placed in process
+arguments; the child receives OS/proxy environment but no Cloudflare token.
+
+Both clients deliberately stop at the first redirect, rather than leaking the
+marker to a redirect target. This is the **one controlled deviation** from
+amail's ordinary default redirect behavior; a redirect is reported as a fixed
+boolean and cannot count as Worker-contract success. Output contains only each
+client's `401`, `403`, or coarse status class; valid canonical application
+request-ID boolean; `cf-ray` presence boolean; and redirect boolean. No raw
+URL, marker, response body, header value, Ray ID, IP, proxy, or provider error
+is written. A positive result requires **both exact HTTP 401, valid application
+request ID, and no redirect**; matching 403s, mixed responses, network errors,
+or failed preflight remain `UNVERIFIED`. Even two positive 401s establish only
+this immediate request contract, **not** retained-log privacy or end-to-end
+causal tracing. In particular, a client discrepancy indicates a transport or
+intermediary difference worth inspecting, not proof that a WAF rule is at fault.
+No live result exists yet.
+
 ### One-shot Security Events discriminator for run 36671177226 (design only)
 
 **Decision:** implement and dispatch one read-only GitHub-hosted query promptly, while the event at approximately 2026-09-30 04:59:42 UTC is still within even the Free/Pro **24-hour** `firewallEventsAdaptive` retention. This is worth doing because the last canary proved a 403 without the application request ID but did not identify its producer. Do not launch another HTTP canary, change a rule, or claim that an empty Security Events result exonerates Cloudflare: the dataset is adaptively sampled and may omit the request. Query the precise zone and `mail-staging.moesegfault.dev`, with a fixed **04:58:42–05:00:42 UTC** window; never broaden to the whole account or output a raw event.

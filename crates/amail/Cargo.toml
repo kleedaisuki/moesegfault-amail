@@ -9,6 +9,14 @@ license = "GPL-3.0-only"
 name = "amail"
 path = "src/main.rs"
 
+[[bin]]
+name = "staging-http-compare"
+path = "src/bin/staging_http_compare.rs"
+required-features = ["staging-diagnostics"]
+
+[features]
+staging-diagnostics = []
+
 [dependencies]
 anyhow = "1"
 base64 = "0.22"

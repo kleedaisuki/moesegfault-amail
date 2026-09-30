@@ -12,7 +12,7 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-security-events, production]
+        options: [staging, staging-e2e, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-http-compare, staging-trace-security-events, production]
       confirm:
         description: Staging E2E, semantic query, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -776,6 +776,17 @@ jobs:
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
           python infra/provider/probe_staging_trace_security_events.py "$DIAGNOSTIC_CONFIRM" 36671177226
+
+  staging-trace-http-compare:
+    name: Compare staging urllib and reqwest anonymous transport
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-trace-http-compare' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    uses: ./.github/workflows/staging-trace-http-compare.yml
+    with:
+      confirm: ${{ inputs.confirm }}
+    secrets: inherit
 
   worker:
     name: Rust Worker (Wasm)
