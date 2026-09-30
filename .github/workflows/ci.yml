@@ -12,7 +12,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging, staging-containment-readback, staging-worker-resource-readback, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production]
+        options: [checks, staging, staging-containment-settings, staging-containment-readback, staging-worker-resource-readback, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production]
       confirm:
         description: Staging E2E, semantic query, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -42,9 +42,15 @@ on:
         required: false
         type: string
       trace_containment_run:
-        description: Successful immutable staging CI deploy run proving contained API version
+        description: Successful immutable staging containment deployment or settings-only attestation run
         required: false
         type: string
+      trace_containment_kind:
+        description: Immutable containment evidence type; settings-only correction does not redeploy API code
+        required: false
+        default: deploy-v1
+        type: choice
+        options: [deploy-v1, settings-v1]
       trace_sink_version:
         description: Reviewed 100-percent serving Queue trace sink version UUID
         required: false
@@ -406,6 +412,50 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_prior_alias_reconcile.py READ_PRIOR_STAGING_ALIASES
+
+  staging-containment-settings:
+    name: Apply isolated staging API capture-off settings
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-containment-settings' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: deploy-mail-staging
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require one-shot staging settings confirmation before credentials
+        env:
+          SETTINGS_CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_VERSION: ${{ inputs.expected_worker_version }}
+        shell: bash
+        run: |
+          if [ "$SETTINGS_CONFIRM" != 'APPLY_STAGING_API_CAPTURE_OFF_SETTINGS' ] ||
+             [ "$EXPECTED_VERSION" != 'c3f6401a-1e84-4f51-91df-ae77d90683e9' ] ||
+             [ "$GITHUB_RUN_ATTEMPT" != '1' ]; then
+            echo '::error::Exact first-attempt staging capture-settings confirmation required'
+            exit 1
+          fi
+      - name: Test synthetic settings correction before credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python -m unittest discover -s infra/tests -p 'test_staging_capture_off.py' -v
+          python -m unittest discover -s crates/mail-worker -p 'test_check_observability.py' -v
+      - name: Correct only non-versioned capture settings and attest unchanged serving API
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.expected_worker_version }}
+          AMAIL_CONTAINMENT_CONFIRM: ${{ inputs.confirm }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/deploy/apply_staging_capture_off.py
 
   staging-containment-readback:
     name: Read-only staging containment settings discriminator
@@ -1677,6 +1727,7 @@ jobs:
       AMAIL_TRACE_DLQ_ID: ${{ needs.staging-trace-sink.outputs.dlq_id }}
       GH_TOKEN: ${{ github.token }}
       AMAIL_TRACE_CONTAINMENT_RUN: ${{ inputs.trace_containment_run }}
+      AMAIL_TRACE_CONTAINMENT_KIND: ${{ inputs.trace_containment_kind }}
       AMAIL_TRACE_CONTAINMENT_VERSION: ${{ inputs.expected_worker_version }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
@@ -1721,8 +1772,8 @@ jobs:
       - name: Verify staging runtime Email Routing Rules read access
         working-directory: .
         run: python infra/provider/probe_routing.py
-      - name: Require separately deployed API privacy containment
-        run: python ../../infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION"
+      - name: Require immutable API capture-off containment attestation
+        run: python ../../infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION" --kind "$AMAIL_TRACE_CONTAINMENT_KIND"
       - name: Apply staging D1 migrations only
         run: wrangler d1 migrations apply MAIL_DB --remote --env staging
       - name: Build Rust Worker bundle
@@ -2056,6 +2107,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       GH_TOKEN: ${{ github.token }}
       AMAIL_TRACE_CONTAINMENT_RUN: ${{ inputs.trace_containment_run }}
+      AMAIL_TRACE_CONTAINMENT_KIND: ${{ inputs.trace_containment_kind }}
       AMAIL_TRACE_CONTAINMENT_VERSION: ${{ inputs.expected_worker_version }}
       AMAIL_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
       AMAIL_TRACE_DLQ_ID: ${{ vars.AMAIL_TRACE_DLQ_ID_STAGING }}
@@ -2064,8 +2116,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Require separately deployed API privacy containment
-        run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION"
+      - name: Require immutable API capture-off containment attestation
+        run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION" --kind "$AMAIL_TRACE_CONTAINMENT_KIND"
       - name: Install pinned private sink deployment tools
         run: |
           rustup target add wasm32-unknown-unknown
@@ -2096,4 +2148,4 @@ jobs:
           AMAIL_TRACE_DLQ_ID: ${{ steps.queues.outputs.dlq_id }}
         run: python crates/mail-worker/check_observability.py --realm staging --mode sink
       - name: Recheck containment pin after sink deployment
-        run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION"
+        run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION" --kind "$AMAIL_TRACE_CONTAINMENT_KIND"

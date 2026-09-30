@@ -1,7 +1,7 @@
 # Decision: correct staging API capture settings without redeploying code
 
-Date: 2026-09-30. Status: **proposed executable source contract, not implemented
-or deployed by this investigation**. No private API call, local test/build,
+Date: 2026-09-30. Status: **implemented source contract, not live deployed**.
+No private API call, local test/build,
 deployment, push, or production change was performed. This supplements
 [effective readback](observability-effective-readback-decision.md) and the
 [Queue migration](privacy-trace-sink-deployment.md).
@@ -224,6 +224,22 @@ assembled config equals its run-head TOML. Hosted tests/build and effective
 readback are then required before a new accepted deployment proof.
 
 ## Hosted verification and acceptance
+
+`infra/deploy/apply_staging_capture_off.py`, its focused synthetic contracts in
+`infra/tests/test_staging_capture_off.py`, and the dedicated manual CI job now
+implement this narrow path. All provider requests use a byte/time-bounded reader
+that rejects redirects and never retries. The helper verifies exact source
+policy and existing no-Queue bindings, allows only the independent Issues
+switch to be unverified in the pre-correction boundary, issues at most one
+PATCH, checks unaffected projections/identity/bindings/serving after it, and
+emits the typed marker only after success. Positive already-off recovery is
+read-only. Failure output is fixed `staging_api_capture_off=UNVERIFIED`, never
+provider/error text. The manual job runs focused correction/effective-checker
+synthetic tests before credential-bearing execution and installs no build tools.
+
+The existing source infrastructure test discovery includes these contracts;
+no local test suite was executed. Static Python AST parsing and `git diff
+--check` passed. Independent source review and hosted execution remain required.
 
 Synthetic tests should discriminate wrong version/name/ID, split traffic,
 extra Queue binding, first-attempt violation, unsafe source, missing Issues
