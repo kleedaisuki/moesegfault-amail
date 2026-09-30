@@ -4,7 +4,7 @@ Status: **hosted canary attempted, retained-log acceptance still unverified** (2
 
 ## Hosted run diagnostic boundary (updated 2026-09-30)
 
-### Same-run urllib versus reqwest transport discriminator (source ready; not run)
+### Same-run urllib versus reqwest transport discriminator (run 36688418919)
 
 `infra/tests/staging_trace_http_compare.py` and the feature-gated Rust binary
 `staging-http-compare` provide a separate, explicit staging-only diagnostic.
@@ -32,7 +32,8 @@ or failed preflight remain `UNVERIFIED`. Even two positive 401s establish only
 this immediate request contract, **not** retained-log privacy or end-to-end
 causal tracing. In particular, a client discrepancy indicates a transport or
 intermediary difference worth inspecting, not proof that a WAF rule is at fault.
-No live result exists yet.
+
+**Observed boundary:** [hosted run 36688418919](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36688418919) at `e9ae9e4` followed [100%-serving Mail pin 36688337454](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36688337454), which matched version `59027efc-ba58-4024-9f54-653f098ea841`. On the same Windows runner and synthetic URL, `urllib` returned **403**, no valid application request ID, `cf-ray` present, no redirect; `reqwest` returned **401**, valid application request ID, `cf-ray` present, no redirect. The workflow deliberately ended `transport_difference_unverified`, not success. This demonstrates a **client-path-dependent response boundary in that hosted run**: the Rust/amail-style request visibly reached the application's expected unauthenticated contract while the Python request did not. It does not attribute the 403 to a particular WAF rule, Cloudflare component, proxy, header, TLS behavior, or security policy. `cf-ray` presence alone is not such attribution. No retained-log query, mail operation, or CLI-to-Worker causal trace was accepted by this comparison; the privacy gate remains open. The next investigation should compare only the minimal transport inputs that differ, with fixed-label outputs and the same no-leak constraints, before changing an edge rule or treating the Python canary as a Worker privacy test.
 
 ### One-shot Security Events discriminator for run 36671177226 (design only)
 
