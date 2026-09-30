@@ -16,7 +16,8 @@ def row(label: str, request: str = "request-12345678", trigger: str = "scheduled
         "timestamp": probe.START + 1,
         "$metadata": {"service": probe.SERVICE, "requestId": request,
                       "message": {"message": label}},
-        "$workers": {"eventType": trigger, "requestId": request,
+        "$workers": {"eventType": trigger, "scriptName": probe.SERVICE,
+                     "requestId": request,
                      "scriptVersion": {"id": version}},
         "source": {"message": label},
     }
@@ -40,6 +41,23 @@ class RolePhaseLogTests(unittest.TestCase):
                    row("role monitor phase=routes failed", "request-87654321")]
         self.assertEqual(probe.classify(records), "digest_only_inconclusive")
 
+    def test_failed_phase_and_healthy_are_contradictory(self) -> None:
+        """Never publish a root cause from an impossible control-flow pairing."""
+
+        records = [row("role alert digest accepted groups=1"),
+                   row("role monitor phase=destination failed"),
+                   row("role monitor healthy pending=0")]
+        with self.assertRaisesRegex(probe.ProbeError, "invocation_phase_ambiguous"):
+            probe.classify(records)
+
+    def test_accepted_digest_and_failed_digest_are_contradictory(self) -> None:
+        """The accepted marker is flush_alerts' last action before success."""
+
+        records = [row("role alert digest accepted groups=1"),
+                   row("role monitor phase=digest failed")]
+        with self.assertRaisesRegex(probe.ProbeError, "invocation_phase_ambiguous"):
+            probe.classify(records)
+
     def test_email_arrival_is_not_parsed_as_cron(self) -> None:
         """Skip dynamic Email Handler references without displaying them."""
 
@@ -62,6 +80,14 @@ class RolePhaseLogTests(unittest.TestCase):
         outside["$metadata"]["service"] = "another-worker"
         with self.assertRaisesRegex(probe.ProbeError, "service_scope_unverified"):
             probe.classify([outside])
+        wrong_script = row("role monitor healthy pending=0")
+        wrong_script["$workers"]["scriptName"] = "another-worker"
+        with self.assertRaisesRegex(probe.ProbeError, "worker_scope_unverified"):
+            probe.classify([wrong_script])
+        missing_script = row("role monitor healthy pending=0")
+        del missing_script["$workers"]["scriptName"]
+        with self.assertRaisesRegex(probe.ProbeError, "worker_scope_unverified"):
+            probe.classify([missing_script])
 
     def test_query_echo_and_pagination_fail_closed(self) -> None:
         """A changed time window or incomplete page is never absence proof."""

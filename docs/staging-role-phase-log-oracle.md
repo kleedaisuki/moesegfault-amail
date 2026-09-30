@@ -17,7 +17,8 @@ It first verifies the exact failed GitHub run and SHA, then asks Cloudflare's
 [telemetry query API](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/)
 for the exact interval and `$metadata.service=amail-role-monitor-staging`.
 It requires a completed dry-query scope echo, complete bounded cursor pages,
-per-record service/time checks, Worker `scheduled`/`cron` event type, and the
+per-record indexed service, Worker `scriptName`, and timestamp checks, Worker
+`scheduled`/`cron` event type, and the
 historical Worker version embedded in each relevant provider record. It
 recognizes only reviewed source literals for digest acceptance, fixed failed
 phase, static health failure, and bounded healthy count. Cloudflare's opaque
@@ -25,6 +26,13 @@ request ID correlates labels **in memory only**; no ID or raw event is printed.
 Dynamic Email Handler logs are ignored only when their event type is `email`.
 An unreviewed scheduled payload or missing version/request ID is `UNVERIFIED`,
 not an inferred absence. Redirects and oversized responses fail closed.
+The classifier also rejects impossible same-invocation evidence: a failed
+phase paired with `healthy`, or a digest failure paired with the accepted
+digest marker. Either indicates a malformed provider view or a correlation
+anomaly, not a reliable phase localization. Missing or contradictory
+`$workers.scriptName` likewise makes scope unverified; Cloudflare documents
+that Worker name in the telemetry event schema, but its historical retention
+shape has not yet been observed for this Worker.
 
 Dispatch after independent review and a green hosted infrastructure test:
 

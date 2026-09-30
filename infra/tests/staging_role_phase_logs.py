@@ -211,6 +211,7 @@ def classify(records: list[dict]) -> str:
              "event_window_or_integrity_unverified")
         worker = record.get("$workers")
         need(isinstance(worker, dict), "worker_envelope_unverified")
+        need(worker.get("scriptName") == SERVICE, "worker_scope_unverified")
         need(worker.get("truncated") is not True, "event_window_or_integrity_unverified")
         trigger = worker.get("eventType")
         if trigger not in ("scheduled", "cron"):
@@ -248,7 +249,12 @@ def classify(records: list[dict]) -> str:
         return "digest_not_observed"
     labels = invocations[digest_ids[0]]
     failures = labels & {"digest", "destination", "routes", "lease"}
-    need(len(failures) <= 1 and not ({"healthy", "health_failed"} <= labels),
+    # A failed phase cannot reach the final healthy log; flush_alerts cannot
+    # both log its final accepted digest and return a digest-phase failure.
+    # Such records indicate provider/correlation ambiguity, not a root cause.
+    need(len(failures) <= 1 and not (failures and "healthy" in labels)
+         and "digest" not in labels
+         and not ({"healthy", "health_failed"} <= labels),
          "invocation_phase_ambiguous")
     if failures:
         return "same_invocation_" + next(iter(failures)) + "_failed"
