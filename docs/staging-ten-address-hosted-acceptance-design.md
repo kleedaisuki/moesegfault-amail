@@ -1,10 +1,34 @@
 # B-only hosted ten-address and reserved-name acceptance
 
-Status (2026-09-30): **design only; NO-GO for live dispatch**. This document
+Status (2026-09-30): **design plus dormant manifest/recovery source;
+NO-GO for live dispatch**. This document
 does not create a workflow, account, alias, provider rule, or acceptance result.
 The assignment's safe-design fallback is used because B has not yet completed
 normal verification and the hosted two-principal isolation acceptance has not
 passed. No input boolean can substitute for either fact.
+
+Source increment: `infra/tests/staging_ten_address_manifest.py` now implements
+the dormant, side-effect-free candidate/manifest envelope, private artifact
+readback gate, complete normalized snapshot contracts, prefix/drift checks and
+exact supported-delete recovery controller. Its synthetic contracts are in
+`test_staging_ten_address_manifest.py`, discovered by the existing hosted
+infra unittest job. No Cloudflare adapter, browser wrapper, campaign mutator
+or workflow target is exposed. The normalized snapshot input must eventually
+come from a complete source-reviewed adapter, not a filtered caller-provided
+inventory. Prior-isolation/provenance verification, service-version checks,
+message/storage absence, deadline/key retention enforcement and artifact
+upload/download orchestration remain **unimplemented integration gates**.
+
+AES-GCM sealing/opening follows the
+[cryptography AEAD API](https://cryptography.io/en/latest/hazmat/primitives/aead/#cryptography.hazmat.primitives.ciphers.aead.AESGCM)
+and lazily requires the reviewed `cryptography` package;
+missing dependency fails closed. A future hosted wrapper must pin/install it
+and execute actual AES-GCM integration tests before receiving mutation
+capabilities. Current envelope tests inject an authentication-only synthetic
+fixture and do **not** prove encryption/library behavior. All code errors are
+fixed source-owned codes; there is no live CLI entry point or raw-data output.
+The root recovery key is domain-separated into a cipher key, independently of
+the candidate-derivation namespace. No secret is configured by this increment.
 
 ## Scope and source evidence
 
