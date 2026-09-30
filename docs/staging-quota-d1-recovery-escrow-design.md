@@ -1,7 +1,8 @@
 # Staging quota recovery escrow and 24-hour escalation
 
-Date: 2026-10-01. Status: **design only, pending independent review; no migration,
-source adapter, alert, escrow write or live quota dispatch is authorized**.
+Date: 2026-10-01. Status: **reviewed dormant-source design; first encrypted
+schema/adapter slice implemented, pending independent code review and hosted
+validation. No migration, live escrow write, alert or quota dispatch authorized**.
 
 ## Problem and bounded decision
 
@@ -90,7 +91,7 @@ provisioning rows; this design does not grant a replay flag or restore batching.
 1. Obtain exact successful source and tested binary, current three-service/
    binding/held/capture-off evidence, fresh synthetic A login and full baseline
    through the reviewed wrapper. Build/seal the existing manifest without alias
-   mutation. Require the unverified/armed budget and exact escrow schema.
+   mutation. Require the all-nonpurged ciphertext budget and exact escrow schema.
 2. Enforce one outstanding parent across `writing`, `sealed` and `armed` with
    a database uniqueness/conditional-admission constraint, not a caller count.
    Insert parent `writing` with fixed original coordinates and envelope digest.
@@ -292,7 +293,7 @@ DB selector or general query surface. It authenticates the existing encrypted
 manifest before extracting public coordinates, inserts exact ciphertext slices
 once, rejects conflicting values, bounds each query/body/result, compares full
 namespaced DDL before row access, exhausts count/index/length/digest/canonical
-base64 chunks and repeats complete authenticated readback before sealing.
+base64 chunks before sealing, then repeats complete authenticated sealed readback.
 Partial writes are retained. Existing sealed identical content can be read as
 durability evidence, never as lost arm acknowledgement. Artifact ID attachment
 is insert-once/equal-only. `arm` requires current-invocation response changes=1
