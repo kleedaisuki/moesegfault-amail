@@ -49,6 +49,25 @@ class ObservabilityGateTests(unittest.TestCase):
         self.assertFalse(gate.safe_settings({**safe, "logpush": True}))
         self.assertFalse(gate.safe_settings({**safe, "tail_consumers": [{"service": "other"}]}))
 
+    def test_private_sink_is_independently_safe(self) -> None:
+        """Only the Queue sink retains reviewed logs; public API settings cannot mask it."""
+
+        for realm in gate.SINK_SCRIPT:
+            safe = gate.local_settings(realm, sink=True)
+            self.assertTrue(gate.safe_settings(safe, sink=True))
+            self.assertFalse(gate.safe_settings(safe))
+            self.assertFalse(gate.safe_settings(gate.local_settings(realm), sink=True))
+            for section, field, value in (("logs", "invocation_logs", True),
+                                           ("traces", "enabled", True),
+                                           ("logs", "destinations", ["private-export"])):
+                obs = {**safe["observability"]}
+                obs[section] = {**obs[section], field: value}
+                self.assertFalse(gate.safe_settings({"observability":obs}, sink=True))
+        with patch.object(gate, "readback", return_value=gate.local_settings("staging", sink=True)) as fetch:
+            self.assertTrue(gate.verify("staging", "account", "token", sink=True))
+            self.assertEqual(fetch.call_count, 2)
+            self.assertTrue(all(call.args[2] == "amail-trace-sink-staging" for call in fetch.call_args_list))
+
     def test_both_readbacks_are_required(self) -> None:
         """A safe script setting cannot mask an unsafe deployed version."""
 

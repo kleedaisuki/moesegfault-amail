@@ -133,11 +133,11 @@ fn rule_create_app_error(error: &platform::RuleCreateFailure) -> AppError {
 
 /// Main API entry point; authentication precedes mailbox access. / 主 API 入口；邮箱访问始终在身份认证之后。
 #[event(fetch)]
-pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+pub async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let start = js_sys::Date::now();
     let mut trace = Trace::new();
-    let result = dispatch(req, env, &request_id, &mut trace).await;
+    let result = dispatch(req, env.clone(), &request_id, &mut trace).await;
     let mut response = match result {
         Ok(response) => response,
         Err(err) => problem(&request_id, err)?,
@@ -151,6 +151,10 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         response.status_code(),
         trace::elapsed_ms(start),
     );
+    let events = trace.take_events();
+    ctx.wait_until(async move {
+        trace::flush(&env, events).await;
+    });
     Ok(response)
 }
 
@@ -158,28 +162,32 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 #[event(scheduled)]
 pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
     if let Err(_) = reconcile_addresses(&env).await {
-        console_warn!("amail routing reconciliation failed");
+        trace::diagnostic(&env, trace::DiagnosticCode::RoutingReconciliationFailed).await;
     }
     if let Err(_) = reconcile_outbound(&env).await {
-        console_warn!("amail outbound reconciliation failed");
+        trace::diagnostic(&env, trace::DiagnosticCode::OutboundReconciliationFailed).await;
     }
     if let Err(_) = reindex(&env).await {
-        console_warn!("amail semantic index retry failed");
+        trace::diagnostic(&env, trace::DiagnosticCode::SemanticIndexRetryFailed).await;
     }
     if let Err(_) = reconcile_storage(&env).await {
-        console_warn!("amail storage ledger reconciliation failed");
+        trace::diagnostic(
+            &env,
+            trace::DiagnosticCode::StorageLedgerReconciliationFailed,
+        )
+        .await;
     }
     if let Err(_) = garbage_collect(&env).await {
-        console_warn!("amail deleted message cleanup failed");
+        trace::diagnostic(&env, trace::DiagnosticCode::DeletedMessageCleanupFailed).await;
     }
     if let Err(_) = clean_orphans(&env).await {
-        console_warn!("amail orphan object cleanup failed");
+        trace::diagnostic(&env, trace::DiagnosticCode::OrphanObjectCleanupFailed).await;
     }
     if let Err(_) = search_jobs::cleanup(&env).await {
-        console_warn!("amail search job cleanup failed");
+        trace::diagnostic(&env, trace::DiagnosticCode::SearchJobCleanupFailed).await;
     }
     if let Err(_) = expire_abuse_data(&env).await {
-        console_warn!("amail abuse data cleanup failed");
+        trace::diagnostic(&env, trace::DiagnosticCode::AbuseDataCleanupFailed).await;
     }
 }
 
@@ -307,7 +315,7 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
         .await?
         .results::<Row>()?;
     if rows.len() == 30 {
-        console_warn!("amail address reconciliation batch full");
+        trace::diagnostic(&env, trace::DiagnosticCode::AddressReconciliationBatchFull).await;
     }
     let mut reported_non_enabled = false;
     for row in rows {
@@ -335,7 +343,8 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
             };
             if !saved_enabled {
                 if !reported_non_enabled && ids.iter().any(|id| id == saved) {
-                    console_warn!("amail non-enabled committed routing rule");
+                    trace::diagnostic(&env, trace::DiagnosticCode::NonEnabledCommittedRoutingRule)
+                        .await;
                     reported_non_enabled = true;
                 }
                 continue;
@@ -374,7 +383,11 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
                 database.prepare("UPDATE addresses SET state='pending',needs_reconcile=0 WHERE address=?1 AND state='provisioning'")
                     .bind(&[bind_str(&row.address)])?.run().await?;
             } else if !ids.is_empty() && !reported_non_enabled {
-                console_warn!("amail non-enabled provisioning routing rule");
+                trace::diagnostic(
+                    &env,
+                    trace::DiagnosticCode::NonEnabledProvisioningRoutingRule,
+                )
+                .await;
                 reported_non_enabled = true;
             }
             continue;
@@ -661,7 +674,8 @@ async fn process_embedding(
             Ok(false)
         }
         Err(error) => {
-            persist_embedding_failure(database, lease, row.attempts, error, invalid_requests).await
+            persist_embedding_failure(env, database, lease, row.attempts, error, invalid_requests)
+                .await
         }
     }
 }
@@ -701,6 +715,7 @@ async fn persist_embedding_success(
 
 /// Persist bounded retry or quarantine, and stop on the established cooldown rule.
 async fn persist_embedding_failure(
+    env: &Env,
     database: &D1Database,
     lease: &EmbeddingLease<'_>,
     previous_attempts: i64,
@@ -734,7 +749,7 @@ async fn persist_embedding_failure(
         .run()
         .await?;
     if quarantine {
-        console_warn!("amail semantic document quarantined");
+        trace::diagnostic(&env, trace::DiagnosticCode::SemanticDocumentQuarantined).await;
     }
     if cooldown == 0 {
         return Ok(false);
@@ -747,7 +762,7 @@ async fn persist_embedding_failure(
         .bind(&[bind_num(now() + cooldown), bind_str(error.code())])?
         .run()
         .await?;
-    console_warn!("amail semantic provider cooldown");
+    trace::diagnostic(&env, trace::DiagnosticCode::SemanticProviderCooldown).await;
     Ok(true)
 }
 
@@ -852,7 +867,7 @@ async fn dispatch(
             mark_message(&mut req, &env, &user, id, request_id).await
         }
         (Method::Delete, ["v1", "messages", id]) => delete_message(&env, &user, id).await,
-        (Method::Post, ["v1", "telemetry"]) => telemetry(&mut req, request_id).await,
+        (Method::Post, ["v1", "telemetry"]) => telemetry(&mut req, request_id, trace).await,
         _ => Err(AppError::not_found()),
     }
 }
@@ -2361,7 +2376,10 @@ async fn send_message(
         });
     }
     if mark_storage_indexed(&database, &id).await.is_err() {
-        console_warn!("amail storage ledger state deferred");
+        trace.warning(
+            request_id,
+            trace::DiagnosticCode::StorageLedgerStateDeferred,
+        );
     }
     database.prepare("UPDATE send_requests SET state='sent' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3")
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
@@ -2533,7 +2551,10 @@ async fn inbound(
     );
     insert?;
     if mark_storage_indexed(&database, &id).await.is_err() {
-        console_warn!("amail storage ledger state deferred");
+        trace.warning(
+            request_id,
+            trace::DiagnosticCode::StorageLedgerStateDeferred,
+        );
     }
     Ok(
         Response::from_json(&serde_json::json!({"id":id,"request_id":request_id}))?
@@ -2558,14 +2579,14 @@ struct TelemetryBatch {
     events: Vec<TelemetryEvent>,
 }
 
-async fn telemetry(req: &mut Request, request_id: &str) -> AppResult<Response> {
+async fn telemetry(req: &mut Request, request_id: &str, trace: &Trace) -> AppResult<Response> {
     let batch: TelemetryBatch = req
         .json()
         .await
         .map_err(|_| AppError::bad("invalid_json"))?;
     if batch.events.len() > 100
         || batch.events.iter().any(|e| {
-            Operation::from_cli(&e.operation).is_none()
+            trace::operation_from_cli(&e.operation).is_none()
                 || e.trace_id.len() > 64
                 || !e
                     .trace_id
@@ -2588,7 +2609,8 @@ async fn telemetry(req: &mut Request, request_id: &str) -> AppResult<Response> {
             && (event.status == 0 || (100..=599).contains(&event.status))
         {
             trace::client_event(
-                Operation::from_cli(&event.operation).unwrap_or(Operation::Unknown),
+                trace,
+                trace::operation_from_cli(&event.operation).unwrap_or(Operation::Unknown),
                 &event.trace_id,
                 event.span_id.as_deref(),
                 event.correlation_id.as_deref(),

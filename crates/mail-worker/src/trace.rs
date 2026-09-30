@@ -1,6 +1,10 @@
 //! Allowlisted application trace events; no request-derived text enters retained logs.
 
+use amail_trace_schema::Event as QueuedEvent;
+pub(crate) use amail_trace_schema::{DiagnosticCode, Operation, Phase};
+use amail_trace_schema::{ErrorCode, Outcome, Service};
 use serde::Serialize;
+use std::cell::RefCell;
 
 /// Exact W3C version-00 context accepted only after a trusted boundary is crossed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -10,92 +14,21 @@ pub(crate) struct Parent {
     sampled: bool,
 }
 
-/// A fixed operation name, never copied from a URL or request body.
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Operation {
-    Health,
-    Inbound,
-    AddressesList,
-    AddressesAdd,
-    AddressesDelete,
-    MessagesList,
-    MessagesSearch,
-    SearchPoll,
-    MessagesSend,
-    MessagesGet,
-    MessagesArchive,
-    MessagesMark,
-    MessagesDelete,
-    TelemetryUpload,
-    Unknown,
-}
-
-impl Operation {
-    /// Map the historical CLI wire names into the same fixed operation vocabulary.
-    pub(crate) fn from_cli(raw: &str) -> Option<Self> {
-        Some(match raw {
-            "addresses.list" => Self::AddressesList,
-            "addresses.add" => Self::AddressesAdd,
-            "addresses.delete" => Self::AddressesDelete,
-            "messages.list" => Self::MessagesList,
-            "messages.search" => Self::MessagesSearch,
-            "messages.get" => Self::MessagesGet,
-            "messages.archive" => Self::MessagesArchive,
-            "messages.mark" => Self::MessagesMark,
-            "messages.delete" => Self::MessagesDelete,
-            "messages.send" => Self::MessagesSend,
-            _ => return None,
-        })
-    }
-}
-
-/// An allowlisted outcome; arbitrary application or provider errors are excluded.
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Outcome {
-    Success,
-    ClientError,
-    ServerError,
-    PhaseFailure,
-}
-
-/// The only services permitted in retained application trace events.
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum Service {
-    MailApi,
-    MailCli,
-}
-
-/// A small, stable phase vocabulary rather than free-form span names.
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Phase {
-    RequestExit,
-    OperationExit,
-    D1Read,
-    D1Write,
-    R2Write,
-    ProviderSend,
-    RoutingList,
-    RoutingCreate,
-}
-
-/// Coarse failure reason; exception text and provider details are never retained.
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ErrorCode {
-    InvalidRequest,
-    Unauthorized,
-    Forbidden,
-    NotFound,
-    Conflict,
-    RateLimited,
-    ServiceUnavailable,
-    OtherClient,
-    OtherServer,
-    DependencyFailure,
+/// Map historical CLI wire names into the fixed operation vocabulary.
+pub(crate) fn operation_from_cli(raw: &str) -> Option<Operation> {
+    Some(match raw {
+        "addresses.list" => Operation::AddressesList,
+        "addresses.add" => Operation::AddressesAdd,
+        "addresses.delete" => Operation::AddressesDelete,
+        "messages.list" => Operation::MessagesList,
+        "messages.search" => Operation::MessagesSearch,
+        "messages.get" => Operation::MessagesGet,
+        "messages.archive" => Operation::MessagesArchive,
+        "messages.mark" => Operation::MessagesMark,
+        "messages.delete" => Operation::MessagesDelete,
+        "messages.send" => Operation::MessagesSend,
+        _ => return None,
+    })
 }
 
 fn error_code(status: u16) -> Option<ErrorCode> {
@@ -121,12 +54,15 @@ pub(crate) struct Trace {
     sampled: bool,
     operation: Operation,
     request_bytes: Option<u64>,
+    /// Invocation-owned safe records; no global request state.
+    events: RefCell<Vec<QueuedEvent>>,
 }
 
 /// The sole retained JSON schema. Adding a field requires a privacy review.
 #[derive(Serialize)]
 struct Event<'a> {
     schema_version: u8,
+    event_id: String,
     service: Service,
     operation: Operation,
     phase: Phase,
@@ -153,6 +89,7 @@ struct Event<'a> {
 #[derive(Serialize)]
 struct ClientEvent<'a> {
     schema_version: u8,
+    event_id: String,
     service: Service,
     operation: Operation,
     phase: Phase,
@@ -177,6 +114,7 @@ impl Trace {
             sampled: true,
             operation: Operation::Unknown,
             request_bytes: None,
+            events: RefCell::new(Vec::new()),
         }
     }
 
@@ -200,10 +138,11 @@ impl Trace {
         self.request_bytes = Some(bucket(bytes as u64));
     }
 
-    /// Emit a best-effort bounded event, using a static fallback on serialization failure.
+    /// Buffer a bounded request-exit event; never emit console fallback on failure.
     pub(crate) fn exit(&self, request_id: &str, status: u16, duration_ms: u64) {
         let event = Event {
             schema_version: 1,
+            event_id: uuid::Uuid::new_v4().to_string(),
             service: Service::MailApi,
             operation: self.operation,
             phase: Phase::RequestExit,
@@ -223,13 +162,16 @@ impl Trace {
             provider_http_status: None,
             provider_error_code: None,
         };
-        emit(&event);
+        self.record(&event, true);
     }
 
     /// Emit one child phase span with only a fixed phase label and coarse outcome.
     pub(crate) fn phase(&self, request_id: &str, phase: Phase, success: bool, duration_ms: u64) {
         let span_id = random_span_id();
-        emit(&self.phase_record(&span_id, request_id, phase, success, duration_ms));
+        self.record(
+            &self.phase_record(&span_id, request_id, phase, success, duration_ms),
+            false,
+        );
     }
 
     /// Report only numeric Cloudflare Routing Rules POST facts, never its body.
@@ -242,14 +184,17 @@ impl Trace {
         duration_ms: u64,
     ) {
         let span_id = random_span_id();
-        emit(&self.routing_create_record(
-            &span_id,
-            request_id,
-            success,
-            provider_http_status,
-            provider_error_code,
-            duration_ms,
-        ));
+        self.record(
+            &self.routing_create_record(
+                &span_id,
+                request_id,
+                success,
+                provider_http_status,
+                provider_error_code,
+                duration_ms,
+            ),
+            false,
+        );
     }
 
     fn routing_create_record<'a>(
@@ -283,6 +228,7 @@ impl Trace {
     ) -> Event<'a> {
         Event {
             schema_version: 1,
+            event_id: uuid::Uuid::new_v4().to_string(),
             service: Service::MailApi,
             operation: self.operation,
             phase,
@@ -307,18 +253,43 @@ impl Trace {
             provider_error_code: None,
         }
     }
+
+    /// Serialize only reviewed event schemas and reserve the last slot for request exit.
+    fn record<T: Serialize>(&self, event: &T, exit: bool) {
+        let Ok(value) = serde_json::to_value(event) else {
+            return;
+        };
+        let Some(event) = QueuedEvent::from_value(value) else {
+            return;
+        };
+        if serde_json::to_vec(&event).map_or(true, |bytes| bytes.len() > 1024) {
+            return;
+        }
+        let mut events = self.events.borrow_mut();
+        if events.len() < if exit { 128 } else { 127 } {
+            events.push(event);
+        }
+    }
+
+    /// Keep an operational warning causally attached to the request that encountered it.
+    pub(crate) fn warning(&self, request_id: &str, code: DiagnosticCode) {
+        let mut event = diagnostic_record(code);
+        event.trace_id = self.trace_id.clone();
+        event.parent_span_id = Some(self.span_id.clone());
+        event.request_id = Some(request_id.to_owned());
+        event.operation = self.operation;
+        self.record(&event, false);
+    }
+
+    /// Detach the bounded records before an asynchronous handoff without retaining request state.
+    pub(crate) fn take_events(&self) -> Vec<QueuedEvent> {
+        std::mem::take(&mut *self.events.borrow_mut())
+    }
 }
 
 /// Measure a bounded elapsed duration without treating wall-clock rollback as failure.
 pub(crate) fn elapsed_ms(start: f64) -> u64 {
     (js_sys::Date::now() - start).max(0.0) as u64
-}
-
-fn emit(event: &Event<'_>) {
-    match serde_json::to_string(event) {
-        Ok(encoded) => worker::console_log!("{}", encoded),
-        Err(_) => worker::console_warn!("amail trace event serialization failed"),
-    }
 }
 
 /// Parse exact lower-case W3C v00 syntax with nonzero IDs and known flags.
@@ -355,6 +326,7 @@ pub(crate) fn valid_hex_id(id: &str, length: usize) -> bool {
 
 /// Emit a legacy-compatible CLI upload event without retaining caller text.
 pub(crate) fn client_event(
+    trace: &Trace,
     operation: Operation,
     trace_id: &str,
     span_id: Option<&str>,
@@ -365,12 +337,13 @@ pub(crate) fn client_event(
 ) {
     let event = ClientEvent {
         schema_version: 1,
+        event_id: uuid::Uuid::new_v4().to_string(),
         service: Service::MailCli,
         operation,
         phase: Phase::OperationExit,
         trace_id,
         span_id,
-        request_id: request_id.filter(|value| uuid::Uuid::parse_str(value).is_ok()),
+        request_id: request_id.filter(|value| amail_trace_schema::canonical_uuid(value)),
         outcome: match status {
             200..=399 => Outcome::Success,
             400..=499 => Outcome::ClientError,
@@ -380,10 +353,7 @@ pub(crate) fn client_event(
         duration_ms_bucket: bucket(duration_ms.min(3_600_000)),
         response_bytes_bucket: bucket(response_bytes_bucket),
     };
-    match serde_json::to_string(&event) {
-        Ok(encoded) => worker::console_log!("{}", encoded),
-        Err(_) => worker::console_warn!("amail client trace serialization failed"),
-    }
+    trace.record(&event, false);
 }
 
 fn random_span_id() -> String {
@@ -434,6 +404,7 @@ mod tests {
         trace.operation(Operation::MessagesSend);
         let event = Event {
             schema_version: 1,
+            event_id: uuid::Uuid::new_v4().to_string(),
             service: Service::MailApi,
             operation: trace.operation,
             phase: Phase::RequestExit,
@@ -450,7 +421,7 @@ mod tests {
             provider_error_code: None,
         };
         let value = serde_json::to_value(event).unwrap();
-        assert_eq!(value.as_object().unwrap().len(), 11);
+        assert_eq!(value.as_object().unwrap().len(), 12);
         assert_eq!(value["parent_span_id"], "0123456789abcdef");
         assert!(value.get("url").is_none());
         assert!(value.get("tracestate").is_none());
@@ -481,6 +452,73 @@ mod tests {
         assert!(value.get("http_status_class").is_none());
     }
 
+    /// One hundred legacy uploaded rows and a request exit require two ordered batches.
+    #[test]
+    fn full_telemetry_batch_keeps_exit_and_identity() {
+        let trace = Trace::new();
+        for _ in 0..100 {
+            client_event(
+                &trace,
+                Operation::MessagesList,
+                "0123456789abcdef0123456789abcdef",
+                None,
+                None,
+                0,
+                0,
+                0,
+            );
+        }
+        trace.exit("00000000-0000-4000-8000-000000000001", 202, 0);
+        let events = trace.take_events();
+        assert_eq!(events.len(), 101);
+        assert_eq!(
+            events.last().unwrap().phase,
+            amail_trace_schema::Phase::RequestExit
+        );
+        let ids: Vec<_> = events.iter().map(|event| event.event_id.clone()).collect();
+        let batches = queue_batches(events);
+        assert_eq!(
+            batches.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![100, 1]
+        );
+        let roundtrip: Vec<_> = batches
+            .iter()
+            .flatten()
+            .map(|event| event.event_id.clone())
+            .collect();
+        assert_eq!(ids, roundtrip);
+    }
+
+    /// Burst telemetry cannot exhaust the request exit slot or exceed the memory bound.
+    #[test]
+    fn bounded_buffer_reserves_request_exit() {
+        let trace = Trace::new();
+        for _ in 0..200 {
+            client_event(
+                &trace,
+                Operation::MessagesList,
+                "0123456789abcdef0123456789abcdef",
+                None,
+                None,
+                200,
+                1,
+                1,
+            );
+        }
+        trace.exit("00000000-0000-4000-8000-000000000001", 200, 1);
+        let events = trace.take_events();
+        assert_eq!(events.len(), 128);
+        assert!(events.iter().all(QueuedEvent::valid));
+        assert!(events
+            .iter()
+            .all(|event| serde_json::to_vec(event).unwrap().len() <= 1024));
+        assert_eq!(
+            events.last().unwrap().phase,
+            amail_trace_schema::Phase::RequestExit
+        );
+        assert!(trace.take_events().is_empty());
+    }
+
     /// Routing diagnostics expose numeric provider facts under the normal trace IDs only.
     #[test]
     fn routing_create_event_has_no_provider_text_slot() {
@@ -502,5 +540,59 @@ mod tests {
         assert!(value.get("body").is_none());
         assert!(value.get("address").is_none());
         assert!(value.get("provider_message").is_none());
+    }
+}
+
+/// Send typed safe records only; failures neither log request context nor change API outcomes.
+/// Batches stay below Queue's 100-message limit and 256KB batch size limit.
+pub(crate) async fn flush(env: &worker::Env, events: Vec<QueuedEvent>) {
+    let Ok(queue) = env.queue("TRACE_EVENTS") else {
+        return;
+    };
+    for events in queue_batches(events) {
+        let batch = worker::BatchMessageBuilder::new().messages(events).build();
+        if queue.send_batch(batch).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Preserve order and event IDs while enforcing the Queue batch count and byte bounds.
+fn queue_batches(mut events: Vec<QueuedEvent>) -> Vec<Vec<QueuedEvent>> {
+    let mut batches = Vec::new();
+    while !events.is_empty() {
+        let tail = events.split_off(events.len().min(100));
+        batches.push(events);
+        events = tail;
+    }
+    batches
+}
+
+/// Preserve fixed operational warnings without emitting logs from a public invocation.
+pub(crate) async fn diagnostic(env: &worker::Env, code: DiagnosticCode) {
+    flush(env, vec![diagnostic_record(code)]).await;
+}
+
+/// Construct a standalone fixed maintenance condition without retaining source context.
+fn diagnostic_record(code: DiagnosticCode) -> QueuedEvent {
+    QueuedEvent {
+        schema_version: 1,
+        event_id: uuid::Uuid::new_v4().to_string(),
+        service: amail_trace_schema::Service::MailApi,
+        operation: amail_trace_schema::Operation::Maintenance,
+        phase: amail_trace_schema::Phase::Maintenance,
+        trace_id: uuid::Uuid::new_v4().simple().to_string(),
+        span_id: Some(random_span_id()),
+        parent_span_id: None,
+        request_id: Some(uuid::Uuid::new_v4().to_string()),
+        outcome: amail_trace_schema::Outcome::PhaseFailure,
+        error_code: Some(amail_trace_schema::ErrorCode::DependencyFailure),
+        http_status_class: None,
+        duration_ms_bucket: 0,
+        request_bytes_bucket: None,
+        response_bytes_bucket: None,
+        provider_http_status: None,
+        provider_error_code: None,
+        diagnostic_code: Some(code),
     }
 }

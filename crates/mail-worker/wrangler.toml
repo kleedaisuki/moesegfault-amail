@@ -54,6 +54,10 @@ invocation_logs = false
 [observability.traces]
 enabled = false
 
+[[queues.producers]]
+binding = "TRACE_EVENTS"
+queue = "amail-trace-events"
+
 [triggers]
 crons = ["*/5 * * * *"]
 
@@ -92,6 +96,10 @@ bucket_name = "moesegfault-mail-raw-staging"
 [[env.staging.send_email]]
 name = "EMAIL"
 remote = true
+
+[[env.staging.queues.producers]]
+binding = "TRACE_EVENTS"
+queue = "amail-trace-events-staging"
 
 [env.staging.triggers]
 crons = ["*/5 * * * *"]

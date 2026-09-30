@@ -13,6 +13,8 @@ from urllib.request import Request, urlopen
 
 
 CONFIG = Path(__file__).with_name("wrangler.toml")
+SINK_CONFIG = CONFIG.parents[2] / "workers" / "trace-sink" / "wrangler.toml"
+SINK_SCRIPT = {"production": "amail-trace-sink", "staging": "amail-trace-sink-staging"}
 SCRIPT = {"production": "amail-mail", "staging": "amail-mail-staging"}
 
 
@@ -25,7 +27,7 @@ def built_in_destinations(value: object) -> bool:
     )
 
 
-def safe_observability(value: object) -> bool:
+def safe_observability(value: object, *, sink: bool = False) -> bool:
     """Require public API retention entirely disabled, even for custom safe messages."""
 
     if not isinstance(value, dict):
@@ -33,12 +35,12 @@ def safe_observability(value: object) -> bool:
     logs = value.get("logs")
     traces = value.get("traces")
     return (
-        value.get("enabled") is False
+        value.get("enabled") is sink
         and type(value.get("head_sampling_rate")) in (int, float)
         and value.get("head_sampling_rate") == 1.0
         and value.get("redact_query_string") is True
         and isinstance(logs, dict)
-        and logs.get("enabled") is False
+        and logs.get("enabled") is sink
         and logs.get("invocation_logs") is False
         and logs.get("persist") is not False
         and logs.get("head_sampling_rate", 1.0) == 1.0
@@ -49,21 +51,21 @@ def safe_observability(value: object) -> bool:
     )
 
 
-def safe_settings(value: object) -> bool:
+def safe_settings(value: object, *, sink: bool = False) -> bool:
     """Reject unreviewed script-level export consumers in API readback."""
 
     return (
         isinstance(value, dict)
-        and safe_observability(value.get("observability"))
+        and safe_observability(value.get("observability"), sink=sink)
         and value.get("logpush") is not True
         and not value.get("tail_consumers")
     )
 
 
-def local_settings(realm: str) -> dict:
+def local_settings(realm: str, *, sink: bool = False) -> dict:
     """Read the matching Wrangler realm without relying on TOML inheritance."""
 
-    with CONFIG.open("rb") as source:
+    with (SINK_CONFIG if sink else CONFIG).open("rb") as source:
         config = tomllib.load(source)
     if realm == "production":
         return {"observability": config.get("observability")}
@@ -91,14 +93,14 @@ def readback(account: str, token: str, script: str, suffix: str) -> dict:
         raise ValueError("Cloudflare settings readback malformed") from error
 
 
-def verify(realm: str, account: str, token: str) -> bool:
+def verify(realm: str, account: str, token: str, *, sink: bool = False) -> bool:
     """Check local intent, current script/version settings, and script-level settings."""
 
-    if not safe_observability(local_settings(realm)["observability"]):
+    if not safe_observability(local_settings(realm, sink=sink)["observability"], sink=sink):
         return False
-    script = SCRIPT[realm]
+    script = (SINK_SCRIPT if sink else SCRIPT)[realm]
     return all(
-        safe_settings(readback(account, token, script, suffix))
+        safe_settings(readback(account, token, script, suffix), sink=sink)
         for suffix in ("settings", "script-settings")
     )
 
@@ -108,6 +110,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--realm", choices=tuple(SCRIPT), required=True)
+    parser.add_argument("--mode", choices=("api", "sink"), default="api")
     args = parser.parse_args()
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
     token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
@@ -115,10 +118,10 @@ def main() -> int:
         print("Mail observability verification unavailable: missing credentials")
         return 1
     try:
-        safe = verify(args.realm, account, token)
+        safe = verify(args.realm, account, token, sink=args.mode == "sink")
     except ValueError:
         safe = False
-    print(f"Mail observability {args.realm}: {'safe' if safe else 'UNVERIFIED'}")
+    print(f"Mail observability {args.mode} {args.realm}: {'safe' if safe else 'UNVERIFIED'}")
     return 0 if safe else 1
 
 
