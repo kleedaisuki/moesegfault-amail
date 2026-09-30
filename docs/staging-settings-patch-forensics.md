@@ -138,3 +138,15 @@ Do not fetch audit resource-change history in this first pass: it can contain
 full configuration, is unnecessary to distinguish request receipt/status, and
 expands the privacy surface. Nothing in this implementation authorizes retrying
 the historical mutation or loosening effective capture-off acceptance.
+
+### Protocol-exception privacy correction
+
+Independent review of `182535f` identified that Python `HTTPException` is not
+covered by OSError/URLError: malformed status lines or truncated HTTP reads
+could escape the fixed output boundary. The reader now normalizes that family
+to `transport` with exception-context display suppressed. Focused synthetic
+tests drive the real main/reader path through BadStatusLine during open and
+IncompleteRead during bounded read, requiring exactly the seven fixed failure
+lines, empty stderr and one request. No query, pagination, matching or acceptance
+policy changed. These are source changes awaiting hosted execution and re-review,
+not a claim that the exception occurred in any historical live run.

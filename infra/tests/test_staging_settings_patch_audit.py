@@ -5,6 +5,7 @@ import json
 import os
 import re
 import unittest
+from http.client import BadStatusLine, IncompleteRead
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
@@ -137,6 +138,41 @@ class AuditClassifierTests(unittest.TestCase):
             with patch.object(subject, "build_opener", return_value=opener), self.assertRaises(subject.AuditReadError) as caught:
                 subject.read_audit(ACCOUNT, "PRIVATE_TOKEN")
             self.assertEqual(caught.exception.category, category)
+
+    def test_http_parser_failures_stay_inside_private_transport_boundary(self):
+        """Malformed status lines and truncated reads emit no untrusted traceback."""
+        env = {"CLOUDFLARE_ACCOUNT_ID": ACCOUNT, "CLOUDFLARE_API_TOKEN": "PRIVATE_TOKEN",
+            "AMAIL_SETTINGS_AUDIT_CONFIRM": subject.CONFIRM, "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/codex/amail-v0.1.0",
+            "GITHUB_SHA": "b" * 40}
+        expected = ["staging_settings_patch_audit=UNVERIFIED",
+            "staging_settings_patch_audit_read=transport", "staging_settings_patch_audit_complete=unverified",
+            "staging_settings_patch_audit_matches=unverified", "staging_settings_patch_audit_http=unverified",
+            "staging_settings_patch_audit_action=unverified", "staging_settings_patch_audit_historical=unresolved"]
+        for phase, error in (("open", BadStatusLine("PRIVATE_STATUS_LINE")),
+                             ("read", IncompleteRead(b"PRIVATE_PARTIAL_BODY", 100))):
+            response = MagicMock()
+            response.status = 200
+            response.__enter__.return_value = response
+            opener = MagicMock()
+            opener.open.return_value = response
+            if phase == "open":
+                opener.open.side_effect = error
+            else:
+                response.read.side_effect = error
+            out, err = io.StringIO(), io.StringIO()
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(subject, "build_opener", return_value=opener), \
+                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(subject.main(), 1)
+            self.assertEqual(out.getvalue().splitlines(), expected)
+            self.assertEqual(err.getvalue(), "")
+            self.assertNotIn("PRIVATE", out.getvalue())
+            opener.open.assert_called_once()
+            if phase == "read":
+                response.read.assert_called_once_with(subject.BYTE_LIMIT + 1)
+            else:
+                response.read.assert_not_called()
 
     def test_main_never_outputs_private_fields_and_enforces_first_attempt(self):
         """Even provider success outputs no URI/status number, actor, payload or attestation."""

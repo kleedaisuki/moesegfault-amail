@@ -9,6 +9,7 @@ import json
 import os
 import re
 from datetime import datetime
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -58,7 +59,7 @@ def read_audit(account: str, token: str) -> dict:
             raw = response.read(BYTE_LIMIT + 1)
     except HTTPError as error:
         raise AuditReadError("denied" if error.code in (401, 403) else "http_other") from None
-    except (URLError, TimeoutError, OSError):
+    except (URLError, TimeoutError, OSError, HTTPException):
         raise AuditReadError("transport") from None
     if len(raw) > BYTE_LIMIT:
         raise AuditReadError("oversized")
