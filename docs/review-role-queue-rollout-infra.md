@@ -2,16 +2,16 @@
 
 ## Scope and distinct decisions
 
-Reviewed `a325059`, `351b2e0`, compatibility follow-up `e39ff58`, and pre-mutation state correction `03cb16f`, against `docs/role-mail-monitoring.md`, the Queue privacy ADR, current CI/reusable canary workflows, role serving-capability audit and existing hosted SMTP acceptance caller.
+Reviewed `a325059`, `351b2e0`, compatibility follow-up `e39ff58`, pre-mutation state correction `03cb16f`, and safe-marker caller correction `c4dd186`, against `docs/role-mail-monitoring.md`, the Queue privacy ADR, current CI/reusable canary workflows, role serving-capability audit and existing hosted SMTP acceptance caller.
 
 - **GO for push to non-deploying hosted source CI and the separate read-only capture diagnostic.** No automatic push/PR role deployment is introduced; the role mutation job requires branch-local manual dispatch, exact target and explicit confirmation. This is source review, not a claim that hosted tests already passed.
-- **NO-GO for the live role Queue rollout until the remaining caller integration defect below is corrected and hosted tests pass.** Even after correction, successful immutable phase-one deployment, actual bounded retained-record canary, reviewed exact versions/Queue IDs, and effective capture-off remain operational prerequisites. No production cutover, public sending or role SMTP/Cron privacy acceptance follows from this review.
+- **GO for the live role rollout gate code, subject to successful hosted tests and all documented live prerequisites.** Both identified source defects are resolved; this is not authorization to skip any live prerequisite. successful immutable phase-one deployment, actual bounded retained-record canary, reviewed exact versions/Queue IDs, and effective capture-off remain operational prerequisites. No production cutover, public sending or role SMTP/Cron privacy acceptance follows from this review.
 
 No local builds/tests, live requests, deployments, queue-body reads, secret reads, pushes or production edits were performed. `git diff --check` produced no whitespace errors. Test conclusions below derive from source inspection only.
 
-## Remaining material finding
+## Resolved caller integration finding
 
-### P2 — New safe deployment marker is incompatible with the existing hosted SMTP provenance reader
+### P2 — New safe deployment marker was incompatible with the existing hosted SMTP provenance reader (resolved in `c4dd186`)
 
 Location: `infra/deploy/deploy_staging_role_monitor.py:63`; `workers/role-monitor/hosted_acceptance.py:34-38,187-200`.
 
@@ -19,7 +19,7 @@ The new deploy wrapper captures and suppresses Wrangler output, then emits only 
 
 Impact: deterministic inability to use the new role deployment run for the required hosted SMTP acceptance. This fails closed rather than exposing mail, but blocks delivery acceptance after an otherwise successful role replacement. Confidence: high; directly traced producer and parser contracts.
 
-Remedy: recognize the exact safe new marker inside the exact successful deploy step's time window; retain historical legacy compatibility deliberately if needed. Reject duplicates, mixed old/new marker ambiguity, malformed UUIDs and markers outside that step. Add synthetic caller fixtures for the actual wrapper output. The implementation owner has been notified; do not restore raw Wrangler output to work around this defect.
+Remedy: recognize the exact safe new marker inside the exact successful deploy step's time window; retain historical legacy compatibility deliberately if needed. Reject duplicates, mixed old/new marker ambiguity, malformed UUIDs and markers outside that step. Add synthetic caller fixtures for the actual wrapper output. `c4dd186` implements the exact safe marker parser with a globally unique marker requirement, rejection of malformed safe mentions and mixed legacy evidence, and the existing exact successful deploy-step timestamp window. The added caller fixture exercises actual marker acceptance plus duplicate, mixed, outside-window, unverified and invalid-UUID rejection. Legacy-only history remains supported. Source re-review resolves the deterministic incompatibility; no raw Wrangler output is restored. Hosted execution remains pending.
 
 ## Resolved finding
 
