@@ -566,7 +566,6 @@ def make_mail(address: str, nonce: str, rich: bool) -> tuple[EmailMessage, dict]
     msg["From"] = SENDER
     msg["To"] = address
     msg["Subject"] = subject
-    msg["Message-ID"] = f"<amail-e2e-{nonce}-{suffix.lower()}@{DOMAIN}>"
     msg["Date"] = format_datetime(datetime.now(timezone.utc))
     msg.set_content(f"Synthetic staging notification. {phrase}\n")
     if rich:
@@ -585,22 +584,50 @@ def make_mail(address: str, nonce: str, rich: bool) -> tuple[EmailMessage, dict]
     return msg, {
         "subject": subject,
         "phrase": phrase,
-        "submitted_message_id": str(msg["Message-ID"]),
+        # The SMTP provider owns this header. Only its DATA receipt may fill it.
+        "provider_message_id": None,
         "asset_digest": hashlib.sha256(binary).digest(),
         "cid": f"chart-{nonce}",
     }
 
 
-def smtp_send(token: str, address: str, messages: list[EmailMessage]) -> None:
-    """Submit via real authenticated TLS SMTP; acceptance is not receipt. / 用真实 SMTP 提交。"""
+RECEIPT = re.compile(
+    rb"2\.0\.0 Ok (<[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]{1,128}@[A-Za-z0-9.-]{1,120}>)"
+)
+
+
+def provider_receipt(reply: bytes) -> str:
+    """Accept exactly one bounded Cloudflare DATA receipt, never a guessed header."""
+
+    match = RECEIPT.fullmatch(reply)
+    check(match is not None and len(match.group(1)) <= 256, "smtp_receipt_unverified")
+    value = match.group(1).decode("ascii")
+    local, domain = value[1:-1].split("@")
+    check(not local.startswith(".") and not local.endswith(".") and ".." not in local
+          and all(part and not part.startswith("-") and not part.endswith("-")
+                  for part in domain.split(".")), "smtp_receipt_unverified")
+    return value
+
+
+def smtp_send(token: str, address: str,
+              fixtures: list[tuple[EmailMessage, dict]]) -> None:
+    """Submit each MIME once and retain its private DATA receipt in the same oracle."""
 
     try:
         with smtplib.SMTP_SSL(
             "smtp.mx.cloudflare.net", 465, timeout=30, context=ssl.create_default_context()
         ) as smtp:
             smtp.login("api_token", token)
-            for message in messages:
-                check(not smtp.sendmail(SENDER, [address], message.as_bytes()), "smtp_recipient_refused")
+            for message, oracle in fixtures:
+                check("Message-ID" not in message, "smtp_source_message_id_present")
+                check(oracle.get("provider_message_id") is None, "smtp_receipt_reused")
+                code, _ = smtp.mail(SENDER)
+                check(code == 250, "smtp_sender_refused")
+                code, _ = smtp.rcpt(address)
+                check(code in (250, 251), "smtp_recipient_refused")
+                code, reply = smtp.data(message.as_bytes())
+                check(code == 250 and isinstance(reply, bytes), "smtp_submission_failed")
+                oracle["provider_message_id"] = provider_receipt(reply)
     except ProbeFailure:
         raise
     except Exception:
@@ -633,37 +660,66 @@ def safe_zip(binary: Path, env: dict[str, str], target: str, archive: Path, dest
         check(entry.resolve() == dest or dest in entry.resolve().parents, "archive_path_escape")
 
 
-def verify_archive(dest: Path, oracle: dict, address: str, target: str) -> None:
-    """Compare immutable receipt, sanitized HTML and byte-exact assets. / 核对回执、HTML 和资源字节。"""
+def verify_fixture(row: dict, oracle: dict, address: str, target: str) -> None:
+    """Authorize acceptance or deletion only against the original SMTP receipt."""
 
+    receipt = oracle.get("provider_message_id")
+    check(isinstance(receipt, str) and receipt.isascii(), "smtp_receipt_unverified")
+    provider_receipt(f"2.0.0 Ok {receipt}".encode("ascii"))
+    metadata = row.get("metadata")
+    check(isinstance(metadata, dict) and metadata.get("message_id") == receipt,
+          "provider_message_id_mismatch")
+    rich = oracle["subject"].endswith("-Signal")
+    check(row.get("id") == target and row.get("mailbox") == address
+          and row.get("direction") == "inbound" and row.get("subject") == oracle["subject"]
+          and row.get("from") == SENDER and row.get("to") == [address]
+          and row.get("has_text") is True and row.get("has_html") is rich
+          and row.get("has_attachments") is rich
+          and row.get("attachment_count") == (2 if rich else 0)
+          and isinstance(row.get("received_at"), str), "fixture_get_mismatch")
+
+
+def verify_archive(dest: Path, oracle: dict, address: str, target: str, row: dict) -> None:
+    """Compare the entire immutable ZIP manifest and independent MIME provenance."""
+
+    verify_fixture(row, oracle, address, target)
     try:
         manifest = tomllib.loads((dest / "manifest.toml").read_text(encoding="utf-8"))
         body = (dest / "body.txt").read_text(encoding="utf-8")
-        html = (dest / "body.html").read_text(encoding="utf-8")
     except (OSError, ValueError, UnicodeDecodeError):
         raise ProbeFailure("archive_body_or_manifest_invalid") from None
-    check(
-        manifest.get("version") == 1
-        and manifest.get("id") == target
-        and manifest.get("direction") == "inbound"
-        and manifest.get("subject") == oracle["subject"]
-        and manifest.get("message_id") == oracle["delivered_message_id"]
-        and address in manifest.get("to", []),
-        "archive_receipt_mismatch",
-    )
-    check(oracle["phrase"] in body and oracle["phrase"] in html, "archive_content_mismatch")
-    check(f"cid:{oracle['cid']}" in html and "onerror" not in html.lower(), "html_sanitizer_mismatch")
-    assets = manifest.get("assets")
-    check(isinstance(assets, list) and len(assets) == 2, "archive_asset_count")
-    inline = [a for a in assets if a.get("cid") == oracle["cid"]]
-    attach = [a for a in assets if a.get("filename") == "payload.bin"]
-    check(len(inline) == len(attach) == 1, "archive_asset_metadata")
-    check((dest / inline[0]["path"]).read_bytes() == PNG, "inline_asset_bytes")
-    check(
-        hashlib.sha256((dest / attach[0]["path"]).read_bytes()).digest()
-        == oracle["asset_digest"],
-        "attachment_digest_mismatch",
-    )
+    rich = oracle["subject"].endswith("-Signal")
+    assets = ([
+        {"path": "assets/1-chart.png", "content_type": "image/png", "disposition": "inline",
+         "cid": oracle["cid"], "filename": "chart.png"},
+        {"path": "assets/2-payload.bin", "content_type": "application/octet-stream",
+         "disposition": "attachment", "filename": "payload.bin"},
+    ] if rich else [])
+    expected = {
+        "version": 1, "id": target, "direction": "inbound", "from": SENDER,
+        "to": [address], "subject": oracle["subject"],
+        "received_at": row["received_at"], "message_id": oracle["provider_message_id"],
+        "assets": assets,
+    }
+    check(manifest == expected, "archive_receipt_mismatch")
+    files = {path.relative_to(dest).as_posix() for path in dest.rglob("*") if path.is_file()}
+    expected_files = {"manifest.toml", "body.txt"} | {asset["path"] for asset in assets}
+    if rich:
+        expected_files.add("body.html")
+    check(files == expected_files, "archive_file_set_mismatch")
+    check(oracle["phrase"] in body, "archive_content_mismatch")
+    if rich:
+        try:
+            html = (dest / "body.html").read_text(encoding="utf-8")
+            inline = (dest / "assets/1-chart.png").read_bytes()
+            attachment = (dest / "assets/2-payload.bin").read_bytes()
+        except (OSError, UnicodeDecodeError):
+            raise ProbeFailure("archive_body_or_manifest_invalid") from None
+        check(oracle["phrase"] in html, "archive_content_mismatch")
+        check(f"cid:{oracle['cid']}" in html and "onerror" not in html.lower(), "html_sanitizer_mismatch")
+        check(inline == PNG, "inline_asset_bytes")
+        check(hashlib.sha256(attachment).digest() == oracle["asset_digest"],
+              "attachment_digest_mismatch")
 
 
 def search_cases(binary: Path, env: dict[str, str], address: str, oracle: dict, row: dict) -> None:
@@ -676,14 +732,14 @@ def search_cases(binary: Path, env: dict[str, str], address: str, oracle: dict, 
     common = (
         "--mailbox", address, "--after", after, "--before", before,
         "--title", subject, "--from", SENDER, "--to", address,
-        "--body", phrase, "--meta", f"message_id={oracle['delivered_message_id']}", "--unread",
+        "--body", phrase, "--meta", f"message_id={oracle['provider_message_id']}", "--unread",
     )
     selected(amail(binary, env, "search", *common, failure="search_positive_failed"), subject, 1, "search_positive_count")
     negative = [
         ("wrong_mailbox", ("--mailbox", "nobody@" + DOMAIN, "--title", subject)),
         ("wrong_title", ("--title", subject + "-missing")),
         ("wrong_body", ("--body", phrase + "-missing", "--title", subject)),
-        ("wrong_metadata", ("--meta", f"message_id={oracle['delivered_message_id']}-missing", "--title", subject)),
+        ("wrong_metadata", ("--meta", f"message_id={oracle['provider_message_id']}-missing", "--title", subject)),
         ("wrong_time", ("--after", before, "--title", subject)),
         ("exclusive_before", ("--before", after, "--title", subject)),
         ("wrong_case", ("--title", subject.lower(), "--case-sensitive")),
@@ -801,7 +857,7 @@ def cleanup_inventory(binary: Path, env: dict[str, str], address: str,
 
 def cleanup_verify(binary: Path, env: dict[str, str], address: str,
                    found: dict[str, dict], oracles: dict[str, dict]) -> None:
-    """Corroborate every active fixture against its in-memory submitted MIME."""
+    """Corroborate each active fixture using its immutable SMTP DATA receipt."""
 
     check(len(found) <= len(oracles), "cleanup_unexpected_message")
     subjects: set[str] = set()
@@ -815,33 +871,12 @@ def cleanup_verify(binary: Path, env: dict[str, str], address: str,
         check(len(detail) == 1 and isinstance(detail[0].get("metadata"), dict),
               "cleanup_get_unverified")
         row = detail[0]
-        rich = subject.endswith("-Signal")
-        check(row.get("id") == msg_id and row.get("mailbox") == address
-              and row.get("direction") == "inbound" and row.get("subject") == subject
-              and row.get("from") == SENDER and row.get("to") == [address]
-              and row["metadata"].get("message_id") == oracle["submitted_message_id"]
-              and row.get("has_text") is True and row.get("has_html") is rich
-              and row.get("has_attachments") is rich
-              and row.get("attachment_count") == (2 if rich else 0),
-              "cleanup_get_mismatch")
+        verify_fixture(row, oracle, address, msg_id)
         with tempfile.TemporaryDirectory(prefix="mail-cleanup-", dir=TEMP) as directory:
             archive = Path(directory) / "message.zip"
             unpacked = Path(directory) / "unpacked"
             safe_zip(binary, env, msg_id, archive, unpacked)
-            try:
-                body = (unpacked / "body.txt").read_text(encoding="utf-8")
-                manifest = tomllib.loads((unpacked / "manifest.toml").read_text(encoding="utf-8"))
-            except (OSError, ValueError, UnicodeDecodeError):
-                raise ProbeFailure("cleanup_archive_unverified") from None
-            check(oracle["phrase"] in body and manifest.get("subject") == subject
-                  and manifest.get("message_id") == oracle["submitted_message_id"]
-                  and manifest.get("direction") == "inbound", "cleanup_archive_mismatch")
-            if rich:
-                oracle["delivered_message_id"] = oracle["submitted_message_id"]
-                verify_archive(unpacked, oracle, address, msg_id)
-            else:
-                check(not (unpacked / "body.html").exists()
-                      and manifest.get("assets") == [], "cleanup_archive_mismatch")
+            verify_archive(unpacked, oracle, address, msg_id, row)
 
 
 def cleanup_delete_once(binary: Path, env: dict[str, str], msg_id: str) -> bool:
@@ -1060,7 +1095,7 @@ def main() -> int:
         mail_oracles = {rich_oracle["subject"]: rich_oracle,
                         distractor_oracle["subject"]: distractor_oracle}
         smtp_attempted = True
-        smtp_send(smtp_token, address, [rich, distractor])
+        smtp_send(smtp_token, address, [(rich, rich_oracle), (distractor, distractor_oracle)])
         print("smtp_submitted")
         messages = await_messages(binary, env, {rich_oracle["subject"], distractor_oracle["subject"]})
         delivery_confirmed = True
@@ -1069,30 +1104,32 @@ def main() -> int:
         check(isinstance(target, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]+", target)), "message_id_shape")
         detail = amail(binary, env, "get", target, failure="get_failed")
         check(len(detail) == 1 and detail[0].get("read") is False, "get_implicitly_marked_read")
-        wire_id = detail[0].get("metadata", {}).get("message_id")
-        check(isinstance(wire_id, str) and 3 <= len(wire_id) <= 256, "message_metadata_missing")
-        # A changed Message-ID has no attributed cause without an independent
-        # raw-ingress/provider oracle; separate it from internal consistency.
-        # 缺少独立原始入站或提供商证据时，Message-ID 变化不能归因。
-        rich_oracle["delivered_message_id"] = wire_id
-        print(
-            "source_message_id_preserved"
-            if wire_id == rich_oracle["submitted_message_id"]
-            else "message_id_changed_unattributed"
-        )
+        verify_fixture(detail[0], rich_oracle, address, target)
         archive_file = home.parent / f"archive-{nonce}.zip"
         archive_dir = home.parent / f"archive-{nonce}"
         safe_zip(binary, env, target, archive_file, archive_dir)
-        verify_archive(archive_dir, rich_oracle, address, target)
+        verify_archive(archive_dir, rich_oracle, address, target, detail[0])
         detail = amail(binary, env, "get", target, failure="get_after_read_failed")
         check(len(detail) == 1 and detail[0].get("read") is False, "read_implicitly_marked_read")
+        distractor_row = messages[distractor_oracle["subject"]]
+        distractor_id = distractor_row.get("id")
+        check(isinstance(distractor_id, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]+", distractor_id)),
+              "distractor_id_shape")
+        other_detail = amail(binary, env, "get", distractor_id, failure="distractor_get_failed")
+        check(len(other_detail) == 1, "distractor_get_unverified")
+        verify_fixture(other_detail[0], distractor_oracle, address, distractor_id)
+        with tempfile.TemporaryDirectory(prefix="mail-distractor-", dir=TEMP) as directory:
+            archive = Path(directory) / "message.zip"
+            unpacked = Path(directory) / "unpacked"
+            safe_zip(binary, env, distractor_id, archive, unpacked)
+            verify_archive(unpacked, distractor_oracle, address, distractor_id, other_detail[0])
         print("smtp_to_zip_verified")
 
         search_cases(binary, env, address, rich_oracle, rich_row)
         if args.check_semantic:
             semantic_cases(
                 binary, env, address, nonce, rich_row, rich_oracle,
-                messages[distractor_oracle["subject"]],
+                distractor_row,
             )
         amail(binary, env, "mark", target, "--read", failure="mark_read_failed")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--read", failure="read_search_failed"), rich_oracle["subject"], 1, "read_search_count")
@@ -1103,8 +1140,9 @@ def main() -> int:
         amail_not_found(binary, env, "read", target, "-o", str(home.parent / f"deleted-{nonce}.zip"))
         remaining = rows(amail(binary, env, "sync", "--limit", "100", failure="other_message_sync_failed"))
         distractors = [r for r in remaining if r.get("subject") == distractor_oracle["subject"]]
-        check(len(distractors) == 1, "other_message_lost")
-        amail(binary, env, "delete", distractors[0]["id"], failure="distractor_delete_failed")
+        check(len(distractors) == 1 and distractors[0].get("id") == distractor_id,
+              "other_message_lost")
+        amail(binary, env, "delete", distractor_id, failure="distractor_delete_failed")
         print("search_read_delete_verified")
     except Exception as error:
         primary_error = error if isinstance(error, ProbeFailure) else ProbeFailure("probe_unexpected_failure")

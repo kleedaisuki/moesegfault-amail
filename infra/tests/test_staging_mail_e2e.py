@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from unittest.mock import MagicMock
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -22,6 +23,255 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 HARNESS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(HARNESS)
+
+
+class SmtpReceiptTests(unittest.TestCase):
+    """Keep Cloudflare's DATA oracle distinct from the submitted MIME and API."""
+
+    def test_two_receipts_attach_to_their_original_fixtures(self) -> None:
+        """MAIL/RCPT/DATA are explicit and neither receipt enters public output."""
+
+        address = "fixture@" + HARNESS.DOMAIN
+        fixtures = [HARNESS.make_mail(address, "a" * 16, rich)
+                    for rich in (True, False)]
+        smtp = MagicMock()
+        smtp.mail.return_value = (250, b"2.1.0 Ok")
+        smtp.rcpt.return_value = (250, b"2.1.5 Ok")
+        smtp.data.side_effect = [
+            (250, b"2.0.0 Ok <first@provider.example>"),
+            (250, b"2.0.0 Ok <second@provider.example>"),
+        ]
+        connection = MagicMock()
+        connection.__enter__.return_value = smtp
+        output = StringIO()
+        with patch.object(HARNESS.smtplib, "SMTP_SSL", return_value=connection), redirect_stdout(output):
+            HARNESS.smtp_send("private", address, fixtures)
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual([oracle["provider_message_id"] for _, oracle in fixtures],
+                         ["<first@provider.example>", "<second@provider.example>"])
+        self.assertTrue(all("Message-ID" not in msg for msg, _ in fixtures))
+        self.assertEqual(smtp.mail.call_count, 2)
+        self.assertEqual(smtp.rcpt.call_count, 2)
+        self.assertEqual(smtp.data.call_count, 2)
+
+    def test_second_rejection_preserves_first_receipt(self) -> None:
+        """A partial send is not retried or erased before guarded cleanup."""
+
+        address = "fixture@" + HARNESS.DOMAIN
+        fixtures = [HARNESS.make_mail(address, "a" * 16, rich)
+                    for rich in (True, False)]
+        smtp = MagicMock()
+        smtp.mail.return_value = (250, b"Ok")
+        smtp.rcpt.side_effect = [(250, b"Ok"), (550, b"private refusal")]
+        smtp.data.return_value = (250, b"2.0.0 Ok <first@provider.example>")
+        connection = MagicMock()
+        connection.__enter__.return_value = smtp
+        with patch.object(HARNESS.smtplib, "SMTP_SSL", return_value=connection):
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.smtp_send("private", address, fixtures)
+        self.assertEqual(str(caught.exception), "smtp_recipient_refused")
+        self.assertEqual(fixtures[0][1]["provider_message_id"], "<first@provider.example>")
+        self.assertIsNone(fixtures[1][1]["provider_message_id"])
+        self.assertEqual(smtp.data.call_count, 1)
+
+    def test_unverifiable_data_receipts_fail_closed(self) -> None:
+        """Accepted DATA without one valid ID cannot authorize later deletion."""
+
+        for reply in (b"2.0.0 Ok", b"2.0.0 Ok <a@b> <c@d>",
+                      b"2.0.0 Ok <a..b@provider.example>",
+                      b"2.0.0 Ok <bad@provider.example>\r\nprivate"):
+            with self.subTest(reply_shape=len(reply)):
+                with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                    HARNESS.provider_receipt(reply)
+                self.assertEqual(str(caught.exception), "smtp_receipt_unverified")
+
+    def test_accepted_data_without_receipt_keeps_cleanup_uncertain(self) -> None:
+        """A successful SMTP status is insufficient if the provider omits its ID."""
+
+        address = "fixture@" + HARNESS.DOMAIN
+        fixtures = [HARNESS.make_mail(address, "a" * 16, rich)
+                    for rich in (True, False)]
+        smtp = MagicMock()
+        smtp.mail.return_value = (250, b"Ok")
+        smtp.rcpt.return_value = (250, b"Ok")
+        smtp.data.side_effect = [(250, b"2.0.0 Ok <first@provider.example>"),
+                                 (250, b"2.0.0 Ok")]
+        connection = MagicMock()
+        connection.__enter__.return_value = smtp
+        with patch.object(HARNESS.smtplib, "SMTP_SSL", return_value=connection):
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.smtp_send("private", address, fixtures)
+        self.assertEqual(str(caught.exception), "smtp_receipt_unverified")
+        self.assertEqual(fixtures[0][1]["provider_message_id"], "<first@provider.example>")
+        self.assertIsNone(fixtures[1][1]["provider_message_id"])
+
+    def test_receipt_mismatch_precedes_archive_or_cleanup(self) -> None:
+        """Neither API metadata nor ZIP self-consistency can replace DATA evidence."""
+
+        address = "fixture@" + HARNESS.DOMAIN
+        _, oracle = HARNESS.make_mail(address, "a" * 16, True)
+        oracle["provider_message_id"] = "<original@provider.example>"
+        row = self.row(address, oracle)
+        row["metadata"]["message_id"] = "<changed@provider.example>"
+        with self.assertRaises(HARNESS.ProbeFailure) as caught:
+            HARNESS.verify_fixture(row, oracle, address, "local-id")
+        self.assertEqual(str(caught.exception), "provider_message_id_mismatch")
+        with patch.object(HARNESS, "amail", return_value=[row]), patch.object(
+            HARNESS, "safe_zip"
+        ) as archive:
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.cleanup_verify(Path("amail"), {}, address,
+                                       {"local-id": {"subject": oracle["subject"]}},
+                                       {oracle["subject"]: oracle})
+        self.assertEqual(str(caught.exception), "provider_message_id_mismatch")
+        archive.assert_not_called()
+
+    @staticmethod
+    def row(address: str, oracle: dict) -> dict:
+        """Construct an owner-scoped local row with a separate provider ID."""
+
+        rich = oracle["subject"].endswith("-Signal")
+        return {"id": "local-id", "mailbox": address, "direction": "inbound",
+                "subject": oracle["subject"], "from": HARNESS.SENDER, "to": [address],
+                "metadata": {"message_id": oracle["provider_message_id"]},
+                "has_text": True, "has_html": rich, "has_attachments": rich,
+                "attachment_count": 2 if rich else 0,
+                "received_at": "2026-09-30T00:00:00Z"}
+
+    @staticmethod
+    def archive(root: Path, oracle: dict, row: dict, address: str) -> None:
+        """Write the two exact inbound ZIP shapes without invoking a local toolchain."""
+
+        rich = oracle["subject"].endswith("-Signal")
+        manifest = (
+            'version = 1\nid = "local-id"\ndirection = "inbound"\n'
+            f'from = "{HARNESS.SENDER}"\nto = ["{address}"]\n'
+            f'subject = "{oracle["subject"]}"\nreceived_at = "{row["received_at"]}"\n'
+            f'message_id = "{oracle["provider_message_id"]}"\n'
+        )
+        (root / "body.txt").write_text(oracle["phrase"], encoding="utf-8")
+        if rich:
+            manifest += (
+                '\n[[assets]]\npath = "assets/1-chart.png"\ncontent_type = "image/png"\n'
+                f'disposition = "inline"\ncid = "{oracle["cid"]}"\nfilename = "chart.png"\n'
+                '\n[[assets]]\npath = "assets/2-payload.bin"\n'
+                'content_type = "application/octet-stream"\n'
+                'disposition = "attachment"\nfilename = "payload.bin"\n'
+            )
+            (root / "body.html").write_text(
+                f'<p>{oracle["phrase"]}</p><img src="cid:{oracle["cid"]}">', encoding="utf-8")
+            assets = root / "assets"
+            assets.mkdir()
+            (assets / "1-chart.png").write_bytes(HARNESS.PNG)
+            binary = b"x" * 73
+            (assets / "2-payload.bin").write_bytes(binary)
+            oracle["asset_digest"] = HARNESS.hashlib.sha256(binary).digest()
+        else:
+            manifest += "assets = []\n"
+        (root / "manifest.toml").write_text(manifest, encoding="utf-8")
+
+    def test_both_archive_shapes_and_wrong_provenance(self) -> None:
+        """Full manifest, MIME shape, content and exact file set are required."""
+
+        address = "fixture@" + HARNESS.DOMAIN
+        HARNESS.TEMP.mkdir(exist_ok=True)
+        for rich in (True, False):
+            with self.subTest(rich=rich), tempfile.TemporaryDirectory(dir=HARNESS.TEMP) as directory:
+                root = Path(directory)
+                _, oracle = HARNESS.make_mail(address, "a" * 16, rich)
+                oracle["provider_message_id"] = "<original@provider.example>"
+                row = self.row(address, oracle)
+                self.archive(root, oracle, row, address)
+                HARNESS.verify_archive(root, oracle, address, "local-id", row)
+                (root / "unexpected.txt").write_text("extra", encoding="utf-8")
+                with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                    HARNESS.verify_archive(root, oracle, address, "local-id", row)
+                self.assertEqual(str(caught.exception), "archive_file_set_mismatch")
+                (root / "unexpected.txt").unlink()
+                row["to"] = ["other@example.test"]
+                with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                    HARNESS.verify_archive(root, oracle, address, "local-id", row)
+                self.assertEqual(str(caught.exception), "fixture_get_mismatch")
+
+    def test_rich_archive_rejects_changed_phrase_cid_and_attachment(self) -> None:
+        """A matching receipt and manifest cannot mask changed MIME content."""
+
+        address = "fixture@" + HARNESS.DOMAIN
+        HARNESS.TEMP.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=HARNESS.TEMP) as directory:
+            root = Path(directory)
+            _, oracle = HARNESS.make_mail(address, "a" * 16, True)
+            oracle["provider_message_id"] = "<original@provider.example>"
+            row = self.row(address, oracle)
+            self.archive(root, oracle, row, address)
+            body = root / "body.txt"
+            body.write_text("wrong phrase", encoding="utf-8")
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.verify_archive(root, oracle, address, "local-id", row)
+            self.assertEqual(str(caught.exception), "archive_content_mismatch")
+            body.write_text(oracle["phrase"], encoding="utf-8")
+            html = root / "body.html"
+            html.write_text(f"<p>{oracle['phrase']}</p><img src='cid:wrong'>", encoding="utf-8")
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.verify_archive(root, oracle, address, "local-id", row)
+            self.assertEqual(str(caught.exception), "html_sanitizer_mismatch")
+            html.write_text(f"<p>{oracle['phrase']}</p><img src='cid:{oracle['cid']}'>", encoding="utf-8")
+            attachment = root / "assets/2-payload.bin"
+            attachment.write_bytes(b"y" * 73)
+            with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                HARNESS.verify_archive(root, oracle, address, "local-id", row)
+            self.assertEqual(str(caught.exception), "attachment_digest_mismatch")
+
+    def test_manifest_requires_exact_sender_recipient_timestamp_and_assets(self) -> None:
+        """No partial manifest comparison may grant a cleanup deletion."""
+
+        address = "fixture@" + HARNESS.DOMAIN
+        HARNESS.TEMP.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=HARNESS.TEMP) as directory:
+            root = Path(directory)
+            _, oracle = HARNESS.make_mail(address, "a" * 16, True)
+            oracle["provider_message_id"] = "<original@provider.example>"
+            row = self.row(address, oracle)
+            self.archive(root, oracle, row, address)
+            manifest = root / "manifest.toml"
+            original = manifest.read_text(encoding="utf-8")
+            for before, after in (
+                (HARNESS.SENDER, "other@example.test"),
+                (address, "other@example.test"),
+                (row["received_at"], "2026-09-30T00:00:01Z"),
+                ("assets/1-chart.png", "assets/9-chart.png"),
+            ):
+                with self.subTest(field=before):
+                    manifest.write_text(original.replace(before, after), encoding="utf-8")
+                    with self.assertRaises(HARNESS.ProbeFailure) as caught:
+                        HARNESS.verify_archive(root, oracle, address, "local-id", row)
+                    self.assertEqual(str(caught.exception), "archive_receipt_mismatch")
+            manifest.write_text(original, encoding="utf-8")
+
+    def test_search_uses_receipt_for_positive_and_negative_metadata(self) -> None:
+        """A generated expected ID must never be learned from GET or list rows."""
+
+        address = "fixture@" + HARNESS.DOMAIN
+        _, oracle = HARNESS.make_mail(address, "a" * 16, True)
+        oracle["provider_message_id"] = "<original@provider.example>"
+        row = self.row(address, oracle)
+        calls = []
+
+        def fake_amail(_binary, _env, *args, failure):
+            calls.append(args)
+            if "--meta" in args:
+                expected = args[args.index("--meta") + 1]
+                if expected == "message_id=" + oracle["provider_message_id"]:
+                    return [row]
+            if "--regex" in args and "^AMAIL-E2E-.*-Signal$" in args:
+                return [row]
+            return []
+
+        with patch.object(HARNESS, "amail", side_effect=fake_amail):
+            HARNESS.search_cases(Path("amail"), {}, address, oracle, row)
+        metadata = [args[args.index("--meta") + 1] for args in calls if "--meta" in args]
+        self.assertIn("message_id=<original@provider.example>", metadata)
+        self.assertIn("message_id=<original@provider.example>-missing", metadata)
 
 
 class CleanupTests(unittest.TestCase):
@@ -606,7 +856,7 @@ class CleanupTests(unittest.TestCase):
 
         address = "box@example.test"
         subject = "AMAIL-E2E-nonce-Signal"
-        oracle = {"subject": subject, "submitted_message_id": "<right@example.test>",
+        oracle = {"subject": subject, "provider_message_id": "<right@example.test>",
                   "phrase": "private"}
         listed = {"id_1": {"id": "id_1", "subject": subject}}
         detail = {"id": "id_1", "mailbox": address, "direction": "inbound",
@@ -616,20 +866,20 @@ class CleanupTests(unittest.TestCase):
         with patch.object(HARNESS, "amail", return_value=[detail]):
             with self.assertRaises(HARNESS.ProbeFailure) as caught:
                 HARNESS.cleanup_verify(Path("amail"), {}, address, listed, {subject: oracle})
-        self.assertEqual(str(caught.exception), "cleanup_get_mismatch")
-        detail["metadata"]["message_id"] = oracle["submitted_message_id"]
+        self.assertEqual(str(caught.exception), "provider_message_id_mismatch")
+        detail["metadata"]["message_id"] = oracle["provider_message_id"]
         detail["mailbox"] = "other@example.test"
         with patch.object(HARNESS, "amail", return_value=[detail]):
             with self.assertRaises(HARNESS.ProbeFailure) as caught:
                 HARNESS.cleanup_verify(Path("amail"), {}, address, listed, {subject: oracle})
-        self.assertEqual(str(caught.exception), "cleanup_get_mismatch")
+        self.assertEqual(str(caught.exception), "fixture_get_mismatch")
 
     def test_ambiguous_delete_is_not_repeated(self) -> None:
         """Read back an ambiguous single-ID mutation; never submit it again."""
 
         subject = "AMAIL-E2E-nonce-Signal"
-        oracle = {subject: {"submitted_message_id": "<id>", "phrase": "secret"},
-                  "AMAIL-E2E-nonce-Distractor": {"submitted_message_id": "<id2>", "phrase": "secret2"}}
+        oracle = {subject: {"provider_message_id": "<id@example.test>", "phrase": "secret"},
+                  "AMAIL-E2E-nonce-Distractor": {"provider_message_id": "<id2@example.test>", "phrase": "secret2"}}
         found = {"id_1": {"id": "id_1", "subject": subject}}
         with patch.object(HARNESS, "cleanup_inventory", return_value=found), patch.object(
             HARNESS, "cleanup_verify"
