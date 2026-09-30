@@ -127,16 +127,11 @@ def preflight(zone: str, routing: str, account: str) -> tuple[dict[str, tuple[st
     """Check deployed privacy/bindings, exact route absence, and prior D1 state."""
 
     token = os.environ["CLOUDFLARE_API_TOKEN"]
-    base = f"/accounts/{account}/workers/scripts/amail-role-monitor-staging"
-    settings = AUDIT.api_get(f"{base}/settings", token)
-    script = AUDIT.api_get(f"{base}/script-settings", token)
-    AUDIT.inspect_bindings(settings)
-    AUDIT.inspect_observability(script, settings)
-    AUDIT.inspect_surfaces(
-        AUDIT.api_get(f"{base}/subdomain", token),
-        AUDIT.api_get(f"/zones/{zone}/workers/routes", token),
-        AUDIT.api_get(f"/accounts/{account}/workers/domains?service=amail-role-monitor-staging", token),
-    )
+    try:
+        expected_version, expected_queue = AUDIT.reviewed_pins()
+        AUDIT.inspect_deployment(account, token, zone, expected_version, expected_queue)
+    except (RuntimeError, ValueError, TypeError):
+        raise ProbeError("role_serving_privacy_unverified") from None
     require(ROUTE.reconcile(zone, routing, "audit") == "absent", "synthetic_route_not_absent")
     require(not MARKER.exists(), "prior_route_marker_requires_recovery")
     rules = standard_rules(zone, routing)

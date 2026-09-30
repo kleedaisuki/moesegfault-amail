@@ -207,6 +207,19 @@ deployment/version. New non-secret required inputs are
 deployment jobs without these pins now fail closed rather than accept the old
 custom-log model; workflow integration is deliberately a separate owned change.
 
+Independent source review of the initial implementation found two preflight
+defects, corrected before rollout: serving capabilities were incorrectly checked
+from unversioned `/settings`, and the SMTP driver's old verifier calls had not
+been migrated to the new required pins. Both deployment audit and SMTP preflight
+now share `inspect_deployment`: it reads `/versions/{expected_version}`, requires
+the matching response ID, and checks exact D1/Queue/sending capabilities from
+`resources.bindings` (only direct-list or reviewed `{result:list}` forms). Legacy
+settings are used solely to reject observability contradictions. Synthetic
+orchestration tests cover safe unversioned bindings with wrong/missing/version-ID
+mismatched serving resources, split/drifting traffic, explicit pin absence, and
+the actual SMTP preflight call through the shared parser. These tests are authored
+for hosted execution, not locally run or evidence of deployed acceptance.
+
 ### Coordinated rollout proposal (not performed here)
 
 1. Source review and hosted tests compile role/schema/sink and test strict union,

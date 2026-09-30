@@ -134,6 +134,22 @@ def inspect_bindings(settings: object, queue_id: str) -> None:
     )
 
 
+def inspect_serving_bindings(version: object, expected_version: str, queue_id: str) -> None:
+    """Attest immutable serving-version capabilities, never unversioned /settings bindings."""
+
+    require(isinstance(version, dict) and version.get("id") == expected_version,
+            "serving version resource differs")
+    resources = version.get("resources")
+    require(isinstance(resources, dict), "serving version resources unavailable")
+    bindings = resources.get("bindings")
+    # The version API uses a direct list or the reviewed result-list wrapper.
+    # Reject unknown wrappers rather than guessing a permissive fallback.
+    if isinstance(bindings, dict):
+        require(set(bindings) == {"result"}, "serving binding wrapper differs")
+        bindings = bindings["result"]
+    inspect_bindings({"bindings": bindings}, queue_id)
+
+
 def inspect_observability(script: object, version: object, worker: object) -> None:
     """Require exact Worker-level Logs/traces/Issues-off, not legacy omission or source intent."""
 
@@ -214,35 +230,53 @@ def inspect_d1() -> None:
     require(count == [{"n": 0}], "role arrival ledger not empty")
 
 
+def reviewed_pins() -> tuple[str, str]:
+    """Require non-secret explicit serving-version and Queue pins for every preflight caller."""
+
+    expected_version = os.environ.get("AMAIL_EXPECTED_ROLE_WORKER_VERSION", "")
+    expected_queue = os.environ.get("AMAIL_EXPECTED_TRACE_QUEUE_ID", "")
+    require(UUID.fullmatch(expected_version) is not None, "reviewed serving pin unavailable")
+    require(QUEUE_ID.fullmatch(expected_queue) is not None, "reviewed Queue pin unavailable")
+    return expected_version, expected_queue
+
+
+def inspect_deployment(account: str, token: str, zone: str,
+                       expected_version: str, expected_queue: str) -> None:
+    """Share one exact serving-capability/capture-off bracket with SMTP preflight."""
+
+    require(UUID.fullmatch(expected_version) is not None, "reviewed serving pin unavailable")
+    require(QUEUE_ID.fullmatch(expected_queue) is not None, "reviewed Queue pin unavailable")
+    require(len(account) == 32 and bool(token) and zone == ZONE, "scoped credentials unavailable")
+    base = f"/accounts/{account}/workers/scripts/{WORKER}"
+    first = api_get(f"{base}/deployments?per_page=1&page=1", token)
+    require(isinstance(first, dict), "serving deployment unavailable")
+    before = serving_deployment(first)
+    require(before is not None and before[1] == expected_version, "serving version differs")
+    serving = api_get(f"{base}/versions/{expected_version}", token)
+    inspect_serving_bindings(serving, expected_version, expected_queue)
+    settings = api_get(f"{base}/settings", token)
+    script = api_get(f"{base}/script-settings", token)
+    worker = api_get(f"/accounts/{account}/workers/workers/{WORKER}", token)
+    subdomain = api_get(f"{base}/subdomain", token)
+    routes = api_get(f"/zones/{zone}/workers/routes", token)
+    domains = api_get(f"/accounts/{account}/workers/domains?service={WORKER}", token)
+    # Observability is non-versioned: retain legacy endpoints only to reject contradiction.
+    inspect_observability(script, settings, worker)
+    inspect_surfaces(subdomain, routes, domains)
+    last = api_get(f"{base}/deployments?per_page=1&page=1", token)
+    require(isinstance(last, dict), "serving deployment unavailable")
+    after = serving_deployment(last)
+    require(before == after, "serving version changed during readback")
+
+
 def audit() -> None:
     """Verify one live staging deployment using read-only provider endpoints."""
 
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
     token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
     zone = os.environ.get("CF_ZONE_ID", ZONE)
-    require(len(account) == 32 and bool(token) and zone == ZONE, "scoped credentials unavailable")
-    expected_version = os.environ.get("AMAIL_EXPECTED_ROLE_WORKER_VERSION", "")
-    expected_queue = os.environ.get("AMAIL_EXPECTED_TRACE_QUEUE_ID", "")
-    require(UUID.fullmatch(expected_version) is not None, "reviewed serving pin unavailable")
-    require(QUEUE_ID.fullmatch(expected_queue) is not None, "reviewed Queue pin unavailable")
-    base = f"/accounts/{account}/workers/scripts/{WORKER}"
-    first = api_get(f"{base}/deployments?per_page=1&page=1", token)
-    require(isinstance(first, dict), "serving deployment unavailable")
-    before = serving_deployment(first)
-    require(before is not None and before[1] == expected_version, "serving version differs")
-    version = api_get(f"{base}/settings", token)
-    script = api_get(f"{base}/script-settings", token)
-    worker = api_get(f"/accounts/{account}/workers/workers/{WORKER}", token)
-    subdomain = api_get(f"{base}/subdomain", token)
-    routes = api_get(f"/zones/{zone}/workers/routes", token)
-    domains = api_get(f"/accounts/{account}/workers/domains?service={WORKER}", token)
-    inspect_bindings(version, expected_queue)
-    inspect_observability(script, version, worker)
-    inspect_surfaces(subdomain, routes, domains)
-    last = api_get(f"{base}/deployments?per_page=1&page=1", token)
-    require(isinstance(last, dict), "serving deployment unavailable")
-    after = serving_deployment(last)
-    require(before == after, "serving version changed during readback")
+    expected_version, expected_queue = reviewed_pins()
+    inspect_deployment(account, token, zone, expected_version, expected_queue)
 
     # The reviewed helper paginates all Email Routing rules and rejects conflict.
     route = subprocess.run(

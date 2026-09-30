@@ -138,6 +138,74 @@ class RoleAcceptanceTests(unittest.TestCase):
             self.assertEqual(ACCEPTANCE.main(), 0)
         sender.assert_not_called()
 
+    def test_preflight_uses_shared_exact_deployment_contract(self) -> None:
+        """The SMTP caller passes both explicit pins through the same serving/capture bracket."""
+
+        pins = ("00000000-0000-4000-8000-000000000001", "0" * 31 + "1")
+        with (patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "synthetic"}),
+              patch.object(ACCEPTANCE.AUDIT, "reviewed_pins", return_value=pins),
+              patch.object(ACCEPTANCE.AUDIT, "inspect_deployment") as deployment,
+              patch.object(ACCEPTANCE.ROUTE, "reconcile", return_value="absent"),
+              patch.object(ACCEPTANCE, "MARKER") as marker,
+              patch.object(ACCEPTANCE, "standard_rules", return_value={}),
+              patch.object(ACCEPTANCE, "baseline", return_value=7)):
+            marker.exists.return_value = False
+            self.assertEqual(ACCEPTANCE.preflight(ACCEPTANCE.ZONE, "routing", "0" * 32), ({}, 7))
+        deployment.assert_called_once_with("0" * 32, "synthetic", ACCEPTANCE.ZONE, *pins)
+
+    def test_preflight_invalid_deployment_or_missing_pin_cannot_arm_route(self) -> None:
+        """Capture/binding/pin failure stops before route checks, markers or SMTP work."""
+
+        for failure_at in ("reviewed_pins", "inspect_deployment"):
+            with (self.subTest(failure_at=failure_at),
+                  patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "synthetic"}),
+                  patch.object(ACCEPTANCE.AUDIT, "reviewed_pins", return_value=("version", "queue")) as pins,
+                  patch.object(ACCEPTANCE.AUDIT, "inspect_deployment") as deployment,
+                  patch.object(ACCEPTANCE.ROUTE, "reconcile") as route,
+                  patch.object(ACCEPTANCE, "arm_marker") as arm,
+                  patch.object(ACCEPTANCE, "baseline") as ledger):
+                target = pins if failure_at == "reviewed_pins" else deployment
+                target.side_effect = RuntimeError("synthetic failure")
+                with self.assertRaisesRegex(ACCEPTANCE.ProbeError, "role_serving_privacy_unverified"):
+                    ACCEPTANCE.preflight(ACCEPTANCE.ZONE, "routing", "0" * 32)
+                route.assert_not_called()
+                arm.assert_not_called()
+                ledger.assert_not_called()
+
+    def test_preflight_exercises_real_serving_and_privacy_parser(self) -> None:
+        """Synthetic responses exercise caller arity and strict pinned resource parsing."""
+
+        version = "00000000-0000-4000-8000-000000000001"
+        queue = "0" * 31 + "1"
+        deployment = {"deployments": [{"id": "00000000-0000-4000-8000-000000000002",
+                       "strategy": "percentage", "versions": [
+                           {"version_id": version, "percentage": 100}]}]}
+        bindings = [
+            {"type": "d1", "name": "ROLE_MONITOR", "database_id": ACCEPTANCE.AUDIT.DATABASE},
+            {"type": "send_email", "name": "ROLE_ALERT"},
+            {"type": "queue", "name": "ROLE_TRACE_EVENTS", "queue_id": queue},
+            {"type": "plain_text", "name": "ROLE_REALM", "text": "staging"},
+            {"type": "plain_text", "name": "CF_ZONE_ID", "text": ACCEPTANCE.ZONE},
+        ]
+        worker = {"name": ACCEPTANCE.AUDIT.WORKER, "id": "synthetic-worker", "logpush": False,
+                  "tail_consumers": [], "observability": {"enabled": False,
+                  "logs": {"enabled": False}, "traces": {"enabled": False},
+                  "issues": {"enabled": False}}}
+        responses = [deployment, {"id": version, "resources": {"bindings": bindings}},
+                     {"observability": None}, {}, worker,
+                     {"enabled": False, "previews_enabled": False}, [], [], deployment]
+        with (patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "synthetic",
+                  "AMAIL_EXPECTED_ROLE_WORKER_VERSION": version,
+                  "AMAIL_EXPECTED_TRACE_QUEUE_ID": queue}),
+              patch.object(ACCEPTANCE.AUDIT, "api_get", side_effect=responses) as read,
+              patch.object(ACCEPTANCE.ROUTE, "reconcile", return_value="absent"),
+              patch.object(ACCEPTANCE, "MARKER") as marker,
+              patch.object(ACCEPTANCE, "standard_rules", return_value={}),
+              patch.object(ACCEPTANCE, "baseline", return_value=0)):
+            marker.exists.return_value = False
+            self.assertEqual(ACCEPTANCE.preflight(ACCEPTANCE.ZONE, "routing", "0" * 32), ({}, 0))
+            self.assertEqual(read.call_count, 9)
+
     def test_standard_rule_validation_rejects_worker_action(self) -> None:
         """The harness must never treat a production role cutover as baseline."""
 
