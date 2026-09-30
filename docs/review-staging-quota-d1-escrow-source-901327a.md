@@ -149,3 +149,32 @@ existing immutable 30-day artifact gate. Hosted source test success can advance
 the dormant implementation only; exact staging migration/permission/schema /
 latency proof, wrapper integration and accountable recovery acceptance remain
 separately reviewed and explicitly authorized steps before eventual live GO.
+
+## Follow-up coverage review: `7179e2d`
+
+Date: 2026-10-01. Narrowly reviewed the complete three-file follow-up diff and
+the manifest fixture/validation contracts it relies on. **GO for hosted dormant
+source validation remains unchanged; live NO-GO remains unchanged.** No
+substantive issue was identified. No local tests/builds, provider requests,
+migrations, keys, workflow dispatches, or live operations were performed.
+
+This commit changes test fixtures and documentation only. The production
+escrow adapter, migration, original manifest crypto and workflows are unchanged.
+The following source coverage now supersedes the earlier corresponding gaps:
+
+| Earlier coverage boundary | Follow-up assessment |
+| --- | --- |
+| Maximum size checked only by arithmetic | `maximum_plan()` fills legal bounded object keys/digests to exactly 2,000,000 canonical plaintext bytes. Its incremental JSON-size accounting includes commas; the final canonical length assertion catches fixture drift. `seal()` still invokes complete structural validation. The synthetic test traverses every actual chunk insert, stable readback, artifact attachment and arm, checks 31 ordered indices and complete byte sum. |
+| Real AES used only a small fixture | The explicit real-cipher hosted check now seals the same maximum valid manifest, asserts 31 chunks and exercises complete SQLite roundtrip/arm. Importing fixture helpers does not enable the synthetic cipher patch; that patch belongs to individual synthetic test setup only. Missing/mismatched pinned crypto still fails rather than skips. |
+| Malformed/missing HTTP changes not directly covered | The test invokes `_http` with a mocked bounded request result and covers absent/null metadata, missing/null/boolean/string/negative/float changes. A typed integer one is accepted as a parsed observation, not alone as an Arm permit. No provider request is sent by this fixture. |
+| Preparation response loss not directly covered | Injected committed-but-lost create/chunk/seal responses each fail after exactly one attempted failing operation. The fixtures assert retained writing/sealed state, no armed time and no arm query. A separate matching prepare may complete durability work without manufacturing arm authority. |
+| Competing arm only reasoned from SQL | A second caller completes arm after the first caller's sealed readback but before its UPDATE. The second caller wins once, and the first observes zero changes and fails. This deterministic interleaving covers the critical check-to-transition race without claiming a threaded or real-provider concurrency experiment. |
+
+The follow-up documentation accurately labels this as source coverage pending
+hosted execution. The maximum fixture exercises the existing plaintext limit,
+not an arbitrary padding of unauthenticated ciphertext to the conservative
+2,000,256-byte transport cap. Remaining limits include real D1 migration /
+schema/HTTP behavior, latency/shared-mail regression, malformed base64/digest
+fault injection, concurrent admission, and future receipt/watchdog/recovery
+integration. These remain separate evidence gates; they are not grounds to
+withhold hosted validation of the current dormant tests or to grant live use.
