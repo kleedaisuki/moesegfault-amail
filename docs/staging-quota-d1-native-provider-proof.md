@@ -1,7 +1,8 @@
 # Explicit staging D1 schema and synthetic provider proof
 
-Date: 2026-10-01. Status: **source implemented and independently reviewed;
-awaiting hosted evidence and separately authorized manual dispatch**. No local project
+Date: 2026-10-01. Status: **original schema dispatch failed; read-only incident
+discriminator implemented and independently reviewed (Source GO); exact hosted
+source CI / separately authorized inspection still pending**. No local project
 tests/builds, provider operations, migration, workflow dispatch, push, or deploy
 were performed while authoring this slice. Live ten-address acceptance remains
 **NO-GO**. This is not a 24-hour accountable-intake demonstration.
@@ -58,10 +59,16 @@ Every mode requires all of:
 6. Native DB GET returns UUID `74f35f95-42ce-482c-86e6-dffbdd35cbbe` and name
    `moesegfault-mail-staging`. This pins the target even though account ID comes
    from an existing protected Secret and the token itself is not table-scoped.
-7. `amail-mail-staging` has one 100%-serving deployment; its exact version has
-   exactly one D1 binding, `MAIL_DB`, with the fixed DB UUID. Repeat deployment
-   GET brackets the version, and complete provenance is repeated after the
-   phase, rejecting changed deployment/version or a non-held sending singleton.
+7. `amail-mail-staging` has one 100%-serving deployment of exactly the frozen
+   historical version `c3f6401a-1e84-4f51-91df-ae77d90683e9`. Its complete
+   14-binding inventory must pass existing `mail_pin.containment_bindings_match`:
+   fixed MAIL_DB plus historical ROLE_MONITOR, staging body bucket, approved
+   scalar/secret names and Email binding. D1 targets use native `database_id`.
+   No current-policy/other-version/optional-role fallback is accepted. Repeat
+   deployment GET brackets the version; complete provenance is repeated after
+   the phase, rejecting changed deployment/version or non-held sending state.
+   This is historical binding provenance only, never effective privacy or
+   sending acceptance. Every SQL operation still targets only fixed MAIL_DB.
 
 All proof modes share `staging-native-mail-acceptance` concurrency, with
 `cancel-in-progress: false`. This serializes participating workflows, not
@@ -71,7 +78,7 @@ transition plus an external mail mutation atomic; this workflow performs none.
 This narrow synthetic path checks actual Mail/DB binding and held policy,
 not full three-service/capture-off or authenticated-owner campaign admission.
 
-## Three independently confirmed manual phases
+## Original independently confirmed manual phases (not a retry plan)
 
 | Mode | Exact confirmation | Inputs | Expected fixed result |
 | --- | --- | --- | --- |
@@ -83,41 +90,31 @@ not full three-service/capture-off or authenticated-owner campaign admission.
 
 GitHub's [official workflow-trigger documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)
 requires a `workflow_dispatch` workflow file to exist on the repository's
-default branch before it can receive manual events. This new
-`.github/workflows/staging-ten-address-d1-proof.yml` existing only on the feature
-branch is therefore **not immediately dispatchable**, even with
+default branch before it can receive manual events. The workflow was subsequently registered on `main` at `de2caf2` (parent supplied
+registration evidence; not re-observed by this implementation workstream).
+A workflow existing only on the feature branch would **not be dispatchable**, even with
 `gh workflow run ... --ref codex/amail-v0.1.0`. A successful feature-branch source
 CI does not satisfy registration, and `--ref` selects an execution revision; it
 does not register an otherwise feature-only workflow.
 
-First obtain separately reviewed and authorized registration of this exact
-workflow path on the default branch (`main`), then independently verify that
-registration. Preserve the reviewed staging/feature-branch/first-attempt gates:
-registration does not authorize running the job on `main`, applying DDL, or
-dispatching provider operations. No default-branch registration, push, merge,
-or manual dispatch was performed by this source/doc workstream. Record the
-registration commit separately from the exact feature execution SHA and its
-successful source CI.
+Registration is separate from execution source: `--ref codex/amail-v0.1.0`
+selects that branch's workflow version after its source push; registering an
+existing path on main neither deploys source nor authorizes mutation. Preserve
+feature-branch/staging/first-attempt gates. An inspect addition does not require
+inventing a second workflow name, and must not be dispatched on main where the
+feature guard skips the job. Record main registration, exact feature SHA and
+successful source CI separately. No registration/push/dispatch was performed by
+this discriminator implementation.
 
-Only after verified default-branch registration, independent review, exact
-source CI and explicit administrative authorization should an operator dispatch
-these modes, in that order. Example syntax below is **conditional on completed
-registration**, not a command sequence immediately available after this source
-CI (placeholders must be replaced with independently checked public run IDs):
-
-```shell
-# Future authorized operations ONLY AFTER default-branch workflow registration.
-# Feature-only workflow plus --ref does not satisfy the registration prerequisite.
-gh workflow run staging-ten-address-d1-proof.yml --ref codex/amail-v0.1.0 \
-  -f mode=apply-schema -f confirm=APPLY_STAGING_D1_ESCROW_SCHEMA \
-  -f source_run=EXACT_SUCCESSFUL_SOURCE_RUN
-gh workflow run staging-ten-address-d1-proof.yml --ref codex/amail-v0.1.0 \
-  -f mode=write-synthetic -f confirm=WRITE_STAGING_D1_SYNTHETIC_ONLY \
-  -f source_run=EXACT_SUCCESSFUL_SOURCE_RUN
-gh workflow run staging-ten-address-d1-proof.yml --ref codex/amail-v0.1.0 \
-  -f mode=read-terminal -f confirm=READ_TERMINAL_STAGING_D1_SYNTHETIC_ONLY \
-  -f source_run=EXACT_CURRENT_SUCCESSFUL_SOURCE_RUN -f prior_run=EXACT_SYNTHETIC_WRITE_RUN
-```
+The single authorized original `apply-schema` run
+[36787173756](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36787173756)
+at `242b5abfee461d04188757e8b365d387d46fcdf9` failed only in the final provider
+step after before-Secrets guard and hosted synthetic tests passed, according to
+the parent-supplied nonsecret step metadata. Its generic fixed failure label
+cannot prove that no DDL committed. **Do not rerun apply-schema, write-synthetic
+or read-terminal as diagnosis; all mutation state remains unknown until the
+separately authorized read-only observation below.** The historical phase table
+above explains original contracts, not a standing sequence to execute.
 
 `apply-schema` checks both namespaces before any CREATE. Each must be absent or
 exactly match every checked-in table/index/trigger DDL. Existing equivalent
@@ -179,7 +176,8 @@ below actual HTTP JSON encoding/parsing rather than replacing `Escrow._query`:
 - Native lost arm/terminal ACK, missing counters/Boolean ACK, failed/multiple
   query batches, malformed result rows and fixed capability rejection.
 - Manual-only/first-attempt/confirmation guard and workflow Secret boundary.
-- Exact native DB UUID/name and Worker D1 binding fixtures.
+- Exact native DB UUID/name and frozen c3f complete Worker binding fixtures,
+  including wrong role/mail DB, missing/extra/duplicate bindings and wrong version.
 - Controller write/read-terminal orchestration with independent original-run
   completion requirement, original plaintext binding and unchanged envelope
   digest across separate fixture invocations.
@@ -232,3 +230,190 @@ those gates.
   explains recording completed operations/results for retry safety. Its
   deduplication lesson does not make an unrelated downstream mailbox operation
   replayable after a lost arm response; this proof exposes no downstream mutator.
+
+## Incident-bound read-only `inspect` discriminator
+
+Entry remains the existing registered proof workflow. New exact confirmation:
+`INSPECT_STAGING_D1_READ_ONLY`; input `prior_run` must be exactly `36787173756`.
+No generic incident/run selector is introduced. The historical attempt must be
+independently read as the same workflow/repository/feature branch, attempt 1,
+completed/failure and SHA `242b5abfee461d04188757e8b365d387d46fcdf9`.
+Current checkout/run and six-job successful `source_run` are separately bound
+to the **new exact inspect source SHA**, not borrowed from the historical run.
+
+`staging_ten_address_d1_inspect.py` has an independent `ReadOnlyProvider`
+facade, not a subclass of the mutation-capable Provider. It exposes only exact
+DB GET, fixed staging Worker deployments GET, UUID-shaped version GET,
+fixed global-hold SELECT and fixed two-namespace sqlite_master SELECT.
+D1 SELECT transport is HTTP POST by the official API; the payload remains
+strictly source-owned SELECT with exact reviewed parameters. No DDL,
+INSERT/UPDATE/DELETE, SyntheticEscrow, mailbox, send, real escrow row/ciphertext,
+R2, routing, artifact or recovery-key operation is reachable in inspect.
+Every SELECT must have the existing successful native envelope/typed
+`meta.changes` contract plus `changes == 0`. No private exception or body is
+printed. Provider responses and raw namespaced DDL stay in memory.
+
+| Stage / public label | What is independently checked | Failure behavior |
+| --- | --- | --- |
+| `guard` / `checkout` | Explicit read-only confirmation, protected staging/hosted/manual/attempt-1/feature gates, exact checkout SHA | Stop before provider capabilities; `unverified` |
+| `github_dispatch` | Current GitHub proof attempt/workflow/repository/branch/SHA | Stop; no provider calls |
+| `github_failed_apply` | Original failed exact run/SHA relation | Stop; no provider calls |
+| `source` | Six successful actual source jobs + real crypto step at new exact SHA | Stop; no provider calls |
+| `capability` | Protected account/token structural presence | Stop without rendering values |
+| `database` | Exact DB UUID and staging name | Stop before SQL |
+| `worker` / `binding` | Single 100% serving exact c3f version; complete frozen 14-binding match (including fixed MAIL_DB and historical ROLE_MONITOR) | Stop before SQL |
+| `held` | Exact global singleton `held` | Stop before schema observation |
+| `formal_schema` / `mirror_schema` | Complete expected tables/indexes/triggers, not existence-only | Separately `absent`, `exact`, `partial_or_drift`, or `unverified` |
+| `worker_recheck` / `held_recheck` / `schema_recheck` | Stable serving tuple, still-held singleton, unchanged schema observations | Stop; prior observations do not become current acceptance |
+
+### Integer versus numeric-string schema parameters: bounded hypothesis
+
+The official [D1 REST Query reference](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/)
+models `params` as `string[]`. The existing schema SELECT binds an integer
+`len(prefix)` and the exact prefix. This is a **candidate cause**, not evidence
+of the historical failure. Inspect independently probes the same SELECT with
+both `(len(prefix), prefix)` and `(str(len(prefix)), prefix)`; only these four
+exact namespace/length tuples are admitted. The numeric string is the exact
+decimal length, not an arbitrary numeric expression or SQL fragment.
+
+Each shape gets a fixed `_integer` / `_numeric_string` verified/unverified
+stage label; public `schema_parameter_shapes` emits only
+`integer_and_numeric_string`, `integer_only`, `numeric_string_only` or
+`unverified`. If both succeed their complete parsed schema must agree. A single
+working shape can classify the actual schema; failed shapes do not fabricate
+absence. Final schema recheck uses only shapes successfully observed before,
+and compares exact DDL maps. These distinct read-only protocol observations do
+not replay a DDL request, recover a lost ACK or change the existing apply
+Provider/escrow parameter contract.
+
+`numeric_string_only` after DB/worker/binding/held gates would support the
+parameter-shape hypothesis for current observation, but does not establish a
+historical root cause or justify schema mutation. Any `partial_or_drift` stays
+an explicit failed diagnosis with nonzero exit, even if the other namespace is
+absent/exact. Both namespaces are inspected even if one query/shape fails;
+unknown is never converted to absent. Drift between shape observations is
+`unverified`, never an equality pass.
+
+### Results and next authorized action boundary
+
+- Complete stable absent/exact observation emits
+  `d1_proof_inspect_readonly_complete_no_mutation_authority` with exit 0.
+  This is diagnostic completion, **not** native schema success / a new apply
+  permit / live ten-address GO. Absence does not prove historical DDL was never
+  sent; exactness does not reconstruct historical lost acknowledgements.
+- Stable partial/drift observation emits
+  `d1_proof_inspect_partial_or_drift_no_mutation_authority` with exit 1.
+  No repair, rollback, CREATE continuation or mutation recommendation is encoded.
+- Unverified gate/query/change emits
+  `d1_proof_inspect_failed_no_mutation_authority` with exit 1 and fixed stages.
+  Later stages remain `not_checked`; the private response is not exported.
+
+All outputs carry `read_only: true`, `mutation_authority: false` and
+`real_cleanup_attested: false`. They include only fixed labels and nonsecret
+current source SHA / historical run ID. Do not equate workflow green with GO.
+Same-repository noncanceling concurrency remains unchanged; operational exclusion
+from external administrators is still required for meaningful observations.
+
+The only conditional next command, **not executed or authorized here**, after
+independent review, feature source push, exact successful hosted source CI and
+explicit administrator authorization is:
+
+```shell
+# READ ONLY; existing default-branch registration does not authorize dispatch.
+gh workflow run staging-ten-address-d1-proof.yml --ref codex/amail-v0.1.0 \
+  -f mode=inspect -f confirm=INSPECT_STAGING_D1_READ_ONLY \
+  -f source_run=EXACT_NEW_SUCCESSFUL_SOURCE_RUN -f prior_run=36787173756
+```
+
+The added `test_staging_ten_address_d1_inspect.py` is included by the existing
+hosted `test_staging_ten_address*.py` pattern. Source fixtures cover incident/
+source/guard separation, DB/worker/binding/held failure stages, absent/exact/
+partial formal+mirror classification, unchanged SQLite dumps, forbidden
+mutator seams, exact read whitelist, changed-row rejection, private-output
+redaction, nonzero partial exit and integer-rejected/numeric-string-admitted
+protocol observation. They are authored **not locally executed**. Local
+verification is only Python AST parsing, YAML parsing and `git diff --check`.
+No account/provider request, push, workflow dispatch, local unittest/build or
+mutation retry occurred in this source workstream. Hosted tests and authorized
+provider observations remain external acceptance requirements.
+
+External grounding reuses the original API/SQL/RIFL references above plus
+[GitHub manual workflow semantics](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow):
+default-branch registration and selected execution `--ref` are distinct. The
+engineering lesson of recorded operation results still applies: later schema
+readback cannot manufacture an earlier missing mutation acknowledgement.
+
+## Narrow c3f binding correction after inspect 36788755759
+
+Parent-supplied categorical evidence from the read-only run
+[36788755759](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36788755759)
+at source `48f960b44da454140aa7140870267be5f0ceda7d` reports verified guard,
+checkout, current/historical GitHub relations, source, capability, database and
+worker, then `binding=unverified`. Held/formal/mirror schema were `not_checked`.
+This implementation workstream did not retrieve provider/account data or logs.
+That diagnostic stopped before schema SELECTs; it does **not** establish schema
+absence, current mutation state or historical failure phase on its own.
+
+The source defect is concrete: the former proof and inspector demanded one D1
+binding with `id`, whereas the already reviewed historical c3f contract contains
+both MAIL_DB and ROLE_MONITOR and matches native D1 fields via `database_id`.
+The correction explicitly selects **only** the existing historical comparator
+in both `Provider.provenance()` and `ReadOnlyProvider.binding()`. It does not
+accept an arbitrary serving version or apply current TOML to old runtime.
+See [frozen predecessor provenance](historical-containment-binding-contract-2026-10-01.md).
+No change to that literal contract, current direct-only matcher, runtime,
+workflow permissions, fixed SQL target, held gate or mutation confirmation is
+introduced. The role binding is observed only as metadata; no role DB capability
+or role SQL endpoint is added.
+
+### Checkable no-DDL implication in immutable original source
+
+Inspecting `242b5abfee461d04188757e8b365d387d46fcdf9` yields this ordering:
+
+```text
+execute('apply-schema')
+  -> guard / checkout / dispatch / successful_source
+  -> Provider(...)                          # construction only
+  -> Provider.provenance()
+       -> DB GET / deployment GET / version GET
+       -> require(len(D1 bindings) == 1,
+                  name == MAIL_DB, id == fixed DB)
+       -> deployment GET / held SELECT     # only if old binding gate passed
+  -> Provider.apply()                      # schema SELECT / CREATE only here
+```
+
+The frozen c3f inventory has two D1 bindings, so **if that inventory was observed
+by the original run's provenance read**, the old predicate necessarily failed
+before even its held SELECT; `Provider.apply()` and every schema query/CREATE
+were unreachable. The same source rejects native MAIL_DB using `database_id`
+in place of its expected `id`. This is a source/control-flow implication, not
+an invented successful/no-op mutation acknowledgement.
+
+The parent historical evidence establishes c3f's reviewed inventory; the later
+inspect establishes its own binding stop. Neither the original generic fixed
+failure label nor the later read alone independently timestamps the original
+version response. Therefore do not claim unconditional historical no-DDL from
+those two markers, infer absence from the failed inspect, or disregard changes
+by another actor. Where the original run's c3f-serving relation is independently
+retained, the source implication proves **that run** could not reach DDL; it
+still says nothing about schemas created by other actors.
+
+### Test-source and next-step boundary
+
+Both synthetic provider metadata fixtures now consume the existing independent
+literal `historical_containment_fixture.historical_version()` rather than
+manufacturing a one-binding success response. New/extended source assertions
+reject missing ROLE_MONITOR, wrong role/mail DB, duplicate/extra bindings and an
+otherwise matching inventory attached to another version. Inspect failure at
+binding must leave held/schema phases unobserved and SQL call list empty.
+The prior read-only, dual-parameter and stability tests continue unchanged in
+semantics. Tests are authored and source-traced only; no local unittest/build.
+
+The correction enables a future authorized, exact-source-tested **inspect** to
+proceed through the documented c3f contract into held/schema classification.
+It does not establish that those gates will pass, correct params or DDL, or
+authorize rerunning either failed operation. Do **not** repeat apply-schema.
+The earlier inspect run is evidence already collected, not a passing schema
+proof. A subsequent read-only observation requires separate authorization and
+successful source CI at the new exact feature SHA; no provider/dispatch/push
+operation occurred during this correction.
