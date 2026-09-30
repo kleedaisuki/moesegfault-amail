@@ -1,0 +1,85 @@
+# Explicit branch-only synthetic acceptance for the private Queue trace sink.
+name: Staging Queue trace sink canary
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        required: true
+        type: string
+      confirm:
+        required: false
+        type: string
+      source-version:
+        required: true
+        type: string
+      sink-version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    if: github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: windows-latest
+    environment: staging
+    timeout-minutes: 45
+    concurrency:
+      group: staging-retained-trace-canary
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact mode, version pins and explicit synthetic confirmation
+        env:
+          TRACE_MODE: ${{ inputs.mode }}
+          TRACE_CONFIRM: ${{ inputs.confirm }}
+          SOURCE_VERSION: ${{ inputs.source-version }}
+          SINK_VERSION: ${{ inputs.sink-version }}
+        run: |
+          if ($env:TRACE_MODE -notin @('preflight', 'canary')) {
+            throw 'Invalid trace sink mode'
+          }
+          if ($env:TRACE_MODE -eq 'canary' -and $env:TRACE_CONFIRM -ne 'RUN_STAGING_TRACE_SINK_CANARY') {
+            throw 'Explicit staging trace sink canary confirmation required'
+          }
+          foreach ($value in @($env:SOURCE_VERSION, $env:SINK_VERSION)) {
+            if ($value -cnotmatch '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$') {
+              throw 'Reviewed serving-version pins required'
+            }
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Run synthetic sink harness contracts before secret access
+        run: python -m unittest discover -s infra/tests -p 'test_staging_trace_sink_canary.py' -v
+      - name: Install native-login adapters
+        if: inputs.mode == 'canary'
+        run: python -m pip install pywin32==312 websocket-client==1.9.2
+      - name: Build native amail and anonymous marker transport on hosted runner
+        if: inputs.mode == 'canary'
+        run: |
+          rustup update stable
+          cargo build -p amail --locked
+          cargo build -p amail --features staging-diagnostics --bin staging-http-compare --locked
+          cargo test -p amail --features staging-diagnostics --bin staging-http-compare --locked
+      - name: Attest bounded retained sink records and API non-retention
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          STAGING_E2E_USERNAME: ${{ inputs.mode == 'canary' && secrets.STAGING_E2E_USERNAME || '' }}
+          STAGING_E2E_PASSWORD: ${{ inputs.mode == 'canary' && secrets.STAGING_E2E_PASSWORD || '' }}
+          TRACE_MODE: ${{ inputs.mode }}
+          TRACE_CONFIRM: ${{ inputs.confirm }}
+          SOURCE_VERSION: ${{ inputs.source-version }}
+          SINK_VERSION: ${{ inputs.sink-version }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: >-
+          python infra/tests/staging_hosted_trace_sink_canary.py
+          --mode $env:TRACE_MODE --confirm "$env:TRACE_CONFIRM"
+          --source-version $env:SOURCE_VERSION --sink-version $env:SINK_VERSION
