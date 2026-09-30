@@ -27,7 +27,8 @@ ORIGINAL = "staging_acceptance_"
 WORKFLOW = ".github/workflows/staging-ten-address-d1-proof.yml"
 GENERATION = "synthetic-d1-provider-v1"
 KEY = "a7" * 32  # Public fixture key; NEVER use with an actual recovery manifest.
-CONFIRMS = {"apply-schema": "APPLY_STAGING_D1_ESCROW_SCHEMA",
+CONFIRMS = {"inspect": "INSPECT_STAGING_D1_READ_ONLY",
+            "apply-schema": "APPLY_STAGING_D1_ESCROW_SCHEMA",
             "write-synthetic": "WRITE_STAGING_D1_SYNTHETIC_ONLY",
             "read-terminal": "READ_TERMINAL_STAGING_D1_SYNTHETIC_ONLY"}
 SCHEMA_SQL = "SELECT name,type,sql FROM sqlite_master WHERE substr(name,1,?)=? AND sql IS NOT NULL ORDER BY name"
@@ -40,6 +41,19 @@ def schema_objects(prefix: str) -> dict[str, tuple[str, str]]:
     require(prefix in (ORIGINAL, PREFIX), "d1_proof_namespace_invalid")
     return {name.replace(ORIGINAL, prefix): (kind, sql.replace(ORIGINAL, prefix))
             for name, (kind, sql) in escrow.expected_schema().items()}
+
+
+def schema_observation(rows: list[dict], prefix: str) -> dict[str, tuple[str, str]]:
+    """Parse exact namespaced DDL; parameter transport shape never weakens equality."""
+    require(prefix in (ORIGINAL, PREFIX), "d1_proof_namespace_invalid")
+    observed = {}
+    for row in rows:
+        require(set(row) == {"name", "type", "sql"}
+                and all(isinstance(row[key], str) for key in row)
+                and row["name"].startswith(prefix) and row["name"] not in observed,
+                "d1_proof_schema_unverified")
+        observed[row["name"]] = (row["type"], re.sub(r"\s+", " ", row["sql"]).strip().removesuffix(";"))
+    return observed
 
 
 class Provider:
@@ -71,14 +85,7 @@ class Provider:
         """Compare every namespaced object; never accept IF NOT EXISTS as equality."""
         require(prefix in (ORIGINAL, PREFIX), "d1_proof_namespace_invalid")
         rows = self.query(SCHEMA_SQL, (len(prefix), prefix)).rows
-        observed = {}
-        for row in rows:
-            require(set(row) == {"name", "type", "sql"}
-                    and all(isinstance(row[key], str) for key in row)
-                    and row["name"].startswith(prefix) and row["name"] not in observed,
-                    "d1_proof_schema_unverified")
-            observed[row["name"]] = (row["type"], re.sub(r"\s+", " ", row["sql"]).strip().removesuffix(";"))
-        return observed
+        return schema_observation(rows, prefix)
 
     def apply(self) -> None:
         """Apply only absent schemas; partial/drifted schemas stop for manual review.
@@ -190,7 +197,11 @@ def guard(mode: str) -> None:
             and os.environ.get("AMAIL_D1_PROOF_CONFIRM") == CONFIRMS[mode], "d1_proof_dispatch_unconfirmed")
     manifest.coordinates(os.environ.get("GITHUB_RUN_ID", ""), "1")
     prior = os.environ.get("AMAIL_D1_PROOF_PRIOR_RUN", "")
-    require((mode == "read-terminal") == bool(prior), "d1_proof_prior_run_invalid")
+    require((mode in ("read-terminal", "inspect")) == bool(prior), "d1_proof_prior_run_invalid")
+    if mode == "inspect":
+        from staging_ten_address_d1_inspect import FAILED_RUN
+        require(prior == FAILED_RUN, "d1_proof_prior_run_invalid")
+        manifest.coordinates(os.environ.get("AMAIL_D1_PROOF_SOURCE_RUN", ""), "1")
     if prior:
         manifest.coordinates(prior, "1")
         require(prior != os.environ["GITHUB_RUN_ID"], "d1_proof_prior_run_invalid")
@@ -198,6 +209,9 @@ def guard(mode: str) -> None:
 
 def execute(mode: str) -> dict:
     """Apply/read/write fixed synthetic proof; real campaign authority is never returned."""
+    if mode == "inspect":
+        from staging_ten_address_d1_inspect import execute as inspect
+        return inspect()
     guard(mode)
     sha = checkout()
     token = os.environ.pop("GITHUB_TOKEN", "")
@@ -253,7 +267,10 @@ def main() -> int:
     parser.add_argument("mode", choices=CONFIRMS)
     args = parser.parse_args()
     try:
-        print(json.dumps(execute(args.mode), sort_keys=True))
+        evidence = execute(args.mode)
+        print(json.dumps(evidence, sort_keys=True))
+        if args.mode == "inspect":
+            return 0 if evidence["result"] == "d1_proof_inspect_readonly_complete_no_mutation_authority" else 1
         return 0
     except Exception:
         print("d1_proof_failed_retained_no_campaign_authority", file=sys.stderr)

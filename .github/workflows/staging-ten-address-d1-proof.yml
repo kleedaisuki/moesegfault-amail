@@ -1,16 +1,16 @@
-# English: Explicit staging-only DDL and synthetic native D1 mechanics proof.
+# English: Explicit staging-only read-only incident inspection / synthetic native D1 proof.
 name: Staging quota D1 synthetic provider proof
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Apply additive schemas, write invented ciphertext, or later read/terminal mirror
+        description: Read-only failed apply inspection, additive schemas, or synthetic mirror proof
         type: choice
-        options: [apply-schema, write-synthetic, read-terminal]
+        options: [inspect, apply-schema, write-synthetic, read-terminal]
         required: true
       confirm:
-        description: Exact documented APPLY/WRITE/READ_TERMINAL confirmation
+        description: Exact documented INSPECT/APPLY/WRITE/READ_TERMINAL confirmation
         type: string
         required: true
       source_run:
@@ -18,7 +18,7 @@ on:
         type: string
         required: true
       prior_run:
-        description: Original synthetic write run, read-terminal only
+        description: 36787173756 for inspect; original synthetic write run for read-terminal
         type: string
         default: ''
 
