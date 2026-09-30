@@ -24,7 +24,12 @@ SPEC = importlib.util.spec_from_file_location(
 )
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+sys.modules[SPEC.name] = MODULE
+try:
+    SPEC.loader.exec_module(MODULE)
+except Exception:
+    sys.modules.pop(SPEC.name, None)
+    raise
 
 
 class WorkerCreatedR2Tests(unittest.TestCase):
