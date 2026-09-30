@@ -127,6 +127,17 @@ before opening another session. There is no background expiry task: the operator
 must enforce the documented deadline. Deletion is not a physical secure-wipe
 claim. The one-day artifact retention is a fallback, not proof of deletion.
 
+Additional secret-free fixtures now exercise real Python provenance, download,
+digest and cleanup code with only the HTTP transport substituted: successful
+run/job/artifact binding; authenticated API redirect followed by an unauthenticated
+signed-host download; digest/host rejection; exact DELETE followed by verified
+404; and a DELETE failure preserving the private-key fixture. Local classification
+fixtures exercise real session files, complete envelope/provenance validation and
+fixed CLI output, mocking only the native child (which has its separate real
+hosted cryptographic boundary test). A substituted source SHA is rejected before
+the child, and no network operation occurs during local classification. These
+fixtures were added in source, not executed locally; hosted results are pending.
+
 ## Remaining blockers before any live use
 
 Do not dispatch merely because the encryption job is source-complete. Without
