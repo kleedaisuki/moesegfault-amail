@@ -211,3 +211,20 @@ At `b3587bf`, [push source run 36774241992](https://github.com/kleedaisuki/moese
 The independent [workflow syntax guard 36774241515](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36774241515) passed in 0:08. The PR-triggered [private-provider synthetic crypto 36774249823](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36774249823) passed on Ubuntu and Windows (0:21 each); [candidate-site source/isolation checks 36774249765](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36774249765) passed in 0:27. A separate direct-contact workflow was not triggered by this push; its syntax was covered by the workflow guard. All 51 non-source jobs in the main push run were skipped, so no provider state or serving Mail Worker was changed.
 
 The Worker log reported an exact **`worker-check-v2` cache miss**, a hit/restoration for the independently pinned **`worker-build-check-v1` bundler cache**, and a successful `worker-check-v2` save after checks. The 5:06 Worker job therefore establishes the new key's cold-write path, **not** a v2 cache-hit improvement. A future source-unchanged hosted run that actually reports a v2 hit is required before measuring or claiming that gain; no duplicate run was dispatched merely to manufacture this comparison.
+
+### Natural v2 warm-cache observation (2026-09-30)
+
+The next ordinary docs-only push, `7719d67`, produced [source run 36775433360](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36775433360): **all six source jobs passed**. It was created at 20:50:29 UTC, first active jobs started at 20:50:33 (0:04 wait), and completed at 20:52:53 (2:24 total). Comparing the two exact revisions with `git diff --name-only b3587bf 7719d67` shows only files under `docs/` changed; the Worker code, build inputs and Worker-job workflow source were unchanged. The completed Worker log explicitly reported **exact `worker-check-v2` hit and restoration** for the key saved by `b3587bf`, plus the same independently pinned **`worker-build-check-v1` hit/restoration**. All Worker/Wasm checks ran and passed; no cache result was substituted for an assertion.
+
+| `7719d67` active job | Start → end UTC | Duration | Result |
+| --- | --- | --- | --- |
+| Infrastructure probe unit tests | 20:50:33 → 20:50:50 | 0:17 | Passed |
+| CLI Ubuntu | 20:50:33 → 20:51:45 | 1:12 | Passed |
+| CLI macOS | 20:50:39 → 20:51:42 | 1:03 | Passed |
+| CLI Windows | 20:50:34 → 20:52:52 | 2:18 | Passed |
+| Astro release site | 20:50:35 → 20:50:59 | 0:24 | Passed |
+| Rust Worker/Wasm | 20:50:33 → 20:52:21 | 1:48 | Passed |
+
+The independent [workflow syntax guard 36775433047](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36775433047), PR-triggered [private-provider synthetic crypto 36775438131](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36775438131) on Ubuntu and Windows, and [candidate-site source/isolation checks 36775437909](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36775437909) also passed. The main push run skipped all 51 non-source jobs, including every deployment/provider mutation; no serving Worker changed.
+
+For this unchanged Worker-source/cache-identity pair, the Worker job fell from **5:06 cold-write to 1:48 exact-hit** (3:18 less), while whole source feedback fell from **5:12 to 2:24** (2:48 less); the second run's longest job was Windows CLI. These are two naturally occurring hosted runs, not a controlled benchmark: runner conditions and independent CLI scheduling may differ. The defensible result is that the v2 key survives unrelated documentation changes, restores the compiled Worker cache, retains complete checks, and shortens this observed feedback path. It does **not** predict performance for Rust edits, new build inputs, or a deployment/release path.
