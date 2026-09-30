@@ -1,0 +1,219 @@
+"""Read-only production trace graph and unrouted role storage lifecycle gates.
+
+Queue ownership, serving deployments, independent capture switches and four
+forwards are bracketed. Absence is a complete successful script inventory, never
+a failed GET. No function mutates routing, storage, settings or sending policy.
+"""
+from __future__ import annotations
+import argparse
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "crates/mail-worker"))
+sys.path.insert(0, str(ROOT / "infra/provider"))
+sys.path.insert(0, str(Path(__file__).parent))
+import check_observability as capture
+import ensure_trace_queues as queues
+import ensure_role_forwarding as forwards
+import verify_role_monitor_staging as role
+from pin_staging_mail import bindings_match, serving_deployment
+from trace_rollout_attestation import UUID, ID
+
+API, SINK, ROLE = "amail-mail", "amail-trace-sink", "amail-role-monitor"
+DATABASE = "06e84adb-fe29-4183-b131-5042a48bcdee"
+
+
+def query(binding: str, sql: str) -> list[dict]:
+    """Read bounded production D1 through the reviewed binding, suppressing output."""
+    import json
+    folder = "workers/role-monitor" if binding == "ROLE_MONITOR" else "crates/mail-worker"
+    result = subprocess.run(["wrangler", "d1", "execute", binding, "--remote", "--command", sql, "--json"],
+                            cwd=ROOT / folder, capture_output=True, text=True, timeout=90, check=False)
+    if result.returncode or len(result.stdout) + len(result.stderr) > 262144:
+        raise ValueError("d1_unverified")
+    try:
+        envelope = json.loads(result.stdout)
+        if not isinstance(envelope, list) or len(envelope) != 1 or envelope[0].get("success") is not True:
+            raise ValueError("d1_unverified")
+        rows = envelope[0]["results"]
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise ValueError("d1_unverified")
+        return rows
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError("d1_unverified") from error
+
+
+def storage(lifecycle: str) -> None:
+    """First migration requires pristine storage; replacements require empty expired state."""
+    from importlib.util import spec_from_file_location, module_from_spec
+    spec = spec_from_file_location("production_role_schema", ROOT / "workers/role-monitor/check_staging_db.py")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    tables = query("ROLE_MONITOR", module.SQL)
+    names = [row.get("name") for row in tables]
+    if lifecycle == "first-bootstrap":
+        if names:
+            raise ValueError("bootstrap_storage_unverified")
+        return
+    if lifecycle not in ("replacement", "migrated", "maintenance") or len(names) != 2 or set(names) != module.ALLOWED:
+        raise ValueError("schema_unverified")
+    if not module.valid_schema(query("ROLE_MONITOR", "PRAGMA table_info(role_arrivals)"),
+                               query("ROLE_MONITOR", "PRAGMA table_info(role_monitor_health)")):
+        raise ValueError("schema_unverified")
+    indexes = query("ROLE_MONITOR", "SELECT name FROM sqlite_master WHERE type='index' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB 'd1_*' AND name NOT GLOB '_cf_*'")
+    if len(indexes) != 2 or {row.get("name") for row in indexes} != {"role_arrivals_unalerted", "role_arrivals_forward"}:
+        raise ValueError("schema_unverified")
+    if lifecycle == "maintenance":
+        return  # API/sink replacement does not require erasing an operational ledger.
+    if query("ROLE_MONITOR", "SELECT COUNT(*) AS n FROM role_arrivals") != [{"n": 0}]:
+        raise ValueError("ledger_not_empty")
+    state = query("ROLE_MONITOR", "SELECT singleton, lease_until, checked_at, lease_until <= unixepoch()*1000 AS expired FROM role_monitor_health")
+    if (len(state) != 1 or set(state[0]) != {"singleton", "lease_until", "checked_at", "expired"}
+            or state[0]["singleton"] != 1 or type(state[0]["lease_until"]) is not int
+            or type(state[0]["checked_at"]) is not int or state[0]["expired"] != 1
+            or state[0]["lease_until"] < 0 or state[0]["checked_at"] < 0):
+        raise ValueError("lease_not_expired")
+    if lifecycle == "migrated" and state != [{"singleton": 1, "lease_until": 0, "checked_at": 0, "expired": 1}]:
+        raise ValueError("bootstrap_lease_unverified")
+
+
+def held_send() -> None:
+    """Require held global policy and unset role release gate without writing either."""
+    if query("MAIL_DB", "SELECT state FROM send_policy WHERE scope='global' AND owner_iss='*' AND owner_sub='*'") != [{"state": "held"}]:
+        raise ValueError("send_not_held")
+    if query("MAIL_DB", "SELECT abuse_contact_verified FROM send_release_gates WHERE id=1") != [{"abuse_contact_verified": 0}]:
+        raise ValueError("role_gate_not_held")
+
+
+def role_absent(account: str, token: str) -> None:
+    """Require documented successful SinglePage script inventory, not swallowed 404s."""
+    rows = role.api_get(f"/accounts/{account}/workers/scripts", token)
+    if (not isinstance(rows, list) or len(rows) > 10000
+            or not all(isinstance(row, dict) and isinstance(row.get("id"), str) for row in rows)
+            or len({row["id"] for row in rows}) != len(rows) or any(row["id"] == ROLE for row in rows)):
+        raise ValueError("role_absence_unverified")
+
+
+def forward_snapshot(account: str, *, switched: int = 0) -> dict:
+    """Privately retain the four full shapes, verified destination and exact rule IDs."""
+    destination, token = os.getenv("ROLE_FORWARD_DESTINATION", ""), os.getenv("CF_EMAIL_ROUTING_TOKEN", "")
+    if not destination or not token:
+        raise ValueError("role_config_unverified")
+    client = forwards.Client(token, account)
+    if forwards.destination_state(client, destination) != "verified":
+        raise ValueError("destination_unverified")
+    rules = forwards.rules(client)
+    if switched == 0:
+        if forwards.audit(rules, destination) != set(forwards.ROLES):
+            raise ValueError("forward_unverified")
+    else:
+        from production_role_routes import snapshot
+        snapshot(rules, destination, switched)
+    result = {row.get("id", row.get("tag")): row for row in rules if forwards.matched_roles(row)}
+    if len(result) != 4 or not all(isinstance(key, str) and key for key in result):
+        raise ValueError("rule_identity_unverified")
+    return result
+
+
+def serving(account: str, token: str, pins: dict[str, str]) -> dict:
+    """Require exact single-100 serving and preserve deployment IDs around nonversioned reads."""
+    result = {}
+    for script, pin in pins.items():
+        value = serving_deployment(capture.readback(account, token, script, "deployments?per_page=1&page=1"))
+        if value is None or value[1] != pin:
+            raise ValueError("serving_unverified")
+        result[script] = value
+    return result
+
+
+def role_capabilities(account: str, token: str, version: str, queue: str, *, attached: bool = True) -> None:
+    """Check immutable production bindings and current private all-capture-off surfaces."""
+    base = f"/accounts/{account}/workers/scripts/{ROLE}"
+    value = role.api_get(f"{base}/versions/{version}", token)
+    role.inspect_serving_bindings(value, version, queue, realm="production", database=DATABASE, queue_attached=attached)
+    settings = role.api_get(f"{base}/settings", token)
+    script = role.api_get(f"{base}/script-settings", token)
+    worker = role.api_get(f"/accounts/{account}/workers/workers/{ROLE}", token)
+    if not capture.effective_api_settings(worker, ROLE, settings, script):
+        raise ValueError("role_capture_unverified")
+    subdomain = role.api_get(f"{base}/subdomain", token)
+    routes = role.api_get(f"/zones/{role.ZONE}/workers/routes", token)
+    domains = role.api_get(f"/accounts/{account}/workers/domains?service={ROLE}", token)
+    if (not isinstance(subdomain, dict) or subdomain.get("enabled") is not False
+            or subdomain.get("previews_enabled") is not False
+            or not isinstance(routes, list) or not all(isinstance(row, dict) for row in routes)
+            or any(row.get("script") == ROLE for row in routes)
+            or not isinstance(domains, list) or not all(isinstance(row, dict) for row in domains)
+            or any(row.get("service") == ROLE for row in domains)):
+        raise ValueError("role_surface_unverified")
+
+
+def verify(phase: str, lifecycle: str, *, migrated: bool = False) -> None:
+    """Attest P1->P2 only; maintenance uses strict api-role and never bootstraps Queues."""
+    if migrated and (phase != "before" or lifecycle != "first-bootstrap"):
+        raise ValueError("migration_phase_unverified")
+    account, token = os.getenv("CLOUDFLARE_ACCOUNT_ID", ""), os.getenv("CLOUDFLARE_API_TOKEN", "")
+    topology = "api-only" if phase == "before" else "api-role"
+    queue, dlq = os.getenv("AMAIL_TRACE_QUEUE_ID", ""), os.getenv("AMAIL_TRACE_DLQ_ID", "")
+    pins = {API: os.getenv("AMAIL_EXPECTED_WORKER_VERSION", ""), SINK: os.getenv("AMAIL_EXPECTED_TRACE_SINK_VERSION", "")}
+    role_pin = os.getenv("AMAIL_EXPECTED_ROLE_WORKER_VERSION", "")
+    if (ID.fullmatch(account) is None or not token or ID.fullmatch(queue) is None
+            or ID.fullmatch(dlq) is None or queue == dlq or os.getenv("AMAIL_TRACE_TOPOLOGY") != topology
+            or any(UUID.fullmatch(value) is None for value in pins.values())
+            or phase not in ("before", "after", "maintenance")):
+        raise ValueError("pins_unverified")
+    if phase != "before" or lifecycle == "replacement":
+        if UUID.fullmatch(role_pin) is None:
+            raise ValueError("role_pin_unverified")
+        pins[ROLE] = role_pin
+    elif lifecycle != "first-bootstrap" or role_pin:
+        raise ValueError("lifecycle_unverified")
+    before = serving(account, token, pins)
+    switched = 0
+    if phase == "maintenance":
+        configured = os.getenv("AMAIL_ROLE_ROUTED_COUNT", "")
+        if configured not in ("0", "1", "2", "3", "4"):
+            raise ValueError("route_phase_unreviewed")
+        switched = int(configured)
+    snapshot = forward_snapshot(account, switched=switched)
+    held_send()
+    queues.reconcile(account, token, "production", "readback", topology)
+    if ROLE not in pins:
+        role_absent(account, token)
+    if not bindings_match(capture.readback(account, token, API, f"versions/{pins[API]}"), pins[API],
+                          phase="queue-api", queue_id=queue, realm="production"):
+        raise ValueError("api_bindings_unverified")
+    if not capture.verify("production", account, token) or not capture.verify("production", account, token, sink=True):
+        raise ValueError("privacy_unverified")
+    if ROLE in pins:
+        role_capabilities(account, token, pins[ROLE], queue, attached=phase != "before")
+    storage("maintenance" if phase == "maintenance" else "migrated"
+            if (phase == "after" or migrated) and lifecycle == "first-bootstrap" else lifecycle)
+    queues.reconcile(account, token, "production", "readback", topology)
+    if ROLE not in pins:
+        role_absent(account, token)
+    held_send()
+    if serving(account, token, pins) != before or forward_snapshot(account, switched=switched) != snapshot:
+        raise ValueError("graph_changed")
+
+
+def main() -> int:
+    """Print fixed verdicts only, never destination, MIME, ledger or provider bodies."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--phase", choices=("before", "after", "maintenance"), required=True)
+    parser.add_argument("--lifecycle", choices=("first-bootstrap", "replacement"), default="replacement")
+    parser.add_argument("--migrated", action="store_true")
+    args = parser.parse_args()
+    try:
+        verify(args.phase, args.lifecycle, migrated=args.migrated)
+    except (ValueError, RuntimeError, KeyError, TypeError, OSError, subprocess.TimeoutExpired, forwards.ProvisionError):
+        print("production_role_graph=UNVERIFIED")
+        return 1
+    print(f"production_role_graph_{args.phase}=exact_pins_and_private_state_verified")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
