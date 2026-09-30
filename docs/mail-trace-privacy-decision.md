@@ -90,6 +90,32 @@ are authoritative for this result. Resolve the authoritative effective readback
 contract before changing the verifier or attempting Queue rollout; do not
 repeat the same deployment or infer permission to send new canary traffic.
 
+### Explicit current Worker capture-off flags now observed
+
+[Read-only run `36736823997`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36736823997)
+at source `34db41a` observed expected staging version `c3f6401a` at stable 100%
+serving traffic around five control-plane reads. The exact current Worker
+resource passed fixed `worker_name=match`, `worker_id=valid` checks and reported
+an observability object with `enabled=false`, `logs=false`, `traces=false`,
+`logpush=false`, `tails=empty`. Subordinate options remained `invocation=true`,
+`persist=true`, `redact=false`, `sampling=one`; older endpoints showed
+observability `missing` (`/settings`) and explicit `null` (`/script-settings`).
+
+The explicit current object is stronger positive capture-configuration evidence
+than missing/null legacy representations, not a safe-default assumption.
+Nevertheless, the official disabled-parent interpretation and the revised
+containment checker policy still require independent review. Subordinate true
+options do not alone demonstrate capture, and this diagnostic alone does not
+attest they are inert. Worker-level settings are non-versioned and not locked
+atomically by a stable serving deployment.
+
+This read generated no Mail traffic and inspected no retained records or Queue
+payload. It therefore cannot establish whole-retained-record privacy or a
+completed Queue rollout. Preserve the no-unsafe-dual-logging rule and the
+outstanding hosted verifier, rollout and retained-data gates. See the
+[bounded current-resource interpretation](mail-trace-sink-remediation-options.md#current-worker-resource-readback-explicit-disabled-capture-acceptance-pending)
+and [official effective-readback investigation](observability-effective-readback-decision.md).
+
 ## Original decision in one sentence (direct-source sink superseded)
 
 Retain reviewed, allowlisted **application trace events** in Cloudflare Workers Logs, linked by W3C trace/span IDs across CLI and the mail API; disable Cloudflare's automatic invocation logs and native traces for the mail API in both realms until Cloudflare can exclude sensitive automatic fields *before persistence*. This is a real causal distributed trace graph over structured events, but **not** the Cloudflare native Traces waterfall or automatic D1/R2/fetch spans.

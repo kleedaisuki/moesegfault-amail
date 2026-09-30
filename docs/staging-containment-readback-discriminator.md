@@ -1,12 +1,14 @@
 # Staging containment readback discriminator
 
-Status: source-only diagnostic, not a containment or privacy attestation.
+Status: **read-only diagnostics executed; explicit current Worker capture-off
+flags observed; containment-policy/retained-data acceptance remains pending**.
+No result here is a completed Queue rollout or privacy attestation.
 
 The staging containment upload in run `36725878855` did not pass the existing
 post-deploy observability checker. Do not infer Logs-off from source intent or
 loosen `check_observability.py` before examining the discrepancy.
 
-## Read-only experiment
+## Original four-GET read-only experiment
 
 On `codex/amail-v0.1.0`, dispatch `ci.yml` with target
 `staging-containment-readback`, confirmation `READ_STAGING_CONTAINMENT_SETTINGS`,
@@ -45,13 +47,63 @@ investigation without exposing payloads or causing fresh sensitive request logs.
 Focused synthetic tests cover strict types, missing fields, exact GET ordering,
 version mismatch, deployment change, endpoint failure and secret-free output.
 Tests execute only in GitHub Actions; no local tests/build/live probe was run.
-Independent review and hosted execution remain required.
+Independent review and hosted execution were prerequisites of the completed
+diagnostics below; this source-test contract is not a privacy acceptance result.
+
+## Executed current Worker resource discriminator
+
+The original coarse read in [run `36730461386`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36730461386)
+left observability missing/non-object on the older endpoints. The separately
+reviewed five-GET discriminator at source `34db41a`,
+`infra/tests/staging_worker_resource_readback.py`, added the exact current Worker
+resource GET between the settings reads and final deployment check. It never
+lists unrelated Workers or emits the actual resource ID. The refined fixed
+shape vocabulary distinguishes JSON null from absent/other and validates typed
+export lists without copying their members.
+
+[Read-only run `36736823997`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36736823997)
+returned `stable100` for staging Mail version `c3f6401a` (abbreviated ID), with
+`worker_name=match`, `worker_id=valid`, and these current Worker categories:
+
+```text
+observability_shape=object enabled=false logs=false traces=false
+logpush=false tails=empty invocation=true persist=true redact=false sampling=one
+```
+
+The older `/settings` observability remained `missing`; the older
+`/script-settings` observability was refined to `null`. These older endpoint
+representations must not be silently converted into false flags or treated as
+equivalent to the explicit current Worker object. Exact name match plus a
+nonempty typed ID verifies the inspected resource identity without publishing
+the ID. The deployment/version pair was unchanged at expected 100% traffic
+before and after the five reads.
+
+This is stronger positive configuration evidence than legacy omission: the
+current Worker object explicitly reports disabled top-level, Logs and native
+Traces enable flags, plus Logpush false and an empty typed tail list. It is
+still a current Worker-level, non-versioned observation, not an immutable
+configuration snapshot tied to `c3f6401a` or an atomic settings lock.
+
+The diagnostic reports subordinate invocation/persistence true, redaction false
+and full sampling without interpreting whether they are effective under the
+disabled hierarchy. **Neither those true options alone nor `stable100` settles
+the privacy claim.** Official parent-off semantics and the endpoint-specific
+containment policy are under independent review. The read queried no retained
+logs or Queue payloads, generated no Mail requests and mutated nothing.
+
+Do not declare whole-retained-record privacy or completed Queue rollout, enable
+the old source logger for comparison, or relax enabled-sink policy based on this
+disabled-resource shape. Resolve/review the effective-settings contract, then
+obtain hosted verifier tests and the separately required pinned rollout and
+retained-data gates. See [the detailed fixed-result interpretation](mail-trace-sink-remediation-options.md#current-worker-resource-readback-explicit-disabled-capture-acceptance-pending)
+and [effective-readback decision](observability-effective-readback-decision.md).
 
 ## Official references
 
 - [Script/version settings](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/script_and_version_settings/methods/get/)
 - [Script-level settings](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/settings/methods/get/)
 - [Deployment listing](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/methods/list/)
+- [Current Worker resource](https://developers.cloudflare.com/api/resources/workers/subresources/beta/subresources/workers/methods/get/)
 
 Cloudflare documents the first listed deployment as currently serving, with
 version traffic percentages. These references justify control-plane comparison,

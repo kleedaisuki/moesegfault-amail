@@ -101,7 +101,7 @@ unexplained aggregate result; it **does not establish that it was the sole
 failure branch in either earlier deployment job**. Do not reinterpret `missing`
 or `other` as false, bypass one endpoint, or loosen the checker just to pass.
 
-**Still unresolved:** effective Logs/Traces on versus off, Cloudflare's effective
+**Unresolved after that diagnostic:** effective Logs/Traces on versus off, Cloudflare's effective
 default/normalization contract, and authoritative disabled-capture readback for
 this version. Research into that contract is underway. The next action is to
 resolve the authoritative effective-settings mechanism and independently review
@@ -109,6 +109,52 @@ any verifier change against it, not rerun the unchanged deployment, widen a
 telemetry query or create new canary traffic. Production privacy/public sending
 and the Queue-sink rollout containment prerequisite remain closed. This result
 does not resolve the separate private-inbox/R2 transport gate.
+
+### Current Worker resource readback: explicit disabled capture, acceptance pending
+
+[Read-only run `36736823997`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36736823997)
+at source `34db41a` returned `stable100` for the same expected staging Mail
+version `c3f6401a` (abbreviated ID). The five-GET discriminator read the exact
+current Worker resource in addition to the two older settings representations,
+then confirmed the unchanged expected 100%-serving deployment. Its reviewed
+fixed observations were:
+
+| Representation or field | Fixed observation | Scope of evidence |
+| --- | --- | --- |
+| Current Worker identity | `worker_name=match`, `worker_id=valid` | Exact expected name and a nonempty typed ID passed; the actual resource identifiers were not exported. |
+| Current Worker observability | `observability_shape=object`, `enabled=false` | A concrete current Worker-level object reports literal top-level capture disabled, rather than a missing/default inference. |
+| Current Worker capture children | `logs=false`, `traces=false` | The inspected object reports literal Logs/native-Traces child enable flags disabled. |
+| Current Worker export fields | `logpush=false`, `tails=empty` | Literal Logpush false and a typed empty tail-consumer list in that representation. |
+| Current Worker subordinate options | `invocation=true`, `persist=true`, `redact=false`, `sampling=one` | These options remain explicit even alongside disabled parent/child capture flags. The classifier records them, not whether they are effective under the disabled hierarchy. |
+| Older `/settings` observability | `observability_shape=missing` | That representation still omits observability. |
+| Older `/script-settings` observability | `observability_shape=null` | The refined diagnostic distinguishes explicit JSON null from the previous coarse `other` category. |
+
+This is **stronger positive control-plane evidence** than the previous legacy
+endpoint observations: the exact current Worker resource now exposes explicit
+capture-off flags. The legacy missing/null results do not override those values
+or manufacture defaults; they demonstrate that the endpoints are not equivalent
+representations. Conversely, do not call the resource an immutable configuration
+snapshot of the named version: observability is Worker-level/non-versioned, and
+the deployment bracket does not atomically lock out a concurrent settings edit.
+
+The subordinate `invocation=true`/`persist=true` values do **not alone prove
+active collection** when top-level/Logs enable flags are false; nor does this
+diagnostic alone prove those options are inert. The official parent-off
+semantics and endpoint-specific acceptance policy are under independent review.
+Do not force unrelated option changes, infer safe defaults, or relax enabled-sink
+requirements merely to match one disabled-resource representation.
+
+**Current conclusion:** the missing authoritative-object evidence has been
+improved materially, but whole-retained-record privacy, an independently
+accepted containment gate and a completed Queue rollout are **not established
+by this read**. It generated no Mail traffic, inspected no retained telemetry or
+Queue payload, and changed no settings. Preserve the safe source intent and
+no-dual-logging rule. Next resolve/review the documented disabled-hierarchy
+contract, implement the narrowly justified readback policy, run hosted tests,
+and then perform the separately required pinned rollout/retained-data gates.
+No generic canary, settings mutation, public send or rollout is authorized by
+`stable100` alone. See [the effective-readback decision](observability-effective-readback-decision.md)
+for the official endpoint and parent-off investigation.
 
 ## Second historical result: request-context retention located
 
