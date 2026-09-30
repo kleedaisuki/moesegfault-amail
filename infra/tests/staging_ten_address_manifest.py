@@ -357,9 +357,13 @@ def assert_prefix(plan: dict, current: Snapshot, prefix: int,
             canonical(sorted(baseline.rules, key=lambda rule: rule["id"])), "unrelated_rule_drift")
 
 
-def reconcile(plan: dict, read: Callable[[], Snapshot], delete: Callable[[str], None],
+def reconcile(plan: dict, read: Callable[[], Snapshot], delete: Callable[[str], None] | None,
               owner: str, secret: str, run: str, generation: str) -> None:
-    """Re-audit each exact delete once; stop on ambiguity with no automatic replay."""
+    """Re-audit each delete once; None grants only read-only final verification.
+
+    A live row with no mutation capability requires manual intervention. This
+    represents cross-run uncertainty, not permission to retry an earlier send.
+    """
 
     def snapshot() -> Snapshot:
         """Capture adapter failures without rendering third-party exception text."""
@@ -375,6 +379,7 @@ def reconcile(plan: dict, read: Callable[[], Snapshot], delete: Callable[[str], 
         latest = recovery_actions(plan, snapshot(), owner, secret, run, generation)
         if address not in latest:
             continue
+        require(delete is not None, "recovery_manual_intervention_required")
         try:
             delete(address)
         except Exception:

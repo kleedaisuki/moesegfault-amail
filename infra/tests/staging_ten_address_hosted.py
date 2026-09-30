@@ -201,9 +201,11 @@ def campaign(evidence: Evidence, local: bytes, downloaded: bytes, artifact_id: s
             and plan["provenance"] == evidence.provenance(), "campaign_manifest_mismatch")
     require(type(now_ms) is int and 0 <= now_ms - plan["created_at"] <= 86_400_000,
             "campaign_manifest_stale")
+    # Establish the empty baseline before granting this invocation cleanup
+    # permission. A restarted partial campaign must not enter mutating finally.
+    _observe(adapter, plan, 0, secret, evidence.run, generation)
     primary = False
     try:
-        _observe(adapter, plan, 0, secret, evidence.run, generation)
         for part in plan["submissions"]:
             negative(adapter.add(part), "reserved_or_invalid_name")
             _observe(adapter, plan, 0, secret, evidence.run, generation)
@@ -222,7 +224,7 @@ def campaign(evidence: Evidence, local: bytes, downloaded: bytes, artifact_id: s
         primary = False
     finally:
         try:
-            recover(plan, secret, generation, evidence.owner, adapter)
+            _cleanup(plan, secret, generation, evidence.owner, adapter, may_delete=True)
         except Exception:
             raise manifest.ContractFailure("ten_address_cleanup_required") from None
     require(primary, "ten_address_mutation_ambiguous")
@@ -232,11 +234,23 @@ def campaign(evidence: Evidence, local: bytes, downloaded: bytes, artifact_id: s
 
 def recover(plan: dict, secret: str, generation: str, verified_owner: str,
             adapter: Adapter) -> None:
-    """Reconcile same authenticated plan, never resend add or delete blindly.
+    """Read-only cross-run recovery; never replay an unknowable DELETE attempt.
 
     Upstream recovery must freshly authenticate the sealed owner and validate source/bindings.
     Age beyond 24 hours escalates operationally, but never abandons cleanup or
-    authorizes a new campaign; this routine deliberately has no expiry delete.
+    authorizes a new campaign. Deleting/retired rows may settle via Cron, but
+    any remaining live row requires manual intervention: the immutable plan
+    records intent, not whether a previous process attempted its DELETE.
+    """
+    _cleanup(plan, secret, generation, verified_owner, adapter, may_delete=False)
+
+
+def _cleanup(plan: dict, secret: str, generation: str, verified_owner: str,
+             adapter: Adapter, *, may_delete: bool) -> None:
+    """Keep mutation permission private to this invocation's campaign finally.
+
+    No recovery CLI flag may grant this permission. A durable attempt journal
+    or service idempotency contract is required before external replay is safe.
     """
     try:
         manifest.validate(plan, secret, plan["run"], generation)
@@ -257,7 +271,9 @@ def recover(plan: dict, secret: str, generation: str, verified_owner: str,
                 row = current.rows.get(address)
                 require(row is not None and row["owner_iss"] == plan["owner_iss"]
                         and row["owner_sub"] == verified_owner
-                        and row["created_at"] >= plan["created_at"],
+                        and verified_owner == plan["owner_sub"]
+                        and row["created_at"] >= plan["created_at"]
+                        and row["local_part"] == address.split("@", 1)[0],
                         "retirement_owner_unverified")
                 if (row["state"] == "retired" and row["needs_reconcile"] == 0
                         and row["cf_rule_id"] is None
@@ -267,7 +283,7 @@ def recover(plan: dict, secret: str, generation: str, verified_owner: str,
                 time.sleep(3)
 
         def delete_and_settle(address: str) -> None:
-            """Send DELETE once, then wait before another delete or final verdict."""
+            """Send once in campaign finally, then wait before another DELETE."""
             adapter.delete(address)
             settle_retirement(address)
 
@@ -279,9 +295,10 @@ def recover(plan: dict, secret: str, generation: str, verified_owner: str,
         for address in plan["resources"]:
             row = initial.rows.get(address)
             if (address not in plan["baseline"]["rows"] and row is not None
-                    and row["state"] == "retired" and row["needs_reconcile"] == 1):
+                    and (row["state"] == "deleting"
+                         or row["state"] == "retired" and row["needs_reconcile"] == 1)):
                 settle_retirement(address)
-        manifest.reconcile(plan, adapter.read, delete_and_settle, verified_owner,
+        manifest.reconcile(plan, adapter.read, delete_and_settle if may_delete else None, verified_owner,
                            secret, plan["run"], generation)
         require(adapter.list_owned() == set(), "cleanup_owner_not_empty")
         require(adapter.storage_empty(tuple(plan["resources"])) is True,

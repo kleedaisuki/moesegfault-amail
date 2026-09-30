@@ -239,6 +239,16 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(target.ContractFailure, "recovery_owner_mismatch"):
             target.recovery_actions(value, self.live(value), "foreign", KEY, RUN, GEN)
 
+    def test_read_only_reconcile_requires_manual_for_live_rows(self):
+        """No callback means no DELETE capability, not a successful cleanup."""
+        value = plan()
+        current = self.live(value)
+        with self.assertRaisesRegex(target.ContractFailure,
+                                    "^recovery_manual_intervention_required$"):
+            target.reconcile(value, lambda: current, None, OWNER, KEY, RUN, GEN)
+        target.reconcile(value, lambda: target.Snapshot({}, [], 0), None,
+                         OWNER, KEY, RUN, GEN)
+
     def test_callback_failures_and_malformed_state_are_fixed_labels(self):
         """Untrusted adapter text and invalid state containers never escape."""
         read = mock.Mock(side_effect=ValueError("synthetic private marker"))

@@ -335,6 +335,80 @@ class HostedTests(unittest.TestCase):
         self.assertGreaterEqual(len(reads), 3)
         self.assertEqual(world.deletes, [])
 
+    def test_cross_run_pretransition_crash_never_replays_delete(self):
+        """Active/pending rows cannot distinguish unsent from lost DELETEs."""
+        for state in ("active", "pending", "provisioning"):
+            with self.subTest(state=state):
+                world = World()
+                address = plan()["allowed"][0]
+                world.create(address.split("@", 1)[0])
+                world.snapshot.rows[address]["state"] = state
+                with self.assertRaisesRegex(manifest.ContractFailure,
+                                            "^recovery_manual_intervention_required$"):
+                    target.recover(plan(), KEY, GEN, OWNER, world.adapter())
+                self.assertEqual(world.deletes, [])
+                self.assertEqual(world.calls, [])
+
+    def test_reentered_campaign_does_not_grant_cleanup_permission(self):
+        """A failed empty-baseline gate must not enter mutating finally."""
+        world = World()
+        address = plan()["allowed"][0]
+        world.create(address.split("@", 1)[0])
+        with self.assertRaises(manifest.ContractFailure):
+            self.run_campaign(world)
+        self.assertEqual(world.calls, [])
+        self.assertEqual(world.deletes, [])
+
+    def test_cross_run_posttransition_crash_settles_read_only(self):
+        """A deleting journal transition is owned by Cron, never a second send."""
+        world = World()
+        address = plan()["allowed"][0]
+        world.create(address.split("@", 1)[0])
+        world.snapshot.rows[address]["state"] = "deleting"
+        adapter = world.adapter()
+        reads = []
+
+        def cron_read():
+            """Complete the prior D1/provider transition without CLI mutation."""
+            reads.append(True)
+            if len(reads) == 3:
+                world.snapshot.rows[address].update(state="retired", cf_rule_id=None,
+                                                    needs_reconcile=0)
+                world.snapshot.rules.clear()
+                world.snapshot = manifest.Snapshot(world.snapshot.rows, [], 0)
+            return world.read()
+
+        adapter.read = cron_read
+        with mock.patch.object(target.time, "sleep"):
+            target.recover(plan(), KEY, GEN, OWNER, adapter)
+        self.assertGreaterEqual(len(reads), 3)
+        self.assertEqual(world.deletes, [])
+
+    def test_cross_run_partial_cleanup_settles_then_requires_manual(self):
+        """Existing retirement is settled even when another live row is ambiguous."""
+        world = World()
+        live, pending = plan()["allowed"][:2]
+        world.create(live.split("@", 1)[0])
+        world.snapshot.rows[pending] = row(state="retired", reconcile=1,
+                                           local_part=pending.split("@", 1)[0])
+        adapter = world.adapter()
+        reads = []
+
+        def cron_read():
+            """Settle only the already submitted retirement."""
+            reads.append(True)
+            if len(reads) == 3:
+                world.snapshot.rows[pending]["needs_reconcile"] = 0
+            return world.read()
+
+        adapter.read = cron_read
+        with mock.patch.object(target.time, "sleep"):
+            with self.assertRaisesRegex(manifest.ContractFailure,
+                                        "^recovery_manual_intervention_required$"):
+                target.recover(plan(), KEY, GEN, OWNER, adapter)
+        self.assertEqual(world.snapshot.rows[pending]["needs_reconcile"], 0)
+        self.assertEqual(world.deletes, [])
+
     def test_pin_and_storage_fail_closed(self):
         """Foreign serving state and unexpected mail/storage cannot pass."""
         for kind in ("pin", "storage"):

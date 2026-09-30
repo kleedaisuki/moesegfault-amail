@@ -83,3 +83,41 @@ Only then reconsider batch settlement, with synthetic hosted fixtures for:
 
 The parent integrator selected the simpler serial policy because this is a
 one-time acceptance, not a production bulk-retirement throughput requirement.
+
+## Follow-up safety correction: external recovery is read-only
+
+The subsequent source correction separates the two cleanup entry paths:
+
+- `campaign` invokes the private `_cleanup(..., may_delete=True)` only in its
+  own `finally`. It may send each exactly owned DELETE once, using the existing
+  sequential settlement and ambiguity stop. The empty-baseline campaign gate
+  now executes **before** entering the mutating `try/finally`; a rejected
+  partially mutated campaign cannot accidentally grant cleanup permission.
+- Public `recover` invokes the same cleanup with no mutation capability.
+  Existing `deleting` and pending `retired` transitions receive bounded
+  read-only polling. Once these settle, complete strict manifest reconciliation
+  runs with `delete=None`. Any remaining live owned row raises the fixed
+  `recovery_manual_intervention_required` code; there is no DELETE send.
+- A process killed before a D1 DELETE transition leaves a live row whose
+  attempt history is unknowable. Recovery conservatively requires intervention
+  even if that particular row was actually never sent. A process killed after
+  the transition may finish via Cron and pass only after the complete existing
+  final invariant is restored. Cron failure or timeout remains NO-GO.
+
+This corrects the cross-run blind-replay hazard without a new manifest schema,
+attempt journal, CLI flag, batch policy or service mutation API. It deliberately
+narrows automatic recovery: the immutable v2 manifest is necessary for exact
+scope but insufficient to authorize replay. Operators must not use a fresh
+campaign or call the private cleanup function to bypass this outcome. Safe
+automatic recovery of a still-live ambiguous row remains contingent on the
+future journal/idempotency contract above; this note authorizes no manual
+DELETE procedure.
+
+Focused source fixtures cover active/pending/provisioning pretransition crash
+states, a deleting posttransition crash settled by synthetic Cron, mixed
+pending-retired and active partial cleanup, and read-only manifest
+reconciliation, plus rejection of campaign re-entry without deletion. Existing
+campaign fixtures retain same-invocation mutation coverage. Static AST parsing
+of the four changed Python files and scoped `git diff --check` passed. These
+fixtures were authored but not run locally; containing hosted CI and
+independent review remain prerequisites.
