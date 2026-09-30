@@ -61,6 +61,16 @@ strict projected object was preserved. The readback mismatch may concern
 Issues absence and/or normalized preferences; these fixed observations do not
 isolate the exact helper rejection.
 
+A deliberately delayed, read-only five-GET observation
+[36762180676](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36762180676)
+at 18:56:55 UTC, approximately seven minutes after the accepted PATCH, again
+found the exact serving version stable at 100%, parent/Logs/traces=false,
+Issues missing, logpush=false and empty tails. This adds one bounded temporal
+observation beyond the immediate readback; it does not establish that the
+PATCH was ignored, the state is permanent, or effective Issues=false. No
+further identical readback is planned; it is not a polling-based acceptance
+strategy.
+
 Current all-off acceptance and the public-send/Queue-rollout privacy gate remain
 closed. Historical Audit run `36758328085`'s `page_reported_success` remains a
 separate legacy-operation observation, not a resolution of this mismatch. A

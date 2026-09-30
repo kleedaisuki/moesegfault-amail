@@ -67,6 +67,14 @@ explain the strict readback mismatch; the observations do not determine its
 exact rejection condition or prove effective Issues=false. The unchanged-state
 comparison in the mutation helper was skipped, not passed.
 
+One deliberately delayed, read-only five-GET observation
+[36762180676](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36762180676)
+at 18:56:55 UTC (approximately seven minutes after PATCH acceptance) again
+found the exact version stable100, parent/Logs/traces=false, Issues missing,
+logpush=false and tails empty. This bounds the observation in time; it neither
+proves an ignored PATCH nor a permanent state. No further identical repeat is
+planned, and it does not close all-off acceptance.
+
 This new endpoint outcome is independent of the legacy historical Audit
 `page_reported_success` above. Public sending and Queue rollout remain held;
 require separately reviewed phase-discriminating evidence, not another PATCH.
