@@ -15,9 +15,9 @@ import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from pin_staging_mail import fetch, serving_deployment
+from pin_staging_mail import SCRIPT, fetch, serving_deployment
 sys.path.insert(0, str(Path(__file__).parents[2] / "crates/mail-worker"))
-from check_observability import safe_settings
+from check_observability import effective_api_settings, safe_observability, worker_readback
 
 REPO = "kleedaisuki/moesegfault-amail"
 UUID = r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
@@ -58,18 +58,30 @@ def immutable_evidence(run_id: str, version: str) -> None:
     if not isinstance(source, dict) or source.get("encoding") != "base64":
         raise ValueError("source_unverified")
     config = tomllib.loads(base64.b64decode(source["content"]).decode())
-    stage = config.get("env", {}).get("staging", {})
-    if not safe_settings({"observability": stage.get("observability")}):
+    environments = config.get("env")
+    stage = environments.get("staging") if isinstance(environments, dict) else None
+    if (not isinstance(stage, dict) or stage.get("name") != SCRIPT
+            or not safe_observability(stage.get("observability"))):
         raise ValueError("source_privacy_unverified")
 
 
 def verify(run_id: str, version: str, account: str, token: str) -> None:
-    """Pin stable 100% traffic and safe script/settings before any rollout mutation."""
+    """Pin historical intent and explicit current capture-off before rollout mutation.
+
+    Observability is non-versioned: the exact successful deployment provenance
+    alone cannot prove its current state. Require the same strict Worker-level
+    policy as the Mail API checker, bracketed by the identical single-100
+    deployment/version pair. Legacy missing/null settings never supply positive
+    evidence, and the independently captured Issues subsystem must be off.
+    """
     immutable_evidence(run_id, version)
     before = serving_deployment(fetch(account, token, "deployments?per_page=1&page=1"))
     if before is None or before[1] != version:
         raise ValueError("serving_version_unverified")
-    if not all(safe_settings(fetch(account, token, suffix)) for suffix in ("settings", "script-settings")):
+    settings = fetch(account, token, "settings")
+    script_settings = fetch(account, token, "script-settings")
+    worker = worker_readback(account, token, SCRIPT)
+    if not effective_api_settings(worker, SCRIPT, settings, script_settings):
         raise ValueError("serving_privacy_unverified")
     after = serving_deployment(fetch(account, token, "deployments?per_page=1&page=1"))
     if before != after:

@@ -43,7 +43,9 @@ Only fixed result labels are printed, never provider bodies or queue payloads.
 1. Deploy the separately reviewed **containment-only** API commit: existing
    handlers with all API observability disabled, no trace Queue producer.
    Record its 100%-serving version and use the existing serving-version pin and
-   both effective settings readbacks. Do not deploy producer changes first.
+   explicit current Worker-resource capture-off readback, with both legacy
+   settings representations checked for contradictions. Do not deploy producer
+   changes first.
 2. Only after containment is live may the producer/sink source be pushed for
    hosted source CI without automatically deploying the new sink or API producer.
    Established unrelated staging site, role-monitor and private-inbox jobs may
@@ -52,12 +54,27 @@ Only fixed result labels are printed, never provider bodies or queue payloads.
    `ci.yml` with `target=staging`, `confirm=RUN_STAGING_TRACE_SINK_ROLLOUT`,
    `trace_containment_run=<successful-run-id>` and
    `expected_worker_version=<exact-contained-version-uuid>`. The guard verifies
-   immutable successful first-attempt run/SHA/deploy-job/version output, historical safe TOML,
-   stable 100% serving deployment and current effective safe settings. It does
+   immutable successful first-attempt run/SHA/deploy-job/version output, historical
+   exact-name safe TOML (including explicit Issues-off), stable 100% serving
+   deployment and current effective capture-off settings. It does
    not accept a mutable repository variable as deployment provenance. Sink
    deployment is a prerequisite of API deployment.
    The staging sink job checks API containment before queue creation. The API
    job checks containment again immediately before migration/build/deploy.
+   The current-resource predicate is shared with the Mail API checker: literal
+   false parent/Logs/native traces/Issues, false Logpush, typed empty tails,
+   no streaming-tail consumer and no unreviewed exports. Missing/null legacy
+   representations are unsupported readback, never positive evidence; explicit
+   contradictions fail. Disabled subsystem preferences may retain inactive
+   provider defaults without enabling capture. Readback failure, unexpected
+   identity, split traffic or any deployment/version drift fails closed before
+   mutation. Sink isolation and exact Queue ownership checks are unchanged.
+
+   Earlier containment runs whose immutable source lacks `issues.enabled=false`
+   cannot authorize this full boundary, even if a later settings update appears
+   safe. A settings-only run also cannot impersonate the required successful
+   deploy job/version provenance. Obtain a separately reviewed containment
+   deployment/evidence path; do not repin old historical source to current intent.
 3. Provision one-day queues, deploy the queue-only sink, then read back private
    sink settings/triggers. Deploy the producer API with explicit disabled
    observability and TRACE_EVENTS binding, then verify queue ownership and API
