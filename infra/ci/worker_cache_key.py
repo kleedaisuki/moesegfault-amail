@@ -57,7 +57,11 @@ def execution_without_cache_guards(source: str) -> str:
     result = []
     for block in re.split(r"(?m)(?=^      - )", source):
         lines = block.splitlines()
-        conditions = [line for line in lines if re.match(r"^ +if:", line)]
+        # Support only the current name/uses-first layout. In particular,
+        # ``- if: expression`` is a real GitHub condition, not literal text.
+        if block.startswith("      - ") and not re.match(r"      - (?:name|uses): \S", block):
+            raise ValueError("unsupported step-first layout")
+        conditions = [line for line in lines if re.match(r"^ +(?:- +)?(?:if|\"if\"|'if')[ \t]*:", line)]
         if conditions:
             step = lines[0].removeprefix("      - name: ")
             guard = STEP_GUARDS.get(step)

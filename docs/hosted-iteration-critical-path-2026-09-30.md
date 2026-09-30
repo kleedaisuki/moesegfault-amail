@@ -179,6 +179,10 @@ runtime-variable expressions or a known cache condition on a different step,
 now disables project-cache reuse. The full guard text remains in the hashed
 contract. Synthetic regression fixtures cover rejection and supported guards;
 hosted tests and re-review are still required before claiming acceptance.
+The follow-up review also identified standard step-first `- if:` conditions,
+whose GitHub expressions do not require `${{ }}`. These and quoted/spaced
+conditional keys now fail closed; only the current name/uses-first step layout
+is supported. Branch/input implicit-expression fixtures preserve that boundary.
 
 Reproduce via run/job APIs and filter the **secret-free Worker job logs only**
 for `Cache restored from key`, `Cache not found for input keys`, and `Cache saved

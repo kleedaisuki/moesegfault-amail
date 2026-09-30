@@ -124,6 +124,24 @@ class WorkerCacheKeyTests(unittest.TestCase):
         self.assertEqual(read.call_args_list[0].args[0], ["show", "HEAD:.github/workflows/ci.yml"])
         self.assertIn("HEAD", read.call_args_list[1].args[0])
 
+    def test_step_first_implicit_conditions_disable_reuse(self) -> None:
+        """GitHub's implicit expressions remain dynamic without wrappers."""
+        for guard in (
+            "github.ref == 'refs/heads/main'",
+            "inputs.enable_special_flags == true",
+            "vars.ENABLE_SPECIAL_FLAGS == 'true'",
+        ):
+            source = fixture().replace("      - name: test\n", "      - if: " + guard + "\n")
+            with self.subTest(guard=guard), self.assertRaises(ValueError):
+                KEY.workflow_contract(source)
+        for field in ('"if"', "'if'", "if "):
+            source = fixture().replace(
+                "      - name: test\n",
+                "      - name: Set flags\n        " + field + ": github.ref == 'refs/heads/main'\n",
+            )
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                KEY.workflow_contract(source)
+
     def test_current_workflow_projection_is_cacheable(self) -> None:
         """Current supported layout must not silently fall back forever."""
         source = (HELPER.parents[2] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
