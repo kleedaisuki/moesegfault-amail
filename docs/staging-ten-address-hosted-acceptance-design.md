@@ -568,3 +568,40 @@ contract (local sibling is named `moesegfault-indentity`, matching its remote).
 The acceptance source imports no sibling runtime/config path on GitHub runners;
 protocol-critical fixed expectations are explicit here, while the exact service
 revision is obtained from provider readback and sealed by the manifest.
+
+## Immutable artifact transport increment
+
+`staging_ten_address_artifact.py` validates exact nonexpired artifact ID,
+original run/branch/SHA, same-repository relation, expected nonsecret name,
+reported SHA-256 archive digest and recovery retention of at least 30 days.
+It reads metadata before/after downloading the same ID and requires equality.
+Binary selection requires a complete bounded exact source-run artifact list
+with exactly one `amail-windows-smoke-<SHA>` match; no latest/cache fallback is
+permitted. The caller's exact successful-source admission remains mandatory
+before that binary is supplied to native login.
+
+The [GitHub artifact REST API](https://docs.github.com/en/rest/actions/artifacts)
+documents immutable artifact IDs/digests and a one-minute download redirect.
+The source takes that one authenticated api.github.com redirect with automatic
+redirects rejected, then performs one **unsigned** bounded storage request;
+the bearer never accompanies it. Storage origins are restricted to the official
+[Actions runner communication domains](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+for artifacts. No signed URL or raw metadata is logged. There is no upload or
+artifact deletion capability in the module: the reviewed action must upload
+ciphertext before campaign credentials and return the exact ID.
+
+SHA-256 must match the exact downloaded ZIP bytes before a single root entry
+(`amail.exe` or `manifest.bin`) is read in memory. Additional/path-traversal/
+directory/symlink/encrypted entries fail; no `extractall` or environment ZIP
+utility is used. A new binary can only be written without replacement under
+repository `.temp`; the wrapper owns the fresh directory and later cleanup.
+Recovery bytes must still pass the manifest's AES-GCM authentication and original
+coordinates before any CLI cleanup capability is granted. Neither metadata
+readback nor digest alone proves quota behavior, plaintext privacy, actual
+native login, or an executed recovery.
+
+Next composition gates remain strict: bind held provenance to
+`Readback.sending_state`, require the effective Mail capture-off privacy checker
+in addition to binding/version checks, and derive native binary bytes only from
+this validated artifact path. Source tests are hosted-only and pending; there
+is still no executable campaign/recovery entry point or dispatch target.
