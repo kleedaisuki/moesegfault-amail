@@ -79,12 +79,35 @@ not full three-service/capture-off or authenticated-owner campaign admission.
 | `write-synthetic` | `WRITE_STAGING_D1_SYNTHETIC_ONLY` | Exact successful `source_run`; empty `prior_run` | `d1_proof_synthetic_armed_retained` |
 | `read-terminal` | `READ_TERMINAL_STAGING_D1_SYNTHETIC_ONLY` | Current exact successful `source_run`; exact original synthetic `prior_run` | `d1_proof_cross_dispatch_terminal_ciphertext_retained` |
 
-Only after independent review and explicit administrative authorization should
-an operator dispatch these modes, in that order. Example syntax (placeholders
-must be replaced with independently checked public run IDs):
+### Default-branch workflow registration is a separate prerequisite
+
+GitHub's [official workflow-trigger documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)
+requires a `workflow_dispatch` workflow file to exist on the repository's
+default branch before it can receive manual events. This new
+`.github/workflows/staging-ten-address-d1-proof.yml` existing only on the feature
+branch is therefore **not immediately dispatchable**, even with
+`gh workflow run ... --ref codex/amail-v0.1.0`. A successful feature-branch source
+CI does not satisfy registration, and `--ref` selects an execution revision; it
+does not register an otherwise feature-only workflow.
+
+First obtain separately reviewed and authorized registration of this exact
+workflow path on the default branch (`main`), then independently verify that
+registration. Preserve the reviewed staging/feature-branch/first-attempt gates:
+registration does not authorize running the job on `main`, applying DDL, or
+dispatching provider operations. No default-branch registration, push, merge,
+or manual dispatch was performed by this source/doc workstream. Record the
+registration commit separately from the exact feature execution SHA and its
+successful source CI.
+
+Only after verified default-branch registration, independent review, exact
+source CI and explicit administrative authorization should an operator dispatch
+these modes, in that order. Example syntax below is **conditional on completed
+registration**, not a command sequence immediately available after this source
+CI (placeholders must be replaced with independently checked public run IDs):
 
 ```shell
-# These are future manually authorized operations, not executed authoring steps.
+# Future authorized operations ONLY AFTER default-branch workflow registration.
+# Feature-only workflow plus --ref does not satisfy the registration prerequisite.
 gh workflow run staging-ten-address-d1-proof.yml --ref codex/amail-v0.1.0 \
   -f mode=apply-schema -f confirm=APPLY_STAGING_D1_ESCROW_SCHEMA \
   -f source_run=EXACT_SUCCESSFUL_SOURCE_RUN
@@ -173,7 +196,8 @@ or DROP schemas. They do not block the independent real campaign slot.
 
 ## Required acceptance evidence and remaining live NO-GO
 
-Before closing this provider gap, retain exact hosted CI/dispatch IDs, attempts,
+Before closing this provider gap, retain verified default-branch workflow
+registration evidence and its exact commit, then exact hosted CI/dispatch IDs, attempts,
 integration/source SHAs and successful step conclusions for all three phases.
 Compare write/read-terminal JSON original run, original SHA, envelope digest,
 byte length and chunk count exactly. Require schema verification against actual
