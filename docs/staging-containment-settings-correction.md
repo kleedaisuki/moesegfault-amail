@@ -347,6 +347,78 @@ Even a current preflight pass does not authorize retrying the mutation. Keep
 the failed run, absent Issues and closed rollout state until a reviewed next
 step resolves the actual failure.
 
+### Hosted preflight result and next discriminator
+
+The parent reports that read-only run
+[`36748417146`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36748417146)
+at immutable source `fbbce7314fdf8f0c41729975203876d8ba7d08ff` completed
+successfully for the expected c3f version. Source, serving, version/bindings,
+both normalized legacy policies, normalized current Worker policy, unaffected
+projection and the closing serving bracket matched; aggregate
+`preflight=pass`. These results were reused, not independently re-queried by
+this follow-up.
+
+Inspection of the exact `a30cd5d` to `fbbce73` diff shows no change to the
+correction helper, Mail TOML or effective capture policy. The binding/pin helper
+gained an explicit Queue phase but preserved the default historical pre-Queue
+contract used here. Thus no **persistent current** source/binding/preflight
+blocker was found. This does not recreate historical credentials, network
+responses, settings or deployment observations. Transient failure before the
+historical PATCH remains possible.
+
+The helper's remaining ordered failure branches are:
+
+| Boundary in `apply_staging_capture_off.py` | Unresolved failure mechanism | What would discriminate it |
+| --- | --- | --- |
+| Historical preflight or immediate pre-PATCH serving recheck | An earlier transport/envelope failure, old snapshot mismatch, or observed deployment change. | Original phase records, if any; today's preflight cannot reconstruct them. |
+| PATCH construction/send | HTTP denial/error, refused redirect, transport failure, timeout, or request never reaching the server. | Exact historical audit receipt/outcome; absent audit coverage remains ambiguous. |
+| PATCH response validation | Helper requires HTTP 200, bounded parseable JSON, literal success=true and object result; a rejected, lost or unaccepted response prevents later reads. | Provider audit status can distinguish reported server outcome, but cannot prove client receipt/parsing. |
+| Post-PATCH three GETs and full policy | Any read failure, Issues still omitted/enabled/malformed, conflicting legacy data, or changed Worker identity. | Current explicit Issues-off would improve present-state evidence; current omission alone does not prove which historical phase ran. |
+| Unaffected projection comparison | Tags/Logpush/tail presence or values changed between snapshots. | Privately correlated historical before/after projection evidence; none was retained in aggregate output. |
+| Immutable-version binding reread | Read failure or an unexpectedly mismatching version/resource contract. | Historical phase evidence; today's exact match does not prove an earlier read succeeded. |
+| Final serving bracket | Changed deployment/version pair or final-read failure. | Historical phase or control-plane change evidence, not merely a currently stable version. |
+
+These are source-derived possibilities, not claims that each occurred. In
+particular, the current Issues omission would fail a **current full-policy
+postcheck**, but cannot establish that the historical helper reached that check.
+No server-success response or timing assumption is inferred from aggregate
+UNVERIFIED.
+
+The public PATCH successful response contract and audit permissions/limits are
+researched separately in
+[staging-settings-patch-forensics.md](staging-settings-patch-forensics.md).
+The published HTTP-200/object-result example matches the implemented validator;
+no retrieved contract justifies accepting empty 204, inventing a propagation
+deadline, or converting absent Issues to false. There is no demonstrated
+response-shape source defect to fix without new evidence.
+
+**Recommended next action:** one independently reviewed, strictly read-only
+historical Audit Logs v2 query for the already reported 16:16:01–04 UTC helper
+step, using the fixed covering interval 16:16:00–06 UTC on 2026-09-30. Privately
+match only the exact PATCH method and staging script-settings URI. Output
+closed receipt/status/action/completeness bins only; never actor/IP/token,
+payload, arbitrary provider fields or raw rows. Confirm existing account-level
+audit permission separately from Workers Scripts permission. Do not widen,
+retry, paginate an incomplete first discriminator, query resource-change
+payloads, or run a new settings mutation.
+
+A positive unique matching audit record establishes a provider-reported write
+in that interval and its reported outcome. Attribution to the helper additionally
+depends on the external settings freeze or private actor/source correlation;
+method/path/time uniqueness alone cannot exclude an out-of-band caller. Even
+an attributed success cannot prove client parsing or present Issues-off.
+Denied, missing, incomplete or zero matching audit evidence leaves the
+historical request unresolved and is not permission to retry.
+
+The concrete engineering issue demonstrated so far is **insufficient original
+phase diagnostics**, not a proven settings correctness bug. Before any later
+separately authorized mutation, use fixed phase labels for preflight completion,
+logical PATCH boundary, accepted response and each postcheck. An emitted
+"attempt started" label still does not prove server receipt; interruption may
+occur between the label and transport. Preserve timeout/ambiguity/no-retry
+semantics and the existing all-off gate. These instrumentation recommendations
+are not implemented or authorized for live use by this follow-up.
+
 ## Evidence boundary
 
 Public API schema was retrieved on 2026-09-30. Repository files inspected by
