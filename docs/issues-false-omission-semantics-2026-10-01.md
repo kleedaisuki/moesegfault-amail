@@ -165,8 +165,11 @@ See [the no-route create-time design](staging-issues-no-route-discriminator-2026
 for a smaller prospective test using the documented ability to create a Worker
 before code upload. One code-free, zero-business-data creation with explicit
 Issues false plus one independent GET can compare create-time representation
-against the spent Mail PATCH path. It has not been implemented or run and does
-not guarantee explicit false readback. Missing Issues still fails acceptance;
+against the spent Mail PATCH path. The [narrow implementation](staging-issues-create-probe.md)
+and [independent static review](staging-issues-create-probe-review.md) are now
+integrated; it has not been run or authorized and does not guarantee explicit
+false readback. Its reviewed bounded complete inventory replaces the design's
+unsupported exact-name not-found premise. Missing Issues still fails acceptance;
 positive probe evidence belongs only to that probe identity and cannot attest
 the original Mail Worker. The design also identifies conditional no-route
 deployment/cutover obligations and a stop-to-provider-clarification boundary.

@@ -25,8 +25,9 @@ retention claim can follow from a Worker with no executable version.
 
 The initial design is recorded in
 [`staging-issues-no-route-discriminator-2026-10-01.md`](staging-issues-no-route-discriminator-2026-10-01.md)
-(design commit `3424a56568bd5f06f76801422e57fb1263f75c53`; a separate integration
-dependency). Reuse the [held Mail promotion](held-staging-mail-promotion-2026-10-01.md)
+(design commit `3424a56568bd5f06f76801422e57fb1263f75c53`, cherry-picked without
+its older primary-branch ancestors into this isolated main-based tree). Reuse
+the [held Mail promotion](held-staging-mail-promotion-2026-10-01.md)
 and [omission semantics](issues-false-omission-semantics-2026-10-01.md).
 
 ## Material revision: documented bounded absence rather than guessed 404

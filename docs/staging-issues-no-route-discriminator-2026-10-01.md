@@ -8,6 +8,28 @@ provider request, provider mutation, local project test/build, mail experiment,
 or raw request/mail/log retrieval was performed. Public Cloudflare documentation
 and the existing cached official Issues source were consulted.
 
+### Integrated implementation refinement
+
+The narrow first discriminator is now implemented, **not executed or authorized**,
+in [the code-free create probe runbook](staging-issues-create-probe.md), with an
+[independent source review](staging-issues-create-probe-review.md). This document
+preserves the original design and its conditional future slices. For the first
+slice, the implementation runbook is authoritative on these reviewed refinements:
+
+- The public Get Worker schema has no endpoint-specific reviewed not-found code.
+  Replace the original exact-name GET absence premise below with a bounded,
+  complete, typed List Workers inventory under the actual external writer freeze.
+  This is not a failed-GET fallback or a suffix-discovery/adoption path.
+- Exact resource ID/run/SHA/UTC recovery pins contain no business data or secrets.
+  Persist only their explicit allowlist in one non-secret system-ID artifact;
+  public-repository artifact authentication is not claimed as confidentiality.
+  No encrypted intent, generic escrow or new key provisioning is needed.
+- A failed operation does not claim a completed original/hold after bracket.
+  It remains UNVERIFIED, keeps the external freeze and requires bounded recovery.
+
+No later code upload, candidate deployment/cutover, Mail correction, sending
+release or automatic resource retirement has been implemented by this slice.
+
 ## Decision
 
 The narrowest new discriminator is **one fresh, code-free, no-route Worker
@@ -230,7 +252,7 @@ explicit SMTP retry handling. Neither is already implemented. Keep additive
 data, original direct forwards and unresolved-send reconciliation ownership;
 never auto-delete predecessors, purge Queues or reset holds for convenience.
 
-## Concrete source/workflow implications (not implemented here)
+## Original source/workflow plan (first discriminator implemented separately)
 
 - Add one guarded hosted `staging-issues-create-probe` target and a small helper
   limited to the fixed probe Worker and code-free POST/GET contract. Use the

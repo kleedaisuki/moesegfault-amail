@@ -24,7 +24,7 @@ Final reviewed file SHA-256 fingerprints:
 | `infra/provider/staging_issues_create_probe.py` | `3A5659A3C1F7C28EAA49B945C73AD586CDD2DBACDA2B3054D16891024A8C7D85` |
 | `infra/tests/test_staging_issues_create_probe.py` | `9FAA0708C61D947835D5797FD964D94057BBBAC1329DD27E1E9401B2011F57C0` |
 | `.github/workflows/staging-issues-create-probe.yml` | `E14C5CA2CDA8C6DEE62EE43E43651A1DD611551675B9B92D267A49A0C7E89293` |
-| `docs/staging-issues-create-probe.md` | `945647CC77594959E419E7C5D95CF1C43015C9F262F3A1774E37988620FF22DF` |
+| `docs/staging-issues-create-probe.md` | `83A8A251E11E73C040E9938F0A1794609D02315B9DA7FCD6241802419C36E0AD` |
 
 ## Evidence-backed contract assessment
 
@@ -81,8 +81,38 @@ does not change provider behavior. GO is reaffirmed for the final fingerprints.
   intentional fail-closed behavior, not proof that current provider responses
   will satisfy the authored fixtures. Hosted checks and authorized observation
   are still outstanding.
-- The design-document link is an explicitly identified separate integration
-  dependency; ensure that document is present when integrating both changes.
+- The design-document integration dependency is resolved in the final tree;
+  see the integration audit below.
+
+## Final-tree integration audit
+
+Reviewed the full base-to-working-tree changed-file inventory: seven files,
+limited to this helper, its tests/workflow, runbook/review, design document and
+omission-semantics supplement. Re-read the integrated design and the three
+documentation reconciliation hunks. The design retains its historical inspection
+snapshot but now explicitly makes the implementation runbook authoritative for
+bounded inventory absence, minimal non-secret recovery and incomplete failure
+brackets. Conditional deployment/cutover slices remain unimplemented and
+unauthorized. The supplement accurately says implemented, not executed or
+authorized. No documentation update expands the executable operation scope.
+
+Independently confirmed with local Git inspection:
+
+- `b9fdbeae53d31316204ca20b718b6420e119e2df` contains only the design document
+  and omission-semantics supplement, cherry-picked from the design change.
+- `git merge-base --is-ancestor a4fc616 HEAD` returned 0.
+- `git merge-base --is-ancestor 2ff67e HEAD` returned 1: the older primary
+  inspection snapshot was not imported as ancestry.
+- A static Markdown-link existence scan across the four changed documents
+  found all relative file destinations present. This checks file existence,
+  not remote availability or Markdown fragment anchors.
+- Recomputed helper/test/workflow fingerprints are unchanged from the final
+  executable review above. The updated runbook fingerprint is recorded above.
+
+The missing design dependency is therefore resolved, and source integration GO
+is reaffirmed for this final tree. Final documentation commit/provenance is an
+integration step, not provider authorization. No tests/builds or provider
+requests were executed during this audit.
 
 The authored tests cover the principal positive/negative branches, including
 independent readback rather than creation acknowledgement, incomplete pagination,
