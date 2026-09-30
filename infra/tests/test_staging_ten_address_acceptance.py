@@ -60,7 +60,7 @@ class PhaseTests(unittest.TestCase):
                   "AMAIL_TEN_ADDRESS_KEY_GENERATION": GEN}
         return world, reader, services, cli, native, artifacts, values
 
-    def execute(self, mode, *, privacy="match", tampered=False):
+    def execute(self, mode, *, privacy="match", tampered=False, active_recovery=False):
         """Run controller with synthetic authenticated envelopes and no environment tools."""
         world, reader, services, cli, native, artifacts, values = self.setup_world()
         with mock.patch.object(manifest, "_cipher", SyntheticAEAD):
@@ -75,7 +75,7 @@ class PhaseTests(unittest.TestCase):
                 world.snapshot.rows[part.lower() + "@" + manifest.DOMAIN]["created_at"] = int(time.time() * 1000)
                 return result
             world.create = create
-            if mode == "recover":
+            if mode == "recover" and active_recovery:
                 world.create(value["allowed"][0].split("@")[0])
             artifacts.content.return_value = blob
             if mode == "campaign":
@@ -93,7 +93,12 @@ class PhaseTests(unittest.TestCase):
                     mock.patch.object(target.provenance, "Services", return_value=services) as service_factory, \
                     mock.patch.object(target.provenance.mail_pin, "run", return_value=privacy) as private, \
                     mock.patch.object(target.native, "native_account", native):
-                result = target.execute(self.args(mode))
+                try:
+                    result = target.execute(self.args(mode))
+                finally:
+                    if mode == "recover":
+                        cli.add.assert_not_called()
+                        cli.delete.assert_not_called()
             self.assertEqual(source.call_count, 1)
             self.assertIs(service_factory.call_args.args[2], reader.sending_state)
             self.assertEqual(list(target.TEMP.glob("ten-address-hosted-*")), [])
@@ -126,11 +131,16 @@ class PhaseTests(unittest.TestCase):
         result, world, artifacts, privacy, cli = self.execute("recover")
         self.assertEqual(result, ("ten_address_recovery_verified",))
         cli.add.assert_not_called()
-        self.assertEqual(len(world.deletes), 1)
+        self.assertEqual(len(world.deletes), 0)
         self.assertEqual(world.snapshot.global_count, 0)
         self.assertFalse(target.prepared_file(RUN).exists())
         self.assertEqual(artifacts.content.call_args.args[:3], ("123", RUN, SHA))
         self.assertEqual(privacy.call_count, 2)
+
+    def test_active_external_recovery_requires_manual_intervention_without_delete(self):
+        """An active row cannot prove whether an earlier invocation attempted DELETE."""
+        with self.assertRaisesRegex(manifest.ContractFailure, "recovery_manual_intervention_required"):
+            self.execute("recover", active_recovery=True)
 
     def test_capture_off_failure_or_ciphertext_mismatch_never_mutates(self):
         """Matching bindings do not replace effective capture-off or durable ciphertext proof."""
@@ -156,6 +166,17 @@ class EntryTests(unittest.TestCase):
         with mock.patch.dict(target.os.environ, {}, clear=True):
             with self.assertRaisesRegex(manifest.ContractFailure, "dispatch_unconfirmed"):
                 target.environment("prepare")
+
+    def test_manual_intervention_is_a_fixed_failure_not_a_success_marker(self):
+        """No unreviewed opt-in can turn unknown cross-run deletion into a replay."""
+        from contextlib import redirect_stderr
+        from io import StringIO
+        output = StringIO()
+        with mock.patch.object(target.sys, "argv", ["quota", "recover", "--source-run", "789"]), \
+                mock.patch.object(target, "execute", side_effect=manifest.ContractFailure("recovery_manual_intervention_required")), \
+                redirect_stderr(output):
+            self.assertEqual(target.main(), 1)
+        self.assertEqual(output.getvalue().strip(), "ten_address_recovery_manual_intervention_required")
 
     def test_actual_manual_run_identity_must_match_exact_workflow(self):
         """A diagnostic/source run cannot authorize this campaign despite matching SHA."""

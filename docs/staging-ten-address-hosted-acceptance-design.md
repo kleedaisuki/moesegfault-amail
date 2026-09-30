@@ -719,3 +719,32 @@ containing hosted CI and cross-platform synthetic checks; protected key existenc
 without value disclosure; actual current capture-off, held/service/resource and
 complete quota/routing/storage admission. Neither workflow source registration
 nor its synthetics is a real ten-address result. **No live quota run authorized.**
+
+## Cross-run recovery safety correction (64b6726 integration)
+
+The immutable manifest persists intent but no durable per-DELETE attempt journal.
+Therefore a later invocation seeing an active/pending/provisioning alias cannot
+prove that an earlier cancelled process did not already submit DELETE. External
+`recover` is now **read-only**: it may observe settlement of deleting/retired rows,
+but cannot issue DELETE or reinterpret active rows as unattempted. The wrapper
+also grants no delete callback in recover mode; no CLI/workflow override exists.
+An active unknown row produces fixed failure
+`ten_address_recovery_manual_intervention_required`, not a success or automatic
+retry. Earlier design paragraphs permitting supported delete recovery apply
+only to the **same invocation's campaign finally** after its independently
+verified empty-baseline start, not external recovery. Manual restricted
+reconciliation must resolve the ambiguity without inventing a replay proof.
+
+Hosted synthetic composition now separately covers empty successful read-only
+recovery and seeded-active manual-intervention failure, asserting no add or
+DELETE callback in either case. The workflow already treats nonzero recover as
+a failed acceptance and retains original encrypted artifacts; it does not
+classify the manual-intervention marker as success. Same-process cleanup still
+uses the reviewed serial per-alias settlement path and finite 80-minute job
+bound. This is a source safety change, not a successful live recovery.
+
+The quota workflow's noncanceling `staging-native-mail-acceptance` group remains
+unchanged. Relevant same-repository deploy/settings/private-inbox jobs are being
+aligned to it separately. A GitHub concurrency group cannot lock another
+repository: sibling Identity/Login deployment freeze and independent three-service
+pins remain required, not replaced by this lock name.

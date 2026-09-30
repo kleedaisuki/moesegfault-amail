@@ -160,7 +160,7 @@ def execute(args: argparse.Namespace) -> tuple[str, ...]:
                 """Prepare/recovery never receive an add capability, even accidentally."""
                 raise manifest.ContractFailure("quota_mutation_capability_unavailable")
             adapter = hosted.Adapter(reader.read, cli.owned, forbidden if args.mode != "campaign" else cli.add,
-                                     forbidden if args.mode == "prepare" else cli.delete,
+                                     forbidden if args.mode != "campaign" else cli.delete,
                                      lambda: activation(reader, allowed), pin, reader.storage_empty)
             evidence = hosted.Evidence("workflow_dispatch", manifest.BRANCH, manifest.REPOSITORY, "staging",
                                        "RUN_STAGING_TEN_ADDRESSES", original_run, "1", sha, sha, "success",
@@ -215,6 +215,13 @@ def main() -> int:
         for label in execute(args):
             print(label)
         return 0
+    except manifest.ContractFailure as error:
+        # This exact public result is source-owned and contains no observed value.
+        label = ("ten_address_recovery_manual_intervention_required"
+                 if str(error) == "recovery_manual_intervention_required"
+                 else "ten_address_acceptance_unverified")
+        print(label, file=sys.stderr)
+        return 1
     except Exception:
         print("ten_address_acceptance_unverified", file=sys.stderr)
         return 1
