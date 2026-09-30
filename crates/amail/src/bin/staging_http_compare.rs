@@ -137,7 +137,8 @@ fn main() {
         println!("staging_http_compare: unverified");
         std::process::exit(1);
     }
-    let result = valid_target(raw.trim_end_matches(['\r', '\n'])).and_then(|url| probe(url, sink_markers));
+    let result =
+        valid_target(raw.trim_end_matches(['\r', '\n'])).and_then(|url| probe(url, sink_markers));
     match result {
         Some(facts) if private_id => {
             if let Some(request_id) = private_denial_id(&facts) {
@@ -188,12 +189,16 @@ mod tests {
         let marker = "a".repeat(32);
         let good = format!("https://mail-staging.moesegfault.dev/v1/messages/amail_path_canary_{marker}?probe=amail_query_canary_{marker}");
         let url = valid_target(&good).expect("synthetic target");
-        assert_eq!(sink_payload(&url), Some((
-            format!("amail_header_canary_{marker}"),
-            format!("amail_body_canary_{marker}"),
-            format!("00-{marker}-1111111111111111-01"),
-        )));
-        let wrong = url::Url::parse("https://mail-staging.moesegfault.dev/v1/messages/private").expect("url");
+        assert_eq!(
+            sink_payload(&url),
+            Some((
+                format!("amail_header_canary_{marker}"),
+                format!("amail_body_canary_{marker}"),
+                format!("00-{marker}-1111111111111111-01"),
+            ))
+        );
+        let wrong = url::Url::parse("https://mail-staging.moesegfault.dev/v1/messages/private")
+            .expect("url");
         assert!(sink_payload(&wrong).is_none());
     }
 
