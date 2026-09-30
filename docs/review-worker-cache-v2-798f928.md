@@ -40,3 +40,14 @@ Confidence: high from direct regex/control-flow inspection. Impact is conditiona
 ## Hosted follow-up
 
 Run normal hosted source checks and the new helper fixtures. Correct the condition validation with focused hosted fixtures before presenting dynamic layout rejection as complete. Seed v2 once through a successful trusted source push, then use the next natural unrelated diagnostic/doc revision to observe exact target-cache reuse and retained assertions; do not introduce a deployment or live acceptance operation solely to measure cache timing.
+
+## Correction follow-up: bb91d98
+
+Reviewed `bb91d98d6ce8ab63c48132f3ff4c70eb086e4184` without executing local tests. Exact named-step guards and expected operations close the original named-step example. However P2 is **not yet resolved**: `execution_without_cache_guards()` detects only lines matching `^ +if:`. Standard GitHub step syntax can place the condition first:
+
+```yaml
+      - if: github.ref == 'refs/heads/main'
+        run: echo 'RUSTFLAGS=-C target-cpu=native' >> "$GITHUB_ENV"
+```
+
+The first line is `- if:`, not `if:`. It therefore bypasses the condition detector; GitHub's implicit condition expression has no `${{ }}` for the later expression validator and no uppercase `GITHUB_*` token. The conditional build setup remains cacheable by the same direct control-flow reasoning. Reject step-first conditions (and any unsupported condition layout) before projection, retaining only the exact named-step orchestration forms. Add an implicit branch condition and bracket-input variant in that standard step-first layout. Hosted source checks are still permitted, but dynamic fail-closed contract GO remains withheld until corrected.
