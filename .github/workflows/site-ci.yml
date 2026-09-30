@@ -1,0 +1,74 @@
+# Site-only hosted evidence; never deploys or receives provider credentials.
+name: Candidate site CI
+
+on:
+  push:
+    branches: [main, codex/amail-site-candidate]
+    paths: ['site/**', 'infra/release/candidate_site.py', 'infra/release/check_candidate_site_gate.py', 'infra/release/test_candidate_site*.py', '.github/workflows/site-ci.yml', '.github/workflows/site-candidate.yml', 'docs/site-*.md']
+  pull_request:
+    paths: ['site/**', 'infra/release/candidate_site.py', 'infra/release/check_candidate_site_gate.py', 'infra/release/test_candidate_site*.py', '.github/workflows/site-ci.yml', '.github/workflows/site-candidate.yml', 'docs/site-*.md']
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  site:
+    # The read-only deployment gate requires this exact successful job name.
+    name: Astro candidate site source checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check both site workflow syntaxes with digest-pinned actionlint
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .temp/actionlint
+          curl --fail --silent --show-error --retry 3 --connect-timeout 10 --max-time 60 \
+            --location --output .temp/actionlint/archive.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.11/actionlint_1.7.11_linux_amd64.tar.gz
+          echo '900919a84f2229bac68ca9cd4103ea297abc35e9689ebb842c6e34a3d1b01b0a  .temp/actionlint/archive.tar.gz' | sha256sum --check -
+          tar -xzf .temp/actionlint/archive.tar.gz -C .temp/actionlint actionlint
+          .temp/actionlint/actionlint .github/workflows/site-ci.yml .github/workflows/site-candidate.yml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check synthetic candidate and workflow regressions without provider access
+        working-directory: .
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s infra/release -p 'test_candidate_site*.py' -v
+      - name: Install locked site dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check Astro and route-local release-state fixtures
+        run: |
+          pnpm check
+          node --test scripts/check-release-state.test.mjs
+      - name: Build truthful candidate and prepare production noindex
+        env:
+          AMAIL_RELEASE_STATE: candidate
+        run: |
+          pnpm build
+          pnpm check:release-state candidate
+          python ../infra/release/candidate_site.py prepare "$GITHUB_SHA"
+      - name: Verify fresh published output does not inherit candidate headers
+        env:
+          AMAIL_RELEASE_STATE: published
+        run: |
+          pnpm build
+          pnpm check:release-state published
+          cmp public/_headers dist/_headers

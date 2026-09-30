@@ -1,0 +1,32 @@
+{
+  // 中文：Astro 的 dist 由 Workers 静态资源直接提供；自定义域名会自动配置 DNS。
+  // English: Workers serves Astro's dist directly; the custom domain provisions its DNS record.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "amail-release-site",
+  "compatibility_date": "2026-09-27",
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "amail.moesegfault.dev", "custom_domain": true }
+  ],
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "force-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "env": {
+    "staging": {
+      // 中文：显式隔离名称和路由，绝不继承正式站域名。
+      // English: Explicitly isolate name and route; never inherit the production hostname.
+      "name": "amail-release-site-staging",
+      "workers_dev": false,
+      "routes": [
+        { "pattern": "amail-staging.moesegfault.dev", "custom_domain": true }
+      ],
+      "assets": {
+        "directory": "./dist",
+        "html_handling": "force-trailing-slash",
+        "not_found_handling": "404-page"
+      }
+    }
+  }
+}

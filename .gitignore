@@ -1,0 +1,4 @@
+# Repository-local hosted fixtures and generated interpreter caches.
+.temp/
+.cache/
+__pycache__/
