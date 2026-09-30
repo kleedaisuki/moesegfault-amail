@@ -74,9 +74,10 @@ class IterationContractTests(unittest.TestCase):
         worker = self.blocks["worker"]
         self.assertNotIn("restore-keys:", worker)
         self.assertNotIn("secrets.", worker)
-        self.assertIn("HEAD:Cargo.toml HEAD:Cargo.lock HEAD:crates HEAD:workers", worker)
+        self.assertIn('python infra/ci/worker_cache_key.py >> "$GITHUB_OUTPUT"', worker)
         self.assertIn("rustc --version --verbose; cc --version; ldd --version;", worker)
-        self.assertIn("HEAD:.github/workflows/ci.yml", worker)
+        self.assertIn("key: worker-check-v2-", worker)
+        self.assertIn("steps.worker-cache-key.outputs.cacheable == 'true'", worker)
         self.assertIn('cargo install worker-build --version 0.8.5 --locked --root "$GITHUB_WORKSPACE/.cache/worker-build-check"', worker)
         saves = re.findall(r"      - name: Save trusted .*?(?=\n      - name:|\Z)", worker, re.DOTALL)
         self.assertEqual(len(saves), 2)

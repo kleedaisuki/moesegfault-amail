@@ -1557,15 +1557,14 @@ jobs:
         shell: bash
         run: |
           compiler=$({ rustc --version --verbose; cc --version; ldd --version; } | sha256sum | cut -d ' ' -f 1)
-          source=$(git rev-parse HEAD:Cargo.toml HEAD:Cargo.lock HEAD:crates HEAD:workers HEAD:.github/workflows/ci.yml | sha256sum | cut -d ' ' -f 1)
           echo "compiler=$compiler" >> "$GITHUB_OUTPUT"
-          echo "source=$source" >> "$GITHUB_OUTPUT"
+          python infra/ci/worker_cache_key.py >> "$GITHUB_OUTPUT"
       - name: Restore exact Worker check build cache
         id: worker-check-cache
         uses: actions/cache/restore@v4
         with:
           path: target
-          key: worker-check-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.worker-cache-key.outputs.compiler }}-${{ steps.worker-cache-key.outputs.source }}
+          key: worker-check-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.worker-cache-key.outputs.compiler }}-${{ steps.worker-cache-key.outputs.source }}
       - name: Restore pinned Worker check bundler
         id: worker-bundler-cache
         uses: actions/cache/restore@v4
@@ -1627,7 +1626,7 @@ jobs:
         working-directory: workers/role-monitor
         run: worker-build --release
       - name: Save trusted exact Worker check build cache
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') && steps.worker-check-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') && steps.worker-cache-key.outputs.cacheable == 'true' && steps.worker-check-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: target

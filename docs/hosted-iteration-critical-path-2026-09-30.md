@@ -94,3 +94,89 @@ Source implementation and hosted cold/warm validation are complete for the exact
 Two later hosted feedback failures were test-fixture coupling, not regressions in provider behavior: a hardcoded dispatch-input count and a job slice ending at a particular later job. Adding a safe manual diagnostic changed those unrelated assumptions. The demonstrated named-successor and staging-substring job-source contracts now share `infra/tests/workflow_source.py`: extraction is bounded by actual two-space sibling job headers inside the single top-level `jobs` block, rather than an expected successor name. Duplicate/missing jobs, quoted or otherwise unsupported sibling keys, shallow odd indentation and inline job mappings fail closed rather than being absorbed into the preceding job. This intentionally follows the repository's block-style workflow layout; it is not a general YAML parser. Raw job source remains available for exact manual-event, confirmation, branch, environment, secret-scope and execution-order assertions.
 
 The synthetic adjacent-job fixture includes a credential-bearing unrelated job, an underscore identifier, a nested shell step, a final job and a following top-level mapping. It asserts that inserting the unrelated job cannot satisfy or contaminate the preceding job's safety assertions. Existing assertions were retained, with only their source extraction replaced. The independently owned Worker R2 creation/delivery-history tests are excluded from this change. Local verification is limited to Python AST parsing and diff inspection; executable tests remain on GitHub-hosted runners.
+
+## Repeated project-cache misses on unrelated workflow edits (2026-10-01)
+
+Later source pushes show the pinned bundler cache working, but an overly broad
+project-source key repeatedly invalidating compilation. This is separate from
+the seconds-long Infra feedback boundary described in
+[the fast-feedback design](hosted-infra-fast-feedback-design.md).
+
+| Source / push run | Worker job | Project cache | Bundler cache | Whole workflow |
+| --- | --- | --- | --- | --- |
+| `0c18c78`, [36763904226](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36763904226) | 5:25 | miss, saved | exact hit; install skipped | 5:31, green |
+| `2d08556`, [36765951110](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36765951110) | 3:38 | miss, saved | exact hit; install skipped | 3:44, red on Infra |
+| `3542a5f`, [36766439483](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36766439483) | 1:41 | exact hit from `2d08556` | exact hit; install skipped | 2:36, green; Windows CLI dominates |
+| `a36d11c`, [36767492647](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36767492647) | 5:46 | miss, saved | exact hit; install skipped | 5:53, green |
+
+All four revisions have identical committed root/workspace identities:
+
+```text
+Cargo.toml 025c0cad61835a21ace1cf74db8022eebfd489a7
+Cargo.lock e2ca7b6b06aca4b16a1e0522e74c9c354afc98d6
+crates     5b160679e7c971e8d55a997ee703b3def6c3ae60
+workers    3b4e5847afee5d6af3d3e217cab75630afeceb75
+```
+
+The compiler/C/libc fingerprint was also identical (`b85b12…`) in the inspected
+cache labels. The old key hashes the **entire `ci.yml` blob**, not merely the
+Worker build contract. Its workflow blob differs for `0c`, `2d/354`, and `a36`.
+`2d` extends the Worker job's manual predicate as part of production graph work;
+`354` only changes an unrelated test/doc and restores the preceding exact key.
+`a36` changes only a dispatch choice and adds an unrelated encrypted-diagnostic
+job to `ci.yml`; its complete Worker block is byte-identical to `2d/354` after
+LF normalization. Therefore a new sibling diagnostic invalidates all compiled
+Worker outputs despite unchanged Worker source/commands. This is key scope,
+not cache corruption, tool reinstallation, or an unproven Cargo-freshness bug.
+
+Mechanism-level timings: `354` restores `target` in 15 seconds, executes Rust
+Worker tests in 4 seconds, bundles the sink/API in 7/32 seconds, and still runs
+workerd assertions for 9 seconds. In `a36`, the miss makes schema/sink tests,
+sink Wasm check, and Mail unit tests consume 33/32/53 seconds before later
+compilation/bundling. Different runners make these observational comparisons,
+not controlled repeated speedup measurements.
+
+### Minimal v2 source design
+
+The project cache advances to `worker-check-v2`; the independently effective
+`worker-build-check-v1` tool cache remains unchanged. The stdlib-only
+`infra/ci/worker_cache_key.py` projects **the entire Worker job block** through
+the existing strict sibling extractor, plus inherited permissions. It hashes
+that projection together with exact committed identities for Cargo manifest,
+lock, complete `crates`/`workers` trees, boundary-test tree, the fingerprint
+helper itself, and its structural extractor. Optional `.cargo` and Rust
+toolchain files are absence-bound, so introducing them changes the key.
+
+Unknown top-level fields, inherited global env/defaults, YAML indirection,
+unsupported layout, or dynamic build inputs produce a unique uncacheable miss
+and disable project-cache writes. They do not skip source tests. Global
+env/defaults are deliberately unsupported until a future explicit runtime-
+value contract is designed; raw expressions alone cannot fingerprint their
+resolved build effects. Every current Worker command, step, local env, action,
+runner setting, predicate and cache policy is within the hashed job body.
+Unrelated dispatch choices and sibling jobs are outside it. Trusted push-only
+writes and full assertion execution remain unchanged; deployment never consumes
+this check cache and still builds independently.
+
+This creates one expected v2 cold seed. The next naturally occurring unrelated
+manual-job or Python/doc edit should hit the same project key and keep Worker
+feedback near the observed 1:41 warm path, rather than the observed 3:38–5:46
+miss paths. **That is a target, not a measured v2 result.** Full-source feedback
+may then be dominated by Windows CLI rather than Worker, as happened in `354`.
+Measure all job timings, exact hit labels and retained assertions at the first
+natural warm revision; do not run extra deployments or fabricate a production
+cache artifact. Static AST/diff inspection is local; executable tests remain
+hosted. Focused synthetic contracts cover sibling invariance, Worker/global
+permission invalidation, each declared object/config absence, unknown layouts,
+unique unsaved fallbacks and the current workflow's cacheability.
+
+Reproduce via run/job APIs and filter the **secret-free Worker job logs only**
+for `Cache restored from key`, `Cache not found for input keys`, and `Cache saved
+with key`. Compare committed inputs with `git rev-parse <sha>:Cargo.toml
+<sha>:Cargo.lock <sha>:crates <sha>:workers <sha>:.github/workflows/ci.yml`.
+No private provider/job logs or mail data are needed. GitHub's
+[cache reference](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
+explains exact-key identity and immutable entries; the
+[Cargo build-cache reference](https://doc.rust-lang.org/cargo/reference/build-cache.html)
+explains cached compilation outputs. This change narrows cache identity to the
+actual build contract, not test selection or acceptance coverage.
