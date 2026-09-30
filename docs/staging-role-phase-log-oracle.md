@@ -1,10 +1,18 @@
 # First staging role Cron: retained fixed-phase log oracle
 
-Status: **first guarded query returned `UNVERIFIED (scheduled_payload_unreviewed)`**
-in [run 36676440622](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36676440622)
-at source `da86b13`; no historical phase has been observed. The narrow
-provider-event discriminator below is source-only pending independent review,
-hosted CI, and one bounded read-only query.
+Status: the first guarded query returned
+`UNVERIFIED (scheduled_payload_unreviewed)` in
+[run 36676440622](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36676440622)
+at source `da86b13`. The revised typed-log query
+[36679973792](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36679973792)
+returned `UNVERIFIED (scheduled_kind_unverified)`. Both results fail closed:
+**no historical phase has been attributed**, and the provider-owned Cron-event
+explanation remains a hypothesis rather than a confirmed row. Do not repeat
+the unchanged query or infer a phase from unreviewed scheduled records. The
+separate [current Routing-token probe](staging-role-token-permission-discriminator.md#first-live-read-only-result-2026-09-30)
+found account Addresses forbidden and zone Rules accessible; it does not prove
+the token had those permissions in the historical run or that the Cron failed
+in `audit_destination`.
 
 The original guarded SMTP run [36603362864](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36603362864)
 failed between 2026-09-29 17:13:08 and 17:30:41 UTC at source
@@ -37,7 +45,7 @@ anomaly, not a reliable phase localization. Missing or contradictory
 that Worker name in the telemetry event schema, but its historical retention
 shape has not yet been observed for this Worker.
 
-Dispatch after independent review and a green hosted infrastructure test:
+The historical dispatch contract (not an instruction to retry unchanged):
 
 ```text
 gh workflow run ci.yml --ref codex/amail-v0.1.0 \

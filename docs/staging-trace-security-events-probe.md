@@ -21,7 +21,14 @@ secret. This wiring was corrected. The next hosted dispatch
 [36675301214](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36675301214)
 reached GraphQL and received HTTP 200 with a non-null `errors` array, but the
 original privacy gate collapsed all provider errors to `graphql_unverified`.
-No Security Events rows or cause were established. Example dispatch:
+The revised fixed-taxonomy dispatch
+[36678625568](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36678625568)
+also returned `graphql_unverified`. Neither run established Security Events
+rows, a WAF action, or the producer of the mail API's 403. The provider's raw
+error messages were not logged. This is a **fail-closed diagnostic result**:
+do not repeat the unchanged query or infer that no edge intervention occurred.
+The invocation below is retained as the bounded contract, not a retry
+instruction. Example dispatch:
 
 ```text
 gh workflow run ci.yml --ref codex/amail-v0.1.0 \

@@ -4,6 +4,13 @@
 
 The first [guarded read-only token probe 36676551506](staging-role-token-permission-discriminator.md#first-live-read-only-result-2026-09-30), on source `da86b13`, returned `addresses=forbidden`, `rules=accessible`, `destination=not_checked`, `standard_rules=four_direct`, `disposable_route=absent`, `worker_version=match`, and `probe=inconclusive`. This establishes a **current** account Addresses-versus-zone Rules permission split for the repository token used by staging role deployment. It does not prove the token's historical scope, the historical Cron failure phase, the confidential destination's provider verification, or Inbox/Junk delivery. The original SMTP timeout remains failed; keep public sending held and use a separate historical fixed-phase log oracle before attributing causality or changing the token scope. See the [discriminator contract and full fixed-label result](staging-role-token-permission-discriminator.md).
 
+The historical [fixed-phase log oracle](staging-role-phase-log-oracle.md) has
+now returned `UNVERIFIED (scheduled_payload_unreviewed)` in run `36676440622`
+and, after typed-log refinement, `UNVERIFIED (scheduled_kind_unverified)` in
+run `36679973792`. Neither result attributes a Cron phase. Both fail closed;
+do not repeat the unchanged query, infer the historical cause from the current
+token split, or lift the public send hold.
+
 ### Read-only localization after the first timeout (2026-09-30)
 
 The guarded [aggregate audit 36670688163](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36670688163) completed on source `75067327b5fd86333eab0f7283a481366001b4df`. Its fixed labels report **one** `staging_probe` arrival in the first SMTP job window, `forward=accepted`, `alert=marked`, and zero late arrivals. The disposable role route is now absent, the four standard role rules now remain direct forwards, and the current 100%-serving role Worker version matches the pinned version. The singleton health row's `checked_at` and `lease_until` are **both before** the probe window. This is stronger than the original combined timeout: the Email handler reached D1, its `forward()` promise resolved and acceptance was persisted, and a later digest send and `alerted_at` update completed. It does **not** prove either message reached a destination Inbox, or that the historical version/rules remained unchanged throughout the probe. The prior timeout remains a failed acceptance, not a pass retroactively.
