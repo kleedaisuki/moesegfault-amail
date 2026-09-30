@@ -1,12 +1,40 @@
 # Code-free staging Issues create discriminator
 
-Date: 2026-10-01. Status: **implemented for source review; not authorized or
-executed against Cloudflare**. Based on main
-`a4fc6160ca6b771da6351268d1a96af4c4a616dc` in an isolated root-local worktree.
-No local project test/build, provider request/mutation, workflow dispatch,
-Worker creation, code upload, Mail invocation, or push was performed during
-implementation. Synthetic tests are authored for hosted execution; their
-presence is not a passing-test claim.
+Date: 2026-10-01. Status: **source integrated; first live attempt UNVERIFIED,
+stopped before create**. See the [bounded live outcome](#first-live-outcome-2026-10-01)
+for current evidence. The implementation-stage record below is historical:
+it was based on main `a4fc6160ca6b771da6351268d1a96af4c4a616dc` in an isolated
+root-local worktree; no local project test/build, provider request/mutation,
+workflow dispatch, Worker creation, code upload, Mail invocation, or push was
+performed during that implementation stage.
+
+## First live outcome (2026-10-01)
+
+| Evidence class | Exact evidence | Bounded conclusion |
+| --- | --- | --- |
+| Integrated source | [PR #8](https://github.com/kleedaisuki/moesegfault-amail/pull/8), main [`3cc82499ad2fe7ee2c0f8008fedf1edc5085d61c`](https://github.com/kleedaisuki/moesegfault-amail/commit/3cc82499ad2fe7ee2c0f8008fedf1edc5085d61c); exact-main six-job source CI [36793347106](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36793347106) succeeded | Source validation only; no live Issues or privacy acceptance follows. |
+| First manual live attempt | [36793625509, attempt 1](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36793625509/attempts/1), at that exact main SHA | Credential-free guard/tests succeeded; provider operation step failed with the fixed UNVERIFIED result below. |
+| Recovery and approval retirement | Same run's [artifact inventory](https://api.github.com/repos/kleedaisuki/moesegfault-amail/actions/runs/36793625509/artifacts) had `total_count=0`; repository variable `STAGING_ISSUES_CREATE_REVIEWED_SHA` was removed and independently verified absent | No Worker ID or recovery artifact was produced. Approval is retired, not permission for another dispatch. |
+
+```text
+staging_issues_create_probe=UNVERIFIED
+staging_issues_create_phases=absence:checking original_pin:before_match hold:before_match create:skipped identity:skipped isolation:skipped readback:skipped recovery:skipped
+```
+
+The phase boundary is decisive: the first attempt stopped during fixed-name
+absence checking, **before the Worker-create POST**. No Worker was created by
+this attempt. The original pin and hold matched before that phase; no completed
+after-state bracket, fresh-Worker identity/isolation, or Issues readback was
+obtained. Artifact absence is consistent with skipped creation/recovery, not
+independent proof of provider namespace absence.
+
+This result does **not** establish provider root cause, a permission defect,
+Issues true/false/omission, or original Mail privacy. Do not reinterpret
+`absence:checking` as confirmed absence or weaken the fail-closed gate. Keep
+public sending and all previously held release gates unchanged. **No unchanged
+retry, rerun, alternate name, or fresh dispatch is authorized.** Any next
+investigation requires separately reviewed phase-discriminating evidence and
+an explicit new decision, not repetition of this attempt.
 
 ## Purpose and evidence boundary
 
@@ -293,7 +321,8 @@ python -m unittest discover -s infra/tests -p 'test_staging_issues_create_probe.
 | true | Requested false and independent read disagree | Keep isolated and escalate; no code/Mail capability |
 | UNVERIFIED | Discriminator lacks trustworthy evidence | Preserve run/resource pins; bounded private recovery, no replay |
 
-This is a source-level implementation milestone. Hosted checks, independent
-review resolution, immutable integration SHA, approval variable setup,
-protected Environment approval and operation authorization remain separate
-acceptance conditions.
+The source-level milestone and first live outcome are distinguished above.
+The live attempt did not reach any classification branch except UNVERIFIED;
+the other table rows remain prospective protocol semantics, not observations.
+Any further operation requires a separately reviewed decision and fresh
+authorization; the retired approval does not carry forward.
