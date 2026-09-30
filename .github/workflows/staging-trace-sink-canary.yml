@@ -22,6 +22,7 @@ permissions:
 
 jobs:
   canary:
+    name: Hosted bounded trace sink privacy canary
     if: github.ref == 'refs/heads/codex/amail-v0.1.0'
     runs-on: windows-latest
     environment: staging
@@ -85,3 +86,11 @@ jobs:
           python infra/tests/staging_hosted_trace_sink_canary.py
           --mode $env:TRACE_MODE --confirm "$env:TRACE_CONFIRM"
           --source-version $env:SOURCE_VERSION --sink-version $env:SINK_VERSION
+      - name: Record exact pins only after actual bounded retained-record acceptance
+        if: inputs.mode == 'canary'
+        env:
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.source-version }}
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ inputs.sink-version }}
+          AMAIL_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
+          AMAIL_TRACE_DLQ_ID: ${{ vars.AMAIL_TRACE_DLQ_ID_STAGING }}
+        run: python infra/deploy/trace_rollout_attestation.py --kind sink-canary

@@ -12,7 +12,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging, staging-containment-settings, staging-containment-readback, staging-worker-resource-readback, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production]
+        options: [checks, staging, staging-containment-settings, staging-containment-readback, staging-worker-resource-readback, staging-role-queue-rollout, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production]
       confirm:
         description: Staging E2E, semantic query, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -26,7 +26,7 @@ on:
         required: false
         type: string
       role_deploy_run:
-        description: Successful staging CI run ID that deployed the current role Worker; role SMTP only
+        description: Role SMTP deployed-role run; role Queue rollout exact-revision phase1 API/sink deploy run
         required: false
         type: string
       role_probe_run_id:
@@ -34,7 +34,7 @@ on:
         required: false
         type: string
       role_version:
-        description: Pin the current 100%-serving role Worker version UUID; role SMTP only
+        description: Current 100%-serving role Worker UUID; SMTP or pre-rollout replacement pin
         required: false
         type: string
       role_freeze:
@@ -53,6 +53,10 @@ on:
         options: [deploy-v1, settings-v1]
       trace_sink_version:
         description: Reviewed 100-percent serving Queue trace sink version UUID
+        required: false
+        type: string
+      trace_sink_canary_run:
+        description: Prior successful bounded retained-record API/sink privacy canary; role Queue rollout only
         required: false
         type: string
       trace_mode:
@@ -1164,7 +1168,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
-      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || inputs.target == 'production'))
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || inputs.target == 'staging-role-queue-rollout' || inputs.target == 'production'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -1313,7 +1317,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
-      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || inputs.target == 'production'))
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || inputs.target == 'staging-role-queue-rollout' || inputs.target == 'production'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -1956,12 +1960,15 @@ jobs:
 
   staging-role-monitor:
     name: Deploy isolated staging role monitor
-    # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+    # Phase2 is a separate manual promotion, never bundled into phase1 or a push.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging-role-queue-rollout' && github.ref == 'refs/heads/codex/amail-v0.1.0' && inputs.confirm == 'RUN_STAGING_ROLE_TRACE_ROLLOUT'
     needs: [worker, dns]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: staging
+    permissions:
+      contents: read
+      actions: read
     concurrency:
       group: deploy-role-monitor-staging
       cancel-in-progress: false
@@ -1972,6 +1979,17 @@ jobs:
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
       PYTHONDONTWRITEBYTECODE: '1'
+      GH_TOKEN: ${{ github.token }}
+      AMAIL_ROLE_ROLLOUT_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_ROLE_PHASE1_RUN: ${{ inputs.role_deploy_run }}
+      AMAIL_ROLE_SINK_CANARY_RUN: ${{ inputs.trace_sink_canary_run }}
+      AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.expected_worker_version }}
+      AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ inputs.trace_sink_version }}
+      AMAIL_EXPECTED_ROLE_WORKER_VERSION: ${{ inputs.role_version }}
+      AMAIL_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
+      AMAIL_TRACE_DLQ_ID: ${{ vars.AMAIL_TRACE_DLQ_ID_STAGING }}
+      AMAIL_EXPECTED_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
+      AMAIL_TRACE_TOPOLOGY: api-only
     steps:
       - name: Check protected staging configuration without printing values
         shell: bash
@@ -1983,6 +2001,11 @@ jobs:
             fi
           done
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require immutable phase1 deploy and bounded retained privacy evidence
+        run: python infra/deploy/require_role_trace_phase1.py
       - name: Set up Rust Wasm target
         run: |
           rustup update stable
@@ -1990,9 +2013,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
       - name: Install pinned deployment tools
         run: |
           cargo install worker-build --version 0.8.5 --locked
@@ -2007,21 +2027,19 @@ jobs:
           fi
       - name: Audit isolated staging D1 before migration
         run: python workers/role-monitor/check_staging_db.py
+      - name: Require exact phase1 API, sink, role and Queue pins before any mutation
+        run: python infra/deploy/check_role_trace_rollout.py --phase before
       - name: Apply only role-monitor migrations
         working-directory: workers/role-monitor
         run: wrangler d1 migrations apply ROLE_MONITOR --env staging --remote
       - name: Bundle Rust Email and Cron Worker
         working-directory: workers/role-monitor
         run: worker-build --release
+      - name: Recheck serving pins immediately before Worker replacement
+        run: python infra/deploy/check_role_trace_rollout.py --phase before
       - name: Deploy staging Worker with private destination and provider audit secrets
-        working-directory: workers/role-monitor
-        shell: bash
-        run: |
-          umask 077
-          mkdir -p ../../.temp
-          trap 'rm -f ../../.temp/role-monitor-secrets.json' EXIT
-          node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/role-monitor-secrets.json", JSON.stringify({ROLE_FORWARD_DESTINATION:process.env.ROLE_FORWARD_DESTINATION,CF_EMAIL_ROUTING_TOKEN:process.env.CF_EMAIL_ROUTING_TOKEN,CF_ACCOUNT_ID:process.env.CLOUDFLARE_ACCOUNT_ID}));'
-          wrangler deploy --env staging --secrets-file ../../.temp/role-monitor-secrets.json
+        id: role
+        run: python infra/deploy/deploy_staging_role_monitor.py
       - name: Confirm deploy did not open the synthetic SMTP route
         shell: bash
         run: |
@@ -2030,6 +2048,11 @@ jobs:
             echo '::error::Staging role route changed unexpectedly'
             exit 1
           fi
+      - name: Require exact phase2 topology and strict serving-role capture-off readback
+        env:
+          AMAIL_TRACE_TOPOLOGY: api-role
+          AMAIL_EXPECTED_ROLE_WORKER_VERSION: ${{ steps.role.outputs.version }}
+        run: python infra/deploy/check_role_trace_rollout.py --phase after
 
   deploy-trace-sink:
     name: Deploy private production privacy trace sink
@@ -2149,3 +2172,9 @@ jobs:
         run: python crates/mail-worker/check_observability.py --realm staging --mode sink
       - name: Recheck containment pin after sink deployment
         run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION" --kind "$AMAIL_TRACE_CONTAINMENT_KIND"
+      - name: Record exact sink and Queue pins only after successful isolation readback
+        env:
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ steps.sink.outputs.version }}
+          AMAIL_TRACE_QUEUE_ID: ${{ steps.queues.outputs.queue_id }}
+          AMAIL_TRACE_DLQ_ID: ${{ steps.queues.outputs.dlq_id }}
+        run: python infra/deploy/trace_rollout_attestation.py --kind sink-deploy
