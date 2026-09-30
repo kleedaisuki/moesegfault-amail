@@ -1,0 +1,39 @@
+[package]
+name = "amail-worker"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+amail-trace-schema = { path = "../trace-schema" }
+worker = { version = "0.8.3", features = ["d1", "queue"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+mailparse = "0.16"
+ammonia = "4"
+html2text = "0.16"
+css-inline = { version = "0.20", default-features = false }
+regex = "1"
+base64 = "0.22"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "js"] }
+sha2 = "0.10"
+hmac = "0.12"
+percent-encoding = "2"
+subtle = "2"
+email_address = "0.2"
+getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+
+[dev-dependencies]
+pretty_assertions = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }

@@ -1,0 +1,2504 @@
+# 中文：在 GitHub 托管的运行器上验证全部平台；本地开发机不执行重型构建。
+# English: Validate supported platforms on GitHub-hosted runners, not the developer workstation.
+name: CI and deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main, codex/amail-v0.1.0]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Run non-deploying checks, deploy staging, or promote production after review
+        required: true
+        type: choice
+        options: [checks, staging, staging-containment-settings, staging-current-worker-capture-off, staging-capture-preflight, staging-settings-patch-audit, staging-settings-audit-shape, staging-containment-readback, staging-worker-resource-readback, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-worker-r2-delivery-history, staging-worker-r2-history-shape, staging-worker-r2-history-error, staging-private-provider-error-capture, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production, production-api-only-maintenance]
+      confirm:
+        description: Documented RUN_* confirmation; production bootstrap or api-only maintenance is explicit
+        required: false
+        type: string
+      r2_prior_run_id:
+        description: Original numeric R2 capability probe run ID; recovery only
+        required: false
+        type: string
+      r2_prior_run_attempt:
+        description: Original numeric R2 capability probe attempt; recovery only
+        required: false
+        type: string
+      role_deploy_run:
+        description: Historical role SMTP deployed-role run; not a v0.1 release prerequisite
+        required: false
+        type: string
+      role_probe_run_id:
+        description: Historical failed role SMTP run ID; role timeout read-only audit only
+        required: false
+        type: string
+      role_version:
+        description: Historical 100%-serving role Worker UUID; research SMTP pin only
+        required: false
+        type: string
+      role_freeze:
+        description: For role SMTP enter FREEZE_STAGING_ROLE_DEPLOYS after enforcing external deploy freeze
+        required: false
+        type: string
+      mail_deploy_freeze:
+        description: Current-Worker correction requires FREEZE_STAGING_MAIL_DEPLOYS after enforcing external Mail deploy freeze
+        required: false
+        type: string
+      trace_containment_run:
+        description: Successful immutable staging containment deployment or settings-only attestation run
+        required: false
+        type: string
+      trace_containment_kind:
+        description: Immutable containment evidence type; settings-only correction does not redeploy API code
+        required: false
+        default: deploy-v1
+        type: choice
+        options: [deploy-v1, settings-v1]
+      trace_sink_version:
+        description: Reviewed 100-percent serving Queue trace sink version UUID
+        required: false
+        type: string
+      trace_mode:
+        description: For staging-trace-canary only; preflight does not log in
+        required: false
+        default: preflight
+        type: choice
+        options: [preflight, canary]
+      semantic:
+        description: Also check semantic search on the same two staging-e2e messages
+        required: false
+        default: false
+        type: boolean
+      exact_cosine:
+        description: Private staging D1 and OpenRouter two-page oracle on the same two messages; requires semantic
+        required: false
+        default: false
+        type: boolean
+      exact_cosine_confirm:
+        description: Enter RUN_STAGING_EXACT_COSINE only for the private exact-cosine oracle
+        required: false
+        type: string
+      isolation:
+        description: Add B denial checks to the same two staging-e2e SMTP fixtures
+        required: false
+        default: false
+        type: boolean
+      isolation_confirm:
+        description: Distinct RUN_STAGING_TWO_PRINCIPAL_ISOLATION confirmation
+        required: false
+        type: string
+      expected_worker_version:
+        description: Expected 100%-serving staging Mail Worker Version ID; serving pin or containment readback
+        required: false
+        type: string
+      alias_run_id:
+        description: Completed hosted staging-e2e GitHub run ID to reconcile; no address is accepted
+        required: false
+        type: string
+      alias_attempt:
+        description: GitHub run attempt for that exact staging-e2e run
+        required: false
+        type: string
+      routing_probe_run_id:
+        description: Original one-use routing Write probe run ID for recovery or delayed audit
+        required: false
+        type: string
+      routing_probe_attempt:
+        description: Original one-use routing Write probe attempt for recovery or delayed audit
+        required: false
+        type: string
+
+      production_graph_freeze:
+        description: Production requires FREEZE_PRODUCTION_GRAPH_WRITERS and the phase-specific confirm
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Checks can supersede obsolete checks; shared-state manual operations never cancel each other.
+# Keep the existing manual group so in-flight acceptance remains mutually exclusive.
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && 'amail-production-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
+
+jobs:
+  cli:
+    name: CLI (${{ matrix.os }})
+    # Manual diagnostic jobs run independently; do not duplicate the full test matrix.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance')))
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update stable Rust toolchain
+        run: rustup update stable
+      - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all -- --check
+      - name: Test CLI
+        run: cargo test -p amail --locked --all-targets
+      - name: Check CLI help
+        run: cargo run -p amail --locked -- --help
+      - name: Upload tested Windows binary for staging live smoke
+        if: matrix.os == 'windows-latest' && github.event_name == 'push' && github.ref == 'refs/heads/codex/amail-v0.1.0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: amail-windows-smoke-${{ github.sha }}
+          path: target/debug/amail.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  staging-e2e:
+    name: Hosted Windows native PKCE and SMTP to ZIP/search
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-e2e' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: windows-latest
+    environment: staging
+    timeout-minutes: 40
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require explicit staging probe confirmation
+        env:
+          AMAIL_STAGING_E2E_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if ($env:AMAIL_STAGING_E2E_CONFIRM -ne 'RUN_STAGING_E2E') {
+            throw 'Explicit staging E2E confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install browser and DPAPI adapters
+        run: python -m pip install pywin32==312 websocket-client==1.9.2
+      - name: Build tested amail binary on hosted Windows
+        run: |
+          rustup update stable
+          cargo test -p amail --locked --all-targets
+          cargo build -p amail --locked
+      - name: Execute staging native and inbound-mail acceptance
+        env:
+          AMAIL_STAGING_E2E_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_STAGING_SEMANTIC_E2E: ${{ inputs.semantic && '1' || '0' }}
+          AMAIL_STAGING_EXACT_COSINE_E2E: ${{ inputs.exact_cosine && '1' || '0' }}
+          AMAIL_STAGING_EXACT_COSINE_CONFIRM: ${{ inputs.exact_cosine_confirm }}
+          AMAIL_STAGING_ISOLATION_E2E: ${{ inputs.isolation && '1' || '0' }}
+          AMAIL_STAGING_ISOLATION_CONFIRM: ${{ inputs.isolation_confirm }}
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          STAGING_E2E_B_USERNAME: ${{ inputs.isolation && secrets.STAGING_E2E_B_USERNAME || '' }}
+          STAGING_E2E_B_PASSWORD: ${{ inputs.isolation && secrets.STAGING_E2E_B_PASSWORD || '' }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          AMAIL_TEST_SMTP_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_hosted_e2e.py
+
+  staging-r2-object-capability:
+    name: One-shot private staging R2 object capability or exact-key recovery
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.target == 'staging-r2-object-capability' || inputs.target == 'staging-r2-object-recover') &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 8
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require explicit probe or recovery confirmation
+        env:
+          R2_CONFIRM: ${{ inputs.confirm }}
+        shell: pwsh
+        run: |
+          $expected = if ('${{ inputs.target }}' -eq 'staging-r2-object-capability') {
+            'RUN_STAGING_R2_OBJECT_CAPABILITY'
+          } else {
+            'RECOVER_STAGING_R2_OBJECT_CAPABILITY'
+          }
+          if ($env:R2_CONFIRM -ne $expected) {
+            throw 'Explicit staging R2 capability confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Probe one private sentinel and reconcile exact-key cleanup
+        env:
+          AMAIL_R2_CAPABILITY_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_R2_CAPABILITY_MODE: ${{ inputs.target == 'staging-r2-object-recover' && 'recover' || 'probe' }}
+          AMAIL_R2_PRIOR_RUN_ID: ${{ inputs.r2_prior_run_id }}
+          AMAIL_R2_PRIOR_RUN_ATTEMPT: ${{ inputs.r2_prior_run_attempt }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_r2_object_capability.py
+
+  staging-worker-r2-delivery-history:
+    name: Classify one historical Worker-created R2 delivery window
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-worker-r2-delivery-history' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact historical read confirmation
+        env:
+          HISTORY_CONFIRM: ${{ inputs.confirm }}
+        shell: pwsh
+        run: |
+          if ($env:HISTORY_CONFIRM -ne 'READ_WORKER_R2_DELIVERY_HISTORY_36751791789') {
+            throw 'Exact historical Worker R2 read confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Test fixed historical event and privacy contracts
+        run: python -m unittest discover -s infra/tests -p 'test_staging_worker_r2_delivery_history.py' -v
+      - name: Read bounded historical Sending and Routing events
+        env:
+          HISTORY_CONFIRM: ${{ inputs.confirm }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_worker_r2_delivery_history.py "$HISTORY_CONFIRM" 36751791789
+
+  staging-worker-r2-history-shape:
+    name: Describe one reduced historical Email schema without delivery acceptance
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-worker-r2-history-shape' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact reduced historical shape confirmation and first attempt
+        env:
+          HISTORY_CONFIRM: ${{ inputs.confirm }}
+        shell: bash
+        run: |
+          if [[ "$HISTORY_CONFIRM" != 'READ_WORKER_R2_HISTORY_BASELINE_SHAPE_36751791789' || "$GITHUB_RUN_ATTEMPT" != '1' ]]; then
+            echo 'Exact historical shape confirmation and first attempt required' >&2
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Test fixed historical shape and workflow privacy contracts
+        run: |
+          python -m unittest discover -s infra/tests -p 'test_staging_worker_r2_delivery_history.py' -v
+          python -m unittest discover -s infra/tests -p 'test_staging_worker_r2_history_shape.py' -v
+          python -m unittest discover -s infra/tests -p 'test_worker_r2_history_shape_workflow.py' -v
+      - name: Read one reduced historical Sending and Routing schema
+        env:
+          HISTORY_CONFIRM: ${{ inputs.confirm }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_worker_r2_history_shape.py "$HISTORY_CONFIRM" 36751791789
+
+  staging-worker-r2-history-error:
+    name: Classify one content-free historical Email error without delivery acceptance
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-worker-r2-history-error' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact historical error-class confirmation and first attempt
+        env:
+          HISTORY_CONFIRM: ${{ inputs.confirm }}
+        shell: bash
+        run: |
+          if [[ "$HISTORY_CONFIRM" != 'READ_WORKER_R2_HISTORY_ERROR_CLASS_36751791789' || "$GITHUB_RUN_ATTEMPT" != '1' ]]; then
+            echo 'Exact historical error-class confirmation and first attempt required' >&2
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Test fixed historical error and workflow privacy contracts
+        run: |
+          python -m unittest discover -s infra/tests -p 'test_staging_worker_r2_delivery_history.py' -v
+          python -m unittest discover -s infra/tests -p 'test_staging_worker_r2_history_error.py' -v
+          python -m unittest discover -s infra/tests -p 'test_worker_r2_history_error_workflow.py' -v
+      - name: Read one content-free historical Sending and Routing error class
+        env:
+          HISTORY_CONFIRM: ${{ inputs.confirm }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_worker_r2_history_error.py "$HISTORY_CONFIRM" 36751791789
+
+  staging-private-provider-error-capture:
+    name: One-shot encrypted content-free provider error
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-private-provider-error-capture' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Require reviewed immutable source and first attempt
+        env:
+          CAPTURE_CONFIRM: ${{ inputs.confirm }}
+          REVIEWED_SHA: ${{ vars.PRIVATE_PROVIDER_CAPTURE_REVIEWED_SHA }}
+          ACTIONS_RUNNER_DEBUG: ${{ secrets.ACTIONS_RUNNER_DEBUG }}
+          ACTIONS_STEP_DEBUG: ${{ secrets.ACTIONS_STEP_DEBUG }}
+        shell: bash
+        run: |
+          if [[ "$CAPTURE_CONFIRM" != 'CAPTURE_PRIVATE_WORKER_R2_ERROR_36751791789_ONCE' || "$GITHUB_RUN_ATTEMPT" != '1' || "$GITHUB_SHA" != "$REVIEWED_SHA" || "${ACTIONS_RUNNER_DEBUG,,}" == 'true' || "${ACTIONS_STEP_DEBUG,,}" == 'true' ]]; then
+            echo 'Private capture guard rejected' >&2
+            exit 1
+          fi
+      - name: Verify native crypto and offline confidentiality contracts without secrets
+        env:
+          PRIVATE_CAPTURE_SYNTHETIC_HOSTED: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s infra/tests -p 'test_private_provider_capture.py' -v
+      - name: Capture one bounded encrypted error envelope
+        env:
+          PRIVATE_CAPTURE_CONFIRM: ${{ inputs.confirm }}
+          PRIVATE_CAPTURE_PUBLIC_KEY: ${{ vars.PRIVATE_PROVIDER_CAPTURE_PUBLIC_KEY }}
+          PRIVATE_CAPTURE_REVIEWED_SHA: ${{ vars.PRIVATE_PROVIDER_CAPTURE_REVIEWED_SHA }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ACTIONS_RUNNER_DEBUG: ${{ secrets.ACTIONS_RUNNER_DEBUG }}
+          ACTIONS_STEP_DEBUG: ${{ secrets.ACTIONS_STEP_DEBUG }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/private_provider_capture.py
+      - name: Upload only the encrypted exact file
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: private-provider-error-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .temp/private-provider-diag/capture.enc.json
+          include-hidden-files: true
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+          if-no-files-found: error
+      - name: Remove exact ciphertext on all outcomes
+        if: always()
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/private_provider_capture.py cleanup
+
+  staging-second-principal-preflight:
+    name: Read-only second-principal Identity, routing and private-R2 preflight
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-second-principal-preflight' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 8
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact read-only preflight confirmation
+        env:
+          SECOND_PREFLIGHT_CONFIRM: ${{ inputs.confirm }}
+        shell: pwsh
+        run: |
+          if ($env:SECOND_PREFLIGHT_CONFIRM -ne 'READ_STAGING_SECOND_PRINCIPAL_PREFLIGHT') {
+            throw 'Explicit second-principal read-only preflight confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install import-only CDP dependency
+        run: python -m pip install websocket-client==1.9.2
+      - name: Read exact staging inbox, routes, Identity and R2 state
+        env:
+          AMAIL_SECOND_PRINCIPAL_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_SECOND_PRINCIPAL_MODE: preflight
+          STAGING_E2E_B_USERNAME: ${{ secrets.STAGING_E2E_B_USERNAME }}
+          STAGING_E2E_B_PASSWORD: ${{ secrets.STAGING_E2E_B_PASSWORD }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_second_principal.py
+
+  staging-second-principal:
+    name: One-shot normal registration and native PKCE for principal B
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.target == 'staging-second-principal' || inputs.target == 'staging-second-principal-recover') &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: windows-latest
+    environment: staging
+    timeout-minutes: 20
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require one-shot staging registration confirmation
+        env:
+          SECOND_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          $expected = if ('${{ inputs.target }}' -eq 'staging-second-principal') {
+            'RUN_STAGING_SECOND_PRINCIPAL_PROVISION'
+          } else {
+            'RUN_STAGING_SECOND_PRINCIPAL_RECOVER'
+          }
+          if ($env:SECOND_CONFIRM -ne $expected) {
+            throw 'Explicit second-principal registration confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install private native browser adapters
+        run: python -m pip install pywin32==312 websocket-client==1.9.2
+      - name: Build tested CLI on hosted Windows
+        run: |
+          rustup update stable
+          cargo test -p amail --locked --all-targets
+          cargo build -p amail --locked
+      - name: Register, verify and attest second principal
+        env:
+          AMAIL_SECOND_PRINCIPAL_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_SECOND_PRINCIPAL_MODE: ${{ inputs.target == 'staging-second-principal-recover' && 'recover' || 'provision' }}
+          STAGING_E2E_B_USERNAME: ${{ secrets.STAGING_E2E_B_USERNAME }}
+          STAGING_E2E_B_PASSWORD: ${{ secrets.STAGING_E2E_B_PASSWORD }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_second_principal.py
+
+  staging-semantic-query-only:
+    name: Hosted native PKCE empty-mail semantic query without SMTP
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-semantic-query-only' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: windows-latest
+    environment: staging
+    timeout-minutes: 30
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require one-shot semantic-query confirmation
+        env:
+          AMAIL_SEMANTIC_QUERY_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if ($env:AMAIL_SEMANTIC_QUERY_CONFIRM -ne 'RUN_STAGING_SEMANTIC_QUERY_ONLY') {
+            throw 'Explicit staging semantic-query confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install native browser and DPAPI adapters
+        run: python -m pip install pywin32==312 websocket-client==1.9.2
+      - name: Build tested native CLI on hosted Windows
+        run: |
+          rustup update stable
+          cargo test -p amail --locked --all-targets
+          cargo build -p amail --locked
+      - name: Probe only empty owner inventory and semantic query
+        env:
+          AMAIL_SEMANTIC_QUERY_CONFIRM: ${{ inputs.confirm }}
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_semantic_query_only.py
+
+  staging-prior-alias-reconcile:
+    name: Read-only reconciliation of two prior staging aliases
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-prior-alias-reconcile' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-prior-alias-reconcile
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Require explicit read-only reconciliation confirmation
+        env:
+          RECONCILE_CONFIRM: ${{ inputs.confirm }}
+        shell: pwsh
+        run: |
+          if ($env:RECONCILE_CONFIRM -ne 'READ_PRIOR_STAGING_ALIASES') {
+            throw 'Explicit prior-alias reconciliation confirmation required'
+          }
+      - name: Check exact prior aliases without mutation
+        env:
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_prior_alias_reconcile.py READ_PRIOR_STAGING_ALIASES
+
+  staging-containment-settings:
+    name: Apply isolated staging API capture-off settings
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-containment-settings' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require one-shot staging settings confirmation before credentials
+        env:
+          SETTINGS_CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_VERSION: ${{ inputs.expected_worker_version }}
+        shell: bash
+        run: |
+          if [ "$SETTINGS_CONFIRM" != 'APPLY_STAGING_API_CAPTURE_OFF_SETTINGS' ] ||
+             [ "$EXPECTED_VERSION" != 'c3f6401a-1e84-4f51-91df-ae77d90683e9' ] ||
+             [ "$GITHUB_RUN_ATTEMPT" != '1' ]; then
+            echo '::error::Exact first-attempt staging capture-settings confirmation required'
+            exit 1
+          fi
+      - name: Test synthetic settings correction before credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python -m unittest discover -s infra/tests -p 'test_staging_capture_off.py' -v
+          python -m unittest discover -s crates/mail-worker -p 'test_check_observability.py' -v
+      - name: Correct only non-versioned capture settings and attest unchanged serving API
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.expected_worker_version }}
+          AMAIL_CONTAINMENT_CONFIRM: ${{ inputs.confirm }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/deploy/apply_staging_capture_off.py
+
+  # A distinct current-resource PATCH; never retry or reinterpret settings-v1.
+  staging-current-worker-capture-off:
+    name: Apply isolated staging current-Worker capture-off settings
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-current-worker-capture-off' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require one-shot current-Worker confirmation and external deploy freeze
+        env:
+          CURRENT_WORKER_CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_VERSION: ${{ inputs.expected_worker_version }}
+          DEPLOY_FREEZE: ${{ inputs.mail_deploy_freeze }}
+        shell: bash
+        run: |
+          if [ "$CURRENT_WORKER_CONFIRM" != 'APPLY_STAGING_CURRENT_WORKER_CAPTURE_OFF' ] ||
+             [ "$EXPECTED_VERSION" != 'c3f6401a-1e84-4f51-91df-ae77d90683e9' ] ||
+             [ "$DEPLOY_FREEZE" != 'FREEZE_STAGING_MAIL_DEPLOYS' ] ||
+             [ "$GITHUB_RUN_ATTEMPT" != '1' ]; then
+            echo '::error::Exact first-attempt current-Worker confirmation and deploy freeze required'
+            exit 1
+          fi
+      - name: Test synthetic current-Worker correction before credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python -m unittest discover -s infra/tests -p 'test_staging_current_worker_capture_off.py' -v
+          python -m unittest discover -s infra/tests -p 'test_current_worker_capture_off_workflow.py' -v
+          python -m unittest discover -s crates/mail-worker -p 'test_check_observability.py' -v
+      - name: Correct current-Worker capture settings with unchanged serving brackets
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.expected_worker_version }}
+          AMAIL_CURRENT_WORKER_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_CURRENT_WORKER_FREEZE: ${{ inputs.mail_deploy_freeze }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/deploy/apply_staging_current_worker_capture_off.py
+
+  staging-capture-preflight:
+    name: Read-only staging capture correction preflight diagnosis
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-capture-preflight' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require fixed read-only preflight confirmation before credentials
+        env:
+          DIAGNOSTIC_CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_VERSION: ${{ inputs.expected_worker_version }}
+        shell: bash
+        run: |
+          if [ "$DIAGNOSTIC_CONFIRM" != 'READ_STAGING_CAPTURE_SETTINGS_PREFLIGHT' ] ||
+             [ "$EXPECTED_VERSION" != 'c3f6401a-1e84-4f51-91df-ae77d90683e9' ] ||
+             [ "$GITHUB_RUN_ATTEMPT" != '1' ]; then
+            echo '::error::Exact first-attempt read-only preflight confirmation required'
+            exit 1
+          fi
+      - name: Test synthetic read-only phase diagnosis before credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s infra/tests -p 'test_staging_capture_preflight_diagnostic.py' -v
+      - name: Read only fixed preflight resources and print categorical phases
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.expected_worker_version }}
+          AMAIL_CAPTURE_PREFLIGHT_CONFIRM: ${{ inputs.confirm }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/deploy/diagnose_staging_capture_preflight.py
+
+  staging-settings-patch-audit:
+    name: Read-only historical staging settings PATCH audit
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-settings-patch-audit' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require exact historical read-only audit confirmation before credentials
+        env:
+          AUDIT_CONFIRM: ${{ inputs.confirm }}
+        shell: bash
+        run: |
+          if [ "$AUDIT_CONFIRM" != 'READ_STAGING_CAPTURE_SETTINGS_PATCH_AUDIT' ] ||
+             [ "$GITHUB_RUN_ATTEMPT" != '1' ]; then
+            echo '::error::Exact first-attempt read-only historical audit confirmation required'
+            exit 1
+          fi
+      - name: Test synthetic fixed-window audit classifier before credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s infra/tests -p 'test_staging_settings_patch_audit.py' -v
+      - name: Read one historical audit page and print fixed categories only
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AMAIL_SETTINGS_AUDIT_CONFIRM: ${{ inputs.confirm }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_settings_patch_audit.py
+
+  staging-settings-audit-shape:
+    name: Read-only historical Audit response shape discriminator
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-settings-audit-shape' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require exact one-GET audit shape confirmation before credentials
+        env:
+          SHAPE_CONFIRM: ${{ inputs.confirm }}
+        shell: bash
+        run: |
+          if [ "$SHAPE_CONFIRM" != 'READ_STAGING_CAPTURE_SETTINGS_AUDIT_SHAPE' ] ||
+             [ "$GITHUB_RUN_ATTEMPT" != '1' ]; then
+            echo '::error::Exact first-attempt read-only audit shape confirmation required'
+            exit 1
+          fi
+      - name: Test original audit and synthetic shape contracts before credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python -m unittest discover -s infra/tests -p 'test_staging_settings_patch_audit.py' -v
+          python -m unittest discover -s infra/tests -p 'test_staging_settings_audit_shape.py' -v
+      - name: Read one fixed historical audit page and print presence-type bins only
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AMAIL_SETTINGS_AUDIT_SHAPE_CONFIRM: ${{ inputs.confirm }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_settings_audit_shape.py
+
+  staging-containment-readback:
+    name: Read-only staging containment settings discriminator
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-containment-readback' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require read-only confirmation and expected version
+        shell: pwsh
+        env:
+          READ_CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_VERSION: ${{ inputs.expected_worker_version }}
+        run: |
+          if ($env:READ_CONFIRM -cne 'READ_STAGING_CONTAINMENT_SETTINGS' -or
+              $env:EXPECTED_VERSION -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') {
+            throw 'Exact read-only confirmation and expected staging version required'
+          }
+      - name: Test synthetic containment readback contracts before credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s infra/tests -p 'test_staging_containment_readback.py' -v
+      - name: Read control-plane categorical settings with deployment brackets
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.expected_worker_version }}
+          AMAIL_CONTAINMENT_CONFIRM: ${{ inputs.confirm }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_containment_readback.py
+
+  staging-worker-resource-readback:
+    name: Read-only staging Worker resource observability discriminator
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-worker-resource-readback' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require distinct read-only confirmation and expected version
+        shell: pwsh
+        env:
+          READ_CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_VERSION: ${{ inputs.expected_worker_version }}
+        run: |
+          if ($env:READ_CONFIRM -cne 'READ_STAGING_WORKER_RESOURCE_OBSERVABILITY' -or
+              $env:EXPECTED_VERSION -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') {
+            throw 'Exact Worker resource confirmation and expected staging version required'
+          }
+      - name: Test synthetic Worker resource contracts before credentials
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s infra/tests -p 'test_staging_worker_resource_readback.py' -v
+      - name: Read categorical representations with five-GET deployment bracket
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.expected_worker_version }}
+          AMAIL_WORKER_RESOURCE_CONFIRM: ${{ inputs.confirm }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_worker_resource_readback.py
+
+  staging-serving-pin:
+    name: Read-only pin of 100%-serving staging Mail Worker
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-serving-pin' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-serving-pin
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read serving deployment, settings and bindings without mutation
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.expected_worker_version }}
+          AMAIL_EXPECTED_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/deploy/pin_staging_mail.py --phase queue-api
+
+  staging-hosted-alias-reconcile:
+    name: Read-only reconciliation of one hosted staging alias
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-hosted-alias-reconcile' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-hosted-alias-reconcile
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Require explicit exact-run read confirmation
+        shell: pwsh
+        env:
+          RECONCILE_CONFIRM: ${{ inputs.confirm }}
+          ALIAS_RUN_ID: ${{ inputs.alias_run_id }}
+          ALIAS_ATTEMPT: ${{ inputs.alias_attempt }}
+        run: |
+          if ($env:RECONCILE_CONFIRM -ne 'READ_ONE_STAGING_ALIAS' -or
+              $env:ALIAS_RUN_ID -notmatch '^[1-9][0-9]{0,19}$' -or
+              $env:ALIAS_ATTEMPT -notmatch '^[1-9][0-9]{0,2}$') {
+            throw 'Explicit exact-run read confirmation and valid GitHub run coordinates required'
+          }
+      - name: Read exact alias routing and D1 state without mutation
+        env:
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ALIAS_RUN_ID: ${{ inputs.alias_run_id }}
+          ALIAS_ATTEMPT: ${{ inputs.alias_attempt }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        shell: pwsh
+        run: python infra/tests/staging_hosted_alias_reconcile.py READ_ONE_STAGING_ALIAS $env:ALIAS_RUN_ID $env:ALIAS_ATTEMPT
+
+  staging-routing-policy:
+    name: Read configured staging routing-token policy
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-routing-policy' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    env:
+      CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Inspect only token verification and details GETs
+        run: python infra/provider/probe_routing_write.py
+
+  staging-fifth-mail-audit:
+    name: Read-only aggregate audit of fifth hosted E2E mail
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-fifth-mail-audit' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-fifth-mail-audit
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Require exact-run aggregate-read confirmation
+        shell: pwsh
+        env:
+          AUDIT_CONFIRM: ${{ inputs.confirm }}
+          ALIAS_RUN_ID: ${{ inputs.alias_run_id }}
+          ALIAS_ATTEMPT: ${{ inputs.alias_attempt }}
+        run: |
+          if ($env:AUDIT_CONFIRM -ne 'READ_FIFTH_MAIL_AGGREGATES' -or
+              $env:ALIAS_RUN_ID -ne '36589042183' -or
+              $env:ALIAS_ATTEMPT -ne '1') {
+            throw 'Exact fifth-run aggregate-read confirmation required'
+          }
+      - name: Read exact D1 aggregates and route absence only
+        shell: pwsh
+        env:
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ALIAS_RUN_ID: ${{ inputs.alias_run_id }}
+          ALIAS_ATTEMPT: ${{ inputs.alias_attempt }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_fifth_mail_audit.py READ_FIFTH_MAIL_AGGREGATES $env:ALIAS_RUN_ID $env:ALIAS_ATTEMPT
+
+  staging-fifth-mail-cleanup:
+    name: Guarded one-shot cleanup of fifth hosted mail fixtures
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-fifth-mail-cleanup' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: windows-latest
+    environment: staging
+    timeout-minutes: 45
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact-run destructive confirmation before accessing secrets
+        env:
+          CLEANUP_CONFIRM: ${{ inputs.confirm }}
+          ALIAS_RUN_ID: ${{ inputs.alias_run_id }}
+          ALIAS_ATTEMPT: ${{ inputs.alias_attempt }}
+        run: |
+          if ($env:CLEANUP_CONFIRM -ne 'DELETE_FIFTH_MAIL_EXACT_FIXTURES' -or
+              $env:ALIAS_RUN_ID -ne '36589042183' -or
+              $env:ALIAS_ATTEMPT -ne '1') {
+            throw 'Exact fifth-run fixture cleanup confirmation required'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install native browser and DPAPI adapters
+        run: python -m pip install pywin32==312 websocket-client==1.9.2
+      - name: Build native amail CLI
+        run: |
+          rustup update stable
+          cargo build -p amail --locked
+      - name: Verify exact fixtures and delete only their owner-scoped CLI IDs
+        env:
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ inputs.expected_worker_version }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_fifth_mail_cleanup.py DELETE_FIFTH_MAIL_EXACT_FIXTURES 36589042183 1
+
+  staging-routing-write-probe:
+    name: One valid disabled staging Routing Rules Write probe
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-routing-write-probe' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Create one disabled valid rule and remove only exact owned rule
+        env:
+          PROBE_CONFIRM: ${{ inputs.confirm }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/provider/probe_routing_effective_write.py probe "$PROBE_CONFIRM" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+
+  staging-routing-write-recover:
+    name: Recover exact prior staging Routing Rules Write probe
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-routing-write-recover' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read and clean only the original exact owned disabled rule
+        env:
+          PROBE_CONFIRM: ${{ inputs.confirm }}
+          PROBE_RUN_ID: ${{ inputs.routing_probe_run_id }}
+          PROBE_ATTEMPT: ${{ inputs.routing_probe_attempt }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/provider/probe_routing_effective_write.py recover "$PROBE_CONFIRM" "$PROBE_RUN_ID" "$PROBE_ATTEMPT"
+
+  staging-routing-write-audit:
+    name: Delayed read-only audit of exact staging Routing Rules probe
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-routing-write-audit' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Confirm exact candidate is still absent after cleanup
+        env:
+          PROBE_CONFIRM: ${{ inputs.confirm }}
+          PROBE_RUN_ID: ${{ inputs.routing_probe_run_id }}
+          PROBE_ATTEMPT: ${{ inputs.routing_probe_attempt }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/provider/probe_routing_effective_write.py audit "$PROBE_CONFIRM" "$PROBE_RUN_ID" "$PROBE_ATTEMPT"
+
+  staging-routing-diagnostic:
+    name: Classify retained staging address-add incident without mutation
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-routing-diagnostic' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-retained-routing-diagnostic
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Query only the hardcoded run-owned retained event window
+        env:
+          DIAGNOSTIC_CONFIRM: ${{ inputs.confirm }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        shell: pwsh
+        run: |
+          if ($env:DIAGNOSTIC_CONFIRM -ne 'READ_STAGING_ADDRESS_INCIDENT_36533465672') {
+            throw 'Explicit read-only staging incident confirmation required'
+          }
+          python infra/tests/staging_address_failure_logs.py READ_STAGING_ADDRESS_INCIDENT_36533465672
+
+  staging-current-address-diagnostic:
+    name: Classify one current staging address-add incident without mutation
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-current-address-diagnostic' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-retained-routing-diagnostic
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Query only the current run's bounded retained event window
+        env:
+          DIAGNOSTIC_CONFIRM: ${{ inputs.confirm }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        shell: pwsh
+        run: |
+          if ($env:DIAGNOSTIC_CONFIRM -ne 'READ_STAGING_ADDRESS_INCIDENT_36553799873') {
+            throw 'Explicit read-only staging incident confirmation required'
+          }
+          python infra/tests/staging_current_address_failure_logs.py READ_STAGING_ADDRESS_INCIDENT_36553799873
+
+  staging-fourth-invocation-metrics:
+    name: Read only fourth staging E2E Worker invocation metrics
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-fourth-invocation-metrics' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Query bounded aggregate status counters, never raw Worker logs
+        env:
+          DIAGNOSTIC_CONFIRM: ${{ inputs.confirm }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python infra/provider/probe_staging_fourth_invocation_metrics.py "$DIAGNOSTIC_CONFIRM"
+
+  staging-role-smtp:
+    name: One guarded staging role-monitor SMTP probe
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-role-smtp' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    # Serialize with staging role deployments; the explicit external freeze
+    # still covers out-of-band Wrangler and queued-run ambiguity.
+    concurrency:
+      group: deploy-role-monitor-staging
+      cancel-in-progress: false
+    env:
+      CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned Wrangler for restricted D1 readback
+        run: npm install --global wrangler@4.142.0
+      - name: Check deployed provenance and run one ID-bound SMTP probe
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AMAIL_STAGING_ROLE_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_STAGING_ROLE_FREEZE: ${{ inputs.role_freeze }}
+          AMAIL_STAGING_ROLE_DEPLOY_RUN: ${{ inputs.role_deploy_run }}
+          AMAIL_STAGING_ROLE_VERSION: ${{ inputs.role_version }}
+          AMAIL_EXPECTED_ROLE_WORKER_VERSION: ${{ inputs.role_version }}
+          AMAIL_EXPECTED_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          # Existing staging token for guarded SMTP; sender read is not SMTP AUTH proof.
+          AMAIL_TEST_SMTP_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python workers/role-monitor/hosted_acceptance.py
+
+  staging-role-timeout-audit:
+    name: Read-only aggregate audit of first role SMTP timeout
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-role-timeout-audit' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-role-timeout-audit
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require exact historical run and read-only confirmation
+        shell: pwsh
+        env:
+          AUDIT_CONFIRM: ${{ inputs.confirm }}
+          ROLE_RUN_ID: ${{ inputs.role_probe_run_id }}
+        run: |
+          if ($env:AUDIT_CONFIRM -ne 'READ_FIRST_ROLE_SMTP_AGGREGATES' -or
+              $env:ROLE_RUN_ID -ne '36603362864') {
+            throw 'Exact first role SMTP read-only confirmation required'
+          }
+      - name: Read bounded role D1 aggregates and current provider state only
+        env:
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          AMAIL_STAGING_ROLE_VERSION: ${{ inputs.role_version }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_role_timeout_audit.py READ_FIRST_ROLE_SMTP_AGGREGATES 36603362864
+
+  staging-role-token-phase-probe:
+    name: Read-only role routing token permission discriminator
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-role-token-phase-probe' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    concurrency:
+      group: staging-role-token-phase-probe
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require exact failed SMTP run and read-only confirmation
+        shell: pwsh
+        env:
+          PROBE_CONFIRM: ${{ inputs.confirm }}
+          ROLE_RUN_ID: ${{ inputs.role_probe_run_id }}
+        run: |
+          if ($env:PROBE_CONFIRM -ne 'READ_FIRST_ROLE_TOKEN_PERMISSIONS' -or
+              $env:ROLE_RUN_ID -ne '36603362864') {
+            throw 'Exact first role SMTP token-permission confirmation required'
+          }
+      - name: Read bounded provider inventories without disclosing destination
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+          AMAIL_STAGING_ROLE_VERSION: ${{ inputs.role_version }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_role_token_phase_probe.py READ_FIRST_ROLE_TOKEN_PERMISSIONS 36603362864
+
+  staging-role-phase-logs:
+    name: Read only historical first-role Cron application phase logs
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-role-phase-logs' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: staging-role-phase-logs
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require exact historical role run and read-only confirmation
+        shell: pwsh
+        env:
+          PROBE_CONFIRM: ${{ inputs.confirm }}
+          ROLE_RUN_ID: ${{ inputs.role_probe_run_id }}
+        run: |
+          if ($env:PROBE_CONFIRM -ne 'READ_FIRST_ROLE_PHASE_LOGS' -or
+              $env:ROLE_RUN_ID -ne '36603362864') {
+            throw 'Exact first role Cron phase-log confirmation required'
+          }
+      - name: Classify bounded retained application logs with no raw records
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_role_phase_logs.py READ_FIRST_ROLE_PHASE_LOGS 36603362864
+
+  staging-trace-canary:
+    name: Reuse branch-local staging retained-log trace canary
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-trace-canary' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    uses: ./.github/workflows/staging-trace-canary.yml
+    with:
+      mode: ${{ inputs.trace_mode }}
+      confirm: ${{ inputs.confirm }}
+    secrets: inherit
+
+  staging-trace-sink-canary:
+    name: Reuse branch-local Queue trace sink privacy acceptance
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-trace-sink-canary' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    uses: ./.github/workflows/staging-trace-sink-canary.yml
+    with:
+      mode: ${{ inputs.trace_mode }}
+      confirm: ${{ inputs.confirm }}
+      source-version: ${{ inputs.expected_worker_version }}
+      sink-version: ${{ inputs.trace_sink_version }}
+    secrets: inherit
+
+  staging-trace-marker-location:
+    name: Classify one historical retained staging marker without raw logs
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-trace-marker-location' &&
+      inputs.confirm == 'READ_STAGING_TRACE_MARKER_LOCATION' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    concurrency:
+      group: staging-trace-marker-location
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Classify the exact historical retained window with fixed labels only
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_trace_marker_location.py --confirm READ_STAGING_TRACE_MARKER_LOCATION
+
+  staging-trace-marker-discriminator:
+    name: Refine one historical retained staging marker with fixed structural bins
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-trace-marker-discriminator' &&
+      inputs.confirm == 'READ_STAGING_TRACE_MARKER_DISCRIMINATOR' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    concurrency:
+      group: staging-trace-marker-discriminator
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Classify the exact historical retained window with fixed labels only
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_trace_marker_discriminator.py --confirm READ_STAGING_TRACE_MARKER_DISCRIMINATOR
+
+  staging-trace-security-events:
+    name: Read only sampled Security Events for one staging trace incident
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-trace-security-events' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Classify one bounded, sampled zone-host event window
+        env:
+          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DIAGNOSTIC_CONFIRM: ${{ inputs.confirm }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python infra/provider/probe_staging_trace_security_events.py "$DIAGNOSTIC_CONFIRM" 36671177226
+
+  staging-trace-http-compare:
+    name: Compare staging urllib and reqwest anonymous transport
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-trace-http-compare' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    uses: ./.github/workflows/staging-trace-http-compare.yml
+    with:
+      confirm: ${{ inputs.confirm }}
+    secrets: inherit
+
+  worker:
+    name: Rust Worker (Wasm)
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+          run_install: false
+      - name: Install workerd boundary-test dependencies
+        working-directory: infra/tests/worker-boundary
+        run: pnpm install --frozen-lockfile
+      - name: Check installed Miniflare module contract before Rust build
+        working-directory: infra/tests/worker-boundary
+        run: node miniflare-config-smoke.mjs
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - name: Fingerprint Worker check toolchain and exact source inputs
+        id: worker-cache-key
+        # No fallback keys: changed inputs must never reuse compiled project outputs.
+        shell: bash
+        run: |
+          compiler=$({ rustc --version --verbose; cc --version; ldd --version; } | sha256sum | cut -d ' ' -f 1)
+          echo "compiler=$compiler" >> "$GITHUB_OUTPUT"
+          python infra/ci/worker_cache_key.py >> "$GITHUB_OUTPUT"
+      - name: Restore exact Worker check build cache
+        id: worker-check-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: target
+          key: worker-check-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.worker-cache-key.outputs.compiler }}-${{ steps.worker-cache-key.outputs.source }}
+      - name: Restore pinned Worker check bundler
+        id: worker-bundler-cache
+        uses: actions/cache/restore@v4
+        with:
+          # Dedicated install root contains public compiler tools only, not Cargo credentials.
+          path: .cache/worker-build-check
+          key: worker-build-check-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.worker-cache-key.outputs.compiler }}-0.8.5
+      - name: Run privacy trace schema and sink contracts
+        run: |
+          cargo test -p amail-trace-schema --locked --all-targets
+          cargo test -p amail-trace-sink --locked --all-targets
+      - name: Compile privacy trace sink target
+        run: cargo check -p amail-trace-sink --locked --target wasm32-unknown-unknown
+      - name: Run Rust Worker unit tests
+        run: cargo test -p amail-worker --locked --all-targets
+      - name: Run Rust Email ingress contract tests
+        run: cargo test -p amail-ingress --locked --all-targets
+      - name: Run Rust sending lifecycle contract tests
+        run: cargo test -p amail-events --locked --all-targets
+      - name: Run staging Identity test inbox contract tests
+        run: cargo test -p amail-identity-test-inbox --locked --all-targets
+      - name: Run role monitor contract tests
+        run: cargo test -p amail-role-monitor --locked --all-targets
+      - name: Compile Worker target
+        run: cargo check -p amail-worker --locked --target wasm32-unknown-unknown
+      - name: Compile Email ingress target
+        run: cargo check -p amail-ingress --locked --target wasm32-unknown-unknown
+      - name: Compile Email lifecycle target
+        run: cargo check -p amail-events --locked --target wasm32-unknown-unknown
+      - name: Compile staging Identity test inbox target
+        run: cargo check -p amail-identity-test-inbox --locked --target wasm32-unknown-unknown
+      - name: Compile role monitor target
+        run: cargo check -p amail-role-monitor --locked --target wasm32-unknown-unknown
+      - name: Install workers-rs bundler
+        if: steps.worker-bundler-cache.outputs.cache-hit != 'true'
+        run: cargo install worker-build --version 0.8.5 --locked --root "$GITHUB_WORKSPACE/.cache/worker-build-check"
+      - name: Use isolated pinned check bundler
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/.cache/worker-build-check/bin" >> "$GITHUB_PATH"
+      - name: Bundle privacy trace sink
+        working-directory: workers/trace-sink
+        run: worker-build --release
+      - name: Bundle Worker for Wrangler
+        working-directory: crates/mail-worker
+        run: worker-build --release
+      - name: Run built Rust Worker address-add boundary tests in workerd
+        working-directory: infra/tests/worker-boundary
+        run: pnpm test
+      - name: Bundle Rust Email ingress for Wrangler
+        working-directory: workers/mail-ingress
+        run: worker-build --release
+      - name: Bundle Rust Email lifecycle consumer for Wrangler
+        working-directory: workers/mail-events
+        run: worker-build --release
+      - name: Bundle staging Identity test inbox for Wrangler
+        working-directory: workers/identity-test-inbox
+        run: worker-build --release
+      - name: Bundle role monitor for Wrangler
+        working-directory: workers/role-monitor
+        run: worker-build --release
+      - name: Save trusted exact Worker check build cache
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') && steps.worker-cache-key.outputs.cacheable == 'true' && steps.worker-check-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: target
+          key: ${{ steps.worker-check-cache.outputs.cache-primary-key }}
+      - name: Save trusted pinned check bundler
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') && steps.worker-bundler-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/worker-build-check
+          key: ${{ steps.worker-bundler-cache.outputs.cache-primary-key }}
+
+  site:
+    name: Astro release site
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check Astro and TypeScript
+        run: pnpm check
+      - name: Build static site
+        run: pnpm build
+      - name: Check default candidate copy and navigation
+        run: pnpm check:release-state candidate
+      - name: Build published-state site without deploying
+        env:
+          AMAIL_RELEASE_STATE: published
+        run: pnpm build
+      - name: Check published copy and navigation
+        run: pnpm check:release-state published
+
+  dns:
+    name: Infrastructure probe unit tests
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned hosted probe dependencies
+        run: |
+          python -m pip install --only-binary=:all: -r infra/dns/requirements.txt -r infra/tests/ten_address_requirements.txt
+      - name: Test real encrypted quota recovery envelopes
+        run: python infra/tests/staging_ten_address_crypto_check.py -v
+      - name: Test DNS and provider probes
+        run: python -m unittest discover -s infra/tests -v
+      - name: Test staging Identity exact-route safeguards
+        run: python -m unittest discover -s workers/identity-test-inbox -p 'test_*.py' -v
+      - name: Test staging role-monitor route safeguards
+        run: python -m unittest discover -s workers/role-monitor -p 'test_*.py' -v
+      - name: Test mail API observability privacy gate
+        run: python -m unittest discover -s crates/mail-worker -p 'test_check_observability.py' -v
+      - name: Check private staging Identity inbox config
+        run: python workers/identity-test-inbox/check_config.py
+      - name: Check staging isolation contract
+        run: python infra/deploy/check_staging.py
+
+  provider-live:
+    name: OpenRouter 256D live contract
+    # Synthetic provider calls belong to explicit promotion, not the fast source loop.
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Probe Qwen3 Embedding 8B with synthetic text
+        run: python infra/provider/probe_openrouter.py
+
+  deploy-worker:
+    name: Deploy mail API
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main'
+    needs: [cli, worker, site, dns, provider-live, deploy-trace-sink]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    concurrency:
+      group: deploy-mail-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: crates/mail-worker
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      AMAIL_TRACE_QUEUE_ID: ${{ needs.deploy-trace-sink.outputs.queue_id }}
+      AMAIL_TRACE_DLQ_ID: ${{ needs.deploy-trace-sink.outputs.dlq_id }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      AMAIL_EXPECTED_WORKER_VERSION: ${{ vars.AMAIL_MAIL_VERSION_PRODUCTION }}
+      AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ needs.deploy-trace-sink.outputs.sink_version }}
+      AMAIL_TRACE_TOPOLOGY: api-only
+    steps:
+      - name: Verify deployment secrets before installing tools
+        working-directory: .
+        shell: bash
+        run: |
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN OPENROUTER_API_KEY CF_EMAIL_ROUTING_TOKEN CF_ZONE_ID INGRESS_SECRET; do
+            if [ -z "${!key}" ]; then
+              echo "::error::Missing deployment value $key"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deploy tools
+        run: |
+          cargo install worker-build --version 0.8.3 --locked
+          npm install --global wrangler@4.142.0
+          python -m pip install -r ../../infra/dns/requirements.txt
+      - name: Verify authoritative Email Sending DNS
+        working-directory: .
+        run: python infra/dns/verify_sending.py
+      - name: Recheck strict maintenance graph before schema or provider changes
+        if: inputs.target == 'production-api-only-maintenance'
+        working-directory: .
+        run: python infra/deploy/check_production_role_graph.py --phase api-only
+      - name: Disable and verify user-domain Email preview and partial suppression drops
+        working-directory: .
+        run: python infra/provider/configure_sending_privacy.py --target production
+      - name: Verify runtime Email Routing Rules read access
+        working-directory: .
+        run: python infra/provider/probe_routing.py
+      - name: Apply remote D1 migrations
+        run: wrangler d1 migrations apply MAIL_DB --remote
+      - name: Build Rust Worker bundle
+        run: worker-build --release
+      - name: Recheck exact maintenance graph immediately before Mail replacement
+        if: inputs.target == 'production-api-only-maintenance'
+        working-directory: .
+        run: python infra/deploy/check_production_role_graph.py --phase api-only
+      - name: Deploy mail Worker with redacted output and exact recovery version
+        id: api
+        working-directory: .
+        run: python infra/deploy/deploy_production_mail.py
+      - name: Verify exact graph phase, serving bindings, capture and held sending
+        working-directory: .
+        env:
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ steps.api.outputs.version }}
+        shell: bash
+        run: |
+          python infra/deploy/check_production_role_graph.py --phase api-only
+          echo "production_trace_graph_attestation=api-only-v1 source=${{ steps.api.outputs.version }} sink=$AMAIL_EXPECTED_TRACE_SINK_VERSION queue=$AMAIL_TRACE_QUEUE_ID dlq=$AMAIL_TRACE_DLQ_ID"
+      - name: Smoke test deployed API
+        working-directory: .
+        shell: bash
+        # 中文：首次自定义域名发布可能短暂遇到 DNS/TLS 传播；仅重试幂等健康 GET。
+        # English: First custom-domain publication can briefly race DNS/TLS propagation; retry only an idempotent health GET.
+        run: curl --fail --silent --show-error --retry-all-errors --retry 12 --retry-delay 5 --max-time 10 https://mail.moesegfault.dev/health
+
+  deploy-ingress:
+    name: Deploy Rust SMTP ingress
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
+    needs: deploy-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: production
+    concurrency:
+      group: deploy-ingress-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: workers/mail-ingress
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Rust bundler and Wrangler
+        run: |
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Build Rust Email ingress
+        run: worker-build --release
+      - name: Deploy Rust Email-event Worker with shared secret
+        shell: bash
+        run: |
+          test -n "$INGRESS_SECRET"
+          umask 077
+          mkdir -p ../../.temp
+          trap 'rm -f ../../.temp/ingress-secrets.json' EXIT
+          node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/ingress-secrets.json", JSON.stringify({INGRESS_SECRET: process.env.INGRESS_SECRET}));'
+          wrangler deploy --secrets-file ../../.temp/ingress-secrets.json
+
+  deploy-events:
+    name: Deploy Rust sending lifecycle consumer
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
+    needs: deploy-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: production
+    concurrency:
+      group: deploy-events-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: workers/mail-events
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Rust bundler and Wrangler
+        run: |
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Ensure production lifecycle Queue and DLQ
+        working-directory: .
+        run: python infra/deploy/ensure_email_events.py --target production --phase queues
+      - name: Build Rust lifecycle consumer
+        run: worker-build --release
+      - name: Deploy production lifecycle consumer
+        run: wrangler deploy
+      - name: Ensure production Email Sending Event Subscription
+        working-directory: .
+        run: python infra/deploy/ensure_email_events.py --target production --phase subscription
+
+  release-ready:
+    name: Gate public site on verified published release
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: read
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check matching published and attested GitHub Release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version=$(python -c 'import json; print(json.load(open("site/package.json"))["version"])')
+          tag="v$version"
+          release=$(gh release view "$tag" --json isDraft --jq '.isDraft' 2>/dev/null || true)
+          tag_sha=$(git rev-parse "refs/tags/$tag^{commit}" 2>/dev/null || true)
+          ready=false
+          if [ "$release" = false ] && [ -n "$tag_sha" ] && git merge-base --is-ancestor "$tag_sha" HEAD; then
+            mkdir -p .temp/release-published
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir .temp/release-published
+            python infra/release/verify_published_assets.py .temp/release-published "$tag" \
+              --repo "$GITHUB_REPOSITORY" --source-digest "$tag_sha"
+            ready=true
+          fi
+          if [ "$ready" = true ]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo "Public site deferred: matching published tag or attested Release is unavailable"
+          fi
+
+  deploy-site:
+    name: Deploy release site
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && needs.release-ready.outputs.ready == 'true'
+    needs: [deploy-ingress, deploy-events, site, release-ready]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: deploy-site-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: site
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build site
+        env:
+          AMAIL_RELEASE_STATE: published
+        run: pnpm build
+      - name: Verify published site copy before production deploy
+        run: pnpm check:release-state published
+      - name: Deploy Astro assets to Workers
+        run: pnpm run deploy
+      - name: Smoke test published pages
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .temp
+          smoke_dir=$(mktemp -d .temp/site-smoke.XXXXXX)
+          trap 'rm -f -- "$smoke_dir"/*.html "$smoke_dir"/*.headers; rmdir -- "$smoke_dir"' EXIT
+          # One GET per exact public route; curl does not follow redirects.
+          for route in home manual changelog; do
+            path=/
+            if [ "$route" != home ]; then path="/$route/"; fi
+            status=$(curl --fail --silent --show-error --retry 6 --retry-delay 5 \
+              --dump-header "$smoke_dir/$route.headers" --output "$smoke_dir/$route.html" \
+              --write-out '%{http_code}' "https://amail.moesegfault.dev$path")
+            if [ "$status" != 200 ]; then
+              echo "::error::$route: expected HTTP 200, got $status"
+              exit 1
+            fi
+          done
+          python - "$smoke_dir" <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          import re
+          import sys
+
+          class Anchors(HTMLParser):
+              """Collect actual anchor href attributes, excluding lookalike attributes."""
+
+              def __init__(self):
+                  super().__init__()
+                  self.hrefs = set()
+
+              def handle_starttag(self, tag, attrs):
+                  if tag == 'a':
+                      self.hrefs.update(value for name, value in attrs if name == 'href')
+
+          pages = {
+              'home': ('v0.1.0 已发布', 'v0.1.0 尚未发布'),
+              'manual': ('v0.1.0 已发布', 'v0.1.0 尚未开放下载'),
+              'changelog': ('v0.1.0 已正式发布', 'v0.1.0 仍在验收'),
+          }
+          tag_url = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0'
+          root = Path(sys.argv[1])
+          for route, (published, candidate) in pages.items():
+              html = (root / f'{route}.html').read_text(encoding='utf-8')
+              headers = (root / f'{route}.headers').read_text(encoding='utf-8')
+              anchors = Anchors()
+              anchors.feed(html)
+              if published not in html or candidate in html or tag_url not in anchors.hrefs:
+                  raise SystemExit(f'::error::{route}: published copy or exact Release href is missing, or candidate copy remains')
+              if re.search('noindex', html, re.IGNORECASE) or re.search(r'^x-robots-tag\s*:[^\r\n]*\bnoindex\b', headers, re.IGNORECASE | re.MULTILINE):
+                  raise SystemExit(f'::error::{route}: production response must be indexable')
+          PY
+
+  staging-site:
+    name: Deploy isolated staging release site
+    # Staging is an explicit promotion, never a side effect of a source push.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+    needs: site
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    concurrency:
+      group: deploy-site-staging
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: site
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Verify site deploy credentials
+        working-directory: .
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build launch site
+        run: pnpm build
+      - name: Verify staging candidate copy before deploy
+        run: pnpm check:release-state candidate
+      - name: Deploy isolated staging Worker
+        run: pnpm run deploy:staging
+      - name: Smoke test staging launch pages
+        working-directory: .
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --retry 6 --retry-delay 5 https://amail-staging.moesegfault.dev/ > /dev/null
+          curl --fail --silent --show-error https://amail-staging.moesegfault.dev/manual/ > /dev/null
+          curl --fail --silent --show-error https://amail-staging.moesegfault.dev/changelog/ > /dev/null
+          headers=$(curl --fail --silent --show-error --head https://amail-staging.moesegfault.dev/)
+          if ! grep -iq '^x-robots-tag:.*noindex' <<< "$headers"; then
+            echo '::error::Staging launch page must be noindex'
+            exit 1
+          fi
+
+  staging-worker:
+    name: Deploy isolated staging mail API
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/amail-v0.1.0' && inputs.confirm == 'RUN_STAGING_TRACE_SINK_ROLLOUT'
+    needs: [cli, worker, site, dns, provider-live, staging-trace-sink]
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: staging
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: crates/mail-worker
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      AMAIL_TRACE_QUEUE_ID: ${{ needs.staging-trace-sink.outputs.queue_id }}
+      AMAIL_TRACE_DLQ_ID: ${{ needs.staging-trace-sink.outputs.dlq_id }}
+      GH_TOKEN: ${{ github.token }}
+      AMAIL_TRACE_CONTAINMENT_RUN: ${{ inputs.trace_containment_run }}
+      AMAIL_TRACE_CONTAINMENT_KIND: ${{ inputs.trace_containment_kind }}
+      AMAIL_TRACE_CONTAINMENT_VERSION: ${{ inputs.expected_worker_version }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
+      MAIL_SENDING_DOMAIN: mail-staging.moesegfault.dev
+      AMAIL_TRACE_TOPOLOGY: api-only
+      AMAIL_STAGING_MAIL_DEPLOY_CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Verify staging secrets before installing tools
+        working-directory: .
+        shell: bash
+        run: |
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN OPENROUTER_API_KEY CF_EMAIL_ROUTING_TOKEN INGRESS_SECRET; do
+            if [ -z "${!key}" ]; then
+              echo "::error::Missing staging deployment value $key"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify staging resource isolation
+        run: python ../../infra/deploy/check_staging.py
+      - name: Install deploy tools
+        run: |
+          cargo install worker-build --version 0.8.3 --locked
+          npm install --global wrangler@4.142.0
+          python -m pip install -r ../../infra/dns/requirements.txt
+      - name: Verify staging authoritative Email Sending DNS
+        working-directory: .
+        run: python infra/dns/verify_sending.py
+      - name: Require established staging global hold before provider or schema changes
+        working-directory: .
+        run: python infra/operator/check_send_hold.py --target staging
+      - name: Disable and verify staging user-domain preview and partial suppression drops
+        working-directory: .
+        run: python infra/provider/configure_sending_privacy.py --target staging
+      - name: Verify staging runtime Email Routing Rules read access
+        working-directory: .
+        run: python infra/provider/probe_routing.py
+      - name: Require immutable API capture-off containment attestation
+        run: python ../../infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION" --kind "$AMAIL_TRACE_CONTAINMENT_KIND"
+      - name: Apply staging D1 migrations only
+        run: wrangler d1 migrations apply MAIL_DB --remote --env staging
+      - name: Build Rust Worker bundle
+        run: worker-build --release
+      - name: Recheck staging global hold immediately before Mail replacement
+        working-directory: .
+        run: python infra/operator/check_send_hold.py --target staging
+      - name: Deploy staging Worker with redacted output and exact recovery version
+        id: api
+        working-directory: .
+        run: python infra/deploy/deploy_production_mail.py --target staging
+      - name: Verify private trace producer and consumer ownership
+        working-directory: .
+        run: python infra/deploy/ensure_trace_queues.py --target staging --phase readback --topology api-only
+      - name: Pin new staging Mail immutable bindings and capture-off state
+        working-directory: .
+        env:
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ steps.api.outputs.version }}
+          AMAIL_EXPECTED_TRACE_QUEUE_ID: ${{ needs.staging-trace-sink.outputs.queue_id }}
+        run: python infra/deploy/pin_staging_mail.py --phase queue-api
+      - name: Verify deployed staging mail API observability privacy boundary
+        run: python check_observability.py --realm staging
+      - name: Recheck exact staging sink privacy after Mail deployment
+        working-directory: .
+        env:
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ needs.staging-trace-sink.outputs.sink_version }}
+        run: python crates/mail-worker/check_observability.py --realm staging --mode sink
+      - name: Verify staging public sending remains held after graph readback
+        working-directory: .
+        run: python infra/operator/check_send_hold.py --target staging
+      - name: Smoke test staging API
+        working-directory: .
+        shell: bash
+        # 中文：仅健康 GET 可重试所有网络错误，避免首发 DNS 传播造成误报。
+        # English: Retry all network errors only for the health GET, avoiding false first-deploy DNS failures.
+        run: curl --fail --silent --show-error --retry-all-errors --retry 12 --retry-delay 5 --max-time 10 https://mail-staging.moesegfault.dev/health
+
+  staging-ingress:
+    name: Deploy isolated Rust staging SMTP ingress
+    # Staging is an explicit promotion, never a side effect of a source push.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+    needs: staging-worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: staging
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: workers/mail-ingress
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Rust bundler and Wrangler
+        run: |
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Build Rust Email ingress
+        run: worker-build --release
+      - name: Deploy staging Rust Email-event Worker
+        shell: bash
+        run: |
+          test -n "$INGRESS_SECRET"
+          umask 077
+          mkdir -p ../../.temp
+          trap 'rm -f ../../.temp/ingress-staging-secrets.json' EXIT
+          node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/ingress-staging-secrets.json", JSON.stringify({INGRESS_SECRET: process.env.INGRESS_SECRET}));'
+          wrangler deploy --env staging --secrets-file ../../.temp/ingress-staging-secrets.json
+
+  staging-events:
+    name: Deploy isolated Rust staging lifecycle consumer
+    # Staging is an explicit promotion, never a side effect of a source push.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+    # Serialize same-run resource writers; GitHub otherwise replaces pending siblings.
+    needs: staging-ingress
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: staging
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: workers/mail-events
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Rust bundler and Wrangler
+        run: |
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Ensure staging lifecycle Queue and DLQ
+        working-directory: .
+        run: python infra/deploy/ensure_email_events.py --target staging --phase queues
+      - name: Build Rust lifecycle consumer
+        run: worker-build --release
+      - name: Deploy staging lifecycle consumer
+        run: wrangler deploy --env staging
+      - name: Ensure staging Email Sending Event Subscription
+        working-directory: .
+        run: python infra/deploy/ensure_email_events.py --target staging --phase subscription
+
+  staging-identity-test-inbox:
+    name: Deploy private staging Identity verification inbox
+    # Staging is an explicit promotion, never a side effect of a source push.
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+    needs: [worker, dns, staging-events]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: staging
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Verify deploy credentials
+        shell: bash
+        run: |
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN CF_EMAIL_ROUTING_TOKEN; do
+            if [ -z "${!key}" ]; then
+              echo "::error::Missing $key"
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@v4
+      - name: Set up Rust Wasm target
+        run: |
+          rustup update stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Rust bundler and Wrangler
+        run: |
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Refuse deployment while any public test alias is routed
+        shell: bash
+        run: |
+          state=$(python workers/identity-test-inbox/ensure_route.py --all-absent)
+          if [ "$state" != absent ]; then
+            echo '::error::Close every exact test route before replacing the inbox Worker'
+            exit 1
+          fi
+      - name: Check private staging binding and no HTTP surface
+        run: python workers/identity-test-inbox/check_config.py --live
+      - name: Build private Rust Email Worker
+        working-directory: workers/identity-test-inbox
+        run: worker-build --release
+      - name: Deploy staging Identity test inbox without routing rule
+        working-directory: workers/identity-test-inbox
+        run: wrangler deploy
+      - name: Verify deployment did not open any test alias
+        shell: bash
+        run: |
+          state=$(python workers/identity-test-inbox/ensure_route.py --all-absent)
+          if [ "$state" != absent ]; then
+            echo '::error::Inbox deployment unexpectedly changed Email Routing'
+            exit 1
+          fi
+      - name: Read back deployed recipient allowlist and private bucket
+        run: python workers/identity-test-inbox/check_config.py --live --deployed
+
+  deploy-trace-sink:
+    name: Deploy private production privacy trace sink
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main'
+    needs: [worker, dns]
+    outputs:
+      queue_id: ${{ steps.queues.outputs.queue_id }}
+      dlq_id: ${{ steps.queues.outputs.dlq_id }}
+      sink_version: ${{ steps.sink.outputs.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: production
+    concurrency:
+      group: deploy-trace-sink-production
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      AMAIL_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_PRODUCTION }}
+      AMAIL_TRACE_DLQ_ID: ${{ vars.AMAIL_TRACE_DLQ_ID_PRODUCTION }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      AMAIL_EXPECTED_WORKER_VERSION: ${{ vars.AMAIL_MAIL_VERSION_PRODUCTION }}
+      AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ vars.AMAIL_TRACE_SINK_VERSION_PRODUCTION }}
+      AMAIL_PRODUCTION_GRAPH_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
+      AMAIL_TRACE_TOPOLOGY: api-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned private sink deployment tools
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Require explicit graph lifecycle before any production mutation
+        run: python infra/deploy/prepare_production_graph.py --phase "${{ inputs.target == 'production-api-only-maintenance' && 'api-only-maintenance' || 'bootstrap' }}"
+      - name: Preserve existing strict graph IDs for maintenance; provision only first bootstrap
+        id: queues
+        shell: bash
+        run: |
+          if [ "${{ inputs.target == 'production-api-only-maintenance' && 'api-only-maintenance' || 'bootstrap' }}" = api-only-maintenance ]; then
+            python infra/deploy/ensure_trace_queues.py --target production --phase readback --topology api-only
+            printf 'queue_id=%s\ndlq_id=%s\n' "$AMAIL_TRACE_QUEUE_ID" "$AMAIL_TRACE_DLQ_ID" >> "$GITHUB_OUTPUT"
+          else
+            python infra/deploy/ensure_trace_queues.py --target production --phase queues --topology api-only
+          fi
+      - name: Preserve partial provisioning identity without payloads
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trace-queue-provision-production-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .temp/trace-queue-provision-production.json
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Build private Rust trace consumer
+        working-directory: workers/trace-sink
+        run: worker-build --release
+      - name: Recheck old exact graph immediately before sink replacement
+        if: inputs.target == 'production-api-only-maintenance'
+        run: python infra/deploy/check_production_role_graph.py --phase api-only
+      - name: Deploy Queue-only trace consumer without secrets or HTTP route
+        id: sink
+        working-directory: workers/trace-sink
+        run: python ../../infra/deploy/deploy_trace_sink.py --target production
+      - name: Verify sink retained telemetry and private trigger boundary
+        env:
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ steps.sink.outputs.version }}
+          AMAIL_TRACE_QUEUE_ID: ${{ steps.queues.outputs.queue_id }}
+          AMAIL_TRACE_DLQ_ID: ${{ steps.queues.outputs.dlq_id }}
+        run: python crates/mail-worker/check_observability.py --realm production --mode sink
+
+      - name: Verify new sink in unchanged strict API-only graph
+        if: inputs.target == 'production-api-only-maintenance'
+        env:
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ steps.sink.outputs.version }}
+        run: python infra/deploy/check_production_role_graph.py --phase api-only
+
+  staging-trace-sink:
+    name: Deploy private staging privacy trace sink
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/amail-v0.1.0' && inputs.confirm == 'RUN_STAGING_TRACE_SINK_ROLLOUT'
+    needs: [worker, dns]
+    outputs:
+      queue_id: ${{ steps.queues.outputs.queue_id }}
+      dlq_id: ${{ steps.queues.outputs.dlq_id }}
+      sink_version: ${{ steps.sink.outputs.version }}
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: staging
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      AMAIL_TRACE_CONTAINMENT_RUN: ${{ inputs.trace_containment_run }}
+      AMAIL_TRACE_CONTAINMENT_KIND: ${{ inputs.trace_containment_kind }}
+      AMAIL_TRACE_CONTAINMENT_VERSION: ${{ inputs.expected_worker_version }}
+      AMAIL_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
+      AMAIL_TRACE_DLQ_ID: ${{ vars.AMAIL_TRACE_DLQ_ID_STAGING }}
+      AMAIL_TRACE_TOPOLOGY: api-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require immutable API capture-off containment attestation
+        run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION" --kind "$AMAIL_TRACE_CONTAINMENT_KIND"
+      - name: Install pinned private sink deployment tools
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install worker-build --version 0.8.5 --locked
+          npm install --global wrangler@4.142.0
+      - name: Require established staging global hold before Queue or sink changes
+        run: python infra/operator/check_send_hold.py --target staging
+      - name: Ensure one-day trace Queue and dead-letter Queue
+        id: queues
+        run: python infra/deploy/ensure_trace_queues.py --target staging --phase queues --topology api-only
+      - name: Preserve partial provisioning identity without payloads
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trace-queue-provision-staging-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .temp/trace-queue-provision-staging.json
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Build private Rust trace consumer
+        working-directory: workers/trace-sink
+        run: worker-build --release
+      - name: Deploy Queue-only trace consumer without secrets or HTTP route
+        id: sink
+        working-directory: workers/trace-sink
+        run: python ../../infra/deploy/deploy_trace_sink.py --target staging
+      - name: Verify sink retained telemetry and private trigger boundary
+        env:
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ steps.sink.outputs.version }}
+          AMAIL_TRACE_QUEUE_ID: ${{ steps.queues.outputs.queue_id }}
+          AMAIL_TRACE_DLQ_ID: ${{ steps.queues.outputs.dlq_id }}
+        run: python crates/mail-worker/check_observability.py --realm staging --mode sink
+      - name: Verify staging public sending remains held after sink readback
+        run: python infra/operator/check_send_hold.py --target staging
+      - name: Recheck containment pin after sink deployment
+        run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION" --kind "$AMAIL_TRACE_CONTAINMENT_KIND"
+      - name: Record exact sink and Queue pins only after successful isolation readback
+        env:
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ steps.sink.outputs.version }}
+          AMAIL_TRACE_QUEUE_ID: ${{ steps.queues.outputs.queue_id }}
+          AMAIL_TRACE_DLQ_ID: ${{ steps.queues.outputs.dlq_id }}
+        run: python infra/deploy/trace_rollout_attestation.py --kind sink-deploy

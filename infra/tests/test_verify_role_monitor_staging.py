@@ -1,0 +1,223 @@
+"""Check that the live role-monitor auditor rejects privacy regressions."""
+
+from __future__ import annotations
+
+import importlib.util
+import copy
+from io import BytesIO
+from pathlib import Path
+import unittest
+import os
+from types import SimpleNamespace
+import urllib.error
+import urllib.request
+from unittest.mock import patch
+
+
+PATH = Path(__file__).resolve().parents[1] / "deploy/verify_role_monitor_staging.py"
+SPEC = importlib.util.spec_from_file_location("verify_role_monitor_staging", PATH)
+assert SPEC and SPEC.loader
+audit = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(audit)
+QUEUE_ID = "00000000000000000000000000000001"
+VERSION_ID = "00000000-0000-4000-8000-000000000001"
+DEPLOYMENT_ID = "00000000-0000-4000-8000-000000000002"
+
+
+class RoleMonitorLiveAuditTests(unittest.TestCase):
+    """Reject leaked HTTP surfaces, unsafe observability and cross-realm D1."""
+
+    def bindings(self) -> dict:
+        """Return a representative sanitized provider shape, not real secrets."""
+
+        return {"bindings": [
+            {"type": "d1", "name": "ROLE_MONITOR", "database_id": audit.DATABASE},
+            {"type": "send_email", "name": "ROLE_ALERT"},
+            {"type": "queue", "name": "ROLE_TRACE_EVENTS", "queue_id": QUEUE_ID},
+            {"type": "plain_text", "name": "ROLE_REALM", "text": "staging"},
+            {"type": "plain_text", "name": "CF_ZONE_ID", "text": audit.ZONE},
+            {"type": "secret_text", "name": "ROLE_FORWARD_DESTINATION"},
+        ]}
+
+    def test_provider_redirect_does_not_forward_deployment_bearer(self) -> None:
+        """A 302 is a fixed failed read, never a second-origin credential hop."""
+
+        request = urllib.request.Request(audit.API + "/test")
+        self.assertIsNone(audit.RejectRedirect().redirect_request(
+            request, None, 302, "Found", {}, "https://other.example/"))
+        redirect = urllib.error.HTTPError(request.full_url, 302, "Found",
+                                            {"Location": "https://other.example/"}, BytesIO(b"private"))
+        with patch.object(audit._NO_REDIRECT, "open", side_effect=redirect) as opener:
+            with self.assertRaisesRegex(RuntimeError, "^Cloudflare API read failed: HTTP 302$"):
+                audit.api_get("/test", "secret")
+        self.assertEqual(opener.call_count, 1)
+
+    def test_bindings_reject_production_database(self) -> None:
+        """A correctly named binding must still target the isolated staging ID."""
+
+        settings = self.bindings()
+        audit.inspect_bindings(settings, QUEUE_ID)
+        settings["bindings"][0]["database_id"] = "production-db-id"
+        with self.assertRaisesRegex(RuntimeError, "D1 database differs"):
+            audit.inspect_bindings(settings, QUEUE_ID)
+
+    def test_bindings_reject_extra_storage_capability(self) -> None:
+        """An unrelated storage binding broadens the private Worker's reach."""
+
+        settings = self.bindings()
+        settings["bindings"].append({"type": "r2_bucket", "name": "RAW_MAIL"})
+        with self.assertRaisesRegex(RuntimeError, "unexpected capability binding"):
+            audit.inspect_bindings(settings, QUEUE_ID)
+
+    def test_effective_observability_rejects_automatic_capture(self) -> None:
+        """Current Worker settings must explicitly disable every independent collector."""
+
+        obs = {"enabled": False, "logs": {"enabled": False},
+               "traces": {"enabled": False}, "issues": {"enabled": False}}
+        worker = {"name": audit.WORKER, "id": "synthetic-worker",
+                  "logpush": False, "tail_consumers": [], "observability": obs}
+        audit.inspect_observability({"observability": None}, {}, worker)
+        for key in ("logs", "traces", "issues"):
+            changed = {**obs, key: {"enabled": True}}
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                audit.inspect_observability({}, {}, {**worker, "observability": changed})
+        for missing in ({}, {"observability": obs}, {**worker, "observability": None}):
+            with self.assertRaises(RuntimeError):
+                audit.inspect_observability({}, {}, missing)
+        missing_issues = {key: value for key, value in obs.items() if key != "issues"}
+        with self.assertRaises(RuntimeError):
+            audit.inspect_observability({}, {}, {**worker, "observability": missing_issues})
+        with self.assertRaises(RuntimeError):
+            audit.inspect_observability({"observability": {"logs": {"enabled": True}}}, {}, worker)
+
+    def test_bindings_require_reviewed_queue_id_not_name(self) -> None:
+        """A renamed or cross-realm Queue cannot satisfy the producer capability pin."""
+
+        settings = self.bindings()
+        audit.inspect_bindings(settings, QUEUE_ID)
+        for changed in ("another-queue", "00000000000000000000000000000002"):
+            settings["bindings"][2]["queue_id"] = changed
+            with self.assertRaisesRegex(RuntimeError, "Queue binding differs"):
+                audit.inspect_bindings(settings, QUEUE_ID)
+
+    def deployment(self) -> dict:
+        """Build a synthetic single-100 serving record for orchestration tests."""
+
+        return {"deployments": [{"id": DEPLOYMENT_ID, "strategy": "percentage",
+                                  "versions": [{"version_id": VERSION_ID, "percentage": 100}]}]}
+
+    def worker(self) -> dict:
+        """Positive collector switches are separate from immutable serving resources."""
+
+        return {"name": audit.WORKER, "id": "synthetic-worker", "logpush": False,
+                "tail_consumers": [], "observability": {"enabled": False,
+                "logs": {"enabled": False}, "traces": {"enabled": False},
+                "issues": {"enabled": False}}}
+
+    def provider(self, serving: dict, before: dict | None = None, after: dict | None = None):
+        """Supply safe unversioned settings while independently controlling serving bindings."""
+
+        deployments = iter([before or self.deployment(), after or self.deployment()])
+        base = "/accounts/" + "0" * 32 + "/workers/scripts/" + audit.WORKER
+        responses = {
+            base + "/versions/" + VERSION_ID: serving,
+            base + "/settings": self.bindings(),
+            base + "/script-settings": {"observability": None},
+            "/accounts/" + "0" * 32 + "/workers/workers/" + audit.WORKER: self.worker(),
+            base + "/subdomain": {"enabled": False, "previews_enabled": False},
+            "/zones/" + audit.ZONE + "/workers/routes": [],
+            "/accounts/" + "0" * 32 + "/workers/domains?service=" + audit.WORKER: [],
+        }
+
+        def read(path: str, token: str) -> object:
+            """Never perform network I/O; an unexpected endpoint is a test failure."""
+
+            if path == base + "/deployments?per_page=1&page=1":
+                return next(deployments)
+            return copy.deepcopy(responses[path])
+
+        return read
+
+    def test_audit_accepts_only_exact_serving_resource_shapes(self) -> None:
+        """Both reviewed binding shapes pass the real orchestration with exact pins."""
+
+        for bindings in (self.bindings()["bindings"], {"result": self.bindings()["bindings"]}):
+            serving = {"id": VERSION_ID, "resources": {"bindings": bindings}}
+            with (self.subTest(wrapped=isinstance(bindings, dict)),
+                  patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "0" * 32,
+                     "CLOUDFLARE_API_TOKEN": "synthetic", "CF_ZONE_ID": audit.ZONE,
+                     "AMAIL_EXPECTED_ROLE_WORKER_VERSION": VERSION_ID,
+                     "AMAIL_EXPECTED_TRACE_QUEUE_ID": QUEUE_ID}),
+                  patch.object(audit, "api_get", side_effect=self.provider(serving)) as read,
+                  patch.object(audit.subprocess, "run", return_value=SimpleNamespace(
+                      returncode=0, stdout="absent")),
+                  patch.object(audit, "inspect_d1") as ledger):
+                audit.audit()
+                ledger.assert_called_once()
+                self.assertTrue(any(call.args[0].endswith("/versions/" + VERSION_ID)
+                                    for call in read.call_args_list))
+
+    def test_audit_cannot_substitute_safe_unversioned_bindings(self) -> None:
+        """Wrong/missing serving resources fail even if /settings has safe Queue and D1."""
+
+        safe = {"id": VERSION_ID, "resources": self.bindings()}
+        wrong_queue = copy.deepcopy(safe)
+        wrong_queue["resources"]["bindings"][2]["queue_id"] = "f" * 32
+        wrong_db = copy.deepcopy(safe)
+        wrong_db["resources"]["bindings"][0]["database_id"] = "wrong-db"
+        for serving in (wrong_queue, wrong_db, {}, {"id": VERSION_ID},
+                        {"id": DEPLOYMENT_ID, "resources": self.bindings()},
+                        {"id": VERSION_ID, "resources": {"bindings": {"unknown": []}}}):
+            with (self.subTest(serving=serving),
+                  patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "0" * 32,
+                     "CLOUDFLARE_API_TOKEN": "synthetic", "CF_ZONE_ID": audit.ZONE,
+                     "AMAIL_EXPECTED_ROLE_WORKER_VERSION": VERSION_ID,
+                     "AMAIL_EXPECTED_TRACE_QUEUE_ID": QUEUE_ID}),
+                  patch.object(audit, "api_get", side_effect=self.provider(serving)),
+                  patch.object(audit.subprocess, "run") as route,
+                  patch.object(audit, "inspect_d1") as ledger):
+                with self.assertRaises(RuntimeError):
+                    audit.audit()
+                route.assert_not_called()
+                ledger.assert_not_called()
+
+    def test_audit_rejects_split_or_changed_serving_deployment(self) -> None:
+        """The first/last pin cannot authorize split traffic or a mid-read replacement."""
+
+        split = self.deployment()
+        split["deployments"][0]["versions"] = [
+            {"version_id": VERSION_ID, "percentage": 50},
+            {"version_id": DEPLOYMENT_ID, "percentage": 50}]
+        drift = self.deployment()
+        drift["deployments"][0]["id"] = "00000000-0000-4000-8000-000000000003"
+        safe = {"id": VERSION_ID, "resources": self.bindings()}
+        for before, after in ((split, self.deployment()), (self.deployment(), drift)):
+            with (patch.object(audit, "api_get", side_effect=self.provider(safe, before, after)),
+                  self.assertRaises(RuntimeError)):
+                audit.inspect_deployment("0" * 32, "synthetic", audit.ZONE, VERSION_ID, QUEUE_ID)
+
+    def test_missing_pins_stop_before_any_provider_read(self) -> None:
+        """No caller can use backward-compatible defaults to waive version or Queue identity."""
+
+        with (patch.dict(os.environ, {}, clear=True), patch.object(audit, "api_get") as read):
+            with self.assertRaisesRegex(RuntimeError, "reviewed serving pin unavailable"):
+                audit.audit()
+            read.assert_not_called()
+
+    def test_http_surface_rejects_each_exposure(self) -> None:
+        """An Email/Cron-only Worker must be inaccessible through HTTP."""
+
+        private = {"enabled": False, "previews_enabled": False}
+        audit.inspect_surfaces(private, [], [])
+        for subdomain, routes, domains in (
+            ({"enabled": True, "previews_enabled": False}, [], []),
+            ({"enabled": False, "previews_enabled": True}, [], []),
+            (private, [{"script": audit.WORKER}], []),
+            (private, [], [{"service": audit.WORKER}]),
+        ):
+            with self.subTest(subdomain=subdomain, routes=routes, domains=domains), self.assertRaises(RuntimeError):
+                audit.inspect_surfaces(subdomain, routes, domains)
+
+
+if __name__ == "__main__":
+    unittest.main()

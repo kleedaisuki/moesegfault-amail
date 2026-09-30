@@ -1,0 +1,53 @@
+# Native Email Sending Queue consumer. / 原生邮件发送事件队列消费者。
+name = "amail-events"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-09-25"
+workers_dev = false
+
+[vars]
+CF_ACCOUNT_ID = "07109e406d4e1ab7a0997dd399db6fd5"
+CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"
+MAIL_DOMAIN = "mail.moesegfault.dev"
+
+[[d1_databases]]
+binding = "MAIL_DB"
+database_name = "moesegfault-mail-production"
+database_id = "ad06f7f3-8897-4150-b9a9-7a46a8e55b30"
+
+[[queues.consumers]]
+queue = "amail-sending-events"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+retry_delay = 120
+dead_letter_queue = "amail-sending-events-dlq"
+
+# Queue payload contains recipient, sender, subject and SMTP response.
+# 队列负载包含收发件人、标题和 SMTP 响应，禁用自动观测以免泄漏。
+[observability]
+enabled = false
+
+[env.staging]
+name = "amail-events-staging"
+workers_dev = false
+
+[env.staging.vars]
+CF_ACCOUNT_ID = "07109e406d4e1ab7a0997dd399db6fd5"
+CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"
+MAIL_DOMAIN = "mail-staging.moesegfault.dev"
+
+[[env.staging.d1_databases]]
+binding = "MAIL_DB"
+database_name = "moesegfault-mail-staging"
+database_id = "74f35f95-42ce-482c-86e6-dffbdd35cbbe"
+
+[[env.staging.queues.consumers]]
+queue = "amail-sending-events-staging"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+retry_delay = 120
+dead_letter_queue = "amail-sending-events-dlq-staging"
+
+[env.staging.observability]
+enabled = false

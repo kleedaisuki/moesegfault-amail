@@ -1,0 +1,57 @@
+# Private application trace sink; Queue handler only, no public or private HTTP invocation.
+name = "amail-trace-sink"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-09-30"
+workers_dev = false
+preview_urls = false
+
+[[queues.consumers]]
+queue = "amail-trace-events"
+max_batch_size = 10
+max_batch_timeout = 1
+max_retries = 3
+retry_delay = 30
+max_concurrency = 2
+dead_letter_queue = "amail-trace-dlq"
+
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+redact_query_string = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1.0
+invocation_logs = false
+persist = true
+
+[observability.traces]
+enabled = false
+
+[env.staging]
+name = "amail-trace-sink-staging"
+workers_dev = false
+preview_urls = false
+
+[[env.staging.queues.consumers]]
+queue = "amail-trace-events-staging"
+max_batch_size = 10
+max_batch_timeout = 1
+max_retries = 3
+retry_delay = 30
+max_concurrency = 2
+dead_letter_queue = "amail-trace-dlq-staging"
+
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1.0
+redact_query_string = true
+
+[env.staging.observability.logs]
+enabled = true
+head_sampling_rate = 1.0
+invocation_logs = false
+persist = true
+
+[env.staging.observability.traces]
+enabled = false

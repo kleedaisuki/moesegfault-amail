@@ -1,0 +1,2 @@
+# BaseLoader preserves GitHub's `on` key without YAML 1.1 Boolean conversion.
+PyYAML==6.0.3

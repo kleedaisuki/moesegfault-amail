@@ -1,0 +1,316 @@
+# 中文：main 手动运行只验证发布包；仅版本标签可发布并通过出站发布门禁。
+# English: Manual main runs verify bundles; only version tags can pass the send gate and publish.
+name: Release amail CLI
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Verify release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require trusted source and matching site/CLI version
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -n '/^\[package\]/,/^\[/{s/^version *= *"\([^"]*\)"/\1/p;}' crates/amail/Cargo.toml | head -n 1)
+          test -n "$version"
+          site_version=$(python -c 'import json; print(json.load(open("site/package.json"))["version"])')
+          test "$site_version" = "$version"
+          case "$GITHUB_EVENT_NAME:$GITHUB_REF" in
+            push:refs/tags/v*)
+              git fetch origin main
+              git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+              test "v$version" = "$GITHUB_REF_NAME"
+              ;;
+            workflow_dispatch:refs/heads/main) ;;
+            *) echo '::error::Untrusted release source'; exit 1 ;;
+          esac
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update stable Rust toolchain
+        run: rustup update stable
+      - name: Test CLI on release platform
+        run: cargo test -p amail --locked --all-targets
+      - name: Build release binary
+        run: cargo build -p amail --locked --release
+      - name: Archive Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p release-payload
+          cp target/release/amail README.md LICENSE release-payload/
+          tar -C release-payload -czf "amail-${RELEASE_TAG}-${{ matrix.target }}.tar.gz" amail README.md LICENSE
+      - name: Archive Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-payload | Out-Null
+          Copy-Item target/release/amail.exe,README.md,LICENSE release-payload/
+          Compress-Archive -Path release-payload/* -DestinationPath "amail-$($env:RELEASE_TAG)-${{ matrix.target }}.zip" -Force
+      - name: Attest release archive
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest@v4
+        with:
+          subject-path: amail-${{ needs.preflight.outputs.tag }}-${{ matrix.target }}.*
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: amail-${{ matrix.target }}
+          path: amail-${{ needs.preflight.outputs.tag }}-${{ matrix.target }}.*
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble:
+    name: Assemble and verify release bundle
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: amail-*
+          path: dist
+          merge-multiple: true
+      - name: Package agent skill
+        shell: bash
+        run: |
+          test -f skills/amail/SKILL.md
+          cd skills
+          zip -q -r "../dist/amail-agent-skill-${RELEASE_TAG}.zip" amail
+      - name: Attest agent skill bundle
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/amail-agent-skill-${{ needs.preflight.outputs.tag }}.zip
+      - name: Generate and verify release checksums
+        shell: bash
+        run: |
+          cd dist
+          find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 6
+          sha256sum --check SHA256SUMS
+      - name: Upload verified bundle for dry-run inspection or publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle-${{ needs.preflight.outputs.tag }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  send-release-gate:
+    name: Require production outbound release attestations
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check production health and read-only D1 send release state
+        run: python infra/release/check_send_gate.py
+
+  publish:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [preflight, assemble, send-release-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundle-${{ needs.preflight.outputs.tag }}
+          path: dist
+      - name: Create immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release create "${{ needs.preflight.outputs.tag }}" dist/* --verify-tag --generate-notes --title "${{ needs.preflight.outputs.tag }}"
+
+  verify-published:
+    name: Verify published Release asset bytes
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [preflight, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundle-${{ needs.preflight.outputs.tag }}
+          path: .temp/release-assembled
+      - name: Download every published asset into repository temp
+        shell: bash
+        run: |
+          mkdir -p .temp/release-published
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir .temp/release-published
+      - name: Require exact published names and checksum-matching bytes
+        shell: bash
+        run: python infra/release/verify_published_assets.py .temp/release-published "$RELEASE_TAG" --trusted-manifest .temp/release-assembled/SHA256SUMS
+
+  launch-site:
+    name: Launch public site after release assets
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: verify-published
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: deploy-site-production
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: site
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Verify Cloudflare deploy credentials
+        working-directory: .
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - name: Require deployed mail API before public launch
+        working-directory: .
+        shell: bash
+        run: curl --fail --silent --show-error --retry 6 --retry-delay 5 https://mail.moesegfault.dev/health > /dev/null
+      - name: Install locked site dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build launch site
+        env:
+          AMAIL_RELEASE_STATE: published
+        run: pnpm build
+      - name: Verify published site copy before launch
+        run: pnpm check:release-state published
+      - name: Deploy public launch site
+        run: pnpm run deploy
+      - name: Smoke test public launch pages
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .temp
+          smoke_dir=$(mktemp -d .temp/site-smoke.XXXXXX)
+          trap 'rm -f -- "$smoke_dir"/*.html "$smoke_dir"/*.headers; rmdir -- "$smoke_dir"' EXIT
+          # One GET per exact public route; curl does not follow redirects.
+          for route in home manual changelog; do
+            path=/
+            if [ "$route" != home ]; then path="/$route/"; fi
+            status=$(curl --fail --silent --show-error --retry 6 --retry-delay 5 \
+              --dump-header "$smoke_dir/$route.headers" --output "$smoke_dir/$route.html" \
+              --write-out '%{http_code}' "https://amail.moesegfault.dev$path")
+            if [ "$status" != 200 ]; then
+              echo "::error::$route: expected HTTP 200, got $status"
+              exit 1
+            fi
+          done
+          python - "$smoke_dir" <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          import re
+          import sys
+
+          class Anchors(HTMLParser):
+              """Collect actual anchor href attributes, excluding lookalike attributes."""
+
+              def __init__(self):
+                  super().__init__()
+                  self.hrefs = set()
+
+              def handle_starttag(self, tag, attrs):
+                  if tag == 'a':
+                      self.hrefs.update(value for name, value in attrs if name == 'href')
+
+          pages = {
+              'home': ('v0.1.0 已发布', 'v0.1.0 尚未发布'),
+              'manual': ('v0.1.0 已发布', 'v0.1.0 尚未开放下载'),
+              'changelog': ('v0.1.0 已正式发布', 'v0.1.0 仍在验收'),
+          }
+          tag_url = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0'
+          root = Path(sys.argv[1])
+          for route, (published, candidate) in pages.items():
+              html = (root / f'{route}.html').read_text(encoding='utf-8')
+              headers = (root / f'{route}.headers').read_text(encoding='utf-8')
+              anchors = Anchors()
+              anchors.feed(html)
+              if published not in html or candidate in html or tag_url not in anchors.hrefs:
+                  raise SystemExit(f'::error::{route}: published copy or exact Release href is missing, or candidate copy remains')
+              if re.search('noindex', html, re.IGNORECASE) or re.search(r'^x-robots-tag\s*:[^\r\n]*\bnoindex\b', headers, re.IGNORECASE | re.MULTILINE):
+                  raise SystemExit(f'::error::{route}: production response must be indexable')
+          PY

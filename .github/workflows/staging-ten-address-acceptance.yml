@@ -1,0 +1,177 @@
+name: Guarded staging ten-address acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: One quota campaign or same-manifest recovery; never account provisioning
+        type: choice
+        options: [accept, recover]
+        default: accept
+        required: true
+      confirm:
+        description: RUN_STAGING_TEN_ADDRESSES or RECOVER_STAGING_TEN_ADDRESSES
+        type: string
+        required: true
+      source_run:
+        description: Successful six-job source CI for this exact checkout SHA
+        type: string
+        required: true
+      prior_run:
+        description: Original attempt-1 quota run; recovery only
+        type: string
+        default: ''
+      artifact_id:
+        description: Exact immutable original ciphertext artifact ID; recovery only
+        type: string
+        default: ''
+      mail_phase:
+        description: Reviewed current Mail binding contract; no deployment occurs
+        type: choice
+        options: [pre-queue, queue-api]
+        default: pre-queue
+        required: true
+      queue_id:
+        description: Exact reviewed trace Queue ID when mail_phase is queue-api
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  quota:
+    name: Guarded hosted staging quota and exact recovery
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0' &&
+      github.run_attempt == 1
+    runs-on: windows-latest
+    environment: staging
+    # Existing reviewed per-address retirement can take one Cron window each.
+    # Do not run live until the separately reviewed bounded shared settlement exists.
+    timeout-minutes: 80
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PUBLIC_SOURCE_RUN: ${{ inputs.source_run }}
+      PUBLIC_PRIOR_RUN: ${{ inputs.prior_run }}
+      PUBLIC_ARTIFACT_ID: ${{ inputs.artifact_id }}
+      PUBLIC_QUOTA_MODE: ${{ inputs.mode }}
+      PUBLIC_QUOTA_CONFIRM: ${{ inputs.confirm }}
+      PUBLIC_MAIL_PHASE: ${{ inputs.mail_phase }}
+      PUBLIC_QUEUE_ID: ${{ inputs.queue_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact original staging invocation before Secrets
+        run: |
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1' -or $env:GITHUB_REF -cne 'refs/heads/codex/amail-v0.1.0') { throw 'quota_dispatch_unconfirmed' }
+          if ($env:PUBLIC_SOURCE_RUN -cnotmatch '^[1-9][0-9]{0,19}$') { throw 'quota_source_run_invalid' }
+          if ($env:PUBLIC_QUOTA_MODE -ceq 'accept') {
+            if ($env:PUBLIC_QUOTA_CONFIRM -cne 'RUN_STAGING_TEN_ADDRESSES' -or $env:PUBLIC_PRIOR_RUN -or $env:PUBLIC_ARTIFACT_ID) { throw 'quota_dispatch_unconfirmed' }
+          } elseif ($env:PUBLIC_QUOTA_MODE -ceq 'recover') {
+            if ($env:PUBLIC_QUOTA_CONFIRM -cne 'RECOVER_STAGING_TEN_ADDRESSES' -or $env:PUBLIC_PRIOR_RUN -cnotmatch '^[1-9][0-9]{0,19}$' -or $env:PUBLIC_ARTIFACT_ID -cnotmatch '^[1-9][0-9]{0,19}$') { throw 'quota_recovery_unconfirmed' }
+          } else { throw 'quota_dispatch_unconfirmed' }
+          if ($env:PUBLIC_MAIL_PHASE -ceq 'pre-queue') {
+            if ($env:PUBLIC_QUEUE_ID) { throw 'quota_phase_unreviewed' }
+          } elseif ($env:PUBLIC_MAIL_PHASE -ceq 'queue-api') {
+            if ($env:PUBLIC_QUEUE_ID -cnotmatch '^[a-f0-9]{32}$') { throw 'quota_phase_unreviewed' }
+          } else { throw 'quota_phase_unreviewed' }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned hosted native and recovery dependencies
+        run: |
+          python -m pip install --only-binary=:all: -r infra/tests/ten_address_requirements.txt pywin32==312 websocket-client==1.9.2
+          if ($LASTEXITCODE -ne 0) { throw 'quota_dependencies_unverified' }
+      - name: Run synthetic quota composition and real cipher tests before Secrets
+        run: |
+          python infra/tests/staging_ten_address_crypto_check.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'quota_cipher_tests_failed' }
+          python -m unittest discover -s infra/tests -p 'test_staging_ten_address*.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'quota_composition_tests_failed' }
+      - name: Prepare immutable encrypted baseline without alias mutation
+        id: prepare
+        if: inputs.mode == 'accept'
+        env:
+          AMAIL_QUOTA_ENVIRONMENT: staging
+          AMAIL_QUOTA_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_TEN_ADDRESS_KEY_GENERATION: ten-address-v1
+          AMAIL_TEN_ADDRESS_RECOVERY_KEY: ${{ secrets.AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1 }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+        run: |
+          $arguments = @('prepare', '--source-run', $env:PUBLIC_SOURCE_RUN, '--mail-phase', $env:PUBLIC_MAIL_PHASE)
+          if ($env:PUBLIC_QUEUE_ID) { $arguments += @('--queue-id', $env:PUBLIC_QUEUE_ID) }
+          python infra/tests/staging_ten_address_acceptance.py @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'quota_prepare_unverified' }
+      - name: Retain exact recovery ciphertext before any alias mutation
+        id: recovery_artifact
+        if: inputs.mode == 'accept'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ten-address-recovery-${{ github.run_id }}
+          path: .temp/ten-address-recovery-${{ github.run_id }}/manifest.bin
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 30
+      - name: Run one serial quota campaign after exact artifact readback
+        id: campaign
+        if: inputs.mode == 'accept' && steps.recovery_artifact.outputs.artifact-id != ''
+        env:
+          ORIGINAL_ARTIFACT_ID: ${{ steps.recovery_artifact.outputs.artifact-id }}
+          AMAIL_QUOTA_ENVIRONMENT: staging
+          AMAIL_QUOTA_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_TEN_ADDRESS_KEY_GENERATION: ten-address-v1
+          AMAIL_TEN_ADDRESS_RECOVERY_KEY: ${{ secrets.AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1 }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+        run: |
+          if ($env:ORIGINAL_ARTIFACT_ID -cnotmatch '^[1-9][0-9]{0,19}$') { throw 'quota_artifact_unverified' }
+          $arguments = @('campaign', '--source-run', $env:PUBLIC_SOURCE_RUN, '--artifact-id', $env:ORIGINAL_ARTIFACT_ID, '--mail-phase', $env:PUBLIC_MAIL_PHASE)
+          if ($env:PUBLIC_QUEUE_ID) { $arguments += @('--queue-id', $env:PUBLIC_QUEUE_ID) }
+          python infra/tests/staging_ten_address_acceptance.py @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'quota_campaign_unverified' }
+      - name: Same original manifest recovery without add capability
+        id: recovery
+        if: inputs.mode == 'recover'
+        env:
+          AMAIL_QUOTA_ENVIRONMENT: staging
+          AMAIL_QUOTA_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_TEN_ADDRESS_KEY_GENERATION: ten-address-v1
+          AMAIL_TEN_ADDRESS_RECOVERY_KEY: ${{ secrets.AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1 }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+        run: |
+          $arguments = @('recover', '--source-run', $env:PUBLIC_SOURCE_RUN, '--prior-run', $env:PUBLIC_PRIOR_RUN, '--artifact-id', $env:PUBLIC_ARTIFACT_ID, '--mail-phase', $env:PUBLIC_MAIL_PHASE)
+          if ($env:PUBLIC_QUEUE_ID) { $arguments += @('--queue-id', $env:PUBLIC_QUEUE_ID) }
+          python infra/tests/staging_ten_address_acceptance.py @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'quota_recovery_unverified' }
+      - name: Reject skipped campaign authority
+        if: inputs.mode == 'accept' && steps.campaign.outcome == 'skipped'
+        run: throw 'quota_campaign_not_executed'
+      - name: Record recovery availability without plaintext
+        if: always() && inputs.mode == 'accept' && steps.recovery_artifact.outputs.artifact-id != ''
+        run: Write-Output 'ten_address_immutable_recovery_artifact_retained'

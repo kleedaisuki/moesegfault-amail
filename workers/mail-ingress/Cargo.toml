@@ -1,0 +1,15 @@
+[package]
+name = "amail-ingress"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+worker = "0.8.7"
+uuid = { version = "1", features = ["v4", "js"] }
+js-sys = "0.3"
+futures-util = "0.3"

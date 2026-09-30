@@ -1,0 +1,42 @@
+# Configuration evidence only: GET-only provider reads, scoped D1 health, no unhold.
+name: Refresh adopted direct-forward contact health
+
+on:
+  schedule:
+    # Avoid the top-of-hour contention window; schedule delivery is not an SLA.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Realm to observe; hourly schedule always observes production
+        required: true
+        default: production
+        type: choice
+        options: [staging, production]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: amail-direct-contact-${{ inputs.target || 'production' }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # No approval-dependent environment: expiry remains fail-closed if runs stop.
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Observe adopted policy or prove unadopted global hold
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+          INPUT_TARGET: ${{ inputs.target || 'production' }}
+          INPUT_SKIP_UNADOPTED_HELD: 'true'
+        run: python infra/operator/direct_contact_health.py

@@ -1,0 +1,6 @@
+# Only workerd's reviewed native binary validation may run an install script.
+allowBuilds:
+  workerd: true
+overrides:
+  # Stable Miniflare v4 pins vulnerable undici 7.28.0; keep its major API.
+  undici: 7.29.0

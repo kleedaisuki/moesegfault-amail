@@ -1,0 +1,30 @@
+name = "amail-inbound"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-09-25"
+workers_dev = false
+
+[vars]
+MAIL_API_ORIGIN = "https://mail.moesegfault.dev"
+
+[[services]]
+binding = "MAIL_API"
+service = "amail-mail"
+
+# Email events contain unredactable envelope addresses in automatic spans.
+# 邮件事件自动链路可能包含无法在应用层脱敏的信封地址，故禁用此适配器观测。
+[observability]
+enabled = false
+
+[env.staging]
+name = "amail-inbound-staging"
+workers_dev = false
+
+[env.staging.vars]
+MAIL_API_ORIGIN = "https://mail-staging.moesegfault.dev"
+
+[[env.staging.services]]
+binding = "MAIL_API"
+service = "amail-mail-staging"
+
+[env.staging.observability]
+enabled = false

@@ -1,0 +1,261 @@
+"""Offline contract tests for the private staging role-monitor SMTP harness."""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[2]
+TEMP = ROOT / ".temp"
+SPEC = importlib.util.spec_from_file_location("role_acceptance", ROOT / "workers/role-monitor/acceptance.py")
+assert SPEC is not None and SPEC.loader is not None
+ACCEPTANCE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(ACCEPTANCE)
+
+
+class RoleAcceptanceTests(unittest.TestCase):
+    """Check the state machine without touching Cloudflare or SMTP."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Create the ignored repository-local test parent on fresh CI runners."""
+
+        TEMP.mkdir(parents=True, exist_ok=True)
+        if not TEMP.is_dir() or TEMP.resolve().parent != ROOT.resolve():
+            raise AssertionError("role acceptance test temp must stay in repository")
+
+    def test_transient_unknown_is_pending_not_failure(self) -> None:
+        """A D1 read between insert and forward resolution must be tolerated."""
+
+        states = iter([
+            {"n": 1, "unknown_n": 1, "accepted_n": 0, "unalerted_n": 1, "malformed_n": 0},
+            {"n": 1, "unknown_n": 0, "accepted_n": 1, "unalerted_n": 1, "malformed_n": 0},
+            {"n": 1, "unknown_n": 0, "accepted_n": 1, "unalerted_n": 0, "malformed_n": 0},
+        ])
+        with (patch.object(ACCEPTANCE, "arrival", side_effect=lambda _: next(states)),
+              patch.object(ACCEPTANCE, "row", return_value={"checked_at": 100, "lease_until": 10**15}),
+              patch.object(ACCEPTANCE.time, "sleep"),
+              patch.object(ACCEPTANCE.time, "time", return_value=100)):
+            self.assertEqual(ACCEPTANCE.poll(2, 100), (True, True))
+
+    def test_unknown_is_bounded(self) -> None:
+        """Persistently unresolved forwarding is not reported as accepted."""
+
+        state = {"n": 1, "unknown_n": 1, "accepted_n": 0, "unalerted_n": 1, "malformed_n": 0}
+        with (patch.object(ACCEPTANCE, "arrival", return_value=state),
+              patch.object(ACCEPTANCE.time, "sleep"),
+              patch.object(ACCEPTANCE.time, "monotonic", side_effect=[0, 1, 2, 3, 121, 122])):
+            with self.assertRaisesRegex(ACCEPTANCE.ProbeError, "role_forward_persistently_unknown"):
+                ACCEPTANCE.poll(0, 0)
+
+    def test_cleanup_removes_only_owned_alias_and_checks_standard_rules(self) -> None:
+        """Removal/readback must be exact, and recovery marker survives failure."""
+
+        with tempfile.TemporaryDirectory(dir=TEMP) as temp:
+            marker = Path(temp) / "route-open.marker"
+            marker.write_text("armed", encoding="ascii")
+            before = {"abuse@moesegfault.dev": ("rule", "private-target")}
+            with (patch.object(ACCEPTANCE, "MARKER", marker),
+                  patch.object(ACCEPTANCE.ROUTE, "remove_if_id", return_value="removed") as remove,
+                  patch.object(ACCEPTANCE.ROUTE, "reconcile", side_effect=["absent", "absent"]) as route,
+                  patch.object(ACCEPTANCE, "standard_rules", return_value=before),
+                  patch.object(ACCEPTANCE.time, "sleep")):
+                ACCEPTANCE.cleanup("zone", "token", before, "owned-id")
+            remove.assert_called_once_with("zone", "token", "owned-id")
+            self.assertEqual([call.args[2] for call in route.call_args_list], ["audit", "audit"])
+            self.assertFalse(marker.exists())
+
+    def test_cleanup_failure_preserves_recovery_marker(self) -> None:
+        """A route still present cannot be silently converted into a pass."""
+
+        with tempfile.TemporaryDirectory(dir=TEMP) as temp:
+            marker = Path(temp) / "route-open.marker"
+            marker.write_text("armed", encoding="ascii")
+            with (patch.object(ACCEPTANCE, "MARKER", marker),
+                  patch.object(ACCEPTANCE.ROUTE, "remove_if_id", return_value="removed"),
+                  patch.object(ACCEPTANCE.ROUTE, "reconcile", side_effect=["enabled"]),
+                  patch.object(ACCEPTANCE, "standard_rules", return_value={})):
+                with self.assertRaisesRegex(ACCEPTANCE.ProbeError, "route_cleanup_not_absent"):
+                    ACCEPTANCE.cleanup("zone", "token", {}, "owned-id")
+            self.assertTrue(marker.exists())
+
+    def test_late_route_reappearance_preserves_recovery_marker(self) -> None:
+        """An ambiguous create cannot pass on one temporarily absent inventory."""
+
+        with tempfile.TemporaryDirectory(dir=TEMP) as temp:
+            marker = Path(temp) / "route-open.marker"
+            marker.write_text("armed", encoding="ascii")
+            with (patch.object(ACCEPTANCE, "MARKER", marker),
+                  patch.object(ACCEPTANCE.ROUTE, "remove_if_id", return_value="absent"),
+                  patch.object(ACCEPTANCE.ROUTE, "reconcile", side_effect=["absent", "enabled"]),
+                  patch.object(ACCEPTANCE, "standard_rules", return_value={}),
+                  patch.object(ACCEPTANCE.time, "sleep")):
+                with self.assertRaisesRegex(ACCEPTANCE.ProbeError, "route_cleanup_late_rule"):
+                    ACCEPTANCE.cleanup("zone", "token", {}, "owned-id")
+            self.assertTrue(marker.exists())
+
+    def test_unknown_id_never_authorizes_remove(self) -> None:
+        """An ambiguous POST timeout must leave a present matching rule untouched."""
+
+        with tempfile.TemporaryDirectory(dir=TEMP) as temp:
+            marker = Path(temp) / "route-open.marker"
+            marker.write_text('{"version":1,"route_id":null}\n', encoding="ascii")
+            with (patch.object(ACCEPTANCE, "MARKER", marker),
+                  patch.object(ACCEPTANCE.ROUTE, "reconcile", return_value="enabled"),
+                  patch.object(ACCEPTANCE.ROUTE, "remove_if_id") as remove,
+                  patch.object(ACCEPTANCE, "standard_rules", return_value={})):
+                with self.assertRaisesRegex(ACCEPTANCE.ProbeError, "route_cleanup_not_absent"):
+                    ACCEPTANCE.recover("zone", "token")
+            remove.assert_not_called()
+            self.assertTrue(marker.exists())
+
+    def test_send_preflight_uses_smtp_token(self) -> None:
+        """The audit token need not also carry Email Sending read permission."""
+
+        with (patch.object(sys, "argv", ["acceptance.py", "--confirm-staging-smtp"]),
+              patch.dict(os.environ, {"AMAIL_TEST_SMTP_TOKEN": "smtp-token"}),
+              patch.object(ACCEPTANCE, "credentials", return_value=("zone", "routing", "account")),
+              patch.object(ACCEPTANCE, "preflight", return_value=({}, 0)),
+              patch.object(ACCEPTANCE.SMTP, "assert_staging_sender") as sender,
+              patch.object(ACCEPTANCE, "arm_marker"),
+              patch.object(ACCEPTANCE.ROUTE, "create_owned", side_effect=RuntimeError("ambiguous"))):
+            self.assertEqual(ACCEPTANCE.main(), 1)
+        sender.assert_called_once_with("zone", "smtp-token")
+
+    def test_read_only_preflight_does_not_require_smtp_token(self) -> None:
+        """A read-only audit reports sender readiness as untested."""
+
+        with (patch.object(sys, "argv", ["acceptance.py", "--preflight"]),
+              patch.object(ACCEPTANCE, "credentials", return_value=("zone", "routing", "account")),
+              patch.object(ACCEPTANCE, "preflight", return_value=({}, 0)),
+              patch.object(ACCEPTANCE.SMTP, "assert_staging_sender") as sender):
+            self.assertEqual(ACCEPTANCE.main(), 0)
+        sender.assert_not_called()
+
+    def test_preflight_uses_shared_exact_deployment_contract(self) -> None:
+        """The SMTP caller passes both explicit pins through the same serving/capture bracket."""
+
+        pins = ("00000000-0000-4000-8000-000000000001", "0" * 31 + "1")
+        with (patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "synthetic"}),
+              patch.object(ACCEPTANCE.AUDIT, "reviewed_pins", return_value=pins),
+              patch.object(ACCEPTANCE.AUDIT, "inspect_deployment") as deployment,
+              patch.object(ACCEPTANCE.ROUTE, "reconcile", return_value="absent"),
+              patch.object(ACCEPTANCE, "MARKER") as marker,
+              patch.object(ACCEPTANCE, "standard_rules", return_value={}),
+              patch.object(ACCEPTANCE, "baseline", return_value=7)):
+            marker.exists.return_value = False
+            self.assertEqual(ACCEPTANCE.preflight(ACCEPTANCE.ZONE, "routing", "0" * 32), ({}, 7))
+        deployment.assert_called_once_with("0" * 32, "synthetic", ACCEPTANCE.ZONE, *pins)
+
+    def test_preflight_invalid_deployment_or_missing_pin_cannot_arm_route(self) -> None:
+        """Capture/binding/pin failure stops before route checks, markers or SMTP work."""
+
+        for failure_at in ("reviewed_pins", "inspect_deployment"):
+            with (self.subTest(failure_at=failure_at),
+                  patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "synthetic"}),
+                  patch.object(ACCEPTANCE.AUDIT, "reviewed_pins", return_value=("version", "queue")) as pins,
+                  patch.object(ACCEPTANCE.AUDIT, "inspect_deployment") as deployment,
+                  patch.object(ACCEPTANCE.ROUTE, "reconcile") as route,
+                  patch.object(ACCEPTANCE, "arm_marker") as arm,
+                  patch.object(ACCEPTANCE, "baseline") as ledger):
+                target = pins if failure_at == "reviewed_pins" else deployment
+                target.side_effect = RuntimeError("synthetic failure")
+                with self.assertRaisesRegex(ACCEPTANCE.ProbeError, "role_serving_privacy_unverified"):
+                    ACCEPTANCE.preflight(ACCEPTANCE.ZONE, "routing", "0" * 32)
+                route.assert_not_called()
+                arm.assert_not_called()
+                ledger.assert_not_called()
+
+    def test_preflight_exercises_real_serving_and_privacy_parser(self) -> None:
+        """Synthetic responses exercise caller arity and strict pinned resource parsing."""
+
+        version = "00000000-0000-4000-8000-000000000001"
+        queue = "0" * 31 + "1"
+        deployment = {"deployments": [{"id": "00000000-0000-4000-8000-000000000002",
+                       "strategy": "percentage", "versions": [
+                           {"version_id": version, "percentage": 100}]}]}
+        bindings = [
+            {"type": "d1", "name": "ROLE_MONITOR", "database_id": ACCEPTANCE.AUDIT.DATABASE},
+            {"type": "send_email", "name": "ROLE_ALERT"},
+            {"type": "queue", "name": "ROLE_TRACE_EVENTS", "queue_id": queue},
+            {"type": "plain_text", "name": "ROLE_REALM", "text": "staging"},
+            {"type": "plain_text", "name": "CF_ZONE_ID", "text": ACCEPTANCE.ZONE},
+        ]
+        worker = {"name": ACCEPTANCE.AUDIT.WORKER, "id": "synthetic-worker", "logpush": False,
+                  "tail_consumers": [], "observability": {"enabled": False,
+                  "logs": {"enabled": False}, "traces": {"enabled": False},
+                  "issues": {"enabled": False}}}
+        responses = [deployment, {"id": version, "resources": {"bindings": bindings}},
+                     {"observability": None}, {}, worker,
+                     {"enabled": False, "previews_enabled": False}, [], [], deployment]
+        with (patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "synthetic",
+                  "AMAIL_EXPECTED_ROLE_WORKER_VERSION": version,
+                  "AMAIL_EXPECTED_TRACE_QUEUE_ID": queue}),
+              patch.object(ACCEPTANCE.AUDIT, "api_get", side_effect=responses) as read,
+              patch.object(ACCEPTANCE.ROUTE, "reconcile", return_value="absent"),
+              patch.object(ACCEPTANCE, "MARKER") as marker,
+              patch.object(ACCEPTANCE, "standard_rules", return_value={}),
+              patch.object(ACCEPTANCE, "baseline", return_value=0)):
+            marker.exists.return_value = False
+            self.assertEqual(ACCEPTANCE.preflight(ACCEPTANCE.ZONE, "routing", "0" * 32), ({}, 0))
+            self.assertEqual(read.call_count, 9)
+
+    def test_standard_rule_validation_rejects_worker_action(self) -> None:
+        """The harness must never treat a production role cutover as baseline."""
+
+        rows = []
+        for name in ACCEPTANCE.ROLES:
+            rows.append({
+                "id": name, "enabled": True, "source": "api",
+                "matchers": [{"type": "literal", "field": "to", "value": name}],
+                "actions": [{"type": "worker", "value": ["unexpected"]}],
+            })
+        with patch.object(ACCEPTANCE.ROUTE, "rules", return_value=rows):
+            with self.assertRaisesRegex(ACCEPTANCE.ProbeError, "standard_rule_not_direct_forward"):
+                ACCEPTANCE.standard_rules("zone", "token")
+
+    def test_post_timeout_never_infers_ownership_from_matching_rule(self) -> None:
+        """A matching rule after a timeout could belong to another writer."""
+
+        with (patch.object(ACCEPTANCE.ROUTE, "rules", return_value=[]),
+              patch.object(ACCEPTANCE.ROUTE, "call", return_value=(0, {}))):
+            with self.assertRaisesRegex(RuntimeError, "ownership ambiguous"):
+                ACCEPTANCE.ROUTE.create_owned("zone", "token")
+
+    def test_successful_create_returns_provider_id(self) -> None:
+        """A POST response ID and matching independent inventory bind cleanup."""
+
+        route = {
+            "id": "created-id", "name": ACCEPTANCE.ROUTE.NAME, "enabled": True, "source": "api",
+            "matchers": [{"type": "literal", "field": "to", "value": ACCEPTANCE.ROUTE.ALIAS}],
+            "actions": [{"type": "worker", "value": [ACCEPTANCE.ROUTE.WORKER]}],
+        }
+        with (patch.object(ACCEPTANCE.ROUTE, "rules", side_effect=[[], [route]]),
+              patch.object(ACCEPTANCE.ROUTE, "call", return_value=(201, {
+                  "success": True, "result": {"id": "created-id"}}))):
+            self.assertEqual(ACCEPTANCE.ROUTE.create_owned("zone", "token"), "created-id")
+
+    def test_replacement_rule_is_not_deleted(self) -> None:
+        """A same-shape rule with a new provider ID is not this run's route."""
+
+        replacement = {
+            "id": "replacement-id", "name": ACCEPTANCE.ROUTE.NAME,
+            "enabled": True, "source": "api",
+            "matchers": [{"type": "literal", "field": "to", "value": ACCEPTANCE.ROUTE.ALIAS}],
+            "actions": [{"type": "worker", "value": [ACCEPTANCE.ROUTE.WORKER]}],
+        }
+        with (patch.object(ACCEPTANCE.ROUTE, "rules", return_value=[replacement]),
+              patch.object(ACCEPTANCE.ROUTE, "call") as provider):
+            with self.assertRaisesRegex(RuntimeError, "ID changed"):
+                ACCEPTANCE.ROUTE.remove_if_id("zone", "token", "created-id")
+        provider.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

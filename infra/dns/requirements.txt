@@ -1,0 +1,3 @@
+# 中文：仅用于 CI 的只读权威 DNS 验证；固定版本保证复现。
+# English: Pin the read-only authoritative DNS verifier dependency for reproducible CI.
+dnspython==2.8.0

@@ -1,0 +1,11 @@
+# Review: exact-fixture `get` classifier (`6bd3ef4`)
+
+**Verdict: GO for CI validation; not authorization for another live cleanup dispatch.**
+
+The change decomposes the former compound `fixture_get_mismatch` predicate into twelve sequential `require` calls. Comparison against the parent revision shows the same exact ID, mailbox, inbound direction, subject, sender, recipient list, `has_text`, `has_html`, `has_attachments`, attachment count, metadata-dictionary shape, and submitted Message-ID requirements. None was removed or weakened. The changed code runs in `verify_row`, which `execute` calls for every active fixture before the second control read, repeated full inventory, second serving-version pin, and the first `delete_once` call. A mismatch therefore remains a pre-mutation failure in this script.
+
+Every new failure value is a source-owned snake-case constant. `main` emits only `safe_stage_code(error)`, whose shape filter also rejects unexpected strings. No observed header, address, subject, message ID, body, or provider response is interpolated into the diagnostic. The test table changes one field at a time and checks the corresponding exact label; positive Signal and Distractor shapes are both exercised. This is meaningful synthetic coverage of the classifier, not proof of the disputed field in the live run.
+
+The design note accurately labels cleanup dispatch `36601847525` as failed at `fixture_get_mismatch`. The hosted job log contains `fifth_cleanup_preflight:verified`, `fifth_cleanup_auth:verified`, and `fifth_cleanup_failed:fixture_get_mismatch`, consistent with that code-order analysis. A later independent, read-only [aggregate audit `36602396858`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36602396858) still found the two known fixtures active and no other expected-owner mail; this is current-state corroboration, not a transaction log for the failed cleanup. The note correctly says a subsequent live dispatch needs a separate decision.
+
+Review limitations: I did not dispatch a live cleanup, run a local toolchain test, or perform the later D1 audit myself. The stronger private owner/foreign-row attestation remains an explicit open risk from the earlier cleanup design, not introduced by this classifier change. Working-tree modifications to `staging_mail_e2e.py` and its tests were outside this review.

@@ -1,0 +1,50 @@
+# One-shot staging transport diagnostic; no login, mail mutation, or retained-log query.
+name: Staging trace HTTP client comparison
+
+on:
+  workflow_call:
+    inputs:
+      confirm:
+        description: Enter RUN_STAGING_TRACE_HTTP_COMPARE for two synthetic GETs
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: windows-latest
+    environment: staging
+    timeout-minutes: 25
+    concurrency:
+      group: staging-trace-http-compare
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require explicit one-shot confirmation
+        shell: pwsh
+        env:
+          PROBE_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if ($env:PROBE_CONFIRM -ne 'RUN_STAGING_TRACE_HTTP_COMPARE') {
+            throw 'Staging trace HTTP comparison requires explicit confirmation'
+          }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Build feature-gated reqwest transport probe
+        shell: pwsh
+        run: |
+          rustup update stable
+          cargo test -p amail --bin staging-http-compare --features staging-diagnostics --locked
+          cargo build -p amail --bin staging-http-compare --features staging-diagnostics --locked
+      - name: Verify effective privacy and compare one protected-route GET per client
+        shell: pwsh
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_trace_http_compare.py --confirm RUN_STAGING_TRACE_HTTP_COMPARE
