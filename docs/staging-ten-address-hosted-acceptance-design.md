@@ -25,6 +25,19 @@ Independent review and hosted source tests remain prerequisites. No local
 execution, live alias, provider mutation, SMTP or deployment is performed by
 this source change.
 
+Hosted source evidence (2026-10-01): exact checkout `3542a5f` passed the
+[normal source CI run 36766439483](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36766439483)
+(all six selected jobs), and independent
+[workflow lint run 36766439302](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36766439302)
+passed. The infrastructure lane explicitly executed and passed the pinned real
+AES-GCM test step; this closes the earlier **real cipher integration** source
+prerequisite for the containing identity/manifest/readback/crypto commits.
+This source run predates native adapter `8d39444` and fixture correction
+`acc68ea`; those later native fixtures are not covered by this evidence and
+still require hosted execution on a containing reviewed SHA. None of these
+source runs created an address, provider rule, message, account or deployment.
+**Live ten-address acceptance remains NO-GO and not executed.**
+
 Readback source increment (2026-10-01): the non-executable
 `staging_ten_address_readback.py` adapter reads only configured staging D1/R2
 and complete zone rules. It brackets a bounded full allocation SELECT with
@@ -476,3 +489,50 @@ source/binary and single-serving service readback, actual hold/binding evidence,
 immutable manifest upload/download metadata validation, external same-artifact
 recovery and manual-only workflow review. Native synthetic fixtures are
 hosted-only; no CLI/browser/provider was run locally by this change.
+
+## Concrete remaining hosted composition
+
+Do not add a generic configurable campaign framework or a caller-supplied
+"passed" boolean. The source seams compose into one narrow three-phase job:
+
+1. **Prepare (read-only remote state).** Verify exact successful hosted source
+   run and its tested Windows binary artifact for the checkout, then read the
+   single 100%-serving Mail/Identity/Login revisions, staging resource bindings
+   and persisted global sending hold. Reuse normal native A login through
+   `native_account`; independently obtain the selected verified subject via
+   `selected_owner`. Construct `Evidence` only from these observations. Derive
+   eleven aliases from the separate recovery key and original run coordinates.
+   Build `Readback` from the fixed staging resources, expose `Cli.owned`, and
+   call `hosted.prepare` to seal the full baseline. Write only ciphertext to
+   an exact new `.temp` file; no plaintext manifest or token may be uploaded.
+2. **Durability boundary, then campaign.** Upload exactly that ciphertext file
+   using immutable/no-overwrite artifact semantics with retained key generation
+   and >=30-day retention. Independently read artifact metadata: exact original
+   run, checkout/workflow identity, name, artifact ID and nonexpired lifetime.
+   Download that **same ID**, reject additional/symlink/unexpected files,
+   authenticate envelope and compare exact downloaded/local ciphertext before
+   loading add/delete capabilities. Re-establish native/service observations
+   for the campaign process rather than carrying an unverified CLI-home path
+   through job output. Compose `Adapter(read=Readback.read, list_owned=Cli.owned,
+   add=Cli.add, delete=Cli.delete, storage_empty=Readback.storage_empty, pin=...)`.
+   Implement read-only bounded activation settlement for the exact expected
+   prefix, never replay add on timeout. The controller owns reserved/quota
+   sequencing and `finally` recovery; no SMTP credential belongs to this job.
+3. **Same-artifact recovery.** An interrupted/killed run must be recoverable by
+   original run/attempt/artifact ID and retained key generation, not a nonce
+   guessed from public logs. Verify the original immutable artifact's metadata,
+   authenticate its manifest, perform fresh normal login for the sealed owner,
+   and recheck reviewed staging bindings and pinned service versions. Invoke
+   only `hosted.recover`; no add capability is granted. Preserve uncertain
+   encrypted artifacts and key generations until exact cleanup is recorded.
+   Logout and remove only each phase's newly created `.temp` files/homes; never
+   blanket-delete provider rules, messages, R2 objects or unrelated addresses.
+
+A standalone manual-only workflow avoids increasing `ci.yml` dispatch inputs
+or rebuilding/deploying unrelated services for this one acceptance. It must
+share `staging-native-mail-acceptance`, use `cancel-in-progress: false`, attempt
+1 and exact branch/confirmation guards, no push/schedule trigger, and recovery
+that remains possible after a hard cancellation. These integration phases,
+activation adapter and workflow are **not implemented or live-authorized** by
+this document; they identify the remaining minimum trustworthy work rather
+than allowing an unsafe shortcut through the dormant controller.
