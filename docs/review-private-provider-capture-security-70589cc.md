@@ -1,7 +1,8 @@
 # Security review: encrypted provider error capture
 
 Review date: 2026-10-01. Source: `70589cc26c26e465185782598df860ee897aadcc`
-and correction `9a8b65aa1f73ecee86c1281c4d20a6158fe9fb9f`.
+and corrections `9a8b65aa1f73ecee86c1281c4d20a6158fe9fb9f` and
+`d6ca3d1b7aaca309920d8a2edf9d3cffb4e923af`.
 
 ## Verdict and scope
 
@@ -20,7 +21,7 @@ and was not reviewed as implemented behavior.
 
 ## Findings
 
-### P2: hosted native tests do not traverse the production binary pipe
+### Resolved P2: hosted native tests did not traverse the production binary pipe
 
 Location: `infra/tests/test_private_provider_capture.py:118-126` and
 `infra/tests/private_provider_capture.py:59-70` (at correction `9a8b65a`).
@@ -38,13 +39,26 @@ response after the provider request, defeating the intended capture-once/offline
 diagnosis mechanism. This is an evidence/coverage gap, not demonstrated plaintext
 disclosure. Confidence: high.
 
-Required before live use: hosted synthetic keys held only in process memory,
+Correction required before live use: hosted synthetic keys held only in process memory,
 invoke the real Python `encrypt()` function with synthetic UTF-8 error data,
 validate its real returned envelope, and independently decrypt/check payload and
 authenticated provenance with the same synthetic key. Include wrong-key/header/
 tag/ciphertext rejection and no arbitrary diagnostic output. Do not create an
 operator key or call Cloudflare to test this boundary. Existing checks may run
 now; they must not be promoted to live acceptance on their own.
+
+`d6ca3d1` adds `PrivateProviderCrypto.Boundary()`: an in-memory ephemeral RSA
+key remains in the parent .NET process; only its public key enters a credential-
+free Python process. The Python `synthetic-boundary` branch calls actual
+`encrypt()`, which invokes the PowerShell binary stdin reader and validates its
+real envelope. The returned ciphertext is independently decrypted in the
+original parent with the synthetic private key; existing payload, GCM component
+tamper and wrong-RSA-key checks run on that returned envelope. Python also checks
+the exact synthetic provenance through `validate_envelope()`. Only a fixed PASS
+leaves the native test; arbitrary child output/errors are suppressed on failure.
+This resolves the source coverage gap. Actual hosted execution is still pending,
+and this review neither ran nor claimed those checks. No new substantive defect
+was found in the narrowly reviewed correction.
 
 ### Resolved: authenticated workflow identity named the wrong workflow
 
