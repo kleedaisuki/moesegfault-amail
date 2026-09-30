@@ -173,6 +173,30 @@ class Services:
                 "service_serving_changed")
         return first[1]
 
+    def check(self, expected: Pins) -> None:
+        """Recheck held state and the same immutable revisions without refetching bindings.
+
+        Version-scoped bindings were checked during initial read. Their exact
+        immutable IDs cannot acquire different resources in place, so repeating
+        all version payload GETs around forty CLI operations adds latency, not
+        another independent invariant. Mutable capture settings remain a separate
+        explicit privacy check in the wrapper before and after the campaign.
+        """
+        require(isinstance(expected, Pins) and all(isinstance(value, str)
+                and UUID.fullmatch(value) is not None for value in vars(expected).values()),
+                "service_expected_pins_unverified")
+        try:
+            require(self._hold() == "held", "global_sending_not_held")
+            for worker, version in zip((mail_pin.SCRIPT, IDENTITY, LOGIN),
+                                       (expected.mail, expected.identity, expected.login)):
+                serving = mail_pin.serving_deployment(self._read(worker, "deployments?per_page=1&page=1"))
+                require(serving is not None and serving[1] == version, "service_relation_changed")
+            require(self._hold() == "held", "global_sending_not_held")
+        except manifest.ContractFailure:
+            raise
+        except Exception:
+            raise manifest.ContractFailure("service_provenance_unverified") from None
+
     def read(self) -> Pins:
         """Require actual explicit hold and two equal three-service serving relations."""
         try:

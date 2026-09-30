@@ -605,3 +605,61 @@ Next composition gates remain strict: bind held provenance to
 in addition to binding/version checks, and derive native binary bytes only from
 this validated artifact path. Source tests are hosted-only and pending; there
 is still no executable campaign/recovery entry point or dispatch target.
+
+## Executable hosted phase composition (unwired; live NO-GO)
+
+`staging_ten_address_acceptance.py` now composes prepare/campaign/recover behind
+actual manual-workflow metadata, exact checkout, hosted Windows/attempt-1/ref/
+repository/environment/confirmation gates and protected environment Secrets.
+It accepts only the intended standalone workflow path, which is not registered
+or wired by this source increment. Thus adding a Python entry point does not
+make an existing diagnostic/source workflow a mutation authority.
+
+Admission verifies the exact successful source run, uses only digest-validated
+CI binary artifact bytes, binds `Services` hold directly to
+`Readback.sending_state`, and requires the existing complete effective Mail
+capture-off checker (`mail_pin.run == match`) separately from binding/version
+admission. Mail/Identity/Login serving revisions are read and compared with any
+opened recovery manifest before fresh normal native A login. Per-observation
+checks re-read actual serving IDs and held policy without refetching unchanged
+immutable version binding bodies; effective mutable capture settings are
+explicitly checked again after campaign/recovery. This removes repeated
+unchanged version-payload reads from the forty-command critical path without
+weakening the version relation. Control-plane observations are not reservations.
+
+Prepare grants neither add nor delete callbacks, seals the complete stable
+baseline, writes only one new exact `.temp/ten-address-recovery-<run>/manifest.bin`
+file, and tears down its native session and binary scratch directory. The
+reviewed immutable upload action must finish before campaign, return the actual
+artifact ID and retain the cipher/key generation. Campaign independently reads
+that exact artifact's metadata/archive/digest, authenticates its AES-GCM envelope,
+requires equality with the original local ciphertext, reacquires native A and
+then invokes the serial controller. Activation waiting only reads the exact
+candidate allocations; missing allocations or timeout do not replay add.
+
+Recovery reads the original manual run and original exact artifact/manifest,
+reacquires the sealed owner, validates original three-service pins and held/
+capture-off policy, and calls only the supported same-manifest recovery. It
+needs no surviving local prepare file and receives no add callback. The CLI
+binary comes from the **current reviewed successful source checkout**, rather
+than requiring an expired three-day original binary artifact; backward-compatible
+address DELETE remains the external contract. Manifest source/run provenance
+still matches the original artifact/run and is not rewritten. Successful quota
+aliases remain retired tombstones, not erased database history. Recovery key and
+encrypted artifacts remain retained; no expiry abandons unknown provider state.
+
+All provider/browser/subprocess capabilities are replaced in the new hosted
+synthetic composition fixtures. This increment performs no local test or live
+call. Before any live GO it still needs independent review, passing hosted CI
+on a containing SHA, the standalone workflow's immutable upload-before-campaign
+and finally/recovery controls, and separately configured recovery key generation.
+No route, account, policy, provider artifact or deployment was created here.
+
+Latest bounded earlier source evidence: exact `7ea4e5b` passed
+[normal source CI 36768768375](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36768768375)
+with all six active jobs,
+[workflow lint 36768767833](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36768767833),
+and private synthetic Windows/Ubuntu checks
+[36768773603](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36768773603).
+This verifies the containing native/service admission source, not later artifact
+`04c1391`, this executable wrapper, or an actual quota/cleanup run.

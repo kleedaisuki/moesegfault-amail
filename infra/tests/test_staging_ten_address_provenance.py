@@ -98,6 +98,18 @@ class ProvenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(manifest.ContractFailure, "global_sending_not_held"):
             self.service(hold=lambda: next(holds)).read()
 
+    def test_pin_rechecks_reuse_immutable_binding_admission(self):
+        """Per-operation checks fetch current serving IDs/hold, not unchanged version bodies."""
+        services = self.service()
+        pins = services.read()
+        reader = mock.Mock(wraps=services._read)
+        services._read = reader
+        services.check(pins)
+        self.assertEqual(reader.call_count, 3)
+        self.assertTrue(all(call.args[1] == "deployments?per_page=1&page=1" for call in reader.call_args_list))
+        with self.assertRaisesRegex(manifest.ContractFailure, "service_relation_changed"):
+            services.check(target.Pins(V[1], V[1], V[2]))
+
     def test_split_traffic_or_provider_failure_is_not_a_pin(self):
         """No latest-uploaded version or raw provider failure can substitute serving."""
         invalid = {"deployments": [{"id": V[0], "strategy": "percentage", "versions": [
