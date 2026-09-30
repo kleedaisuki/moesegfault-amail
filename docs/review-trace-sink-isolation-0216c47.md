@@ -150,3 +150,41 @@ request parameters, for either Domains or Queues.
 Additional primary reference retrieved 2026-09-30:
 [official Queue SDK list implementation](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/resources/queues/queues.py)
 (list method: SinglePage, no declared pagination parameters).
+
+## Follow-up recheck: `813869e`
+
+The Queue SinglePage P2 is resolved in source: the request is bare `queues`,
+absent/empty/coherent optional metadata is accepted, IDs/names are bounded and
+unique, and explicit advertised row-count/page contradictions still fail.
+`queue_trigger_exact` continues to call this shared helper before inspecting
+consumer details. No hosted test result is claimed by this source review.
+
+**GO for hosted synthetic CI; source checker live acceptance remains NO-GO for
+the small continuation-denial correction below.**
+
+### P2 — Unknown continuation metadata still bypasses the completeness guard
+
+Location: `ensure_trace_queues.py:inventory`, optional metadata block.
+
+The helper ignores unknown result_info keys and checks only four known cursor
+aliases. For example, a valid main/DLQ response with
+`result_info={"cursors":{"after":"opaque"}}` passes the guard despite its
+explicit unreviewed continuation signal. A top-level `next_cursor` is also
+ignored. This is a source-derived denial-contract counterexample, not a claim
+that Cloudflare currently emits these fields. The design explicitly requires
+unknown/incomplete readback to remain unverified.
+
+Correction: use a closed documented result_info key set (as the Domain helper
+already does), and reject unknown top-level transport/continuation shapes
+rather than assuming additional fields cannot mean truncation. An allowlisted
+documented response-envelope set is preferable to indefinitely enumerating
+cursor spellings; normal errors/messages/success/result fields remain allowed.
+Add hosted negatives for unknown nested continuation, top-level continuation
+and explicit truncation. A future provider schema extension can be reviewed
+deliberately rather than silently establishing absence from incomplete data.
+
+The Domain helper's result_info is closed, but it likewise does not currently
+inspect top-level truncation/continuation claims. Apply the same completeness
+boundary consistently to endpoint-specific single-page readers. Confidence:
+high for the accepted synthetic control flow; unqueried runtime behavior remains
+unknown. This does not reopen the already corrected request-shape findings.
