@@ -9,6 +9,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
+using System.Diagnostics;
 
 /// <summary>One-shot bounded envelope; no plaintext filesystem operations.</summary>
 public static class PrivateProviderCrypto {
@@ -58,11 +59,12 @@ public static class PrivateProviderCrypto {
         }
     }
     /// <summary>Synthetic in-memory interoperation and tamper checks; no operator key.</summary>
-    public static void Synthetic() {
-        using RSA rsa = RSA.Create(3072);
+    public static void Synthetic(RSA supplied = null, string captured = null) {
+        using RSA generated = supplied == null ? RSA.Create(3072) : null;
+        RSA rsa = supplied ?? generated;
         string pub = Convert.ToBase64String(rsa.ExportSubjectPublicKeyInfo());
         byte[] expected = Encoding.UTF8.GetBytes("{\"http_status\":200,\"errors\":[{\"message\":\"synthetic\\nsecret\"}]}");
-        string envelope = Encrypt((byte[])expected.Clone(), pub, "{\"synthetic\":true}");
+        string envelope = captured ?? Encrypt((byte[])expected.Clone(), pub, "{\"synthetic\":true}");
         using JsonDocument outer = JsonDocument.Parse(envelope);
         byte[] header = Convert.FromBase64String(outer.RootElement.GetProperty("header").GetString());
         using JsonDocument parsed = JsonDocument.Parse(header);
@@ -90,10 +92,34 @@ public static class PrivateProviderCrypto {
             if (!wrongKey) throw new Exception();
         } finally { CryptographicOperations.ZeroMemory(key); CryptographicOperations.ZeroMemory(frame); }
     }
+    /// <summary>Exercise Python validation and the actual anonymous-stdin child boundary.</summary>
+    public static void Boundary(string script) {
+        using RSA rsa = RSA.Create(3072);
+        ProcessStartInfo start = new ProcessStartInfo("python") {
+            UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        start.ArgumentList.Add(script);
+        start.ArgumentList.Add("synthetic-boundary");
+        var inherited = new System.Collections.Generic.Dictionary<string,string>();
+        foreach (string name in new [] {"PATH","SystemRoot","HOME","TMPDIR","TEMP","TMP","DOTNET_ROOT"})
+            if (Environment.GetEnvironmentVariable(name) is string value) inherited[name] = value;
+        start.Environment.Clear();
+        foreach (var pair in inherited) start.Environment[pair.Key] = pair.Value;
+        start.Environment["PRIVATE_CAPTURE_SYNTHETIC_HOSTED"] = "1";
+        start.Environment["PRIVATE_CAPTURE_PUBLIC_KEY"] = Convert.ToBase64String(rsa.ExportSubjectPublicKeyInfo());
+        start.Environment["PYTHONDONTWRITEBYTECODE"] = "1";
+        using Process process = Process.Start(start);
+        string output = process.StandardOutput.ReadToEnd();
+        string errors = process.StandardError.ReadToEnd();
+        if (!process.WaitForExit(60000) || process.ExitCode != 0 || errors.Length != 0 ||
+            output.Length > 400000 || output.Contains("synthetic\\nsecret")) throw new Exception();
+        Synthetic(rsa, output);
+    }
 }
 '@
     if ($Mode -eq 'synthetic') {
         [PrivateProviderCrypto]::Synthetic()
+        [PrivateProviderCrypto]::Boundary((Join-Path $PSScriptRoot 'private_provider_capture.py'))
         Write-Output 'private_capture_crypto=PASS'
         exit 0
     }

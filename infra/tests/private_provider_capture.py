@@ -129,7 +129,12 @@ def run() -> None:
 def main() -> int:
     """Suppress all arbitrary errors; cleanup only the verified exact ciphertext path."""
     try:
-        if sys.argv[1:] == ["cleanup"]:
+        if sys.argv[1:] == ["synthetic-boundary"]:
+            history.need(os.environ.get("PRIVATE_CAPTURE_SYNTHETIC_HOSTED") == "1", "identity")
+            projection = b'{"http_status":200,"errors":[{"message":"synthetic\\nsecret"}]}'
+            encrypted = encrypt(projection, {"synthetic": True}, os.environ.get("PRIVATE_CAPTURE_PUBLIC_KEY", ""))
+            sys.stdout.buffer.write(encrypted)
+        elif sys.argv[1:] == ["cleanup"]:
             path = destination()
             path.unlink(missing_ok=True)
             history.need(not path.exists(), "scope")
