@@ -149,6 +149,8 @@ SAFE_API_CODES = frozenset({
     "address_limit", "address_provision_unknown", "address_state_changed",
     "address_deleting", "address_retired", "not_found", "service_unavailable", "send_held",
     "semantic_index_incomplete", "http_error", "unauthorized", "invalid_json",
+    "semantic_index_corrupt", "semantic_unavailable", "semantic_quota",
+    "search_job_quota", "search_job_prepare_unknown", "search_resource_limit",
     "reserved_or_invalid_name", "search_job_stale", "search_cursor_stale",
 })
 DIAG_PHASES = frozenset({
@@ -200,7 +202,7 @@ def cli_failure(stderr: bytes, fallback: str) -> str:
         if re.fullmatch(rb"amail: not logged in; run `amail login`\r?\n?", stderr):
             return fallback + "_auth_before_request"
     found = re.search(
-        rb"(?:^|\n)amail: mail API ([a-z.]+) failed: HTTP ([45][0-9]{2})(?: [A-Za-z ]{1,40})?, "
+        rb"(?:^|\n)amail: (?:search job [0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}: )?mail API ([a-z.]+) failed: HTTP ([45][0-9]{2})(?: [A-Za-z ]{1,40})?, "
         rb"code=([a-z][a-z0-9_]{0,48})(?:, correlation_id=[^,\r\n]{1,128})?"
         rb"(?:, diag=([^,\r\n]{1,100}))?"
         rb"(?:, cf_error=([^,\r\n]{1,40}))?\r?(?:\n|$)",

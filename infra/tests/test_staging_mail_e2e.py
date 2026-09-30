@@ -486,6 +486,32 @@ class CleanupTests(unittest.TestCase):
             "mail_sync_failed_http_409_unknown_code",
         )
 
+    def test_cli_failure_classifies_poll_error_without_exposing_job_id(self) -> None:
+        """CLI wraps poll errors with a job ID and may print a prior 202 line."""
+
+        job = b"123e4567-e89b-42d3-a456-426614174000"
+        prefix = (b"amail: search job " + job + b" running; polling "
+                  b"(resume with `amail search --resume " + job + b"`)\n")
+        for code, status in ((b"semantic_index_incomplete", b"503 Service Unavailable"),
+                             (b"semantic_unavailable", b"503 Service Unavailable"),
+                             (b"semantic_quota", b"429 Too Many Requests")):
+            stderr = (prefix + b"amail: search job " + job
+                      + b": mail API messages.search.poll failed: HTTP " + status
+                      + b", code=" + code + b", correlation_id=private-id\n")
+            label = HARNESS.cli_failure(stderr, "semantic_search_failed")
+            self.assertEqual(
+                label,
+                "semantic_search_failed_http_" + status[:3].decode() + "_" + code.decode(),
+            )
+            self.assertNotIn(job.decode(), label)
+        self.assertEqual(
+            HARNESS.cli_failure(prefix + b"amail: search job " + job
+                                + b": mail API messages.search.poll failed: HTTP 503 Service Unavailable, "
+                                b"code=private_mail_body, correlation_id=private-id\n",
+                                "semantic_search_failed"),
+            "semantic_search_failed_http_503_unknown_code",
+        )
+
     def test_address_failure_closed_diagnostic_and_transport_contract(self) -> None:
         """Discard hostile suffixes and accept only fixed CLI diagnostic grammar."""
 
