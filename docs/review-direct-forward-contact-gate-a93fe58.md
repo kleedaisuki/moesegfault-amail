@@ -157,3 +157,66 @@ Because 0009 has not been represented as deployed, correcting its source is
 consistent with the pending held rollout. If contrary deployment evidence
 appears, do not assume editing 0009 retrofits an already migrated database;
 create an additive follow-up migration and re-review that rollout separately.
+
+## Operator extension review: 0fab849
+
+Date: 2026-10-01. Reviewed `0fab849f36f53f6de885dfb005c6bcd10adff41a`
+against the corrected 212cfe0 source. Scope is helper/migration/test/doc changes;
+integrated workflow 1c13b38 and its shared concurrency-lock implementation are
+outside this narrow review. No tests/builds or live calls were executed.
+
+**GO for hosted source-only checks.** No substantive authorization defect was
+identified. Public release/unheld acceptance remains **NO-GO** pending the
+independent evidence already described. This is not approval of unexamined
+workflow serialization or actual D1 catalog-query compatibility.
+
+* **Held-only no-adoption skip:** `optional_held_policy` positively queries the
+  catalog, distinguishes fully absent from expected object-count shapes, and
+  rejects partial counts/query errors/malformed results. The upgraded path
+  compares the actual policy inventory count to version-filtered results, so
+  unsupported-version rows are not interpreted as absence. No policy requires
+  exact established global-held evidence. The main skip occurs before routing
+  credential/destination validation or client construction, needs no routing
+  Secret, writes no health and prints `unadopted_held`, never `healthy_recorded`.
+  Policy absence observed concurrently with later adoption cannot grant send
+  authority; it merely omits that run's configuration renewal.
+* **Atomic adoption comparison:** SQL SELECT/UPSERT guards expected `NONE`
+  absence or the exact existing version-1 UUID in the same statement. A stale
+  expected UUID cannot overwrite a newer contract. Both absence and replacement
+  retain the fresh-ID ledger and automatic held/revoked behavior. Ambiguous
+  outcome uses the generated UUID's exact readback without write retry.
+* **Explicit revocation:** the new AFTER UPDATE OF contact columns trigger
+  clears health and holds even on repeated zero-to-zero revoke. Non-contact
+  gate/canary-only updates do not activate it. Verification does not renew
+  health. Interaction with 0006 hold triggers is safe: all resulting global
+  writes are held, outside the allowed-only readiness guards.
+* **Routing-mutation barrier:** production-only invalidation requires expected
+  schema object counts and revoke-trigger presence, then an acknowledged
+  one-row revoke plus exact held/revoked/health-empty readback. Committed-but-
+  response-lost revocation still fails the barrier; no automatic write retry
+  or downstream mutation permit is created. New tests model this conservative
+  ambiguity branch and repeated revoke, adoption comparison, and no-secret
+  skip. Their source is not evidence they executed successfully.
+
+### Catalog integrity boundary: optional diagnostic, not readiness proof
+
+The no-policy upgraded skip does **not** execute the readiness view. Therefore
+its object-count check does not demonstrate that the view definition is
+executable, semantically correct, or that every migration trigger is present.
+A catalog-present but broken view may still produce an idle-held skip. This is
+not a send-permission defect: skip requires global held, writes no evidence,
+and does not claim migration or release acceptance. Describe these counts as
+object-shape diagnostics, not complete schema-integrity verification.
+
+Optionally execute `SELECT COUNT(*) FROM direct_role_contact_ready` on the
+upgraded no-policy branch to fail early for missing referenced columns or other
+view-resolution errors. This inexpensive diagnostic is useful if that branch
+is intended to detect executable-schema damage, but is **not required for the
+held-only safety contract** and cannot prove view semantics or complete trigger
+integrity. Do not turn it into a substitute for hosted D1 migration/admission
+acceptance. This review raises no necessary correction solely to add it.
+
+The helper explicitly depends on external non-canceling realm serialization:
+an invalidation readback is not a database lease preventing a later checker or
+attestation from running. Confirm that workflow-level contract independently,
+especially across routing mutation, adoption, attestation and health checks.
