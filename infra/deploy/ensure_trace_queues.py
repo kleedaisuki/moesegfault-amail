@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -130,6 +131,22 @@ def validate_detail(detail: object, name: str, queue_id: str, suffix: str, phase
         raise ValueError("producer_drift")
 
 
+def record_creation(target: str, name: str, queue_id: str) -> None:
+    """Preserve fresh identity before PATCH in a restricted Actions recovery artifact."""
+    workspace = os.getenv("GITHUB_WORKSPACE")
+    if not workspace:
+        raise ValueError("recovery_workspace_missing")
+    path = Path(workspace) / ".temp" / f"trace-queue-provision-{target}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = json.loads(path.read_text()) if path.exists() else []
+    if not isinstance(records, list) or len(records) >= 2:
+        raise ValueError("recovery_record_unverified")
+    records.append({"target": target, "queue_name": name, "queue_id": queue_id})
+    with path.open("w", encoding="utf-8") as destination:
+        json.dump(records, destination)
+    path.chmod(0o600)
+
+
 def reconcile(account: str, token: str, target: str, phase: str) -> None:
     """Create only absent resources; readback never mutates or consumes messages."""
     suffix = "-staging" if target == "staging" else ""
@@ -140,7 +157,7 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
     for name in names:
         row = exact_queue(rows, name)
         if row is None:
-            if phase != "queues":
+            if phase == "readback":
                 raise ValueError("queue_missing")
             continue
         if not bounded_queue(row):
@@ -155,7 +172,7 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
             detail = request(account, token, f"queues/{queue_id}").get("result")
             validate_detail(detail, name, queue_id, suffix, phase)
     for name in names:
-        if name in identities:
+        if name in identities or phase != "queues":
             continue
         response = request(account, token, "queues", {"queue_name": name})
         result = response.get("result")
@@ -163,6 +180,7 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
         if created is None:
             raise ValueError("created_queue_unverified")
         identities[name] = created["queue_id"]
+        record_creation(target, name, created["queue_id"])
         # The create API accepts only identity fields. Configure only this newly
         # returned ID; never edit settings of a preexisting resource.
         patched = request(account, token, f"queues/{created['queue_id']}", {"settings": {
@@ -171,16 +189,16 @@ def reconcile(account: str, token: str, target: str, phase: str) -> None:
         if (not isinstance(patched, dict) or patched.get("queue_id") != created["queue_id"]
                 or patched.get("queue_name") != name or not bounded_queue(patched)):
             raise ValueError("created_queue_settings_unverified")
-    if len(set(identities.values())) != len(names):
+    if not identities or len(set(identities.values())) != len(identities):
         raise ValueError("queue_identity_ambiguous")
     # Fresh readback must match the exact create response or reviewed existing identity.
     rows = inventory(account, token)
-    for name in names:
+    for name in identities:
         row = exact_queue(rows, name)
         if row is None or not bounded_queue(row) or row["queue_id"] != identities[name]:
             raise ValueError("queue_settings_drift")
         detail = request(account, token, f"queues/{row['queue_id']}").get("result")
-        validate_detail(detail, name, row["queue_id"], suffix, phase)
+        validate_detail(detail, name, row["queue_id"], suffix, "queues" if phase == "recover" else phase)
     output = os.getenv("GITHUB_OUTPUT")
     if phase == "queues" and output:
         # Non-secret resource IDs connect the authorized create step to this exact rollout.
@@ -192,18 +210,20 @@ def main() -> int:
     """Expose fixed deployment phases; no arbitrary queue, URL, or message input."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True, choices=("staging", "production"))
-    parser.add_argument("--phase", required=True, choices=("queues", "readback"))
+    parser.add_argument("--phase", required=True, choices=("queues", "readback", "recover"))
     args = parser.parse_args()
     account, token = os.getenv("CLOUDFLARE_ACCOUNT_ID", ""), os.getenv("CLOUDFLARE_API_TOKEN", "")
     if not re.fullmatch(r"[0-9a-f]{32}", account) or not token:
         print("trace_queue=credentials_missing", file=sys.stderr)
         return 2
     try:
+        if args.phase == "queues" and not os.getenv("GITHUB_WORKSPACE"):
+            raise ValueError("recovery_workspace_missing")
         reconcile(account, token, args.target, args.phase)
     except ValueError as error:
         print(f"trace_queue={error}", file=sys.stderr)
         return 1
-    print(f"trace_queue_{args.phase}=match")
+    print("trace_queue_recover=exact_inventory_only" if args.phase == "recover" else f"trace_queue_{args.phase}=match")
     return 0
 
 

@@ -1894,6 +1894,14 @@ jobs:
       - name: Ensure one-day trace Queue and dead-letter Queue
         id: queues
         run: python infra/deploy/ensure_trace_queues.py --target production --phase queues
+      - name: Preserve partial provisioning identity without payloads
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trace-queue-provision-production-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .temp/trace-queue-provision-production.json
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Build private Rust trace consumer
         working-directory: workers/trace-sink
         run: worker-build --release
@@ -1948,6 +1956,14 @@ jobs:
       - name: Ensure one-day trace Queue and dead-letter Queue
         id: queues
         run: python infra/deploy/ensure_trace_queues.py --target staging --phase queues
+      - name: Preserve partial provisioning identity without payloads
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trace-queue-provision-staging-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .temp/trace-queue-provision-staging.json
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Build private Rust trace consumer
         working-directory: workers/trace-sink
         run: worker-build --release

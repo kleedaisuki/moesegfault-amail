@@ -25,7 +25,15 @@ resources additionally require exact reviewed project variables
 These non-secret IDs must come from the successful provisioning evidence; name
 equality alone cannot adopt an unrelated empty queue. Counts and resource
 identity must match complete producer/consumer arrays on detail readback. Ambiguous
-POST failure stops without retry. Reconcile inventory before a later run.
+POST/PATCH failure stops without retry. A successful POST identity is recorded
+before PATCH in the restricted run artifact `trace-queue-provision-<realm>-<run>-<attempt>`
+(three-day retention, system resource IDs only). Download/review this exact
+artifact, store the IDs as project Variables, then run `--phase recover` to
+reconcile only those exact identities read-only before a later attempt. Recovery
+never creates, updates, consumes or deletes; partial missing-peer/retention drift
+requires operator review and cannot be treated as deployment success. A killed
+process before recording a POST response still requires provider inventory
+reconciliation, never a blind retry or name-only adoption.
 `--phase readback` is read-only and verifies exact consumer, retry/DLQ settings
 and API producer ownership after API deployment. It never fetches a message.
 Only fixed result labels are printed, never provider bodies or queue payloads.
