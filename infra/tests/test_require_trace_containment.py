@@ -19,7 +19,7 @@ class ContainmentTests(unittest.TestCase):
     def responses(self):
         """Use minimal safe historical TOML and exact successful deployment evidence."""
         source = '[env.staging.observability]\nenabled=false\n[env.staging.observability.logs]\nenabled=false\ninvocation_logs=false\n[env.staging.observability.traces]\nenabled=false\n'
-        return [json.dumps({"id": 123, "status": "completed", "conclusion": "success",
+        return [json.dumps({"id": 123, "run_attempt": 1, "status": "completed", "conclusion": "success",
                 "head_branch": "codex/amail-v0.1.0", "path": ".github/workflows/ci.yml", "head_sha": "a" * 40}),
                 json.dumps({"total_count": 1, "jobs": [{"id": 456, "name": "Deploy isolated staging mail API", "conclusion": "success"}]}),
                 f"Current Version ID: {VERSION}\n",
@@ -37,6 +37,13 @@ class ContainmentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "run_unverified"):
                 MODULE.immutable_evidence(RUN, VERSION)
             self.assertEqual(call.call_count, 1)
+
+    def test_rerun_identity_denied(self):
+        """A reused run ID cannot stand in for an immutable first-attempt deployment."""
+        run = json.loads(self.responses()[0]); run["run_attempt"] = 2
+        with patch.object(MODULE, "gh", return_value=json.dumps(run)):
+            with self.assertRaisesRegex(ValueError, "run_unverified"):
+                MODULE.immutable_evidence(RUN, VERSION)
 
     def test_duplicate_version_output_denied(self):
         """Repeated deploy output is ambiguous rather than an arbitrary winner."""

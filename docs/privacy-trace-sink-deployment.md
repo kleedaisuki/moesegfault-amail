@@ -40,7 +40,7 @@ Only fixed result labels are printed, never provider bodies or queue payloads.
    `ci.yml` with `target=staging`, `confirm=RUN_STAGING_TRACE_SINK_ROLLOUT`,
    `trace_containment_run=<successful-run-id>` and
    `expected_worker_version=<exact-contained-version-uuid>`. The guard verifies
-   immutable successful run/SHA/deploy-job/version output, historical safe TOML,
+   immutable successful first-attempt run/SHA/deploy-job/version output, historical safe TOML,
    stable 100% serving deployment and current effective safe settings. It does
    not accept a mutable repository variable as deployment provenance. Sink
    deployment is a prerequisite of API deployment.

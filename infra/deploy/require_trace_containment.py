@@ -35,6 +35,7 @@ def immutable_evidence(run_id: str, version: str) -> None:
     """Attest successful exact run/source/deploy job and its sole emitted version ID."""
     run = json.loads(gh("api", f"repos/{REPO}/actions/runs/{run_id}"))
     if (not isinstance(run, dict) or str(run.get("id")) != run_id
+            or run.get("run_attempt") != 1
             or run.get("status") != "completed" or run.get("conclusion") != "success"
             or run.get("head_branch") != "codex/amail-v0.1.0"
             or run.get("path") != ".github/workflows/ci.yml"
