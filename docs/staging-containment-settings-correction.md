@@ -7,6 +7,42 @@ or production change; the bounded hosted attempt is recorded below. This supplem
 [effective readback](observability-effective-readback-decision.md) and the
 [Queue migration](privacy-trace-sink-deployment.md).
 
+## Current bounded outcome (2026-10-01)
+
+The first correction workflow still has no accepted settings attestation.
+A later read-only historical page query
+[36758328085](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36758328085)
+at `c0448ba` returned these fixed observations:
+
+| Field | Observed result |
+| --- | --- |
+| `read` | `ok` |
+| `complete` | `unverified` |
+| `matches` | `one` |
+| `http` | `expected_success` |
+| `action` | `success` |
+| `historical` | `page_reported_success` |
+
+This is positive **page-observed provider success** for the validated historical
+method/path/time match. It supersedes the earlier unresolved response-shape
+observation only within that narrow scope. Query completeness is not established;
+there is no complete-query uniqueness, helper attribution, client receipt/parsing
+or current Issues-off proof. The aggregate remains UNVERIFIED and cannot satisfy
+`settings-v1` acceptance. No retry of the old PATCH is justified.
+
+Normal hosted source CI
+[36758001121](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36758001121)
+passed at `c0448ba` in 2:23; independent workflow lint
+[36758000549](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36758000549)
+passed in 0:14. These establish the reviewed source contracts, not provider state.
+The current-resource operation is described separately in
+[the Worker Issues alternative](staging-current-worker-issues-alternative.md).
+It has not been executed; explicit positive all-off readback and unaffected
+state/serving brackets remain required before Queue rollout. The historical
+sections below preserve the original uncertainty and investigation sequence;
+use this section for the latest evidence boundary and
+[PATCH forensics](staging-settings-patch-forensics.md) for the page classifier.
+
 ## Problem and chosen boundary
 
 The current Queue producer/sink rollout requires a successful immutable
