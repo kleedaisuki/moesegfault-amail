@@ -39,7 +39,7 @@ def request(account: str, token: str, path: str, body: dict | None = None, *, me
 def inventory(account: str, token: str) -> list[dict]:
     """Read the documented unfiltered SyncSinglePage endpoint with bounded completeness guards."""
     payload = request(account, token, "queues")
-    if set(payload) - {"success", "errors", "messages", "result", "result_info", "truncated"}:
+    if set(payload) - {"success", "errors", "messages", "result", "result_info"}:
         raise ValueError("inventory_incomplete")
     rows = payload.get("result")
     if not isinstance(rows, list) or len(rows) > 10000 or not all(isinstance(row, dict) for row in rows):
@@ -48,7 +48,7 @@ def inventory(account: str, token: str) -> list[dict]:
     if info is not None:
         if not isinstance(info, dict):
             raise ValueError("inventory_shape")
-        if set(info) - {"page", "count", "total_count", "total_pages", "per_page", "cursor", "next_cursor", "next_page", "has_more"}:
+        if set(info) - {"page", "count", "total_count", "total_pages", "per_page"}:
             raise ValueError("inventory_incomplete")
         for field, expected in (("page", 1), ("count", len(rows)), ("total_count", len(rows))):
             if field in info and (type(info[field]) is not int or info[field] != expected):
@@ -59,10 +59,6 @@ def inventory(account: str, token: str) -> list[dict]:
         if "per_page" in info and (type(info["per_page"]) is not int
                 or not max(1, len(rows)) <= info["per_page"] <= 10000):
             raise ValueError("inventory_incomplete")
-        if any(info.get(key) not in (None, "", False) for key in ("cursor", "next_cursor", "next_page", "has_more")):
-            raise ValueError("inventory_incomplete")
-    if payload.get("truncated") not in (None, False):
-        raise ValueError("inventory_incomplete")
     ids: set[str] = set()
     names: set[str] = set()
     for row in rows:
