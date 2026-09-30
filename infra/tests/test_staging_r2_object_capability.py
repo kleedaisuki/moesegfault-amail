@@ -79,6 +79,33 @@ class R2ObjectCapabilityTests(unittest.TestCase):
                          (0, "staging_r2_object_capability_verified", ""))
         self.assertEqual(calls, ["PUT", "GET", "DELETE", "GET", "GET"])
 
+    def test_success_accepts_documented_optional_upload_metadata(self) -> None:
+        """GET byte equality, not optional PUT result.key/size, proves the object."""
+
+        code, out, err, calls = self.run_probe([
+            (200, b'{"success":true,"result":{}}'), (200, self.BODY),
+            (200, b'{"success":true,"result":{}}'), (404, b""), (404, b""),
+        ])
+        self.assertEqual((code, out.strip(), err),
+                         (0, "staging_r2_object_capability_verified", ""))
+        self.assertEqual(calls, ["PUT", "GET", "DELETE", "GET", "GET"])
+
+    def test_put_http_category_and_invalid_envelope_still_reconcile(self) -> None:
+        """A 400 and a malformed success are distinct, private, fixed labels."""
+
+        for put, expected in (
+            ((400, b"provider-details-never-logged"), "r2_put_http_400"),
+            ((200, b'{"success":true,"result":{"key":"wrong"}}'),
+             "r2_put_response_invalid"),
+        ):
+            with self.subTest(label=expected):
+                code, out, err, calls = self.run_probe([put, (404, b"")])
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertEqual(err.strip(), "staging_r2_object_capability_failed:" + expected)
+            self.assertNotIn("provider-details", err)
+            self.assertEqual(calls, ["PUT", "GET"])
+
     def test_put_403_is_inconclusive_and_never_retried(self) -> None:
         """Write denial does not claim read/delete permission was tested."""
 

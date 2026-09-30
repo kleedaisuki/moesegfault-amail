@@ -132,21 +132,28 @@ def upload_body(body: bytes) -> bytes:
 
 
 def upload(account: str, key: str, token: str, body: bytes) -> None:
-    """Require a matching Cloudflare success envelope; never repeat a PUT."""
+    """Accept optional upload metadata; GET bytes provide decisive readback."""
 
     status, raw = call("PUT", object_path(account, key), token, upload_body(body),
                        f"multipart/form-data; boundary={BOUNDARY}")
     if status == 403:
         raise ProbeFailure("r2_put_denied")
-    require(status == 200, "r2_put_ambiguous")
+    if status != 200:
+        # Fixed, bounded categories improve diagnosis without provider bodies.
+        known = {400, 401, 404, 409, 413, 415, 429, 500, 502, 503, 504}
+        category = (str(status) if status in known else
+                    "other_4xx" if 400 <= status < 500 else
+                    "other_5xx" if 500 <= status < 600 else "other_status")
+        raise ProbeFailure("r2_put_http_" + category)
     try:
         value = json.loads(raw)
         result = value.get("result")
         valid = (value.get("success") is True and isinstance(result, dict)
-                 and result.get("key") == key and str(result.get("size")) == str(len(body)))
+                 and ("key" not in result or result["key"] == key)
+                 and ("size" not in result or str(result["size"]) == str(len(body))))
     except (ValueError, AttributeError, TypeError):
         valid = False
-    require(valid, "r2_put_ambiguous")
+    require(valid, "r2_put_response_invalid")
 
 
 def observed(account: str, key: str, token: str, body: bytes) -> str:
