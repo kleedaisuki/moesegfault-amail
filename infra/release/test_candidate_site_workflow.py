@@ -23,6 +23,8 @@ class CandidateWorkflowTests(unittest.TestCase):
         for branch in gate.SOURCE_BRANCHES:
             self.assertIn(branch, workflow)
         for command in (
+            ".temp/actionlint/actionlint .github/workflows/site-ci.yml .github/workflows/site-candidate.yml",
+            "sha256sum --check -",
             "python -m unittest discover -s infra/release",
             "node --test scripts/check-release-state.test.mjs",
             "pnpm check:release-state candidate",

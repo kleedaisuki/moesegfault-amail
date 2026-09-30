@@ -71,7 +71,8 @@ and require separately reviewed asset/Mail gates; this bootstrap supplies none.
 ## Acceptance plan and current evidence
 
 1. Independent static review of the complete standalone diff before push.
-2. Push only focused branch for GitHub Actions checks. No local tests/builds or
+2. Push only focused branch for GitHub Actions checks, including actionlint
+   syntax/reusable-call checks for both site workflows. No local tests/builds or
    dependency install for this workstream.
 3. Record actual hosted run/job and failures; repair in bounded commits, rerun
    affected checks. PR integration/merge stays root-owned and separate.
@@ -89,3 +90,12 @@ be separately recorded when available.
 This narrow integration/production-safety task progresses by identifiable,
 truthful candidate-only site evidence, not speculative academic machinery or a
 new claim of Mail acceptance.
+
+Hosted syntax tooling uses actionlint v1.7.11, with Linux amd64 archive digest
+`900919a84f2229bac68ca9cd4103ea297abc35e9689ebb842c6e34a3d1b01b0a` pinned from
+the [official release asset metadata](https://api.github.com/repos/rhysd/actionlint/releases/tags/v1.7.11)
+on 2026-10-01. The archive is downloaded/verified/extracted only in hosted
+repository `.temp`, before syntax checking the two allowlisted workflows.
+This adds no provider permission or local install; unexpected upstream bytes
+fail checksum before execution. See [actionlint](https://github.com/rhysd/actionlint)
+for workflow syntax, expressions and reusable-workflow validation scope.

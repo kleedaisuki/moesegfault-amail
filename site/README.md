@@ -16,7 +16,8 @@ guide with the independently reviewed CLI/ZIP contract and release matrix.
 Tests/builds for this workstream run in GitHub Actions, not on the developer
 machine. `.github/workflows/site-ci.yml` (Candidate site CI) has one successful
 job identity, `Astro candidate site source checks`, used by the deployment gate.
-It runs synthetic regressions, locked pnpm install, Astro checks and both
+It runs digest-pinned actionlint on both site workflows, synthetic regressions,
+locked pnpm install, Astro checks and both
 candidate/published-state build fixtures. It never deploys or receives provider
 credentials. Node 22 and pnpm 12.4.1 are pinned by workflow; site package versions
 and lockfile remain those imported from reviewed source.
