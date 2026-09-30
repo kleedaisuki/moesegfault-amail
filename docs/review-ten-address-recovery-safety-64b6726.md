@@ -6,9 +6,10 @@ and its unchanged `staging_ten_address_acceptance.py` caller.
 
 ## Decision
 
-**NO-GO for claiming hosted source checks are ready to pass, pending the
-composition fixture correction below. Live quota/recovery dispatch remains
-NO-GO.** The controller safety correction itself has no substantive defect
+**GO for hosted source-only checks after the independently reviewed `85d3cd1`
+correction below. Live quota/recovery dispatch remains NO-GO.** This is permission
+to obtain hosted evidence, not a claim that tests already passed. The controller
+safety correction itself has no substantive defect
 identified in the inspected paths. It conservatively removes cross-run DELETE
 replay without inventing an attempt history from the immutable manifest.
 
@@ -18,7 +19,7 @@ fixture failure is a source-derived executable path, not a reported test run.
 Only this review artifact was written; concurrent worktree changes are outside
 scope and were not staged.
 
-## Required correction: P1 stale composition recovery contract
+## Resolved finding: P1 stale composition recovery contract
 
 Location: `infra/tests/test_staging_ten_address_acceptance.py:124-133`, with
 fixture construction at lines 80-81.
@@ -65,7 +66,8 @@ cleanup, read-only manifest reconciliation and rejected campaign re-entry.
 Existing campaign fixtures preserve exact same-invocation deletion, asynchronous
 202 settlement, first-ambiguity stop, eleven-alias regression cleanup and
 cooperative interruption coverage. They were inspected, not executed. The
-wrapper-level obsolete recovery fixture remains the required integration fix.
+wrapper-level obsolete recovery fixture was corrected by `85d3cd1` as reviewed
+below.
 
 Read polling is not a deployment lock or global transaction. Full baseline
 verification occurs before success; unrelated drift cannot pass merely because
@@ -90,3 +92,37 @@ current source admission, complete live readbacks, original service pins,
 effective capture-off, held policy and concurrency/operational authorization.
 No reviewed path proves recovery after a killed process whose DELETE never
 became an observable transition.
+
+## Narrow follow-up review: `85d3cd1`
+
+Reviewed commit: `85d3cd10b9acf62877d5d0d79293259e2c4369f9`.
+The original P1 finding is resolved. No further substantive finding was
+identified in this correction; no local tests/builds/live calls were run.
+
+- The wrapper now supplies `forbidden` for **both** add and delete unless mode
+  is campaign. External recovery therefore lacks CLI address mutation even if
+  an accidental future controller invocation tries to use its adapter DELETE.
+  The existing explicit call remains public `hosted.recover`.
+- Default independent recovery uses an empty, authenticated baseline and
+  requires success with zero DELETEs, exact original artifact coordinates, no
+  local prepared file and two effective-privacy checks. This is an adequate
+  success case, not a substitute for the controller's synthetic Cron fixtures.
+- A separate `active_recovery=True` fixture creates the ambiguous live row and
+  requires `recovery_manual_intervention_required`. The helper's `finally`
+  asserts neither native CLI add nor delete was called on recovery, including
+  that failure path.
+- `main` exposes exactly the source-owned fixed manual-intervention failure
+  marker with exit code 1. Other contract failures retain the generic fixed
+  failure marker; observed exception content is not printed. The new entry
+  fixture checks that failure marker and exit status, not success.
+
+The active-failure helper exits before its post-call scratch-directory assertion;
+production teardown remains in `execute`'s outer `finally`, and the successful
+recovery helper still asserts scratch teardown. Extending the failure fixture's
+teardown assertion would be optional coverage improvement, not a release-blocking
+defect established by this review.
+
+**Updated decision: GO for hosted source-only checks of an exact containing SHA;
+live dispatch remains NO-GO until the independent operational/workflow gates are
+satisfied.** Do not infer hosted pass evidence or authorize manual deletion from
+this source assessment.
