@@ -190,3 +190,23 @@ Existing `settings-v1` attestation parsers intentionally do not recognize this
 marker; downstream containment acceptance needs a separate reviewed integration.
 The retained-record privacy canary and production release gates remain closed
 until their independent evidence passes.
+
+## Manual workflow integration
+
+The separate `staging-current-worker-capture-off` job in `ci.yml` requires
+manual dispatch on `codex/amail-v0.1.0`, staging Environment, first attempt,
+`confirm=APPLY_STAGING_CURRENT_WORKER_CAPTURE_OFF`, the approved
+`expected_worker_version`, and dedicated
+`mail_deploy_freeze=FREEZE_STAGING_MAIL_DEPLOYS`. The dedicated input avoids
+confusing the Mail deploy freeze with the existing role-Worker freeze and raises
+dispatch input count from 23 to 24, below GitHub's limit of 25.
+
+The job shares non-cancelable `deploy-mail-staging` concurrency with staging Mail
+mutation paths. It checks operator acknowledgement before synthetic helper,
+workflow guard and observability contracts; only the final helper step receives
+Cloudflare credentials. Push and PR runs cannot execute this job. The historical
+`staging-containment-settings` job and settings-v1 parser remain unchanged.
+`infra/tests/test_current_worker_capture_off_workflow.py` guards these contracts,
+including executing the extracted non-mutating Bash input gate on hosted Linux.
+Local verification was limited to AST/YAML parsing and diff inspection; no tests,
+provider operations or deployments were executed for this wiring change.
