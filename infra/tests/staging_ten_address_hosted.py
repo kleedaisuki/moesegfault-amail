@@ -11,11 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+import time
 from typing import Callable
 
 import staging_ten_address_manifest as manifest
 
 require = manifest.require
+RETIREMENT_TIMEOUT_SECONDS = 360
 
 
 @dataclass(frozen=True, repr=False)
@@ -99,8 +101,16 @@ def negative(result: CliResult, code: str) -> None:
     require(isinstance(result, CliResult), "cli_capture_invalid")
     result.validate()
     require(code in {"reserved_or_invalid_name", "address_limit"}, "negative_oracle_invalid")
-    pattern = (rb"amail: mail API addresses\.add failed: HTTP 409, code="
-               + code.encode("ascii") + rb", correlation_id=[A-Za-z0-9_-]+(?:, [^\r\n]*)?(?:\r?\n|$)")
+    # reqwest StatusCode Display includes the standard reason phrase. Keep
+    # numeric-only diagnostics compatible, but do not accept arbitrary reasons
+    # or appended response bodies as a typed API failure.
+    diagnostic = (rb"(?:, diag=v1:(?:input|d1_lookup|d1_allocate|d1_claim|routing_list|"
+                  rb"routing_create|d1_activate|d1_readback|response_encode|success):"
+                  rb"(?:none|request|http|provider|decode|d1|state):"
+                  rb"(?:0|[1-5][0-9]{2}):(?:0|[1-9][0-9]{3,5}))?")
+    pattern = (rb"amail: mail API addresses\.add failed: HTTP 409(?: Conflict)?, code="
+               + code.encode("ascii") + rb", correlation_id=(?:none|[a-f0-9]{8}-"
+               rb"(?:[a-f0-9]{4}-){3}[a-f0-9]{12})" + diagnostic + rb"(?:\r?\n)?")
     require(result.returncode != 0 and result.stdout == b""
             and re.fullmatch(pattern, result.stderr) is not None, "negative_cli_mismatch")
 
@@ -225,7 +235,47 @@ def recover(plan: dict, secret: str, generation: str, verified_owner: str,
     try:
         manifest.validate(plan, secret, plan["run"], generation)
         require(adapter.pin() == plan["mail_version"], "serving_pin_changed")
-        manifest.reconcile(plan, adapter.read, adapter.delete, verified_owner,
+        def settle_retirement(address: str) -> None:
+            """Poll exact retirement without issuing a mutating request.
+
+            HTTP 202 may leave retired+needs_reconcile=1 until Cron removes
+            provider routes. Preserve that state as inconclusive until the
+            bounded read-only settlement completes; timeout requires recovery.
+            """
+            # Staging's five-minute Cron can legitimately run after the next
+            # minute boundary. Allow one full interval plus bounded headroom.
+            deadline = time.monotonic() + RETIREMENT_TIMEOUT_SECONDS
+            while True:
+                current = adapter.read()
+                current.validate()
+                row = current.rows.get(address)
+                require(row is not None and row["owner_iss"] == plan["owner_iss"]
+                        and row["owner_sub"] == verified_owner
+                        and row["created_at"] >= plan["created_at"],
+                        "retirement_owner_unverified")
+                if (row["state"] == "retired" and row["needs_reconcile"] == 0
+                        and row["cf_rule_id"] is None
+                        and not any(rule["address"] == address for rule in current.rules)):
+                    return
+                require(time.monotonic() < deadline, "retirement_settlement_timeout")
+                time.sleep(3)
+
+        def delete_and_settle(address: str) -> None:
+            """Send DELETE once, then wait before another delete or final verdict."""
+            adapter.delete(address)
+            settle_retirement(address)
+
+        # A previous interrupted run may already have received DELETE 202.
+        # Finish its read-only settlement before manifest's stricter retired
+        # oracle; never resend the original delete to make progress.
+        initial = adapter.read()
+        initial.validate()
+        for address in plan["resources"]:
+            row = initial.rows.get(address)
+            if (address not in plan["baseline"]["rows"] and row is not None
+                    and row["state"] == "retired" and row["needs_reconcile"] == 1):
+                settle_retirement(address)
+        manifest.reconcile(plan, adapter.read, delete_and_settle, verified_owner,
                            secret, plan["run"], generation)
         require(adapter.list_owned() == set(), "cleanup_owner_not_empty")
         require(adapter.storage_empty(tuple(plan["resources"])) is True,

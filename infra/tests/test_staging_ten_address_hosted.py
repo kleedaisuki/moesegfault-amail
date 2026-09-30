@@ -26,7 +26,8 @@ def evidence():
 
 def rejected(code="reserved_or_invalid_name", status=409):
     """Match actual CLI diagnostic format without provider data."""
-    return target.CliResult(1, b"", (f"amail: mail API addresses.add failed: HTTP {status}, "
+    reason = {409: "Conflict", 403: "Forbidden", 500: "Internal Server Error"}.get(status, "Unknown")
+    return target.CliResult(1, b"", (f"amail: mail API addresses.add failed: HTTP {status} {reason}, "
                                   f"code={code}, correlation_id=none\n").encode())
 
 
@@ -139,6 +140,35 @@ class HostedTests(unittest.TestCase):
             with self.assertRaisesRegex(manifest.ContractFailure, "negative_cli_mismatch"):
                 target.negative(value, "reserved_or_invalid_name")
 
+    def test_real_cli_reason_phrase_and_diagnostics(self):
+        """Accept actual reqwest status display and source-owned diagnostic grammar."""
+        for code in ("address_limit", "reserved_or_invalid_name"):
+            result = rejected(code)
+            self.assertIn(b"HTTP 409 Conflict,", result.stderr)
+            target.negative(result, code)
+            target.negative(target.CliResult(1, b"", result.stderr.replace(
+                b"409 Conflict,", b"409,")), code)
+            with_diag = result.stderr.replace(b"correlation_id=none\n",
+                b"correlation_id=00000000-0000-0000-0000-000000000001, diag=v1:input:none:0:0\r\n")
+            target.negative(target.CliResult(1, b"", with_diag), code)
+
+    def test_error_bodies_and_other_statuses_never_pass(self):
+        """No provider body, invalid reason or duplicated status/code is an oracle."""
+        good = rejected().stderr
+        bodies = [rejected(status=500).stderr, rejected(status=403).stderr,
+                  good.replace(b"409 Conflict", b"409 Forbidden"),
+                  good.replace(b"409 Conflict", b"4090 Conflict"),
+                  good.replace(b"reserved_or_invalid_name", b"reserved_or_invalid_name_extra"),
+                  good.rstrip() + b', response={"status":409,"secret":"private"}\n',
+                  good + b'<html>HTTP 409 Conflict private</html>\n',
+                  good.rstrip() + b', cf_error=1101\n',
+                  good.rstrip() + b', diag=v1:input:none:099:0\n',
+                  b'{"code":"reserved_or_invalid_name","status":409}\n',
+                  good + good]
+        for body in bodies:
+            with self.assertRaisesRegex(manifest.ContractFailure, "^negative_cli_mismatch$"):
+                target.negative(target.CliResult(1, b"", body), "reserved_or_invalid_name")
+
     def test_reserved_success_reconciles_entire_manifest(self):
         """Unexpected successful ADMIN is deleted only when exactly owned."""
         world = World()
@@ -206,6 +236,88 @@ class HostedTests(unittest.TestCase):
             with self.assertRaisesRegex(manifest.ContractFailure, "^ten_address_cleanup_required$"):
                 self.run_campaign(world)
         self.assertEqual(len(world.deletes), 1)
+
+    def test_async_delete_202_waits_for_cron_without_replay(self):
+        """Realistic retired+needs=1 is polled before the next exact DELETE."""
+        world = World()
+        pending = {}
+        adapter = world.adapter()
+        observations = []
+
+        def asynchronous_delete(address):
+            """Return as HTTP 202 while route removal awaits synthetic Cron."""
+            self.assertEqual(pending, {})
+            world.deletes.append(address)
+            world.snapshot.rows[address].update(state="retired", cf_rule_id=None,
+                                                needs_reconcile=1)
+            world.snapshot = manifest.Snapshot(world.snapshot.rows, world.snapshot.rules,
+                                               world.snapshot.global_count - 1)
+            pending[address] = 3
+
+        def cron_read():
+            """Only repeated reads advance the synthetic route retirement."""
+            for address in list(pending):
+                observations.append(world.snapshot.rows[address]["needs_reconcile"])
+                pending[address] -= 1
+                if pending[address] == 0:
+                    world.snapshot.rows[address]["needs_reconcile"] = 0
+                    world.snapshot.rules[:] = [r for r in world.snapshot.rules
+                                                if r["address"] != address]
+                    del pending[address]
+            return world.read()
+
+        adapter.read = cron_read
+        adapter.delete = asynchronous_delete
+        with mock.patch.object(world, "adapter", return_value=adapter), \
+                mock.patch.object(target.time, "sleep") as sleep:
+            self.assertEqual(len(self.run_campaign(world)), 3)
+        self.assertEqual(len(world.deletes), 10)
+        self.assertEqual(len(set(world.deletes)), 10)
+        self.assertEqual(len(observations), 30)
+        self.assertEqual(sleep.call_count, 20)
+        self.assertEqual(pending, {})
+
+    def test_async_retirement_timeout_requires_recovery_no_replay(self):
+        """Bounded read-only waiting does not turn a stuck Cron into a pass."""
+        world = World()
+        adapter = world.adapter()
+
+        def never_settles(address):
+            """Retire D1 once but leave provider cleanup pending indefinitely."""
+            world.deletes.append(address)
+            world.snapshot.rows[address].update(state="retired", cf_rule_id=None,
+                                                needs_reconcile=1)
+            world.snapshot = manifest.Snapshot(world.snapshot.rows, world.snapshot.rules,
+                                               world.snapshot.global_count - 1)
+
+        adapter.delete = never_settles
+        with mock.patch.object(world, "adapter", return_value=adapter), \
+                mock.patch.object(target.time, "monotonic", side_effect=[0, 361]):
+            with self.assertRaisesRegex(manifest.ContractFailure, "^ten_address_cleanup_required$"):
+                self.run_campaign(world)
+        self.assertEqual(len(world.deletes), 1)
+
+    def test_recovery_of_prior_delete_202_only_polls(self):
+        """Interrupted DELETE 202 is settled rather than submitted again."""
+        world = World()
+        address = plan()["allowed"][0]
+        world.snapshot.rows[address] = row(state="retired", reconcile=1,
+                                           local_part=address.split("@", 1)[0])
+        adapter = world.adapter()
+        reads = []
+
+        def settles():
+            """Complete previous retirement on the third read-only snapshot."""
+            reads.append(True)
+            if len(reads) == 3:
+                world.snapshot.rows[address]["needs_reconcile"] = 0
+            return world.read()
+
+        adapter.read = settles
+        with mock.patch.object(target.time, "sleep"):
+            target.recover(plan(), KEY, GEN, OWNER, adapter)
+        self.assertGreaterEqual(len(reads), 3)
+        self.assertEqual(world.deletes, [])
 
     def test_pin_and_storage_fail_closed(self):
         """Foreign serving state and unexpected mail/storage cannot pass."""

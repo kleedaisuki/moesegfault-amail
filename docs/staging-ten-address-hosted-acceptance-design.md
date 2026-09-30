@@ -41,6 +41,25 @@ full provider matcher/action inventory and independent message/R2 absence.
 Pinned `cryptography` installation and real AES-GCM integration tests remain
 required. No live run, cleanup or quota pass is claimed by this increment.
 
+Independent-review corrections: negative CLI parsing now accepts the actual
+reqwest `HTTP 409 Conflict` status display (and numeric-only legacy display),
+while requiring the exact 409/code pair, canonical correlation field and only
+the CLI's closed optional diagnostic grammar. Provider bodies, other reason
+phrases/statuses, appended JSON/HTML, duplicate diagnostic lines and generic
+errors cannot satisfy the negative oracle. Fixtures now model actual status
+display instead of hiding the reason phrase.
+
+Recovery now sends each supported DELETE once and polls exact readback until
+the row is retired with zero reconciliation work, no saved rule ID and no
+matching route. A DELETE-202 `retired + needs_reconcile=1` state is transient,
+not an immediate cleanup failure. Waiting is read-only and bounded to six
+minutes per in-flight retirement, covering the configured five-minute Cron
+interval plus headroom. Already-pending retirement from an interrupted run
+is likewise settled without resending DELETE. A timeout fails cleanup and
+requires same-manifest recovery. Synthetic fixtures exercise deferred route
+removal, timeout/no replay and recovery of an earlier DELETE 202. These
+corrections still require hosted tests; no live provider behavior is claimed.
+
 Source increment: `infra/tests/staging_ten_address_manifest.py` now implements
 the dormant, side-effect-free candidate/manifest envelope, private artifact
 readback gate, complete normalized snapshot contracts, prefix/drift checks and
