@@ -1,5 +1,5 @@
 # Encrypt confidential stdin in memory; never print exception details.
-param([ValidateSet('encrypt','synthetic')][string]$Mode = 'encrypt')
+param([ValidateSet('encrypt','synthetic','keygen','classify')][string]$Mode = 'encrypt', [string]$Session = '')
 $ErrorActionPreference = 'Stop'
 try {
     if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'unsupported' }
@@ -115,12 +115,130 @@ public static class PrivateProviderCrypto {
             output.Length > 400000 || output.Contains("synthetic\\nsecret")) throw new Exception();
         Synthetic(rsa, output);
     }
+    /// <summary>Decrypt authenticated bytes in memory and emit only public error classes.</summary>
+    public static string Classify(byte[] envelope, byte[] privateKey) {
+        using RSA rsa = RSA.Create();
+        byte[] key = null;
+        byte[] frame = new byte[RecordSize];
+        try {
+            rsa.ImportPkcs8PrivateKey(privateKey, out int count);
+            if (count != privateKey.Length || rsa.KeySize != 3072) throw new Exception();
+            using JsonDocument outer = JsonDocument.Parse(envelope);
+            byte[] header = Convert.FromBase64String(outer.RootElement.GetProperty("header").GetString());
+            using JsonDocument parsed = JsonDocument.Parse(header);
+            if (parsed.RootElement.GetProperty("fingerprint").GetString() !=
+                Convert.ToHexString(SHA256.HashData(rsa.ExportSubjectPublicKeyInfo())).ToLowerInvariant()) throw new Exception();
+            key = rsa.Decrypt(Convert.FromBase64String(parsed.RootElement.GetProperty("wrapped_key").GetString()), RSAEncryptionPadding.OaepSHA256);
+            using AesGcm aes = new AesGcm(key,16);
+            aes.Decrypt(Convert.FromBase64String(parsed.RootElement.GetProperty("nonce").GetString()),
+                Convert.FromBase64String(outer.RootElement.GetProperty("ciphertext").GetString()),
+                Convert.FromBase64String(outer.RootElement.GetProperty("tag").GetString()),frame,header);
+            int length = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(frame);
+            if (length < 1 || length > 131072) throw new Exception();
+            for (int i = length + 4; i < frame.Length; i++) if (frame[i] != 0) throw new Exception();
+            using JsonDocument payload = JsonDocument.Parse(frame.AsMemory(4,length));
+            if (payload.RootElement.ValueKind != JsonValueKind.Object) throw new Exception();
+            int fields = 0;
+            foreach (var field in payload.RootElement.EnumerateObject()) {
+                if (field.Name != "http_status" && field.Name != "errors") throw new Exception();
+                fields++;
+            }
+            if (fields != 2 || !payload.RootElement.GetProperty("http_status").TryGetInt32(out int status)) throw new Exception();
+            JsonElement errors = payload.RootElement.GetProperty("errors");
+            if (errors.ValueKind != JsonValueKind.Array || errors.GetArrayLength() == 0) return "unclassified";
+            var classes = new System.Collections.Generic.HashSet<string>();
+            foreach (JsonElement error in errors.EnumerateArray()) {
+                string category = "unclassified";
+                if (error.ValueKind == JsonValueKind.Object && error.TryGetProperty("message", out JsonElement message) && message.ValueKind == JsonValueKind.String) {
+                    string text = message.GetString();
+                    if (text.Length <= 2048) {
+                        if (text == "Unauthorized") category = "authentication";
+                        else if (text == "not authorized for that account") category = "authorization_or_dataset_access";
+                        else if (System.Text.RegularExpressions.Regex.IsMatch(text, "\\Aunknown field[^\\r\\n]{0,512}\\z")) category = "schema_or_field";
+                        else if (System.Text.RegularExpressions.Regex.IsMatch(text, "\\Aerror parsing args[^\\r\\n]{0,512}\\z")) category = "arguments_or_filter";
+                        else if (text == "Internal server error") category = "internal";
+                    }
+                }
+                classes.Add(category);
+            }
+            return classes.Count == 1 ? System.Linq.Enumerable.First(classes) : "mixed";
+        } finally {
+            CryptographicOperations.ZeroMemory(privateKey);
+            if (key != null) CryptographicOperations.ZeroMemory(key);
+            CryptographicOperations.ZeroMemory(frame);
+        }
+    }
 }
 '@
     if ($Mode -eq 'synthetic') {
         [PrivateProviderCrypto]::Synthetic()
         [PrivateProviderCrypto]::Boundary((Join-Path $PSScriptRoot 'private_provider_capture.py'))
         Write-Output 'private_capture_crypto=PASS'
+        exit 0
+    }
+    if ($Mode -in @('keygen','classify')) {
+        # Private keys are local-only. Hosted synthetic mode never uses this branch.
+        if ($env:GITHUB_ACTIONS -eq 'true' -or $Session -notmatch '\A[a-z0-9-]{1,40}\z') { throw 'scope' }
+        $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+        $base = Join-Path $root '.temp/private-provider-diag'
+        $folder = Join-Path $base $Session
+        foreach ($path in @((Join-Path $root '.temp'), $base, $folder)) {
+            if ((Test-Path -LiteralPath $path) -and ((Get-Item -Force -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'scope' }
+        }
+        $keyPath = Join-Path $folder 'private.pk8'
+        if ($Mode -eq 'keygen') {
+            if (Test-Path -LiteralPath $folder) { throw 'exists' }
+            [IO.Directory]::CreateDirectory($folder) | Out-Null
+            if ($IsWindows) {
+                $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+                $acl = [Security.AccessControl.DirectorySecurity]::new()
+                $acl.SetOwner($sid)
+                $acl.SetAccessRuleProtection($true,$false)
+                $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
+                $acl.AddAccessRule($rule)
+                Set-Acl -LiteralPath $folder -AclObject $acl
+            } else {
+                [IO.File]::SetUnixFileMode($folder, [IO.UnixFileMode]448)
+            }
+            $rsa = [Security.Cryptography.RSA]::Create(3072)
+            $private = $rsa.ExportPkcs8PrivateKey()
+            try {
+                $options = [IO.FileStreamOptions]::new()
+                $options.Mode = [IO.FileMode]::CreateNew
+                $options.Access = [IO.FileAccess]::Write
+                $options.Share = [IO.FileShare]::None
+                if (-not $IsWindows) { $options.UnixCreateMode = [IO.UnixFileMode]384 }
+                $stream = [IO.FileStream]::new($keyPath,$options)
+                try { $stream.Write($private) } finally { $stream.Dispose() }
+                if (-not $IsWindows) { [IO.File]::SetUnixFileMode($keyPath,[IO.UnixFileMode]384) }
+                [IO.File]::WriteAllText((Join-Path $folder 'public.spki'),[Convert]::ToBase64String($rsa.ExportSubjectPublicKeyInfo()))
+                [IO.File]::WriteAllText((Join-Path $folder 'created.utc'),[DateTimeOffset]::UtcNow.ToString('O'))
+            } finally { [Security.Cryptography.CryptographicOperations]::ZeroMemory($private); $rsa.Dispose() }
+            Write-Output 'private_provider_key=GENERATED'
+            exit 0
+        }
+        foreach ($path in @($folder,$keyPath)) {
+            if (-not (Test-Path -LiteralPath $path) -or ((Get-Item -Force -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'scope' }
+            if ($IsWindows) {
+                $acl = Get-Acl -LiteralPath $path
+                $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+                foreach ($entry in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+                    if ($entry.IdentityReference.Value -ne $sid -or $entry.AccessControlType -ne 'Allow') { throw 'acl' }
+                }
+                if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid) { throw 'acl' }
+            } elseif (([int][IO.File]::GetUnixFileMode($path) -band 63) -ne 0) { throw 'acl' }
+        }
+        if ((Get-Item -LiteralPath $keyPath).Length -gt 4096) { throw 'bounded' }
+        $raw = [IO.MemoryStream]::new()
+        $stdin = [Console]::OpenStandardInput()
+        $block = [byte[]]::new(4096)
+        while (($count = $stdin.Read($block,0,$block.Length)) -gt 0) {
+            if ($raw.Length + $count -gt 400000) { throw 'bounded' }
+            $raw.Write($block,0,$count)
+        }
+        $category = [PrivateProviderCrypto]::Classify($raw.ToArray(),[IO.File]::ReadAllBytes($keyPath))
+        [Console]::Out.Write($category)
+        $raw.Dispose()
         exit 0
     }
     $inputStream = [Console]::OpenStandardInput()

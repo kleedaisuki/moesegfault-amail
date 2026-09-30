@@ -42,19 +42,58 @@ default-branch dispatch registration. Other offline tests are also collected
 by the existing Infra suite; native cryptography is skipped unless the hosted
 lane explicitly enables it.
 
+## Local operator lifecycle source (not exercised)
+
+`infra/tests/private_provider_operator.py` now implements that lifecycle in a
+separate source slice. All commands below are documentation, **not executed**:
+
+```powershell
+python infra/tests/private_provider_operator.py keygen <lowercase-session>
+python infra/tests/private_provider_operator.py inspect <session> <capture-run-id> <reviewed-full-sha>
+python infra/tests/private_provider_operator.py cleanup <session>
+```
+
+Key generation refuses Actions runners, linked session paths and existing
+sessions. The private PKCS#8 key is created only inside the new session folder:
+Windows gets a protected current-user SID-only inheritable DACL before key
+creation; Unix uses directory mode 0700 and atomic file creation mode 0600.
+Public SPKI and creation timestamp share that protected folder. No private key
+is passed through command arguments/environment or stored in GitHub. Operator
+must bind the public fingerprint before setting the two repository variables;
+this slice intentionally does not automatically set variables or dispatch.
+
+Inspection requires the authenticated operator `gh` session, the exact reviewed
+SHA and first-attempt successful manual run/job. It validates the immutable
+artifact's API metadata, SHA-256 digest and age, follows exactly one approved
+HTTPS download redirect without bearer credentials, bounds the archive and
+reads exactly `capture.enc.json` in memory without extraction. An unfamiliar
+download host fails closed; do not widen the suffix list from private error
+prose. Full envelope/provenance validation precedes native decryption.
+
+Native decryption checks fingerprint, OAEP/GCM and framing in memory and emits
+only seven predeclared categories based on narrow public error grammars. Unknown
+fields/messages remain `unclassified`. It never emits decrypted JSON/prose.
+The raw interpreter cannot print, execute provider commands or contact network
+APIs; the orchestrator's network calls are only authenticated GitHub lifecycle
+operations, never Cloudflare or an LLM provider.
+
+After successful private classification, the exact numeric remote artifact is
+deleted and its absence checked before exact local file deletion. No recursive
+delete is used. On interruption, `cleanup` uses the public-only receipt to
+authenticate the original run and recover remote deletion before removing local
+files. A provider cleanup failure retains only encrypted evidence and private
+key until retry/24-hour deadline; the next operator session must finish cleanup
+before opening another session. There is no background expiry task: the operator
+must enforce the documented deadline. Deletion is not a physical secure-wipe
+claim. The one-day artifact retention is a fallback, not proof of deletion.
+
 ## Remaining blockers before any live use
 
-This source slice deliberately does **not** generate operator keys, download
-artifacts, or expose decrypted provider prose. A reviewed local operator helper
-is still required for current-user-only private-key ACLs, authenticated artifact
-run/SHA/digest validation, bounded exact ZIP-member reads, envelope/provenance
-validation before interpretation, predeclared offline classification, remote
-artifact deletion and exact local 24-hour cleanup. The synthetic decryption
-routine is a test, not that operator helper.
-
 Do not dispatch merely because the encryption job is source-complete. Without
-that operator lifecycle and independent security GO, the complete design's
-acceptance criteria are not met. Do not substitute plaintext output, assistant
+independent security GO for the operator slice and hosted synthetic evidence,
+the complete design's acceptance criteria are not met. Windows ACL handling
+and operator download/classification remain source-reviewed only until checked.
+Do not substitute plaintext output, assistant
 tool ingestion, broad ZIP extraction, or permanent private-key storage. Unknown
 provider errors remain confidential and unresolved until a safe interpretation
 path exists. An upload failure is not authorization for a second provider read.
@@ -62,3 +101,7 @@ path exists. An upload failure is not authorization for a second provider read.
 Implementation constraints and threat model remain those in
 `private-provider-error-capture-design.md`; this capture cannot prove historical
 delivery, B readiness, or platform settings/production privacy acceptance.
+
+References: [GitHub artifact API metadata/deletion](https://docs.github.com/en/rest/actions/artifacts),
+[Windows directory ACL contract](https://learn.microsoft.com/en-us/dotnet/api/system.security.accesscontrol.directorysecurity),
+[native ACL extensions](https://learn.microsoft.com/en-us/dotnet/api/system.io.filesystemaclextensions).

@@ -5,12 +5,12 @@ on:
     branches: [codex/amail-v0.1.0, main]
     paths:
       - 'infra/tests/private_provider_*'
-      - 'infra/tests/test_private_provider_capture.py'
+      - 'infra/tests/test_private_provider_*.py'
       - '.github/workflows/private-provider-crypto-tests.yml'
   pull_request:
     paths:
       - 'infra/tests/private_provider_*'
-      - 'infra/tests/test_private_provider_capture.py'
+      - 'infra/tests/test_private_provider_*.py'
       - '.github/workflows/private-provider-crypto-tests.yml'
 permissions:
   contents: read
@@ -30,4 +30,4 @@ jobs:
         env:
           PRIVATE_CAPTURE_SYNTHETIC_HOSTED: '1'
           PYTHONDONTWRITEBYTECODE: '1'
-        run: python -m unittest discover -s infra/tests -p 'test_private_provider_capture.py' -v
+        run: python -m unittest discover -s infra/tests -p 'test_private_provider_*.py' -v
