@@ -17,6 +17,55 @@ No local tests, key generation, provider requests, private downloads, deployment
 or production changes were performed. This is static source and contract review.
 Only this English review artifact was added.
 
+## Follow-up review at `285a77a`
+
+Reviewed corrections `bc8df06` and `285a77a` without running tests, generating
+keys or making live requests. **Existing hosted synthetic checks remain GO;
+live capture remains NO-GO.**
+
+The original two source findings below are resolved in their stated forms:
+
+- `inspect()` now atomically records run/source intent before its first API
+  request and authenticated artifact ID before download. A missing receipt
+  refuses cleanup instead of claiming remote deletion. `record_receipt()` uses
+  exclusive staging-file creation, file flush/fsync and atomic replacement;
+  POSIX directory fsync and the Windows power-loss limitation are explicit.
+  Interrupted replacement retains the previous valid intent. New hosted-only
+  filesystem fixtures inject failures at multiple inspect boundaries and assert
+  preservation of coordinates/key; they use synthetic non-key bytes in root
+  `.temp`, not an operator key.
+- The shared native ACL policy inspects raw descriptor DACL presence/null/count,
+  rejects foreign/non-allow/callback ACEs, checks owner, and requires protected
+  directory inheritance. Key creation verifies its resulting directory ACL.
+  Windows hosted synthetic mode tests good, null, empty, foreign, deny and
+  unprotected synthetic descriptors without creating an operator key.
+
+### Remaining P2: recovery treats artifact absence on a running run as final
+
+Location at `285a77a`: `private_provider_operator.py`, `retire_remote()` run
+authentication and its `if not matches: return` branch. Confidence: high.
+
+An operator can call `inspect` before the manual capture run completes. The new
+intent receipt is persisted, then `provenance()` rejects the nonterminal run.
+`cleanup` authenticates that same run's ID/SHA/branch/attempt/event but does not
+require terminal status. If the capture job has not uploaded its artifact yet,
+the complete artifact listing is empty; recovery returns and local cleanup
+destroys the private key while reporting `CLEANED`. The capture job can upload
+the encrypted artifact afterwards. This is a concrete late-creation race, not
+a reason to reject recovery of failed or cancelled *terminal* runs.
+
+Require authenticated `status == "completed"` before either an absence claim
+or retirement cleanup; do not require successful conclusion, because failed or
+cancelled terminal runs can legitimately leave uploaded artifacts. Preserve the
+key/receipt on queued, requested, waiting, pending or in-progress runs. Add a
+hosted fixture proving nonterminal absence cannot delete the key, and terminal
+failed/cancelled runs can retire their exact authenticated artifact.
+
+The broader successful download/digest and DELETE/recovery fixture gaps remain
+acceptance work, not claims that those mechanisms were run. The source additions
+improve coverage but actual hosted results are owned by the parent delivery
+record. No live acceptance is granted by this follow-up.
+
 ## Necessary corrections
 
 ### P2: early interruption loses the only remote cleanup receipt
