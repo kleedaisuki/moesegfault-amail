@@ -55,8 +55,21 @@ The queue names are `amail-trace-events` / `amail-trace-events-staging`, DLQs
 `crates/mail-worker/check_observability.py --realm staging|production` checks
 public API retention entirely off; `--mode sink` checks safe custom Logs on/full,
 invocation/native traces off, both settings APIs and no unreviewed exports.
-The checker alone does not prove queue ownership, private routing, actual serving
-versions or absence of retained markers; deployment and canary gates cover these.
+Sink mode now additionally requires `AMAIL_EXPECTED_TRACE_SINK_VERSION` and the
+reviewed Queue/DLQ IDs. It pins the same sole 100%-serving deployment before and
+after its checks, reads the exact version's compiled handler set (`queue` only,
+no named entrypoints) and empty binding set, and requires Workers.dev/preview and
+Cron to be absent. It inspects complete bounded account-domain/account-zone
+inventories, every returned zone's unpaginated Worker routes, and account Queue
+subscriptions to reject any other sink subscription. Permission-denied, missing,
+unknown, duplicate, inconsistent, oversized or incomplete readback fails closed;
+local Wrangler intent is not substituted for deployed evidence. Bounds are 20
+inventory pages, 1,000 domain/zone rows, at most 20 zones and 100 Queues for this
+project's acceptance check. The account inventory is necessarily limited to the
+credentials' actual visibility; use an account-wide reviewed deploy capability,
+not a token that silently excludes zones. The compiled no-fetch handler check is
+an independent safeguard even if another operator later alters route publication.
+These checks do not establish absence of retained markers; the canary covers that.
 
 Hosted tests must run the pure schema denial/roundtrip cases and existing Worker
 trace cases, including full 100-row telemetry and reserved-exit/batch bounds, then
@@ -79,3 +92,10 @@ Cloudflare documents [per-message acknowledgements and retry bounds](https://dev
 and [DLQ delivery](https://developers.cloudflare.com/queues/configuration/dead-letter-queues/).
 Queue-only invocation context is a containment hypothesis verified by the hosted
 retained-data test, not a provider guarantee that safe source alone proves privacy.
+
+
+Readback endpoint contracts follow Cloudflare's [version resource API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/get/)
+(handler/binding resources), [account Worker domain inventory](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/list/)
+and [zone Worker route inventory](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/).
+The sink uses the existing reviewed `pin_staging_mail.serving_deployment` parser
+and `ensure_trace_queues` ownership/detail validators without calling provisioning.

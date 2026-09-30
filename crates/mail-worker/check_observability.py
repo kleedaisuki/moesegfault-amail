@@ -99,6 +99,9 @@ def verify(realm: str, account: str, token: str, *, sink: bool = False) -> bool:
     if not safe_observability(local_settings(realm, sink=sink)["observability"], sink=sink):
         return False
     script = (SINK_SCRIPT if sink else SCRIPT)[realm]
+    if sink:
+        from check_trace_sink_isolation import verify as verify_isolation
+        return verify_isolation(account, token, realm, script, readback, safe_settings)
     return all(
         safe_settings(readback(account, token, script, suffix), sink=sink)
         for suffix in ("settings", "script-settings")
