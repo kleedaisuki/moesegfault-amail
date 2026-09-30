@@ -14,6 +14,10 @@ The commit closes the **pre-deploy route-local copy gap** identified in `site-re
 
 The whole-document `/noindex/i` is deliberately stricter than an HTML robots-directive check: harmless future prose or an HTML comment mentioning the word would fail. This is a conditional false positive, not a present defect; if such copy becomes necessary, target actual robots metadata instead of weakening the staging response-header contract.
 
+## Follow-up on finding 2: resolved by `d6826c6` + `aa080a1`
+
+The revised `hasHref` reads exact attribute names on each `<a>` element, so a `data-href` or `aria-href` value no longer substitutes for `href`. The new regression cases cover published links on all three routes and candidate generic Releases links on manual/changelog. On this follow-up, all 21 focused tests passed; the original all-three-page `data-href`-only published fixture now fails with `home: exact v0.1.0 Release link is missing`. Finding 2 is **resolved** at the source-checker level. This narrow verification does not imply a site build or deployment pass. Finding 1 is **not resolved by these two commits** and remains a separate live-smoke obligation.
+
 ## Unverified boundary
 
 The static checker cannot establish live response headers, route freshness, redirect destinations, or published asset integrity. The existing checksum and deployment gates remain distinct. The old changelog date/cutover evidence item in `site-release-acceptance-review.md` was not changed by this commit and is not re-reviewed here.
