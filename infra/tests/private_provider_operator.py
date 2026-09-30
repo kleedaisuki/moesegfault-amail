@@ -21,6 +21,10 @@ import staging_worker_r2_delivery_history as history
 
 CATEGORIES = frozenset({"unclassified", "authentication", "authorization_or_dataset_access",
                         "schema_or_field", "arguments_or_filter", "internal", "mixed"})
+OFFLINE_CATEGORIES = CATEGORIES | frozenset({"query_invalid", "dataset_limit",
+                        "rate_or_resource", "service_unavailable", "invalid"})
+HTTP_BINS = frozenset({"ok", "authentication", "forbidden", "bad_request",
+                       "rate_limited", "server_error", "other"})
 FILES = ("private.pk8", "public.spki", "created.utc", "capture.enc.json", "receipt.json", "receipt.next.json")
 MAX_ARCHIVE = 600_000
 JOB = "One-shot encrypted content-free provider error"
@@ -46,7 +50,22 @@ def child(mode: str, session: str, data: bytes = b"") -> bytes:
         str(Path(__file__).with_name("private_provider_crypto.ps1")), "-Mode", mode, "-Session", session],
         input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=60, check=False)
     history.need(result.returncode == 0 and not result.stderr and len(result.stdout) <= 128, "scope")
+    if mode == "classify-offline":
+        offline_result(result.stdout)
+        return result.stdout
     return result.stdout.strip()
+
+
+def offline_result(raw: bytes) -> str:
+    """Accept exactly two ASCII enum fields, with no normalization or extra output.
+
+    Example: b"http=ok errors=unclassified" is the complete native result.
+    """
+    history.need(type(raw) is bytes and len(raw) <= 128 and raw.isascii(), "schema")
+    text = raw.decode("ascii")
+    allowed = {f"http={http} errors={category}" for http in HTTP_BINS for category in OFFLINE_CATEGORIES}
+    history.need(text in allowed, "schema")
+    return text
 
 
 def token() -> str:
@@ -276,7 +295,11 @@ def inspect(session: str, run_id: str, sha: str) -> str:
 
 
 def classify_local(session: str) -> str:
-    """Reuse the same authenticated encrypted capture without any network request."""
+    """Reuse authenticated ciphertext offline and return only the fixed HTTP/error pair.
+
+    Expiry, provenance and local native ACL checks are unchanged. The richer
+    interpreter is deliberately not used by the live inspect/capture path.
+    """
     folder = session_path(session)
     created = datetime.fromisoformat((folder / "created.utc").read_text())
     history.need(timedelta(0) <= datetime.now(timezone.utc) - created < timedelta(hours=24), "scope")
@@ -294,9 +317,7 @@ def classify_local(session: str) -> str:
                 "query_sha256": hashlib.sha256(capture.QUERY.encode()).hexdigest()}
     encrypted = encrypted_file.read_bytes()
     capture.validate_envelope(encrypted, metadata, (folder / "public.spki").read_text())
-    category = child("classify", session, encrypted).decode("ascii")
-    history.need(category in CATEGORIES, "schema")
-    return category
+    return offline_result(child("classify-offline", session, encrypted))
 
 
 def main() -> int:
@@ -318,8 +339,8 @@ def main() -> int:
             category = inspect(session, args[2], args[3])
             print("private_provider_operator=LOCAL_RETAINED remote=CLEANED errors=" + category + " delivery=UNVERIFIED")
         elif mode == "classify" and len(args) == 2:
-            category = classify_local(session)
-            print("private_provider_operator=LOCAL_RETAINED errors=" + category + " delivery=UNVERIFIED")
+            result = offline_result(classify_local(session).encode("ascii"))
+            print("private_provider_operator=LOCAL_RETAINED " + result + " delivery=UNVERIFIED")
         else:
             raise history.HistoryError("scope")
         return 0

@@ -49,6 +49,54 @@ def encrypted_fixture(metadata, public):
 class OperatorTests(unittest.TestCase):
     """Untrusted input never becomes paths, executable prose or stdout."""
 
+    def test_offline_fixed_enum_boundary(self):
+        """Every admitted result is fixed ASCII, never arbitrary provider data."""
+        for http in operator.HTTP_BINS:
+            for category in operator.OFFLINE_CATEGORIES:
+                raw = f"http={http} errors={category}".encode("ascii")
+                self.assertEqual(operator.offline_result(raw), raw.decode("ascii"))
+        valid = b"http=ok errors=unclassified"
+        for raw in (valid + b"\n", b" " + valid, valid + b" PRIVATE", valid + b"\x00",
+                    b"errors=unclassified http=ok", b"http=200 errors=unclassified",
+                    b"http=ok errors=PRIVATE", b"http=ok errors=\xff", b"x" * 129):
+            with self.assertRaises(Exception):
+                operator.offline_result(raw)
+
+    def test_offline_child_rejects_extra_stdout_stderr_and_failures(self):
+        """Hostile native output and exceptions cannot escape the fixed parent failure."""
+        import subprocess
+        valid = b"http=ok errors=unclassified"
+        outcomes = [subprocess.CompletedProcess([], code, stdout, stderr)
+                    for code, stdout, stderr in ((0, valid + b"\nPRIVATE", b""),
+                        (0, valid, b"PRIVATE"), (1, valid, b""),
+                        (0, b"\xff", b""), (0, b"x" * 129, b""))]
+        for outcome in outcomes:
+            with patch.object(operator.subprocess, "run", return_value=outcome), self.assertRaises(Exception):
+                operator.child("classify-offline", "synthetic", b"CIPHERTEXT")
+        with patch.object(operator.subprocess, "run", return_value=subprocess.CompletedProcess([],0,valid,b"")):
+            self.assertEqual(operator.child("classify-offline", "synthetic", b"CIPHERTEXT"), valid)
+        for failure in (RuntimeError("PRIVATE"), UnicodeError("PRIVATE"), OSError("PRIVATE")):
+            with patch.object(operator, "classify_local", side_effect=failure), \
+                    patch.object(operator.sys, "argv", ["operator", "classify", "synthetic"]), \
+                    contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as errors:
+                self.assertEqual(operator.main(), 1)
+            self.assertEqual(output.getvalue(), "private_provider_operator=UNVERIFIED cleanup=UNVERIFIED\n")
+            self.assertEqual(errors.getvalue(), "")
+
+    def test_native_template_freeze_matches_reviewed_public_table(self):
+        """Catch changes to frozen literal spelling/order without importing a network entry point."""
+        import ast
+        import re
+        path = Path(operator.__file__).parent
+        tree = ast.parse((path / "staging_worker_r2_history_error.py").read_text())
+        expected = next(ast.literal_eval(node.value) for node in tree.body
+                        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+                        and target.id == "TEMPLATES" for target in node.targets))
+        native = (path / "private_provider_crypto.ps1").read_text()
+        table = native.split("OfflineTemplates = {", 1)[1].split("    };", 1)[0]
+        actual = tuple(re.findall(r'\("([a-z_]+)", @"([^"\n]*)"\)', table))
+        self.assertEqual(actual, expected)
+
     def test_exact_zip_member(self):
         self.assertEqual(operator.envelope_from_zip(archive(["capture.enc.json"])), b"ENCRYPTED")
 
@@ -147,12 +195,12 @@ class OperatorTests(unittest.TestCase):
             self.assertEqual(json.loads((folder / "receipt.next.json").read_text())["artifact_id"], 42)
 
     def test_local_classifier_never_contacts_provider_or_github(self):
-        with patch.object(operator, "classify_local", return_value="unclassified"), \
+        with patch.object(operator, "classify_local", return_value="http=ok errors=unclassified"), \
                 patch.object(operator, "github") as network, \
                 patch.object(operator.sys, "argv", ["operator", "classify", "session"]), contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(operator.main(), 0)
         network.assert_not_called()
-        self.assertEqual(output.getvalue(), "private_provider_operator=LOCAL_RETAINED errors=unclassified delivery=UNVERIFIED\n")
+        self.assertEqual(output.getvalue(), "private_provider_operator=LOCAL_RETAINED http=ok errors=unclassified delivery=UNVERIFIED\n")
 
     def test_cleanup_remote_failure_preserves_local_key(self):
         with patch.object(operator, "retire_remote", side_effect=RuntimeError("synthetic")), \
@@ -266,14 +314,14 @@ class OperatorTests(unittest.TestCase):
                         "repository":operator.history.REPOSITORY,"query_sha256":hashlib.sha256(operator.capture.QUERY.encode()).hexdigest()}
             encrypted = encrypted_fixture(metadata,public)
             (folder / "capture.enc.json").write_bytes(encrypted)
-            with patch.object(operator,"session_path",return_value=folder), patch.object(operator,"child",return_value=b"unclassified") as native, \
+            with patch.object(operator,"session_path",return_value=folder), patch.object(operator,"child",return_value=b"http=ok errors=unclassified") as native, \
                     patch.object(operator.history.OPENER,"open") as network, \
                     patch.object(operator.sys,"argv",["operator","classify","session"]),contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(operator.main(),0)
             network.assert_not_called()
-            native.assert_called_once_with("classify","session",encrypted)
+            native.assert_called_once_with("classify-offline","session",encrypted)
             self.assertTrue((folder / "private.pk8").exists())
-            self.assertEqual(output.getvalue(),"private_provider_operator=LOCAL_RETAINED errors=unclassified delivery=UNVERIFIED\n")
+            self.assertEqual(output.getvalue(),"private_provider_operator=LOCAL_RETAINED http=ok errors=unclassified delivery=UNVERIFIED\n")
             # Metadata substitution fails before invoking native decryption.
             bad = encrypted_fixture({**metadata,"source_sha":"b"*40},public)
             (folder / "capture.enc.json").write_bytes(bad)
