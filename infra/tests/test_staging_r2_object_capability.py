@@ -123,20 +123,30 @@ class R2ObjectCapabilityTests(unittest.TestCase):
         self.assertEqual(calls, ["PUT", "GET", "DELETE", "GET", "DELETE", "GET"])
 
     def test_cleanup_failure_is_fail_closed_and_leaks_nothing(self) -> None:
-        """Even a provider exception cannot print token, key or response body."""
+        """A definite DELETE denial gets readback, never another write or leak."""
 
         code, out, err, calls = self.run_probe([
             self.put_ok(), (200, self.BODY), (403, b"private-provider-body"),
-            (200, self.BODY), (403, b"private-provider-body"),
             (200, self.BODY),
         ])
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertEqual(err.strip(), "staging_r2_object_capability_failed:r2_cleanup_unverified")
-        self.assertEqual(calls, ["PUT", "GET", "DELETE", "GET", "DELETE", "GET"])
+        self.assertEqual(calls, ["PUT", "GET", "DELETE", "GET"])
         for private in ("private-token", "private-route-token", "verification/", "provider-body",
                         self.BODY.decode()):
             self.assertNotIn(private, out + err)
+
+    def test_cleanup_stops_after_its_own_delete_denial(self) -> None:
+        """A reconciled ambiguous PUT cannot induce repeated denied DELETEs."""
+
+        code, _, err, calls = self.run_probe([
+            MODULE.ProbeFailure("r2_outcome_ambiguous"), (200, self.BODY),
+            (403, b"private-provider-body"),
+        ])
+        self.assertEqual(code, 1)
+        self.assertEqual(err.strip(), "staging_r2_object_capability_failed:r2_cleanup_unverified")
+        self.assertEqual(calls, ["PUT", "GET", "DELETE"])
 
     def test_run_identity_is_reproducible_distinct_and_uuidv4(self) -> None:
         """A cancelled run can recover its exact key and bytes without logs."""

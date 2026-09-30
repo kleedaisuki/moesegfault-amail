@@ -179,8 +179,9 @@ def delete(account: str, key: str, token: str) -> None:
             raise ProbeFailure("r2_delete_ambiguous") from None
 
 
-def cleanup(account: str, key: str, token: str, body: bytes) -> bool:
-    """Reconcile before another DELETE; never repeat an ambiguous mutation blind."""
+def cleanup(account: str, key: str, token: str, body: bytes,
+            allow_delete: bool = True) -> bool:
+    """Reconcile before conditional DELETE; never retry a definite denial."""
 
     for _ in range(2):
         try:
@@ -191,11 +192,16 @@ def cleanup(account: str, key: str, token: str, body: bytes) -> bool:
             return False
         if state == "absent":
             return True
+        if not allow_delete:
+            return False
         try:
             delete(account, key, token)
-        except Exception:
+        except ProbeFailure as error:
+            if str(error) == "r2_delete_denied":
+                return False
             # The next iteration performs GET/LIST before any further delete.
-            pass
+        except Exception:
+            return False
     try:
         return observed(account, key, token, body) == "absent"
     except Exception:
@@ -246,7 +252,8 @@ def execute() -> None:
     except Exception:
         failure = ProbeFailure("r2_outcome_ambiguous")
     finally:
-        if put_possible and not cleanup(account, key, token, body):
+        allow_delete = failure is None or str(failure) != "r2_delete_denied"
+        if put_possible and not cleanup(account, key, token, body, allow_delete):
             failure = ProbeFailure("r2_cleanup_unverified")
     if failure:
         raise failure
