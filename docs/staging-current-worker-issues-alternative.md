@@ -1,11 +1,11 @@
 # Alternative: edit the current Worker resource, not legacy script settings
 
-Investigated 2026-10-01 at local revision `1aea780`. Status: **documented
-alternative implemented for independent design review; not executed**.
-No private API request, mutation, local test/build, deployment or historical
-audit expansion was performed. Existing run observations are reused from
-[the containment correction](staging-containment-settings-correction.md) and
-[PATCH forensics](staging-settings-patch-forensics.md), not independently repeated.
+Investigated 2026-10-01 at local revision `1aea780`; subsequently implemented,
+reviewed, and exercised once at `daaab1f`. Current status: **provider-accepted
+one-shot PATCH, but acceptance UNVERIFIED; no current Issues-off proof**.
+The original investigation performed no private operation or local test/build.
+The hosted source checks, one-shot mutation, and independent readback are
+recorded below; historical legacy evidence remains separate.
 
 ## Historical evidence update (2026-10-01)
 
@@ -20,10 +20,52 @@ current Issues=false. It does not authorize another legacy settings PATCH.
 See [the correction's current outcome](staging-containment-settings-correction.md#current-bounded-outcome-2026-10-01)
 and [the classifier contract](staging-settings-patch-forensics.md).
 
-This alternative remains a separately reviewed prospective operation, not an
-executed correction. Its endpoint, exact request projection and positive current
-readback obligations remain necessary even after the historical page observation;
-no historical status bin is substituted for its acceptance checks.
+The legacy historical page observation is not the current-resource operation
+recorded below. Neither its success bin nor the new PATCH acceptance can
+substitute for positive current readback and unchanged-state checks.
+
+## One-shot current-resource outcome (2026-10-01)
+
+Reviewed source run
+[36761021378](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36761021378)
+at `daaab1f` passed all six selected hosted checks. It established the source
+contracts, not effective provider settings. The single Beta current Worker
+PATCH run
+[36761367007](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36761367007)
+at the same source reported `staging_current_worker_capture_off=UNVERIFIED`:
+
+| Phase | Fixed observation |
+| --- | --- |
+| `projection` | `ready` |
+| `serving_pin` | `before_match` |
+| `patch` | `accepted` |
+| `readback` | `checking` |
+| `unchanged_state` | `skipped` |
+
+This localizes the failed acceptance after a provider-accepted PATCH, during
+current-resource readback. It does not establish that the PATCH was ignored,
+that it had no effect, or that unaffected state passed: that comparison was
+skipped. No `current-worker-v1` attestation was produced. Do not retry the
+mutation or substitute a fallback endpoint, redeployment, or polling.
+
+The independent five-GET readback
+[36761475455](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36761475455)
+at `daaab1f` found stable single-version 100% serving for
+`c3f6401a-1e84-4f51-91df-ae77d90683e9`, explicit current parent/Logs/traces
+`enabled=false`, missing Issues shape/value, `logpush=false`, and empty tail
+consumers. It did **not** establish effective `issues.enabled=false`.
+Off-disabled preferences `redact_query_string=false`, invocation logging
+`enabled=true`, and `persist=true` are not proof of active capture while the
+corresponding capture switches are off. Conversely they are not proof that the
+strict projected object was preserved. The readback mismatch may concern
+Issues absence and/or normalized preferences; these fixed observations do not
+isolate the exact helper rejection.
+
+Current all-off acceptance and the public-send/Queue-rollout privacy gate remain
+closed. Historical Audit run `36758328085`'s `page_reported_success` remains a
+separate legacy-operation observation, not a resolution of this mismatch. A
+next discriminator must be separately reviewed against these phase-specific
+facts; no repeated live write is authorized by this record.
 
 ## Finding and decision implication
 
@@ -129,9 +171,10 @@ absence of a new issue, or a successful source build cannot replace it.
 `infra/deploy/apply_staging_current_worker_capture_off.py` is a distinct one-shot
 implementation. Its synthetic contracts are
 `infra/tests/test_staging_current_worker_capture_off.py`. The implementation has
-not been run against Cloudflare and the contracts have not been executed locally;
-they must pass on GitHub Actions before an independently reviewed manual dispatch.
-No workflow wiring or live operation is included in this change.
+now been run once against Cloudflare after reviewed hosted checks, with the
+UNVERIFIED outcome above. The contracts were not executed locally. The
+implementation description below preserves its acceptance obligations; it
+does not claim that the live operation met them.
 
 Recommended separate target: `staging-current-worker-capture-off`. Required env:
 

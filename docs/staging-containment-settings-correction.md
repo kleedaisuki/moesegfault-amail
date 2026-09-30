@@ -37,11 +37,41 @@ passed at `c0448ba` in 2:23; independent workflow lint
 passed in 0:14. These establish the reviewed source contracts, not provider state.
 The current-resource operation is described separately in
 [the Worker Issues alternative](staging-current-worker-issues-alternative.md).
-It has not been executed; explicit positive all-off readback and unaffected
-state/serving brackets remain required before Queue rollout. The historical
+Its separately reviewed one-shot Beta current Worker PATCH has now been
+executed, but remains UNVERIFIED as recorded below; explicit positive all-off
+readback and unaffected state/serving brackets remain required before Queue rollout. The historical
 sections below preserve the original uncertainty and investigation sequence;
 use this section for the latest evidence boundary and
 [PATCH forensics](staging-settings-patch-forensics.md) for the page classifier.
+
+### Separately reviewed current Worker operation
+
+All six hosted source checks passed in
+[36761021378](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36761021378)
+at `daaab1f`. The one-shot Beta current Worker PATCH
+[36761367007](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36761367007)
+at that source returned `staging_current_worker_capture_off=UNVERIFIED`, with
+`projection:ready`, `serving_pin:before_match`, `patch:accepted`,
+`readback:checking`, and `unchanged_state:skipped`. This establishes provider
+acceptance followed by unsuccessful helper readback acceptance, not an ignored
+PATCH or no-effect conclusion. No retry and no settings attestation followed.
+
+Independent five-GET readback
+[36761475455](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36761475455)
+at `daaab1f` found stable single100 serving of
+`c3f6401a-1e84-4f51-91df-ae77d90683e9`, current parent/Logs/traces false,
+Issues shape/value missing, logpush false and empty tails. Off-disabled
+preferences (query redaction false, invocation logging true, persistence true)
+are not active-capture proof. Missing Issues and/or normalized preferences may
+explain the strict readback mismatch; the observations do not determine its
+exact rejection condition or prove effective Issues=false. The unchanged-state
+comparison in the mutation helper was skipped, not passed.
+
+This new endpoint outcome is independent of the legacy historical Audit
+`page_reported_success` above. Public sending and Queue rollout remain held;
+require separately reviewed phase-discriminating evidence, not another PATCH.
+The complete endpoint/source contract and result are in
+[the current Worker alternative](staging-current-worker-issues-alternative.md#one-shot-current-resource-outcome-2026-10-01).
 
 ## Problem and chosen boundary
 
