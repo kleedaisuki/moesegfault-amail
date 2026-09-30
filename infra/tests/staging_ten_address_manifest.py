@@ -10,7 +10,7 @@ AEAD fixtures, not a substitute production cipher.
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import hmac
 import json
@@ -31,7 +31,7 @@ RESERVED = (
 LIMIT = 2_000_000
 ROW_KEYS = {"owner_iss", "owner_sub", "state", "created_at", "cf_rule_id",
             "needs_reconcile", "local_part", "slot", "next_reconcile_at"}
-RULE_KEYS = {"id", "address", "enabled", "source", "name", "worker"}
+RULE_KEYS = {"id", "address", "enabled", "source", "name", "worker", "raw_digest"}
 
 
 class ContractFailure(Exception):
@@ -92,6 +92,7 @@ def submissions() -> list[str]:
 class Snapshot:
     """Complete normalized D1/rule readback plus independent aggregate count.
 
+    Objects bind the complete bounded R2 key/metadata inventory, not mail bytes.
     Rows contain every global non-retired allocation and any candidate retired
     baseline. Rules contain the entire zone, normalized only after a future
     adapter validates every raw matcher/action. Unknown shapes must be rejected
@@ -104,12 +105,13 @@ class Snapshot:
     rows: dict[str, dict]
     rules: list[dict]
     global_count: int
+    objects: dict[str, str] = field(default_factory=dict)
 
     def validate(self) -> None:
         """Reject incomplete counts, unsupported row state and duplicate rule IDs."""
 
         require(isinstance(self.rows, dict) and isinstance(self.rules, list)
-                and type(self.global_count) is int, "snapshot_shape_invalid")
+                and type(self.global_count) is int and isinstance(self.objects, dict), "snapshot_shape_invalid")
         canonical(self.value())
         for address, row in self.rows.items():
             require(isinstance(address, str) and isinstance(row, dict)
@@ -130,12 +132,16 @@ class Snapshot:
                     "row_shape_invalid")
         require(sum(row["state"] != "retired" for row in self.rows.values())
                 == self.global_count, "global_inventory_incomplete")
+        require(all(isinstance(key, str) and 1 <= len(key) <= 1024
+                    and isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value) is not None
+                    for key, value in self.objects.items()), "object_inventory_invalid")
         ids = set()
         for rule in self.rules:
             require(isinstance(rule, dict) and set(rule) == RULE_KEYS,
                     "rule_shape_invalid")
             require(all(isinstance(rule[field], str) and bool(rule[field])
                         for field in RULE_KEYS - {"enabled"})
+                    and re.fullmatch(r"[a-f0-9]{64}", rule["raw_digest"]) is not None
                     and type(rule["enabled"]) is bool and rule["id"] not in ids,
                     "rule_shape_invalid")
             ids.add(rule["id"])
@@ -143,7 +149,8 @@ class Snapshot:
     def value(self) -> dict:
         """Return private JSON material; never print or upload without sealing."""
 
-        return {"rows": self.rows, "rules": self.rules, "global_count": self.global_count}
+        return {"rows": self.rows, "rules": self.rules, "global_count": self.global_count,
+                "objects": self.objects}
 
 
 def preflight(snapshot: Snapshot, owner: str, allowed: list[str]) -> None:
@@ -199,7 +206,7 @@ def validate(plan: dict, secret: str, run: str, generation: str) -> Snapshot:
             and plan["attempt"] == "1" and plan["key_generation"] == generation
             and plan["owner_iss"] == ISSUER, "manifest_binding_invalid")
     baseline = plan["baseline"]
-    require(isinstance(baseline, dict) and set(baseline) == {"rows", "rules", "global_count"},
+    require(isinstance(baseline, dict) and set(baseline) == {"rows", "rules", "global_count", "objects"},
             "manifest_shape_invalid")
     snapshot = Snapshot(**baseline)
     expected = build(secret, run, generation, plan["owner_sub"], plan["checkout"],
@@ -331,6 +338,7 @@ def assert_prefix(plan: dict, current: Snapshot, prefix: int,
     baseline = validate(plan, secret, run, generation)
     current.validate()
     require(type(prefix) is int and 0 <= prefix <= 10, "prefix_invalid")
+    require(current.objects == baseline.objects, "object_inventory_drift")
     expected = set(plan["allowed"][:prefix])
     observed = {address for address in current.rows if address not in baseline.rows}
     require(observed == expected and current.global_count == baseline.global_count + prefix
@@ -374,6 +382,7 @@ def reconcile(plan: dict, read: Callable[[], Snapshot], delete: Callable[[str], 
     final = snapshot()
     require(not recovery_actions(plan, final, owner, secret, run, generation), "cleanup_required")
     baseline = validate(plan, secret, run, generation)
+    require(final.objects == baseline.objects, "cleanup_object_drift")
     resources = set(plan["resources"])
     require(final.global_count == baseline.global_count and
             {a: r for a, r in final.rows.items() if a not in resources} ==

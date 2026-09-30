@@ -25,6 +25,35 @@ Independent review and hosted source tests remain prerequisites. No local
 execution, live alias, provider mutation, SMTP or deployment is performed by
 this source change.
 
+Readback source increment (2026-10-01): the non-executable
+`staging_ten_address_readback.py` adapter reads only configured staging D1/R2
+and complete zone rules. It brackets a bounded full allocation SELECT with
+independent counts, captures every address column, exhausts provider pages,
+classifies literal worker/forward/drop rules and rejects unknown matcher/action
+shapes. A digest of **every raw rule field** supplements semantic normalization;
+forward targets, priorities or unknown fields cannot silently disappear from
+unrelated drift checks. Two equal consecutive complete snapshots are required,
+not an assertion that separate services share an atomic transaction.
+
+The v2 baseline now also authenticates the full bounded R2 key/metadata digest
+inventory. ETag/size/last-modified metadata must be present to support the
+same-key replacement check; their documented optional API shape is not
+silently treated as evidence. Prefix/cleanup checks reject new, removed or
+same-key changed objects;
+an independent unfiltered D1 message aggregate includes deleted and outbound
+rows for all campaign candidates. No mail object GET is needed by this quota-only
+probe. This avoids coupling quota acceptance to the separate verification
+inbox's existing-object GET/DELETE capability. It does require successful
+complete **mail-bucket LIST** observations and fails closed if that capability,
+inventory bound, or stable snapshot is unavailable. Unrelated storage change
+can conservatively invalidate a campaign; it never authorizes deleting an object.
+
+Still missing for live dispatch: normal PKCE wrapper and subject readback, exact
+CI/binary provenance, serving/binding/hold checks, immutable upload/download
+orchestration, same-artifact recovery entry point and pinned real AES-GCM hosted
+integration. No manual workflow target has been added; independent review and
+hosted synthetic CI must pass first.
+
 Source increment (2026-10-01): `staging_ten_address_hosted.py` implements the
 dormant campaign controller: structured execution/provenance gate contracts,
 pre-mutation sealing, exact immutable artifact readback, strict native CLI
@@ -47,7 +76,7 @@ denial, cancellation and cleanup contracts. These tests remain pending hosted
 execution; only static AST parsing and diff whitespace checks were performed
 locally. Synthetic AEAD remains deliberately authentication-only.
 
-There is still **no live entry point, complete Cloudflare/D1 adapter, normal
+There is still **no live entry point or integrated normal
 PKCE wrapper, artifact uploader/
 downloader or workflow dispatch target**. `Evidence` describes observations
 that a reviewed wrapper must independently obtain, not authorization for an
@@ -82,8 +111,8 @@ the dormant, side-effect-free candidate/manifest envelope, private artifact
 readback gate, complete normalized snapshot contracts, prefix/drift checks and
 exact supported-delete recovery controller. Its synthetic contracts are in
 `test_staging_ten_address_manifest.py`, discovered by the existing hosted
-infra unittest job. No Cloudflare adapter, browser wrapper, campaign mutator
-or workflow target is exposed. The normalized snapshot input must eventually
+infra unittest job. No browser wrapper, integrated campaign mutator
+or workflow target is exposed. The later readback source is non-executable. The normalized snapshot input must eventually
 come from a complete source-reviewed adapter, not a filtered caller-provided
 inventory. Independent identity/provenance verification, service-version checks,
 message/storage absence, deadline/key retention enforcement and artifact
@@ -394,3 +423,15 @@ campaign. B verification and two-principal isolation remain separate work. Recor
 SHA, deployed pins, Actions URL and privacy-safe outcome in validation notes.
 No current result claims ten-address, reserved-name, concurrent quota races,
 outbound ownership, production capacity or release readiness.
+
+## Complete inventory adapter references
+
+The readback shape is grounded in the official
+[Cloudflare routing-rule LIST API](https://developers.cloudflare.com/api/resources/email_routing/subresources/rules/methods/list/)
+and [R2 object LIST API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/objects/methods/list/)
+(accessed 2026-10-01). R2 documents lexicographic `start_after` and optional
+ETag/size/last-modified metadata. The adapter deliberately requires these
+metadata fields for an existing object and explicit empty keyset completion;
+metadata omission is an inconclusive capability, not an empty bucket. Complete
+provider source-owned fixtures remain hosted-only tests; this reference check
+is not live tenant acceptance.
