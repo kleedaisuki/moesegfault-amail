@@ -31,7 +31,9 @@ The reviewed source observations motivating a separate path are:
   and staging ingress action. Reuse these complete observations.
 * `add_address` in `crates/mail-worker/src/lib.rs` returns HTTP 409 with
   `reserved_or_invalid_name` before address lookup, and `address_limit` when
-  its owner-scoped insertion cannot claim a slot. Negative acceptance must
+  its owner-scoped insertion cannot claim a slot. Before that insertion it
+  checks global `USER_ADDRESS_CAPACITY=198` against all `state!='retired'`
+  D1 rows, returning `capacity_exhausted` at that boundary. Negative acceptance must
   match status and code, not merely a nonzero CLI exit or code substring.
 
 The old harness remains prepared, not an executed ten-address result. Its
@@ -47,6 +49,7 @@ mock tests remain useful but do not prove the stronger hosted contract here.
 | Earlier isolation | A separately completed, successful guarded two-principal SMTP isolation run with checkout SHA and serving-version provenance recorded in `docs/validation.md`; fail closed until a source-reviewed machine-readable attestation exists, or keep dispatch unwired for an explicit parent/operator evidence review |
 | Service provenance | Single 100% serving Mail version matches expected pin, staged Identity/Login revisions recorded; no concurrent staging deployment; recheck Mail serving pin before mutation and after cleanup |
 | Empty B | API `address list` empty, owner-scoped D1 non-retired count zero, no preexisting provisioning/deleting/reconciliation row; do not delete data to make the precondition true |
+| Global application capacity | Complete staging D1 global `state!='retired'` baseline count **at most 187**, across every owner and all pending/provisioning/active/deleting states; complete canonical non-retired row baseline sealed before mutation; unknown schema, incomplete inventory or count disagreement fails closed |
 | Provider capacity | Complete rule inventory, configured domain confirmed as `mail-staging.moesegfault.dev`, at least 12 free rule slots (10 planned + 2 reserve); no truncated/unknown matcher inventory |
 | Global hold | Public sending remains held; staging-only resource bindings independently checked; no SMTP credential passed to this job |
 | Recovery readiness | All candidate D1/provider baseline and exact B owner captured and durably sealed before mutation; protected recovery key available; upload confirmation established; same-run recovery procedure source-reviewed |
@@ -61,6 +64,27 @@ rules too. Unknown/multiple/nonliteral matchers must be classified explicitly
 or fail closed, not silently omitted. The check is an admission observation,
 not a provider reservation; the serial campaign must stop on capacity errors.
 
+Provider inventory alone is insufficient: pending or deleting allocations
+can consume application slots without active provider rules. Independently
+read bound staging D1 `SELECT COUNT(*) AS n FROM addresses WHERE
+state!='retired'` and a complete bounded, stable-order inventory of those
+rows; inventory length must equal the aggregate count. Baseline ceiling
+**187**, rather than 188, ensures ten accepted aliases bring global allocation
+to at most 197. At 198 the eleventh request can return `capacity_exhausted`
+before reaching the owner-slot check, obscuring the intended quota oracle.
+Count every owner and every state except `retired`, including unknown states;
+never infer this number from active provider rules or B alone.
+
+Capture global inventory/count in a consistent D1 read snapshot where
+possible. For paged observations, verify independent final count and canonical
+digest stability and reject drift. This is not a reservation against concurrent
+clients or Cron. After each accepted alias and immediately before/after the
+eleventh request, require global count equal to baseline plus the exact live
+run-owned prefix, and unchanged canonical unrelated-row state. Any other
+allocation, retirement or state change stops the quota claim, even if a later
+response contains `address_limit`; reconcile this manifest without replaying
+the campaign.
+
 Use the existing `staging-native-mail-acceptance` concurrency group, with
 `cancel-in-progress: false`, and ensure deployment jobs share an equivalent
 exclusion. Workflow-level cancellation, manual deploys and Cron are not fully
@@ -70,7 +94,10 @@ prevented by a job lock, hence the independent pin and reconciliation gates.
 
 Derive eleven lowercase local parts `qt0-<nonce>` through `qt10-<nonce>` from a
 domain-separated HMAC of the protected recovery key, exact GitHub repository,
-workflow run ID and original attempt 1. Use at least 128 private nonce bits.
+workflow run ID and original attempt 1. Encode exactly 128 private nonce bits
+as unpadded lowercase base32 (26 characters): `qt10-<nonce>` is 31 characters,
+within the Worker's 32-character local-part bound. A 32-character hexadecimal
+nonce would make that candidate invalid and is forbidden here.
 The recovery command takes only numeric original run coordinates, never an
 operator-supplied alias or owner. A restarted Actions attempt must refuse to
 run the campaign; it may only dispatch the separate reconciliation target.
@@ -88,21 +115,39 @@ Before the first mutating call, capture a versioned full-plan manifest:
 * repository, exact checkout SHA, workflow identity, original run/attempt,
   UTC preflight time and deployed serving-version pins;
 * exact issuer/subject owner B and protected username binding, in memory;
-* all eleven nonce aliases and all reserved-name/normalization candidates;
+* ordered raw CLI submissions, including case variants, and a separate
+  deduplicated canonical normalized resource-baseline map for all eleven
+  nonce aliases and reserved candidates; multiple spellings intentionally
+  point to one canonical resource, not duplicate map entries;
 * exact D1 baseline for every candidate, including absent vs retired/active
   state, owner, creation time, provider rule ID and reconciliation fields;
 * complete exact provider rule baseline for every candidate, including any
   existing operational rule; store unrelated rules only as canonical digest;
-* B's baseline owner count and the capacity/hold observations.
+* B's baseline owner count and the capacity/hold observations;
+* complete global non-retired D1 baseline rows, aggregate count at most 187,
+  canonical digest and predicate/schema version, including all owners and
+  pending/provisioning/deleting allocations.
 
 Seal this manifest using authenticated encryption with a **repository-level**
 protected recovery key. The ciphertext can be retained as a short-lived
 Actions artifact; plaintext remains only under repository `.temp` and must
 never be uploaded or logged. Bind repository/run/attempt/schema as associated
-data; reject swapped, truncated, duplicate-candidate or wrong-owner manifests.
+data; reject swapped, truncated, duplicate canonical map keys, invalid
+submission-to-resource mappings or wrong-owner manifests.
 Do not reuse a login password as an encryption key or rotate/delete the key
 while a campaign may still need recovery. Implement this only with a reviewed
 library and pinned hosted dependency, not handwritten cryptography.
+
+Use a separately generated 256-bit random key with an explicit nonsecret key
+generation ID in the authenticated envelope. Retain ciphertext for at least
+30 days, require routine same-run recovery within 24 hours of interruption,
+and keep the corresponding key generation until exact cleanup is documented
+and the artifact retention period has elapsed. The 24-hour bound triggers
+escalation, not destructive expiry or permission to abandon cleanup. A missing
+artifact or unavailable key fails closed and requires restricted operator
+reconciliation; it never authorizes a fresh campaign. Artifact expiry must not
+precede confirmed cleanup: unresolved runs require preserving their sealed
+manifest in a protected durable store before expiry, with no plaintext logs.
 
 The manifest-upload step must complete successfully **before** a later step
 can load mutation credentials and start the campaign. A write in `finally`
@@ -124,12 +169,17 @@ can show only manifest-present/version/validated booleans and fixed labels.
 3. Add `qt0` through `qt9` serially, once each. For each, require the CLI's
    returned exact address, owner-scoped D1 state `active`, matching issuer/sub,
    one exact enabled API-owned ingress rule, and B's full list/count equal to
-   the expected prefix. Activation polling is read-only; it must not replay
+   the expected prefix. Require global non-retired count equal to baseline
+   plus prefix length and unchanged unrelated-row state. Activation polling
+   is read-only; it must not replay
    `address add`. No success-path idempotent re-add is needed for this slice.
 4. With all ten active simultaneously, snapshot all ten D1 rows and exact
-   provider rules. Submit `qt10` **once** and require exact HTTP
+   provider rules. Independently require global non-retired count equal to
+   baseline plus ten and **at most 197**, unchanged unrelated-row state and
+   provider-capacity headroom. Submit `qt10` **once** and require exact HTTP
    409/`address_limit`, empty stdout, no eleventh D1 row/rule, and ten-row
-   owner/provider snapshots unchanged. This distinguishes genuine quota
+   owner/provider/global count and unrelated-row snapshots unchanged.
+   `capacity_exhausted` is not a per-owner quota pass. This distinguishes genuine quota
    enforcement from a failed unrelated provider request or silent eviction.
 5. Always enter exact-manifest reconciliation. Emit the success label only
    after cleanup and final serving-pin match. If primary acceptance succeeds
@@ -189,6 +239,16 @@ must contact no live service. Required failures and positive contracts:
 * split/mismatched Worker pin and a pin changed during the campaign fail;
 * paged counts changing, duplicate IDs, unknown matchers, 189 rules, or
   existing candidate state fail closed; 188 complete conservative rules pass;
+* global D1 baseline 187 passes admission; 188 fails despite provider
+  headroom; pending/provisioning/deleting and all owners count; incomplete or
+  unstable inventory and aggregate disagreement fail;
+* after ten accepted aliases, count must equal baseline plus ten and be at
+  most 197; external allocation/retirement/state drift around the eleventh
+  request stops the claim; `capacity_exhausted` never proves owner quota;
+* all generated local parts fit 32 characters; normalization variants share
+  one canonical resource map entry without skipping raw submissions;
+* envelope key generation and original coordinates bind recovery; missing
+  key/artifact or overdue recovery cannot authorize a new campaign;
 * ten serial allowed aliases pass; transport errors and generic 409 do not
   satisfy either negative oracle; unexpected stdout is failure;
 * eleventh success/eviction, reserved success and a rejected call with side
