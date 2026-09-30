@@ -1,9 +1,12 @@
 # Review: current-Worker capture-off PATCH (49654d0)
 
-Date: 2026-10-01. Verdict: **NO-GO for live dispatch until the writable
-observability projection is validated separately from readback normalization**.
-One necessary correction; no demonstrated destructive mutation or false
-attestation path was found in the remaining reviewed transaction.
+Date: 2026-10-01. Updated after narrow re-review of correction
+`84ded1429357667aa504beabe797125d26034718`.
+Verdict: **GO for hosted source verification and separately reviewed workflow
+wiring, followed by one guarded staging dispatch when both pass**.
+The original P2 finding below is resolved in source. No remaining substantive
+defect was found in the reviewed helper; this is not a live settings attestation
+or approval of unreviewed workflow wiring.
 
 ## Scope and method
 
@@ -15,7 +18,7 @@ legacy-settings attempt rather than querying it again. Inspected the official
 Cloudflare skill and current public API/SDK references. No local tests, builds,
 private requests, deployment, production edits or workflow wiring were performed.
 
-## Necessary correction
+## Original necessary correction (resolved)
 
 ### P2: readback-null preferences can enter a nonnullable writable projection
 
@@ -57,6 +60,29 @@ the existing strict unknown-field/readback and all-off predicates. Add synthetic
 tests for each rejected null preference proving the writer is not called, and
 retain the nullable propagation-policy preservation test. Do not silently drop
 preferences or change the shared readback predicate to implement write semantics.
+
+### Resolution at 84ded14
+
+The new `validate_write_policy()` runs after the known-field/all-off predicates
+and before returning the writable projection. It checks present Boolean
+preferences using exact Boolean type, present destination preferences as lists
+of strings, and present sampling preferences as finite non-Boolean numeric
+values in [0, 1]. Explicit null in all originally identified nonnullable fields
+now fails before `apply()` can reach the write. Absent preferences remain absent;
+the explicitly nullable trace propagation preference remains preserved. The
+synthetic additions cover every originally listed null field, invalid numeric
+and destination values, and the accepted nullable propagation preference.
+They were inspected, not executed locally. Existing unknown-field and effective
+capture predicates remain unchanged. The correction does not loosen the
+positive GET, policy round-trip, serving pin, or unaffected-state obligations.
+
+The same commit also adds an 18-line historical evidence section describing a
+one-page provider-reported legacy PATCH success with completeness unverified.
+That section explicitly refuses to substitute the observation for current
+Issues=false, complete attribution, or this alternative's acceptance, and does
+not authorize another legacy PATCH. This documentation-only observation does
+not change the helper's safety conclusion. The referenced live run was not
+independently re-queried in this narrow review.
 
 ## Boundaries that held under source review
 
