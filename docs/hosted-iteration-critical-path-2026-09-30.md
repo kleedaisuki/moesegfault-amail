@@ -194,3 +194,20 @@ explains exact-key identity and immutable entries; the
 [Cargo build-cache reference](https://doc.rust-lang.org/cargo/reference/build-cache.html)
 explains cached compilation outputs. This change narrows cache identity to the
 actual build contract, not test selection or acceptance coverage.
+
+### Exact Worker cache-v2 first push (2026-09-30)
+
+At `b3587bf`, [push source run 36774241992](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36774241992) was green across all six active jobs. It was created at 20:40:13 UTC, first active jobs started at 20:40:17 (0:04 wait), and the workflow completed at 20:45:25 (5:12 total). The previous [run 36773432805](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36773432805), `c5b2fd1`, had failed **only** in a stale private-inbox workflow test: it searched for the removed `staging-role-monitor:` job boundary and raised `ValueError`. That Infra failure surfaced in 0:19; the corrected `b3587bf` Infra suite passed in 0:18. The comparison demonstrates fast failure/repair feedback for this fixture, not a measured speedup for the full suite.
+
+| `b3587bf` active job | Start → end UTC | Duration | Result |
+| --- | --- | --- | --- |
+| Infrastructure probe unit tests | 20:40:17 → 20:40:35 | 0:18 | Passed |
+| CLI Ubuntu | 20:40:18 → 20:41:35 | 1:17 | Passed |
+| CLI macOS | 20:40:23 → 20:41:55 | 1:32 | Passed |
+| CLI Windows | 20:40:18 → 20:43:04 | 2:46 | Passed |
+| Astro release site | 20:40:18 → 20:40:41 | 0:23 | Passed |
+| Rust Worker/Wasm | 20:40:18 → 20:45:24 | 5:06 | Passed |
+
+The independent [workflow syntax guard 36774241515](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36774241515) passed in 0:08. The PR-triggered [private-provider synthetic crypto 36774249823](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36774249823) passed on Ubuntu and Windows (0:21 each); [candidate-site source/isolation checks 36774249765](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36774249765) passed in 0:27. A separate direct-contact workflow was not triggered by this push; its syntax was covered by the workflow guard. All 51 non-source jobs in the main push run were skipped, so no provider state or serving Mail Worker was changed.
+
+The Worker log reported an exact **`worker-check-v2` cache miss**, a hit/restoration for the independently pinned **`worker-build-check-v1` bundler cache**, and a successful `worker-check-v2` save after checks. The 5:06 Worker job therefore establishes the new key's cold-write path, **not** a v2 cache-hit improvement. A future source-unchanged hosted run that actually reports a v2 hit is required before measuring or claiming that gain; no duplicate run was dispatched merely to manufacture this comparison.
