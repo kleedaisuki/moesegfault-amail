@@ -459,6 +459,60 @@ fn completed_origin_scrub_is_owner_and_version_scoped() {
     assert_eq!(cleared, ("stale".into(), "{}".into(), "{}".into(), 8));
 }
 
+/// A terminal cursor failure clears the leased page copy only for its owner and lease version.
+#[test]
+fn terminal_page_release_scrubs_copy_with_owner_and_version_cas() {
+    let db = db();
+    job(&db, "page", "alice", "advancing", 9, 1_000);
+    let request = r#"{"semantic":"private query","cursor":"opaque"}"#;
+    let state = r#"{"origin_job_id":"origin","query_vector":[1,0]}"#;
+    db.execute(
+        "UPDATE search_jobs SET request_json=?1,state_json=?2,lease_started_at=1001 WHERE id='page'",
+        params![request, state],
+    )
+    .unwrap();
+    let release = |issuer: &str, owner: &str, version: i64| {
+        db.execute(
+            "UPDATE search_jobs SET state='stale',request_json='{}',state_json='{}',version=version+1,lease_started_at=NULL WHERE id=?1 AND state='advancing' AND version=?2 AND owner_iss=?3 AND owner_sub=?4",
+            params!["page", version, issuer, owner],
+        )
+        .unwrap()
+    };
+    assert_eq!(release("test-issuer", "bob", 9), 0);
+    assert_eq!(release("other-issuer", "alice", 9), 0);
+    assert_eq!(release("test-issuer", "alice", 8), 0);
+    let retained: (String, String, String, i64, Option<i64>) = db
+        .query_row(
+            "SELECT state,request_json,state_json,version,lease_started_at FROM search_jobs WHERE id='page'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        retained,
+        (
+            "advancing".into(),
+            request.into(),
+            state.into(),
+            9,
+            Some(1_001)
+        )
+    );
+    assert_eq!(release("test-issuer", "alice", 9), 1);
+    assert_eq!(release("test-issuer", "alice", 9), 0);
+    let cleared: (String, String, String, i64, Option<i64>) = db
+        .query_row(
+            "SELECT state,request_json,state_json,version,lease_started_at FROM search_jobs WHERE id='page'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        cleared,
+        ("stale".into(), "{}".into(), "{}".into(), 10, None)
+    );
+}
+
 /// Only a first page with another page retains the query vector and private cursor key.
 /// Later page jobs clear their temporary vector; expiry scrubs even the retained origin.
 #[test]
