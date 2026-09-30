@@ -270,6 +270,17 @@ class ProofTests(unittest.TestCase):
                           "issues: write", "wrangler deploy", "upload-artifact", "send_email"):
             self.assertNotIn(forbidden, source)
 
+    def test_dependency_command_uses_literal_yaml_scalar(self):
+        """Keep colon-space shell text out of a plain YAML run scalar.
+
+        This source contract needs no extra parser dependency in the proof job.
+        Whole-workflow parsing remains a separate hosted syntax-lint gate.
+        """
+        source = (Path(__file__).resolve().parents[2] / target.WORKFLOW).read_text(encoding="utf-8")
+        command = "python -m pip install --only-binary=:all: -r infra/tests/ten_address_requirements.txt"
+        self.assertIn("        run: |\n          " + command + "\n", source)
+        self.assertNotIn("        run: " + command, source)
+
 
 if __name__ == "__main__":
     unittest.main()
