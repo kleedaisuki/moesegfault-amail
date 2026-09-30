@@ -149,8 +149,9 @@ are post-deployment obligations, and no Mail/public-release conclusion follows.
 The evidence audit itself ran no local project tests/build/install and did not
 dispatch workflows, deploy, mutate DNS/provider state, create tags/Releases or
 perform SMTP. Root-owned operations are recorded separately below.
-The evidence-only document commit remains isolated/local for root coordination;
-it does not advance the remote main source or silently invalidate the fixed run.
+This section records historical evidence for the fixed de2f150 source. Merging
+this documentation creates a new main SHA, which requires its own successful
+site-ci.yml run before any later deployment; the fixed result is not transferable.
 
 ## Fixed root-authorized candidate deployment and live acceptance
 
