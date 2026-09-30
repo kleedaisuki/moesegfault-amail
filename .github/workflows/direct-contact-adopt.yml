@@ -1,0 +1,75 @@
+# Manual contract adoption only; every successful change keeps public sending held.
+name: Adopt direct-forward contact contract held
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Database realm to adopt, never an unhold
+        required: true
+        type: choice
+        options: [staging, production]
+      expected_contact_contract_id:
+        description: Exact current contract UUID, or NONE for no adopted policy
+        required: true
+        type: string
+      destination_id:
+        description: Provider destination record ID only, never a mailbox address
+        required: true
+        type: string
+      apex_abuse_rule_id:
+        description: Exact existing apex abuse routing rule ID
+        required: true
+        type: string
+      apex_postmaster_rule_id:
+        description: Exact existing apex postmaster routing rule ID
+        required: true
+        type: string
+      mail_abuse_rule_id:
+        description: Exact existing mail subdomain abuse routing rule ID
+        required: true
+        type: string
+      mail_postmaster_rule_id:
+        description: Exact existing mail subdomain postmaster routing rule ID
+        required: true
+        type: string
+      case_ref:
+        description: Opaque adoption review reference, no private text
+        required: true
+        type: string
+      confirm:
+        description: Type ADOPT_DIRECT_CONTACT_HELD; this does not accept human coverage
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: amail-direct-contact-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  adopt:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Adopt one exact contract with stale-input protection
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          INPUT_TARGET: ${{ inputs.target }}
+          INPUT_EXPECTED_CONTACT_CONTRACT_ID: ${{ inputs.expected_contact_contract_id }}
+          INPUT_DESTINATION_ID: ${{ inputs.destination_id }}
+          INPUT_APEX_ABUSE_RULE_ID: ${{ inputs.apex_abuse_rule_id }}
+          INPUT_APEX_POSTMASTER_RULE_ID: ${{ inputs.apex_postmaster_rule_id }}
+          INPUT_MAIL_ABUSE_RULE_ID: ${{ inputs.mail_abuse_rule_id }}
+          INPUT_MAIL_POSTMASTER_RULE_ID: ${{ inputs.mail_postmaster_rule_id }}
+          INPUT_CASE_REF: ${{ inputs.case_ref }}
+          INPUT_CONFIRM: ${{ inputs.confirm }}
+        run: python infra/operator/direct_contact_policy.py

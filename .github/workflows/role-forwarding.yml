@@ -14,12 +14,16 @@ on:
         description: For apply only, enter APPLY_ROLE_FORWARDING
         required: false
         type: string
+      case_ref:
+        description: For provider mutations, opaque hold/invalidation reference; blank for audit
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: reserved-role-forwarding-production
+  group: amail-direct-contact-production
   cancel-in-progress: false
 
 jobs:
@@ -42,6 +46,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      # Any failure or ambiguous result stops before the provider mutation.
+      - name: Invalidate contact acceptance and prove production global hold
+        if: inputs.phase != 'audit'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          INPUT_TARGET: production
+          INPUT_CASE_REF: ${{ inputs.case_ref }}
+        run: python infra/operator/direct_contact_invalidate.py
       - name: Reconcile private destination and exact role rules
         env:
           ROLE_FORWARD_PHASE: ${{ inputs.phase }}

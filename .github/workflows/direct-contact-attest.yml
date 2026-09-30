@@ -1,0 +1,58 @@
+# Coverage is a human commitment; machine health never runs this workflow.
+name: Attest or revoke direct-forward human coverage
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Realm whose exact contact contract was reviewed
+        required: true
+        type: choice
+        options: [staging, production]
+      verified:
+        description: Revoke unconditionally or attest the explicit human commitment
+        required: true
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      contact_contract_id:
+        description: For verification only, exact adopted contract UUID; blank for revoke
+        required: false
+        type: string
+      contact_coverage:
+        description: For verification only, type ACCEPT_INBOX_JUNK_AND_24H_CLOUDFLARE_RESPONSE
+        required: false
+        type: string
+      case_ref:
+        description: Opaque coverage/intervention evidence reference, no private text
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: amail-direct-contact-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Record human coverage or unconditional revocation
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          INPUT_TARGET: ${{ inputs.target }}
+          INPUT_GATE: abuse_contact_verified
+          INPUT_VERIFIED: ${{ inputs.verified }}
+          INPUT_CONTACT_CONTRACT_ID: ${{ inputs.contact_contract_id }}
+          INPUT_CONTACT_COVERAGE: ${{ inputs.contact_coverage }}
+          INPUT_CASE_REF: ${{ inputs.case_ref }}
+        run: python infra/operator/attest_gate.py

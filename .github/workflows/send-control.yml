@@ -40,6 +40,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: amail-direct-contact-${{ inputs.target }}
+  cancel-in-progress: false
+
 jobs:
   control:
     if: github.ref == 'refs/heads/main'
