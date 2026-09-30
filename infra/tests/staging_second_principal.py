@@ -285,6 +285,45 @@ def preflight_contacts(mode: str, contacts: dict[str, tuple[str, str, str, str]]
             "recovery_contact_preflight_failed")
 
 
+def private_inbox_failure_label(stderr: bytes) -> str:
+    """Classify only trusted checker messages, never expose captured stderr.
+
+    ``check_config.py`` owns the privacy/binding policy. This function is a
+    fixed-label diagnostic for its current source-controlled errors, not a
+    second implementation of those live checks. Unknown output fails closed.
+    """
+
+    if len(stderr) > 4096:
+        return "private_inbox_checker_unclassified"
+    message = stderr.decode("utf-8", errors="replace").strip()
+    fixed = {
+        "staging test inbox config is not isolated": "private_inbox_source_invalid",
+        "missing or invalid R2 read credentials": "private_r2_credentials_invalid",
+        "R2 managed public domain is enabled or unknown": "private_r2_managed_policy_failed",
+        "R2 custom domains are present or unknown": "private_r2_custom_policy_failed",
+        "R2 lifecycle rules are missing or unknown": "private_r2_lifecycle_policy_failed",
+        "R2 verification expiry rule is missing or duplicated": "private_r2_lifecycle_policy_failed",
+        "R2 verification expiry rule is disabled or too long": "private_r2_lifecycle_policy_failed",
+        "missing or invalid Worker read credentials": "private_inbox_settings_credentials_invalid",
+        "Worker binding inventory unexpected": "private_inbox_bindings_failed",
+        "Worker bindings differ from reviewed staging configuration":
+            "private_inbox_bindings_failed",
+    }
+    if message in fixed:
+        return fixed[message]
+    reads = {
+        "R2 managed-domain read failed": "private_r2_managed",
+        "R2 custom-domain read failed": "private_r2_custom",
+        "R2 lifecycle read failed": "private_r2_lifecycle",
+        "Worker settings readback unavailable": "private_inbox_settings",
+    }
+    for prefix, label in reads.items():
+        match = re.fullmatch(re.escape(prefix) + r": HTTP([0-9]{1,3})", message)
+        if match:
+            return label + ("_transport_failed" if match[1] == "0" else "_read_failed")
+    return "private_inbox_checker_unclassified"
+
+
 def inspect_state(username: str, password: str) -> tuple[str, str, dict, set[str]]:
     """Read deployed inbox, both routes, Identity contacts and private R2 only."""
 
@@ -303,8 +342,9 @@ def inspect_state(username: str, password: str) -> tuple[str, str, dict, set[str
             capture_output=True, timeout=90, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        raise ProvisionFailure("private_inbox_deployment_unverified") from None
-    require(deployed.returncode == 0, "private_inbox_deployment_unverified")
+        raise ProvisionFailure("private_inbox_subprocess_failed") from None
+    if deployed.returncode != 0:
+        raise ProvisionFailure(private_inbox_failure_label(deployed.stderr))
     require(route(address=ADDRESS) == "absent" and route(address=FIRST) == "absent",
             "verification_route_preexisting")
     try:

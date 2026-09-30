@@ -242,6 +242,62 @@ class SecondPrincipalTests(unittest.TestCase):
         self.assertEqual(args[-2:], ["--live", "--deployed"])
         self.assertTrue(str(args[1]).endswith("check_config.py"))
 
+    def test_private_inbox_failure_labels_are_phase_specific_and_private(self) -> None:
+        """Distinguish the checker phase without forwarding captured diagnostics."""
+
+        cases = {
+            b"R2 managed-domain read failed: HTTP0\n": "private_r2_managed_transport_failed",
+            b"R2 managed-domain read failed: HTTP403\n": "private_r2_managed_read_failed",
+            b"R2 managed public domain is enabled or unknown\n":
+                "private_r2_managed_policy_failed",
+            b"R2 custom-domain read failed: HTTP200\n": "private_r2_custom_read_failed",
+            b"R2 custom domains are present or unknown\n": "private_r2_custom_policy_failed",
+            b"R2 lifecycle read failed: HTTP0\n": "private_r2_lifecycle_transport_failed",
+            b"R2 verification expiry rule is disabled or too long\n":
+                "private_r2_lifecycle_policy_failed",
+            b"Worker settings readback unavailable: HTTP403\n":
+                "private_inbox_settings_read_failed",
+            b"Worker bindings differ from reviewed staging configuration\n":
+                "private_inbox_bindings_failed",
+            b"staging test inbox config is not isolated\n": "private_inbox_source_invalid",
+            b"provider private-body/token/address\n": "private_inbox_checker_unclassified",
+            b"R2 lifecycle read failed: HTTP403\nprovider private-body":
+                "private_inbox_checker_unclassified",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(expected=expected):
+                label = MODULE.private_inbox_failure_label(raw)
+            self.assertEqual(label, expected)
+            self.assertRegex(label, r"\A[a-z][a-z0-9_]+\Z")
+            self.assertNotIn("private-body", label)
+
+    def test_private_inbox_checker_failure_stops_before_route_or_d1(self) -> None:
+        """A failed private-inbox audit cannot continue toward B mutation."""
+
+        stub = types.ModuleType("staging_identity_cdp")
+        stub.decoded_credential = lambda value: None
+        stub.route = lambda action=None, address=None: self.fail("route must not run")
+        provider_env = {
+            "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+            "CLOUDFLARE_API_TOKEN": "private-token",
+            "CF_EMAIL_ROUTING_TOKEN": "private-route-token",
+        }
+        with patch.dict(sys.modules, {"staging_identity_cdp": stub}), \
+                patch.dict(os.environ, provider_env, clear=True), \
+                patch.object(MODULE.subprocess, "run", return_value=types.SimpleNamespace(
+                    returncode=1, stderr=b"Worker settings readback unavailable: HTTP403\n")), \
+                patch.object(MODULE, "identity_contacts", side_effect=AssertionError("D1 must not run")):
+            with self.assertRaises(MODULE.ProvisionFailure) as caught:
+                MODULE.inspect_state("b_username", "protected-password")
+        self.assertEqual(str(caught.exception), "private_inbox_settings_read_failed")
+        with patch.dict(sys.modules, {"staging_identity_cdp": stub}), \
+                patch.dict(os.environ, provider_env, clear=True), \
+                patch.object(MODULE.subprocess, "run", side_effect=MODULE.subprocess.TimeoutExpired(
+                    "private-checker", 90)):
+            with self.assertRaises(MODULE.ProvisionFailure) as caught:
+                MODULE.inspect_state("b_username", "protected-password")
+        self.assertEqual(str(caught.exception), "private_inbox_subprocess_failed")
+
     def test_read_only_permission_failures_identify_d1_or_r2_phase(self) -> None:
         """A denied preflight must identify the capability to repair, not leak replies."""
 
