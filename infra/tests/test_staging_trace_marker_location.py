@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+import re
 import sys
 import unittest
 from unittest.mock import patch
@@ -36,6 +37,43 @@ def row(*, record_id: str = "test-row", kind: str = "cf-worker-log",
 
 class MarkerLocationTests(unittest.TestCase):
     """Keep request-derived strings out of every diagnostic result."""
+
+    def test_manual_workflow_is_branch_bound_and_secret_is_final_step_only(self) -> None:
+        """No default event or user-controlled value may reach the log query."""
+
+        workflow = (Path(__file__).resolve().parents[2] / ".github" / "workflows" /
+                    "ci.yml").read_text(encoding="utf-8")
+        dispatch = workflow.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertIn("staging-trace-marker-location", dispatch)
+        match = re.search(
+            r"(?ms)^  staging-trace-marker-location:\n(.*?)(?=^  [a-z][\w-]*:\n|\Z)",
+            workflow,
+        )
+        self.assertIsNotNone(match)
+        job = match.group(1)
+        for required in (
+            "github.event_name == 'workflow_dispatch'",
+            "inputs.target == 'staging-trace-marker-location'",
+            "inputs.confirm == 'READ_STAGING_TRACE_MARKER_LOCATION'",
+            "github.ref == 'refs/heads/codex/amail-v0.1.0'",
+            "environment: staging",
+            "timeout-minutes: 5",
+            "contents: read",
+            "cancel-in-progress: false",
+        ):
+            self.assertIn(required, job)
+        self.assertNotIn("refs/heads/main", job)
+        self.assertNotIn("needs:", job)
+        final_step = "      - name: Classify the exact historical retained window with fixed labels only\n"
+        self.assertEqual(job.count(final_step), 1)
+        before, final = job.split(final_step, 1)
+        self.assertNotIn("secrets.", before)
+        self.assertEqual(final.count("CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}"), 1)
+        self.assertEqual(final.count("CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}"), 1)
+        self.assertIn("python infra/tests/staging_trace_marker_location.py "
+                      "--confirm READ_STAGING_TRACE_MARKER_LOCATION", final)
+        self.assertNotIn("inputs.", final)
+        self.assertNotIn("${{", final.split("        run: ", 1)[1])
 
     def test_custom_log_metadata_path_only(self) -> None:
         """Classify the plausible platform-enrichment case, not as a privacy pass."""

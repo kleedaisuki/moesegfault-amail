@@ -12,7 +12,7 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-http-compare, staging-trace-security-events, production]
+        options: [staging, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-marker-location, staging-trace-http-compare, staging-trace-security-events, production]
       confirm:
         description: Staging E2E, semantic query, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -918,6 +918,34 @@ jobs:
       mode: ${{ inputs.trace_mode }}
       confirm: ${{ inputs.confirm }}
     secrets: inherit
+
+  staging-trace-marker-location:
+    name: Classify one historical retained staging marker without raw logs
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-trace-marker-location' &&
+      inputs.confirm == 'READ_STAGING_TRACE_MARKER_LOCATION' &&
+      github.ref == 'refs/heads/codex/amail-v0.1.0'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    concurrency:
+      group: staging-trace-marker-location
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Classify the exact historical retained window with fixed labels only
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_trace_marker_location.py --confirm READ_STAGING_TRACE_MARKER_LOCATION
 
   staging-trace-security-events:
     name: Read only sampled Security Events for one staging trace incident
