@@ -183,3 +183,61 @@ and the remaining Queue provenance/lifecycle corrections. Production has no
 prior API deployment, but still requires private sink verification and ordered
 first safe API deployment. Whole-record synthetic acceptance is required after
 rollout; settings green alone cannot establish privacy.
+
+## Ordered rollout correction review (`53728e2`, `97b2c47`, `031cee7`)
+
+Static follow-up, 2026-09-30; no tests/live calls/deployment/push.
+
+Source-resolved:
+- Staging API and sink rollout now requires manual staging dispatch on the exact
+  branch and `RUN_STAGING_TRACE_SINK_ROLLOUT`; branch push no longer deploys these
+  two services. Other pre-existing staging jobs are outside this narrow change.
+- The prerequisite validates successful exact GitHub run, workflow/branch/SHA,
+  successful unique API deploy job, one emitted version ID and historical safe
+  config. `031cee7` rejects mutable rerun identity (`run_attempt != 1`). It then
+  requires stable sole 100% serving version and both effective safe settings.
+  Sink rechecks after deploy, and API rechecks before migration/deployment.
+- Existing Queue IDs are checked before missing resources are created;
+  successful POST identities are captured and pinned through fresh inventory
+  and detail. Readback now checks reviewed IDs in all phases. Authorized
+  operation IDs pass via step/job outputs to the dependent API job. No
+  overwrite/delete/purge or raw payload read is added.
+
+### Required hosted-test fixture correction
+
+`infra/tests/test_require_trace_containment.py::ContainmentTests.responses`
+claims its historical TOML is safe but omits `head_sampling_rate = 1.0` and
+`redact_query_string = true`. The imported actual `safe_settings` rejects it.
+Consequently `test_exact_evidence` deterministically raises
+`source_privacy_unverified`. This is source-derived, not locally executed.
+Fix the fixture to express the actual contract; do not loosen the production
+privacy verifier to make the fixture pass. Infra implementer has been notified.
+
+### Remaining gates / bounded refinements
+
+Full private sink exposure/trigger/exact-bindings verifier remains open at the
+reviewed committed source. Prior P1 remains until its independent source review.
+
+The CI gate passes dispatch strings through raw `${{ inputs.* }}` interpolation
+inside shell double quotes. Python's input validation happens after shell
+expansion. Transport run/version values via step environment variables instead
+so numeric/UUID contracts are enforced before any value can be interpreted as
+shell syntax. This applies to the three new containment calls; no general
+unrelated workflow rewrite is requested.
+
+Identity validation precedes POST, but existing-resource owner arrays/counts
+are still checked only after missing-peer creation. For complete pre-mutation
+ownership attestation, read existing details first and validate them before
+POST. A reviewed ID with attachment drift plus an absent peer otherwise causes
+avoidable partial creation. Existing resource settings/ID and post-create
+readback protection remain sound.
+
+### Decision at this revision
+
+**Fix the deterministic fixture before hosted source CI; no live provisioning
+approval yet.** The previous automatic rollout/created-ID findings are closed
+by actual source changes, not restated as blockers. Remaining live prerequisite
+is full private sink attestation, hosted green integrated tests, successful
+containment evidence accepted by the exact gate, and the bounded pre-mutation
+ownership refinement. Queue schema/provider-shape failures must stop and be
+classified; no blind rerun or adoption is authorized.
