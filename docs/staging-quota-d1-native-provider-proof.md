@@ -21,7 +21,7 @@ source review did not itself authorize provider operations.
 | First read-only inspect | [36788755759](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36788755759), feature `48f960b` | Stopped at `binding=unverified`; later held/schema phases were not established. This is not schema absence or a diagnosis of the original failure. |
 | Corrected independent read-only inspect | [36789711030](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789711030), feature `9499e7f` | Guard, exact source, database, Worker, complete binding, held state and recheck verified; formal and mirror schemas absent at this observation. Both integer and numeric-string REST parameters were accepted. No DDL was performed by the inspector. |
 | New separately authorized apply-schema | [36789780146](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789780146), feature `9499e7f` | Succeeded with `d1_proof_schema_verified`: native formal and mirror schema readback passed. This accepts the bounded native schema, not a real campaign. |
-| Synthetic encrypted write | [36789867723](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789867723), feature `9499e7f` | Succeeded: two ciphertext chunks, 82,592-byte plaintext envelope, synthetic-only mirror retention. No real recovery row or mutation permit. |
+| Synthetic encrypted write | [36789867723](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789867723), feature `9499e7f` | Succeeded: two ciphertext chunks, 82,592-byte encrypted envelope/ciphertext, synthetic-only mirror retention. No real recovery row or mutation permit. |
 | Independent cross-dispatch read-terminal | [36789986151](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789986151), feature `9499e7f` | Succeeded with the same envelope digest and retained mirror terminal receipt; `real_cleanup_attested=false`, synthetic-only. Not real mailbox cleanup or expiry-recovery acceptance. |
 
 Public synthetic evidence digests (SHA-256; not keys or private mail):
@@ -29,7 +29,7 @@ Public synthetic evidence digests (SHA-256; not keys or private mail):
 | Artifact | Digest | Provenance |
 | --- | --- | --- |
 | Verified schema | `8e8f98365779c7d8d9c3607b00b891f2bff639b99a5c69307cd8a6996125d88d` | [Schema run 36789780146](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789780146) |
-| Synthetic plaintext envelope | `8988f551e833960e53f94e7bba02b41ec65aec9399449c5013d7667d8c6bd1cc` | [Write 36789867723](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789867723), [independent read 36789986151](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789986151) |
+| Synthetic encrypted envelope/ciphertext | `8988f551e833960e53f94e7bba02b41ec65aec9399449c5013d7667d8c6bd1cc` | [Write 36789867723](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789867723), [independent read 36789986151](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789986151) |
 | Retained synthetic mirror terminal receipt | `526d173e4233f1b41dc5224845c9dae4bfdd148f0b2b652df024e43b749f22b2` | [Read-terminal 36789986151](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789986151) |
 
 The native provider mechanics gap is now closed **only for this bounded staging
