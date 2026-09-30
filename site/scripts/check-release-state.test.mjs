@@ -50,6 +50,15 @@ for (const state of ['candidate', 'published']) {
         assert.throws(() => checkReleaseState(state, pages, headers), /generic candidate Releases link/);
       }
     });
+
+    if (state === 'published' || path !== 'index') {
+      test(`${state} ${path}: data-href cannot substitute for href`, () => {
+        const pages = fixture(state);
+        const url = state === 'published' ? tagUrl : releasesUrl;
+        pages[path] = pages[path].replace(`href="${url}"`, `data-href="${url}"`);
+        assert.throws(() => checkReleaseState(state, pages, headers), /Release link is missing/);
+      });
+    }
   }
 }
 

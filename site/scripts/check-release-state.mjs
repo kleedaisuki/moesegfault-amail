@@ -12,7 +12,14 @@ const pages = [
 
 /** Match an actual anchor destination, not URL text elsewhere in the document. */
 function hasHref(html, href) {
-  return [...html.matchAll(/<a\b[^>]*\bhref="([^"]*)"[^>]*>/g)].some((match) => match[1] === href);
+  const anchors = html.matchAll(/<a\b((?:[^>"']|"[^"]*"|'[^']*')*)>/g);
+  for (const [, attributes] of anchors) {
+    const parsed = attributes.matchAll(/\s+([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g);
+    for (const [, name, doubleQuoted, singleQuoted, bare] of parsed) {
+      if (name === 'href' && (doubleQuoted ?? singleQuoted ?? bare) === href) return true;
+    }
+  }
+  return false;
 }
 
 /** Assert source-managed staging noindex never targets the production hostname. */
