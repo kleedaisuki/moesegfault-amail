@@ -39,3 +39,17 @@ Before correction, `check_role_trace_rollout.verify('before')` checked the route
 - Confidential destination/provider credentials are written to a restricted repository-local temporary file, captured provider output is not printed, and cleanup runs in `finally`. Deployment is not automatically retried. Successful captured version is a recovery pin, not an after-phase verdict.
 - Failed/ambiguous transition requires read-only reconciliation, held sending and absent synthetic route. Provider settings/attachments are not atomic: external writers must remain frozen; read brackets cannot prove absence of transient changes between observations.
 - Existing production direct forwards and public-send hold remain unchanged. Email/Cron whole-record canaries, lease/fault acceptance, external original/digest delivery and deliberate production rollback still need independent live evidence.
+## Narrow SMTP caller wiring follow-up (`7c4a41e`)
+
+**GO for source CI and live preflight code; real acceptance remains separate.**
+The exact hosted SMTP step now supplies `AMAIL_EXPECTED_ROLE_WORKER_VERSION`
+from the same explicit `inputs.role_version` used by its deployment provenance
+check, and `AMAIL_EXPECTED_TRACE_QUEUE_ID` from the independently reviewed
+staging repository variable. Tracing the caller confirms `gates()` invokes
+`probe.preflight()`, which calls `AUDIT.reviewed_pins()` and the strict immutable
+serving-capability/capture audit. The added step-scoped fixture prevents omission
+of either environment binding without relying on provider-discovered defaults.
+This complements `c4dd186`'s safe deployment marker compatibility; neither fix
+weakens missing-pin rejection, explicit confirmation, deploy freeze, route or
+privacy gates. No new substantive finding in this narrow follow-up. No local
+execution, live access or push was performed; hosted tests are still required.
