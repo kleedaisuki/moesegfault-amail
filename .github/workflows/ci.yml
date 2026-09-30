@@ -12,7 +12,7 @@ on:
         description: Deploy staging, or promote production Workers from main after staging review
         required: true
         type: choice
-        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-trace-canary, staging-trace-security-events, production]
+        options: [staging, staging-e2e, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-security-events, production]
       confirm:
         description: Staging E2E, role SMTP, or trace canary requires its documented RUN_* confirmation
         required: false
@@ -659,6 +659,44 @@ jobs:
           AMAIL_STAGING_ROLE_VERSION: ${{ inputs.role_version }}
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_role_token_phase_probe.py READ_FIRST_ROLE_TOKEN_PERMISSIONS 36603362864
+
+  staging-role-phase-logs:
+    name: Read only historical first-role Cron application phase logs
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.target == 'staging-role-phase-logs' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: staging-role-phase-logs
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require exact historical role run and read-only confirmation
+        shell: pwsh
+        env:
+          PROBE_CONFIRM: ${{ inputs.confirm }}
+          ROLE_RUN_ID: ${{ inputs.role_probe_run_id }}
+        run: |
+          if ($env:PROBE_CONFIRM -ne 'READ_FIRST_ROLE_PHASE_LOGS' -or
+              $env:ROLE_RUN_ID -ne '36603362864') {
+            throw 'Exact first role Cron phase-log confirmation required'
+          }
+      - name: Classify bounded retained application logs with no raw records
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_role_phase_logs.py READ_FIRST_ROLE_PHASE_LOGS 36603362864
 
   staging-trace-canary:
     name: Reuse branch-local staging retained-log trace canary
