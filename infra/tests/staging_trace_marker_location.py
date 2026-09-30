@@ -73,6 +73,24 @@ def one_or_multiple(values: set[str], single: str) -> str:
     return single if values == {single} else "other_or_multiple"
 
 
+def event_shape(record: object) -> dict:
+    """Reject incomplete event envelopes before classifying any visible leaf."""
+
+    if not isinstance(record, dict):
+        raise LocationError("record_shape_unverified")
+    dataset = record.get("dataset")
+    source = record.get("source")
+    workers = record.get("$workers")
+    if (not isinstance(dataset, str) or not dataset
+            or not isinstance(source, (str, dict))
+            or ("$workers" in record and not isinstance(workers, dict))):
+        raise LocationError("record_shape_unverified")
+    if isinstance(workers, dict) and (
+            "truncated" in workers and workers["truncated"] is not False):
+        raise LocationError("record_truncated_unverified")
+    return record
+
+
 def classify(records: list[dict]) -> tuple[str, str, str, str]:
     """Return only fixed carrier, type, component, and hit-count bins.
 
@@ -90,15 +108,18 @@ def classify(records: list[dict]) -> tuple[str, str, str, str]:
     carriers: set[str] = set()
     types: set[str] = set()
     suffixes: dict[str, set[str]] = {"path": set(), "query": set()}
-    for record in records:
+    for raw_record in records:
+        record = event_shape(raw_record)
         metadata = record.get("$metadata")
         timestamp = record.get("timestamp")
         if (not isinstance(metadata, dict) or metadata.get("service") != WORKER
                 or type(timestamp) is not int or not START <= timestamp <= END):
             raise LocationError("record_scope_unverified")
         record_type = metadata.get("type")
-        safe_type = record_type if record_type in ("cf-worker-event", "cf-worker-log") \
-            else "other_or_mixed"
+        safe_type = {
+            "cf-worker-event": "cf_worker_event",
+            "cf-worker-log": "cf_worker_log",
+        }.get(record_type, "other_or_mixed") if isinstance(record_type, str) else "other_or_mixed"
         found = False
         for path, value in string_leaves(record):
             if PATH_PREFIX not in value and QUERY_PREFIX not in value:
@@ -121,7 +142,7 @@ def classify(records: list[dict]) -> tuple[str, str, str, str]:
         raise LocationError("marker_shape_unverified")
     component = "both_same_suffix" if path and query else "path_only" if path else "query_only"
     kind = one_or_multiple(carriers, next(iter(carriers)))
-    record_type = one_or_multiple(types, next(iter(types)))
+    record_type = next(iter(types)) if len(types) == 1 else "other_or_mixed"
     count = "1" if matched_records == 1 else "2_plus"
     return kind, record_type, component, count
 
@@ -148,7 +169,7 @@ def main() -> int:
     except LocationError as error:
         code = error.args[0] if error.args and error.args[0] in {
             "record_shape_unverified", "record_scope_unverified", "marker_in_key_unverified",
-            "marker_shape_unverified", "marker_not_located",
+            "marker_shape_unverified", "marker_not_located", "record_truncated_unverified",
         } else "classification_unverified"
         print(f"staging_trace_marker_location: UNVERIFIED ({code})")
         return 1
