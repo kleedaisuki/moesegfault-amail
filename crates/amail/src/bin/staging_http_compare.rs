@@ -41,8 +41,19 @@ struct Probe {
     redirected: bool,
 }
 
+/// Derive fixed header/body/traceparent carriers only from a validated target.
+fn sink_payload(url: &Url) -> Option<(String, String, String)> {
+    valid_target(url.as_str())?;
+    let marker = url.path().strip_prefix("/v1/messages/amail_path_canary_")?;
+    Some((
+        format!("amail_header_canary_{marker}"),
+        format!("amail_body_canary_{marker}"),
+        format!("00-{marker}-1111111111111111-01"),
+    ))
+}
+
 /// Match amail's reqwest blocking client without following a synthetic redirect.
-fn probe(url: Url) -> Option<Probe> {
+fn probe(url: Url, sink_markers: bool) -> Option<Probe> {
     let redirected = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&redirected);
     let client = Client::builder()
@@ -53,7 +64,20 @@ fn probe(url: Url) -> Option<Probe> {
         }))
         .build()
         .ok()?;
-    let response = client.get(url).send().ok()?;
+    let request = if sink_markers {
+        // Derive all markers from the already validated synthetic URL. No
+        // arbitrary header/body input or caller trace context is accepted.
+        let (header, body, parent) = sink_payload(&url)?;
+        client
+            .post(url.clone())
+            .header("x-amail-synthetic-canary", header)
+            .header("traceparent", parent)
+            .header("content-type", "text/plain")
+            .body(body)
+    } else {
+        client.get(url)
+    };
+    let response = request.send().ok()?;
     let status = response.status().as_u16();
     let request_id = response.headers().get_all("x-amail-request-id");
     let valid_id = (request_id.iter().count() == 1)
@@ -99,9 +123,10 @@ fn private_denial_id(facts: &Probe) -> Option<&str> {
 
 /// Consume the URL on stdin so no synthetic marker appears in process arguments.
 fn main() {
-    let private_id = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
-        [] => false,
-        [flag] if flag.as_str() == "--private-id" => true,
+    let (private_id, sink_markers) = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
+        [] => (false, false),
+        [flag] if flag.as_str() == "--private-id" => (true, false),
+        [flag] if flag.as_str() == "--sink-private-id" => (true, true),
         _ => {
             println!("staging_http_compare: unverified");
             std::process::exit(1);
@@ -112,7 +137,7 @@ fn main() {
         println!("staging_http_compare: unverified");
         std::process::exit(1);
     }
-    let result = valid_target(raw.trim_end_matches(['\r', '\n'])).and_then(probe);
+    let result = valid_target(raw.trim_end_matches(['\r', '\n'])).and_then(|url| probe(url, sink_markers));
     match result {
         Some(facts) if private_id => {
             if let Some(request_id) = private_denial_id(&facts) {
@@ -139,7 +164,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{private_denial_id, valid_target, Probe};
+    use super::{private_denial_id, sink_payload, valid_target, Probe};
 
     /// No arbitrary host, route, marker, fragment, or query can be probed.
     #[test]
@@ -155,6 +180,21 @@ mod tests {
         ] {
             assert!(valid_target(&bad).is_none());
         }
+    }
+
+    /// The sink probe cannot accept arbitrary payload or trusted caller context.
+    #[test]
+    fn sink_markers_are_derived_from_exact_validated_target() {
+        let marker = "a".repeat(32);
+        let good = format!("https://mail-staging.moesegfault.dev/v1/messages/amail_path_canary_{marker}?probe=amail_query_canary_{marker}");
+        let url = valid_target(&good).expect("synthetic target");
+        assert_eq!(sink_payload(&url), Some((
+            format!("amail_header_canary_{marker}"),
+            format!("amail_body_canary_{marker}"),
+            format!("00-{marker}-1111111111111111-01"),
+        )));
+        let wrong = url::Url::parse("https://mail-staging.moesegfault.dev/v1/messages/private").expect("url");
+        assert!(sink_payload(&wrong).is_none());
     }
 
     /// A 403, redirect, or missing ID can never release a private correlation ID.

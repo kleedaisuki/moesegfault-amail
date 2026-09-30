@@ -245,12 +245,12 @@ def run_probes(cli: Path, home: Path) -> tuple[int, int, tuple[str, str, str], s
     return start, end, ids, denied_id, (path_marker, query_marker)
 
 
-def expected_service_filter(value: object) -> bool:
+def expected_service_filter(value: object, service: str = WORKER) -> bool:
     """Recognize only the one exact service filter, allowing its optional tag."""
 
     return isinstance(value, dict) and value.get("key") == "$metadata.service" \
         and value.get("operation") in ("eq", "=") \
-        and value.get("type") == "string" and value.get("value") == WORKER \
+        and value.get("type") == "string" and value.get("value") == service \
         and set(value).issubset({"key", "operation", "type", "value", "kind"}) \
         and value.get("kind", "filter") == "filter"
 
@@ -269,7 +269,7 @@ def shape_match(container: object, key: str, expected: object) -> str:
     return "match" if container[key] == expected else "mismatch"
 
 
-def query_shape(result: object, start: int, end: int) -> dict[str, str]:
+def query_shape(result: object, start: int, end: int, service: str = WORKER) -> dict[str, str]:
     """Reduce a query response to fixed, non-sensitive echo/view categories.
 
     Cloudflare does not echo the top-level requested view in the documented run.
@@ -305,7 +305,7 @@ def query_shape(result: object, start: int, end: int) -> dict[str, str]:
                                else "mismatch"),
         "service_filter": ("unavailable" if not isinstance(filters, list)
                            else "match" if len(filters) == 1
-                           and expected_service_filter(filters[0]) else "mismatch"),
+                           and expected_service_filter(filters[0], service) else "mismatch"),
         "narrowing": ("unavailable" if not isinstance(parameters, dict)
                       else "match" if all(not parameters.get(key)
                                           for key in ("needle", "havings", "groupBys"))
@@ -314,24 +314,25 @@ def query_shape(result: object, start: int, end: int) -> dict[str, str]:
     }
 
 
-def query_echo_matches(run: dict, start: int, end: int) -> bool:
+def query_echo_matches(run: dict, start: int, end: int, service: str = WORKER) -> bool:
     """Require documented scope echoes; reject a contradictory legacy view."""
 
-    shape = query_shape({"run": run}, start, end)
+    shape = query_shape({"run": run}, start, end, service)
     return shape["view"] != "mismatch" and all(shape[key] == "match" for key in (
         "timeframe", "datasets", "filter_combination", "service_filter", "narrowing",
     ))
 
 
 def query_page(account: str, token: str, start: int, end: int, cursor: str | None,
-               shape_reporter: Callable[[dict[str, str]], None] | None = None) -> dict:
+               shape_reporter: Callable[[dict[str, str]], None] | None = None,
+               *, service: str = WORKER) -> dict:
     """Read one dry retained-event page, rejecting absent or unfinished views."""
 
     body: dict = {
         "queryId": str(uuid.uuid4()), "timeframe": {"from": start, "to": end},
         "dry": True, "limit": MAX_PAGE, "view": "events",
         "parameters": {"datasets": [], "filterCombination": "and", "filters": [{
-            "key": "$metadata.service", "operation": "eq", "type": "string", "value": WORKER,
+            "key": "$metadata.service", "operation": "eq", "type": "string", "value": service,
         }]},
     }
     if cursor:
@@ -339,7 +340,7 @@ def query_page(account: str, token: str, start: int, end: int, cursor: str | Non
         body["offsetDirection"] = "next"
     result = request_json(account, token, "query", body).get("result")
     if shape_reporter is not None:
-        shape_reporter(query_shape(result, start, end))
+        shape_reporter(query_shape(result, start, end, service))
     need(isinstance(result, dict), "observability_result_malformed")
     run = result.get("run")
     need(isinstance(run, dict), "observability_run_malformed")
@@ -348,7 +349,7 @@ def query_page(account: str, token: str, start: int, end: int, cursor: str | Non
          "observability_query_incomplete" if status == "STARTED"
          else "observability_query_status_unverified")
     need(run.get("dry") is True, "observability_query_echo_unverified")
-    need(query_echo_matches(run, start, end), "observability_query_echo_unverified")
+    need(query_echo_matches(run, start, end, service), "observability_query_echo_unverified")
     # The API schema marks result.events optional even for the events view.
     # Missing is not equivalent to a completed zero-event container.
     need("events" in result, "observability_events_view_absent")
@@ -361,7 +362,8 @@ def query_page(account: str, token: str, start: int, end: int, cursor: str | Non
 
 
 def retained_events(account: str, token: str, start: int, end: int,
-                    shape_reporter: Callable[[dict[str, str]], None] | None = None) -> list[dict]:
+                    shape_reporter: Callable[[dict[str, str]], None] | None = None,
+                    *, service: str = WORKER) -> list[dict]:
     """Fetch a complete bounded window or fail; truncated data is no privacy proof."""
 
     records: list[dict] = []
@@ -369,7 +371,9 @@ def retained_events(account: str, token: str, start: int, end: int,
     total_count: int | None = None
     seen_ids: set[str] = set()
     while True:
-        page = query_page(account, token, start, end, cursor, shape_reporter)
+        page = (query_page(account, token, start, end, cursor, shape_reporter)
+                if service == WORKER else query_page(
+                    account, token, start, end, cursor, shape_reporter, service=service))
         batch = page["events"]
         need(len(batch) <= MAX_PAGE, "observability_events_malformed")
         need(all(isinstance(item, dict) for item in batch), "observability_events_malformed")
