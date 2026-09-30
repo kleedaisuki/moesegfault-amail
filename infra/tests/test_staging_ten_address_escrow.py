@@ -310,6 +310,44 @@ class EscrowTests(unittest.TestCase):
         self.assertEqual(self.client.read(RUN,KEY,GEN)[1],self.blob)
         self.assertFalse(any(sql == target.SQL["purge"] for sql,params in self.world.calls))
 
+    def test_attach_interleaved_before_receipt_does_not_commit_stale_digest(self):
+        """A changed artifact relation fails CAS before any terminal metadata is written."""
+        self.client.put(self.blob,KEY,RUN,GEN)
+        original = self.client._query
+        competitor = target.Escrow("a"*32,"synthetic-token",query=self.world.query)
+        def attaching(sql,params):
+            if sql == target.SQL["receipt"]:
+                competitor.attach(RUN,KEY,GEN,"123",self.blob)
+            return original(sql,params)
+        self.client._query = attaching
+        with self.assertRaisesRegex(manifest.ContractFailure,"escrow_receipt_ack_unverified"):
+            self.client._finalize(RUN,KEY,GEN,"7654321","b"*40,self.blob)
+        row,blob = self.client.read(RUN,KEY,GEN)
+        self.assertEqual(row["state"],"sealed")
+        self.assertEqual(row["artifact_id"],"123")
+        self.assertIsNone(row["cleanup_receipt_sha"])
+        self.assertIsNone(row["cleanup_verifier_run"])
+        self.assertEqual(blob,self.blob)
+
+    def test_arm_interleaved_before_receipt_does_not_commit_stale_digest(self):
+        """State and arm timestamp are part of the same receipt CAS observation."""
+        self.prepare()
+        original = self.client._query
+        competitor = target.Escrow("a"*32,"synthetic-token",query=self.world.query)
+        def arming(sql,params):
+            if sql == target.SQL["receipt"]:
+                competitor.arm(RUN,KEY,GEN,"123",self.blob)
+            return original(sql,params)
+        self.client._query = arming
+        with self.assertRaisesRegex(manifest.ContractFailure,"escrow_receipt_ack_unverified"):
+            self.client._finalize(RUN,KEY,GEN,"7654321","b"*40,self.blob)
+        row,blob = self.client.read(RUN,KEY,GEN)
+        self.assertEqual(row["state"],"armed")
+        self.assertIsNotNone(row["armed_at"])
+        self.assertIsNone(row["cleanup_receipt_sha"])
+        self.assertIsNone(row["cleanup_verified_at"])
+        self.assertEqual(blob,self.blob)
+
     def test_purge_requires_receipt_and_stops_on_ambiguous_chunk_delete(self):
         """Partial logical purge resumes only as an explicit separate private invocation."""
         blob = manifest.seal(maximum_plan(),KEY,RUN,GEN)

@@ -374,3 +374,17 @@ chunks, and partial 31-chunk purge after committed-but-lost response. These test
 the private SQL semantics only; no synthetic fixture is real cleanup attestation.
 Concrete coordinator, watchdog/intake, hosted provider behavior and live gates
 remain pending. Existing 30-day artifact semantics are unchanged.
+
+### Terminal receipt lifecycle CAS correction
+
+Independent review identified that artifact attachment or arming could change
+a receipt's hash-bound lifecycle fields between authenticated readback and the
+conditional UPDATE. The receipt statement now compares exact observed state,
+nullable artifact ID, nullable arm timestamp and immutable creation time in the
+same write, in addition to the original run/ciphertext relation. A competing
+attach or arm therefore yields zero changes without committing any terminal
+receipt, rather than committing a stale digest that later readback rejects.
+Synthetic interleavings cover both races and assert original ciphertext remains
+readable, lifecycle changes belong only to the competing operation, and all
+terminal receipt fields remain absent. Coordinator work stays paused pending
+independent correction review; no local or live tests were executed.

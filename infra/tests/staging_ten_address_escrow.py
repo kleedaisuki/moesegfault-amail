@@ -46,7 +46,7 @@ SQL = {
     "artifact": f"UPDATE {PARENT} SET artifact_id=?3 WHERE original_run=?1 AND envelope_sha=?2 AND state='sealed' AND artifact_id IS NULL",
     "arm": f"UPDATE {PARENT} SET state='armed',armed_at=unixepoch() WHERE original_run=?1 AND envelope_sha=?2 AND artifact_id=?3 AND state='sealed' AND armed_at IS NULL",
     "clock": "SELECT unixepoch() AS now",
-    "receipt": f"UPDATE {PARENT} SET state='cleanup_verified',cleanup_verified_at=?3,cleanup_receipt_sha=?4,cleanup_verifier_run=?5,cleanup_verifier_sha=?6,cleanup_check_set=?7 WHERE original_run=?1 AND envelope_sha=?2 AND state IN ('writing','sealed','armed') AND cleanup_receipt_sha IS NULL AND ?3>=created_at AND ?3 BETWEEN unixepoch()-30 AND unixepoch()",
+    "receipt": f"UPDATE {PARENT} SET state='cleanup_verified',cleanup_verified_at=?3,cleanup_receipt_sha=?4,cleanup_verifier_run=?5,cleanup_verifier_sha=?6,cleanup_check_set=?7 WHERE original_run=?1 AND envelope_sha=?2 AND state IN ('writing','sealed','armed') AND state=?8 AND artifact_id IS ?9 AND armed_at IS ?10 AND created_at=?11 AND cleanup_receipt_sha IS NULL AND ?3>=created_at AND ?3 BETWEEN unixepoch()-30 AND unixepoch()",
     "purge": f"DELETE FROM {PARTS} WHERE original_run=?1 AND chunk_index=?2 AND chunk_sha=?3 AND ciphertext_b64=?4 AND EXISTS(SELECT 1 FROM {PARENT} WHERE original_run=?1 AND state='cleanup_verified' AND cleanup_receipt_sha=?5)",
 }
 
@@ -339,7 +339,8 @@ class Escrow:
                     "cleanup_check_set":CHECK_SET}
         expected["cleanup_receipt_sha"] = self._receipt(expected)
         require(self._run("receipt",(run,row["envelope_sha"],clock[0]["now"],
-                    expected["cleanup_receipt_sha"],verifier_run,verifier_sha,CHECK_SET)).changes == 1,
+                    expected["cleanup_receipt_sha"],verifier_run,verifier_sha,CHECK_SET,
+                    row["state"],row["artifact_id"],row["armed_at"],row["created_at"])).changes == 1,
                 "escrow_receipt_ack_unverified")
         terminal,actual = self.read(run,key,generation)
         _,values = binding(blob,key,run,generation)
