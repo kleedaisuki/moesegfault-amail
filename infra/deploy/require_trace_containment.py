@@ -15,7 +15,7 @@ import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from pin_staging_mail import SCRIPT, bindings_match, fetch, serving_deployment
+from pin_staging_mail import SCRIPT, containment_bindings_match, fetch, serving_deployment
 sys.path.insert(0, str(Path(__file__).parents[2] / "crates/mail-worker"))
 from check_observability import effective_api_settings, safe_observability, worker_readback
 
@@ -115,7 +115,7 @@ def verify(run_id: str, version: str, account: str, token: str, *, kind: str = "
     before = serving_deployment(fetch(account, token, "deployments?per_page=1&page=1"))
     if before is None or before[1] != version:
         raise ValueError("serving_version_unverified")
-    if kind == "settings-v1" and not bindings_match(
+    if kind == "settings-v1" and not containment_bindings_match(
             fetch(account, token, f"versions/{version}"), version):
         raise ValueError("serving_bindings_unverified")
     settings = fetch(account, token, "settings")

@@ -13,7 +13,7 @@ import re
 from urllib.request import Request, build_opener
 
 from apply_staging_capture_off import (
-    API, SCRIPT, VERSION, bindings_match, effective_api_settings,
+    API, SCRIPT, VERSION, containment_bindings_match, effective_api_settings,
     relax_issues, safe_observability, source_policy, NoRedirect,
 )
 from pin_staging_mail import LIMIT, serving_deployment
@@ -159,7 +159,7 @@ def apply(account: str, token: str, expected: str, phases: dict) -> str:
     before = serving_deployment(fetch(account, token, DEPLOYMENTS))
     if before is None or before[1] != VERSION:
         raise ValueError("serving_pin")
-    if not bindings_match(fetch(account, token, f"versions/{VERSION}"), VERSION):
+    if not containment_bindings_match(fetch(account, token, f"versions/{VERSION}"), VERSION):
         raise ValueError("serving_pin")
     prior = worker_readback(account, token)
     phases["projection"] = "checking"
@@ -192,7 +192,7 @@ def apply(account: str, token: str, expected: str, phases: dict) -> str:
         raise ValueError("unchanged_state")
     phases["unchanged_state"] = "match"
     phases["serving_pin"] = "checking_after"
-    if (not bindings_match(fetch(account, token, f"versions/{VERSION}"), VERSION)
+    if (not containment_bindings_match(fetch(account, token, f"versions/{VERSION}"), VERSION)
             or serving_deployment(fetch(account, token, DEPLOYMENTS)) != before):
         raise ValueError("serving_pin")
     phases["serving_pin"] = "match"

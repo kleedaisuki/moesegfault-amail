@@ -12,7 +12,7 @@ from urllib.error import URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy"))
 import apply_staging_capture_off as subject
-from pin_staging_mail import expected_bindings
+from historical_containment_fixture import historical_version
 
 DEPLOYMENT = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -24,15 +24,8 @@ def deployment(version=subject.VERSION, identifier=DEPLOYMENT):
 
 
 def version():
-    """Build synthetic binding names/resources matching reviewed source only."""
-    values = []
-    for name, (kind, value) in expected_bindings().items():
-        binding = {"name": name, "type": kind}
-        key = {"d1": "database_id", "r2_bucket": "bucket_name", "plain_text": "text"}.get(kind)
-        if key:
-            binding[key] = value
-        values.append(binding)
-    return {"id": subject.VERSION, "resources": {"bindings": values}}
+    """Use the literal historical fixture, independent of current TOML."""
+    return historical_version()
 
 
 def settings(issues=False):
@@ -50,6 +43,17 @@ def settings(issues=False):
 
 class CaptureCorrectionTests(unittest.TestCase):
     """Ensure no source, provider, drift or ambiguity can emit false acceptance."""
+
+    def test_historical_matcher_brackets_correction(self):
+        """Both sides explicitly select the same exact historical predecessor."""
+        from historical_containment_fixture import historical_version
+        with patch.object(subject, "containment_bindings_match",
+                          wraps=subject.containment_bindings_match) as matcher:
+            result = self.apply_fixture()[0]
+        self.assertEqual(result, "applied")
+        self.assertEqual(matcher.call_count, 2)
+        for call in matcher.call_args_list:
+            self.assertEqual(call.args, (historical_version(), subject.VERSION))
 
     def apply_fixture(self, prior=None, current=None, reads=None, patch_error=None):
         """Run only synthetic providers, returning mocks for exact mutation count."""

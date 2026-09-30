@@ -16,7 +16,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 sys.path.insert(0, str(Path(__file__).parent))
-from pin_staging_mail import API, CONFIG, LIMIT, SCRIPT, bindings_match, serving_deployment
+from pin_staging_mail import API, CONFIG, LIMIT, SCRIPT, containment_bindings_match, serving_deployment
 sys.path.insert(0, str(CONFIG.parent))
 from check_observability import effective_api_settings, safe_observability
 
@@ -145,7 +145,7 @@ def apply(account: str, token: str, expected: str) -> str:
     if before is None or before[1] != expected:
         raise ValueError("deployment_unverified")
     version = fetch(account, token, f"versions/{expected}")
-    if not bindings_match(version, expected):
+    if not containment_bindings_match(version, expected):
         raise ValueError("bindings_unverified")
     prior = settings(account, token)
     if not effective_api_settings(relax_issues(prior[0]), SCRIPT,
@@ -163,7 +163,7 @@ def apply(account: str, token: str, expected: str) -> str:
         raise ValueError("readback_unverified")
     if tuple(unaffected(x) for x in current) != projections:
         raise ValueError("unaffected_changed")
-    if not bindings_match(fetch(account, token, f"versions/{expected}"), expected):
+    if not containment_bindings_match(fetch(account, token, f"versions/{expected}"), expected):
         raise ValueError("bindings_unverified")
     if serving_deployment(fetch(account, token, "deployments?per_page=1&page=1")) != before:
         raise ValueError("deployment_changed")

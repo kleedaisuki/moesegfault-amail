@@ -13,10 +13,10 @@ from urllib.error import HTTPError, URLError
 
 sys.path.insert(0, str(Path(__file__).parent))
 from apply_staging_capture_off import (
-    SCRIPT, VERSION, bindings_match, effective_api_settings, fetch,
+    SCRIPT, VERSION, effective_api_settings, fetch,
     relax_issues, serving_deployment, source_policy, unaffected, worker_readback,
 )
-from pin_staging_mail import expected_bindings
+from pin_staging_mail import containment_bindings_match, containment_predecessor_bindings
 from check_observability import legacy_noncontradictory
 
 CONFIRM = "READ_STAGING_CAPTURE_SETTINGS_PREFLIGHT"
@@ -64,7 +64,7 @@ def binding_cause(value: dict) -> str:
         actual = actual["result"]
     if not isinstance(actual, list):
         return "bindings_shape"
-    expected = expected_bindings()
+    expected = containment_predecessor_bindings()
     if len(actual) != len(expected):
         return "bindings_count"
     seen = set()
@@ -120,7 +120,7 @@ def diagnose(account: str, token: str, expected: str) -> tuple[str, dict]:
     try:
         version = fetch(account, token, f"versions/{VERSION}")
         result["version_read"] = "ok"
-        if bindings_match(version, VERSION):
+        if containment_bindings_match(version, VERSION):
             result["bindings"] = result["binding_cause"] = "match"
         else:
             result["bindings"] = "mismatch"

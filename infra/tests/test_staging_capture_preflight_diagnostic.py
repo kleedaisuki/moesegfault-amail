@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy"))
 import diagnose_staging_capture_preflight as subject
 import apply_staging_capture_off as mutator
-from pin_staging_mail import expected_bindings
+from historical_containment_fixture import historical_version
 
 DEPLOYMENT = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
@@ -24,15 +24,8 @@ def deployment(identifier=DEPLOYMENT, version=subject.VERSION):
 
 
 def version():
-    """Build only synthetic resources, not a stored provider response."""
-    bindings = []
-    for name, (kind, value) in expected_bindings().items():
-        binding = {"name": name, "type": kind}
-        field = {"d1": "database_id", "r2_bucket": "bucket_name", "plain_text": "text"}.get(kind)
-        if field:
-            binding[field] = value
-        bindings.append(binding)
-    return {"id": subject.VERSION, "resources": {"bindings": bindings}}
+    """Use the literal historical fixture, independent of current TOML."""
+    return historical_version()
 
 
 def worker():

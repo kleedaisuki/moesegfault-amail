@@ -34,6 +34,17 @@ def worker(issues=None):
 class CurrentWorkerTests(unittest.TestCase):
     """Reject ambiguous projection, write, readback or concurrency evidence."""
 
+    def test_historical_matcher_brackets_correction(self):
+        """Both sides explicitly select the same exact historical predecessor."""
+        from historical_containment_fixture import historical_version
+        with patch.object(subject, "containment_bindings_match",
+                          wraps=subject.containment_bindings_match) as matcher:
+            result = self.execute()[0]
+        self.assertEqual(result, "applied")
+        self.assertEqual(matcher.call_count, 2)
+        for call in matcher.call_args_list:
+            self.assertEqual(call.args, (historical_version(), subject.VERSION))
+
     def execute(self, prior=None, current=None, reads=None, response=None, error=None):
         """Inject every transport boundary and retain one-shot call evidence."""
         prior = worker() if prior is None else prior

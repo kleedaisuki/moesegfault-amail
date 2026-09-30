@@ -126,10 +126,54 @@ def expected_bindings(phase: str = "pre-queue", queue_id: str = "", *, realm: st
     return expected
 
 
+def containment_predecessor_bindings() -> dict[str, tuple[str, str | None]]:
+    """Return a fresh frozen c3f staging contract, independent of current TOML.
+
+    Immutable source daaab1f79cd985030d8d502fd647e16757673052 and hosted
+    operation 36761367007 established this exact 14-binding pre-write match.
+    This is binding provenance only, never privacy acceptance or retry authority.
+    See docs/held-staging-mail-promotion-2026-10-01.md. Do not add optional
+    bindings or derive this historical policy from provider data/current config.
+    """
+    return {
+        "MAIL_DB": ("d1", "74f35f95-42ce-482c-86e6-dffbdd35cbbe"),
+        "ROLE_MONITOR": ("d1", "272e024c-453a-461b-bea0-c37a62c89d24"),
+        "MAIL_BODIES": ("r2_bucket", "moesegfault-mail-raw-staging"),
+        "EMAIL": ("send_email", None),
+        "OPENROUTER_API_KEY": ("secret_text", None),
+        "CF_EMAIL_ROUTING_TOKEN": ("secret_text", None),
+        "INGRESS_SECRET": ("secret_text", None),
+        "ADDRESS_DIAGNOSTICS": ("plain_text", "v1"),
+        "IDENTITY_ISSUER": ("plain_text", "https://identity-staging.moesegfault.dev"),
+        "OIDC_CLIENT_ID": ("plain_text", "amail-cli-staging"),
+        "CF_ZONE_ID": ("plain_text", "6edff81c6ed02f412e70868076411a5e"),
+        "MAIL_DOMAIN": ("plain_text", "mail-staging.moesegfault.dev"),
+        "EMAIL_INGRESS_WORKER_NAME": ("plain_text", "amail-inbound-staging"),
+        "OPENROUTER_EMBEDDING_MODEL": ("plain_text", "qwen/qwen3-embedding-8b"),
+    }
+
+
+CONTAINMENT_PREDECESSOR_VERSION = "c3f6401a-1e84-4f51-91df-ae77d90683e9"
+
+
+def containment_bindings_match(version: dict, expected_version: str) -> bool:
+    """Match only the fixed staging c3f predecessor; never fall back to it."""
+    if expected_version != CONTAINMENT_PREDECESSOR_VERSION:
+        return False
+    return _bindings_match(version, expected_version, containment_predecessor_bindings())
+
+
 def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-queue",
                    queue_id: str = "", realm: str = "staging") -> bool:
-    """Check exact resource bindings on the identified serving version."""
+    """Check the current direct-only contract, without historical fallback."""
+    expected = (expected_bindings() if phase == "pre-queue" and realm == "staging"
+                else expected_bindings(phase, queue_id, realm=realm))
+    return _bindings_match(version, expected_version, expected)
 
+
+def _bindings_match(version: dict, expected_version: str,
+                    expected: dict[str, tuple[str, str | None]]) -> bool:
+    """Compare one selected contract with exact version, shape, names and targets."""
     resources = version.get("resources")
     if version.get("id") != expected_version or not isinstance(resources, dict):
         return False
@@ -139,10 +183,6 @@ def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-qu
     # as an empty binding set or fall back to unversioned /settings.
     if isinstance(actual, dict) and set(actual) == {"result"}:
         actual = actual["result"]
-    # Preserve the historical no-argument contract for pre-Queue callers and
-    # their minimal-resource fixtures; only the new phase requires Queue pins.
-    expected = (expected_bindings() if phase == "pre-queue" and realm == "staging"
-                else expected_bindings(phase, queue_id, realm=realm))
     if not isinstance(actual, list) or len(actual) != len(expected):
         return False
     seen: set[str] = set()

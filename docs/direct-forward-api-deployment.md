@@ -80,7 +80,7 @@ by their exact binding names. Its config guard rejects missing, duplicate,
 additional or renamed D1/R2 entries and malformed D1 IDs; immutable deployed
 bindings must still equal the reviewed realm's complete allowlist. Removing
 `ROLE_MONITOR` never permits an arbitrary substitute database. `pre-queue`
-remains a strict historical pin phase, not an optional-bindings variant; the
+remains the strict current direct-only pin phase, not an optional-bindings variant; the
 active deployed graph uses `queue-api` and the exact events Queue ID.
 
 The active production interfaces are:

@@ -258,7 +258,7 @@ class ContainmentTests(unittest.TestCase):
         replies = [{}, {"id": version}, {}, {}, {}]
         with patch.object(MODULE, "immutable_evidence") as evidence, patch.object(
                 MODULE, "fetch", side_effect=replies) as fetch, patch.object(
-                MODULE, "bindings_match", return_value=True) as bindings, patch.object(
+                MODULE, "containment_bindings_match", return_value=True) as bindings, patch.object(
                 MODULE, "worker_readback", return_value=self.worker()), patch.object(
                 MODULE, "serving_deployment", side_effect=[("d", version), ("d", version)]):
             MODULE.verify(RUN, version, "a", "t", kind="settings-v1")
@@ -266,13 +266,57 @@ class ContainmentTests(unittest.TestCase):
             bindings.assert_called_once_with({"id": version}, version)
             self.assertEqual(fetch.call_args_list[1].args[2], f"versions/{version}")
 
+    def test_settings_historical_bindings_do_not_grant_privacy(self):
+        """The literal old bindings still require independent explicit Issues-off."""
+        from historical_containment_fixture import historical_version
+        version = MODULE.SETTINGS_VERSION
+        for issues in ("missing", None, True):
+            worker = self.worker()
+            if issues == "missing":
+                del worker["observability"]["issues"]
+            else:
+                worker["observability"]["issues"] = {"enabled": issues}
+            with self.subTest(issues=issues), patch.object(MODULE, "immutable_evidence"), patch.object(
+                    MODULE, "fetch", side_effect=[{}, historical_version(), {}, {}]), patch.object(
+                    MODULE, "worker_readback", return_value=worker), patch.object(
+                    MODULE, "serving_deployment", return_value=("d", version)):
+                with self.assertRaisesRegex(ValueError, "serving_privacy_unverified"):
+                    MODULE.verify(RUN, version, "a", "t", kind="settings-v1")
+
+    def test_settings_failed_or_missing_marker_blocks_provider(self):
+        """Immutable failure remains before any binding/privacy provider read."""
+        for failed in (False, True):
+            replies = self.responses(kind="settings-v1")
+            if failed:
+                run = json.loads(replies[0])
+                run["conclusion"] = "failure"
+                replies[0] = json.dumps(run)
+            else:
+                replies[2] = ""
+            with self.subTest(failed=failed), patch.object(MODULE, "gh", side_effect=replies), patch.object(
+                    MODULE, "fetch") as fetch, patch.object(MODULE, "worker_readback") as worker:
+                with self.assertRaises(ValueError):
+                    MODULE.verify(RUN, MODULE.SETTINGS_VERSION, "a", "t", kind="settings-v1")
+                fetch.assert_not_called()
+                worker.assert_not_called()
+
+    def test_deploy_kind_never_selects_historical_bindings(self):
+        """Default deploy evidence does not acquire historical policy fallback."""
+        with patch.object(MODULE, "immutable_evidence"), patch.object(MODULE, "fetch", return_value={}), patch.object(
+                MODULE, "worker_readback", return_value=self.worker()), patch.object(
+                MODULE, "serving_deployment", return_value=("d", VERSION)), patch.object(
+                MODULE, "containment_bindings_match") as historical:
+            MODULE.verify(RUN, VERSION, "a", "t")
+            historical.assert_not_called()
+
     def test_settings_extra_queue_binding_denied(self):
         """Settings evidence may not admit a producer binding in the serving version."""
         version = MODULE.SETTINGS_VERSION
-        resource = {"id": version, "resources": {"bindings": [
-            {"name": "MAIL_DB", "type": "d1", "database_id": "db"},
-            {"name": "TRACE_EVENTS", "type": "queue", "queue_name": "amail-trace-events-staging"}]}}
-        with patch.dict(MODULE.bindings_match.__globals__, {"expected_bindings": lambda: {"MAIL_DB": ("d1", "db")}}), patch.object(
+        from historical_containment_fixture import historical_version
+        resource = historical_version()
+        resource["resources"]["bindings"].append(
+            {"name": "TRACE_EVENTS", "type": "queue", "queue_id": "a" * 32})
+        with patch.object(
                 MODULE, "immutable_evidence"), patch.object(MODULE, "fetch", side_effect=[{}, resource]), patch.object(
                 MODULE, "worker_readback") as worker, patch.object(MODULE, "serving_deployment", return_value=("d", version)):
             with self.assertRaisesRegex(ValueError, "serving_bindings_unverified"):
