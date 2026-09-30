@@ -58,6 +58,21 @@ This preserves manual promotion's source validation and full privacy rollout gat
 
 After source review, run hosted push checks once cold and an equivalent manual `checks` run warm on the same immutable SHA, then compare job and step times, cache-hit state, test counts, and conclusions. A manual check cannot write caches. Keep mutation/deployment dispatches out of this timing experiment. Do not accept a cache-hit job that skips actual assertions. Verify source push invokes **no** staging deployment/provider-live jobs. These runs validate the design; later ordinary Rust edits measure whether the warm bundler benefit persists with a project build-cache miss.
 
+### Hosted cold/warm source-check observations (2026-09-30)
+
+The first non-deploying push [36738776043](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36738776043), `1e378e5`, was **not a green workflow**: Infrastructure had one historical TOML fixture error (`test_require_trace_containment.test_exact_evidence`, `source_privacy_unverified`, because the synthetic source omitted the now-required disabled Issues section). The Worker job itself passed every Rust/Wasm, bundle, and workerd assertion, and its trusted project-branch cache-save steps completed. The follow-up push [36739829040](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36739829040), `5f6778a`, changed only that infra fixture/docs while leaving the exact Worker source key and pinned bundler inputs unchanged; **all six active source jobs passed**. These are not strictly same-SHA repeated runs, but the second job reported exact hits for both cache keys created by the first.
+
+| Source push | Created → first active job | Workflow elapsed | Worker job | Infra | Windows CLI | Cache evidence |
+| --- | --- | --- | --- | --- | --- | --- |
+| [36738776043](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36738776043), cold | 15:42:25 → 15:42:29 (0:04) | 7:24, **workflow failed only on infra fixture** | 7:19, passed | 0:14, failed (1/525) | 4:31, passed | exact Worker build and pinned bundler **missed**, then both saved after passing Worker contracts |
+| [36739829040](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36739829040), warm | 15:50:52 → 15:50:57 (0:05) | 2:09, passed | 1:47, passed | 0:16, passed | 2:03, passed | exact Worker build and pinned bundler **hit/restored**; install and save steps skipped |
+
+Both runs executed CLI tests on Ubuntu/macOS/Windows, the full Rust Worker unit/build suite, Wasm bundles, workerd address-boundary assertions, Astro checks, and infra probes. OpenRouter live contract and **every** staging/provider mutation or deployment job were skipped on both pushes; no serving Worker was replaced. The cold Worker still saved its cache because that job's own complete contracts passed, even though the unrelated infra job made the workflow red. This is job-scoped cache policy, not a claim that the first workflow passed.
+
+Selected Worker step durations (cold → warm): bundled tool install **2:07 → skipped**; exact project-cache restore **0:01 → 0:13**; Rust Worker unit tests **0:48 → 0:03**; API bundle **1:15 → 0:32**; privacy-sink bundle **0:37 → 0:08**; workerd address assertions **0:09 → 0:09**. The Worker job fell by **5:32** (7:19 → 1:47), while the complete source-feedback path fell by **5:15** (7:24 → 2:09). The cold/warm comparison includes normal runner and cache-transfer variance, and the revisions differ in an infra fixture; it is evidence for the exact-key warm path, not a general speedup estimate for Rust source changes. A third manual same-SHA `checks` run is not needed to establish that these keys restore or that tests still execute. The next informative measurement is an ordinary Rust edit that misses the project build cache but hits the pinned bundler cache.
+
+Reproduction: read only each run's `created_at`/`updated_at`, the six non-skipped job `started_at`/`completed_at` fields and Worker step timings from GitHub Actions; the Worker logs contain fixed cache-miss/save or hit/restore labels. No mail, secrets, or provider payloads are required.
+
 What remains serialized: reviewed staged rollout, shared alias/account/route creation and cleanup, one-use SMTP sends, serving-pin-sensitive acceptance, production promotion, and observational provider waits. Cancellation is not safe for those operations; a timeout can leave ambiguous external state. Avoid replacing safety serialism with parallel retries.
 
 ## External grounding
@@ -69,4 +84,4 @@ What remains serialized: reviewed staged rollout, shared alias/account/route cre
 
 ## Status
 
-Source implementation only; independent review and hosted cold/warm validation are required before claiming an achieved latency improvement. No public sending or privacy gate is relaxed by this change.
+Source implementation and hosted cold/warm validation are complete for the exact unchanged-Worker-input path above; broader cache-miss performance remains unmeasured. No public sending or privacy gate is relaxed by this change.
