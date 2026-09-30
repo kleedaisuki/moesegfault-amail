@@ -292,6 +292,112 @@ class StagingTraceCanaryTests(unittest.TestCase):
                                     "rejected_request_event_missing"):
             canary.assess(records, (T, C, R), D, MARKERS)
 
+    def test_delayed_requery_accepts_only_same_window_late_denial(self) -> None:
+        """A fake clock proves one delay and one identical-scope second read."""
+
+        first = events()[:1]
+        sleeps: list[float] = []
+        with patch.object(canary, "retained_events", side_effect=[first, events()]) as query:
+            outcome = canary.assess_with_delayed_requery(
+                "a" * 32, "fake", 1000, 2000, (T, C, R), D, MARKERS,
+                sleep=sleeps.append,
+            )
+        self.assertEqual(outcome, "late_arrival")
+        self.assertEqual(sleeps, [canary.LATE_REQUERY_DELAY_SECONDS])
+        self.assertEqual(query.call_count, 2)
+        self.assertEqual(query.call_args_list[0], query.call_args_list[1])
+
+    def test_immediate_pass_does_not_wait_or_requery(self) -> None:
+        """Existing successful evidence keeps its original one-read behavior."""
+
+        with patch.object(canary, "retained_events", return_value=events()) as query:
+            outcome = canary.assess_with_delayed_requery(
+                "a" * 32, "fake", 1000, 2000, (T, C, R), D, MARKERS,
+                sleep=lambda _: self.fail("must not sleep"),
+            )
+        self.assertEqual(outcome, "verified")
+        query.assert_called_once()
+
+    def test_delayed_requery_still_missing_is_fixed_failure(self) -> None:
+        """A second absence remains unverified and cannot trigger a loop."""
+
+        first = events()[:1]
+        with patch.object(canary, "retained_events", side_effect=[first, first]) as query:
+            with self.assertRaisesRegex(canary.CanaryError, "^still_missing$"):
+                canary.assess_with_delayed_requery(
+                    "a" * 32, "fake", 1000, 2000, (T, C, R), D, MARKERS,
+                    sleep=lambda _: None,
+                )
+        self.assertEqual(query.call_count, 2)
+
+    def test_delayed_requery_skips_non_missing_first_failure(self) -> None:
+        """An initial privacy failure cannot be laundered by a later result."""
+
+        unsafe = events()[:1]
+        unsafe[0]["$metadata"]["url"] = MARKERS[0]
+        with patch.object(canary, "retained_events", return_value=unsafe) as query:
+            with self.assertRaisesRegex(canary.CanaryError, "synthetic_url_marker_retained"):
+                canary.assess_with_delayed_requery(
+                    "a" * 32, "fake", 1000, 2000, (T, C, R), D, MARKERS,
+                    sleep=lambda _: self.fail("must not sleep"),
+                )
+        query.assert_called_once()
+
+    def test_delayed_requery_rejects_lost_prior_id(self) -> None:
+        """A later valid pair is not sufficient if an earlier row vanished."""
+
+        first = events()[:1]
+        second = events()
+        second[0]["$metadata"]["id"] = "replacement-root-id"
+        with patch.object(canary, "retained_events", side_effect=[first, second]):
+            with self.assertRaisesRegex(canary.CanaryError,
+                                        "^observability_record_ids_regressed$"):
+                canary.assess_with_delayed_requery(
+                    "a" * 32, "fake", 1000, 2000, (T, C, R), D, MARKERS,
+                    sleep=lambda _: None,
+                )
+
+    def test_delayed_requery_revalidates_second_view(self) -> None:
+        """A late denial cannot mask a newly unsafe retained row."""
+
+        second = events()
+        second[1]["$metadata"]["url"] = MARKERS[0]
+        with patch.object(canary, "retained_events", side_effect=[events()[:1], second]):
+            with self.assertRaisesRegex(canary.CanaryError, "synthetic_url_marker_retained"):
+                canary.assess_with_delayed_requery(
+                    "a" * 32, "fake", 1000, 2000, (T, C, R), D, MARKERS,
+                    sleep=lambda _: None,
+                )
+
+    def test_delayed_requery_rejects_duplicate_denial(self) -> None:
+        """Late arrival cannot weaken the unique-denial predicate."""
+
+        second = events()
+        duplicate = json.loads(json.dumps(second[1]))
+        duplicate["$metadata"]["id"] = "distinct-denial-row"
+        second.append(duplicate)
+        with patch.object(canary, "retained_events", side_effect=[events()[:1], second]):
+            with self.assertRaisesRegex(canary.CanaryError,
+                                        "^rejected_request_event_duplicate$"):
+                canary.assess_with_delayed_requery(
+                    "a" * 32, "fake", 1000, 2000, (T, C, R), D, MARKERS,
+                    sleep=lambda _: None,
+                )
+
+    def test_delayed_requery_requires_stable_ids(self) -> None:
+        """A missing indexed ID prevents a continuity claim and a second read."""
+
+        first = events()[:1]
+        del first[0]["$metadata"]["id"]
+        with patch.object(canary, "retained_events", return_value=first) as query:
+            with self.assertRaisesRegex(canary.CanaryError,
+                                        "^observability_record_ids_unverified$"):
+                canary.assess_with_delayed_requery(
+                    "a" * 32, "fake", 1000, 2000, (T, C, R), D, MARKERS,
+                    sleep=lambda _: self.fail("must not sleep"),
+                )
+        query.assert_called_once()
+
     def test_valid_denial_cannot_hide_conflicting_candidate(self) -> None:
         """An extra wrong-phase row cannot be overwritten into a pass."""
 

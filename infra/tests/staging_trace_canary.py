@@ -32,6 +32,7 @@ HEX16 = re.compile(r"[0-9a-f]{16}\Z")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 MAX_PAGE = 200
 MAX_EVENTS = 1600
+LATE_REQUERY_DELAY_SECONDS = 60
 EVENT_KEYS = frozenset({
     "schema_version", "service", "operation", "phase", "trace_id", "span_id",
     "parent_span_id", "request_id", "outcome", "error_code",
@@ -534,6 +535,51 @@ def assess(records: list[dict], ids: tuple[str, str, str], denied_id: str,
     # unrelated platform field safe merely because the two markers are absent.
 
 
+def retained_record_ids(records: list[dict]) -> set[str]:
+    """Require stable indexed IDs before comparing two complete retained views."""
+
+    ids = [record.get("$metadata", {}).get("id")
+           if isinstance(record.get("$metadata"), dict) else None
+           for record in records]
+    need(all(isinstance(item, str) and item for item in ids)
+         and len(set(ids)) == len(ids), "observability_record_ids_unverified")
+    return set(ids)
+
+
+def assess_with_delayed_requery(account: str, token: str, start: int, end: int,
+                                ids: tuple[str, str, str], denied_id: str,
+                                markers: tuple[str, str],
+                                sleep: Callable[[float], None] = time.sleep) -> str:
+    """Recheck only a missing denial once, without traffic or scope expansion.
+
+    Each view independently passes complete pagination and the full privacy,
+    schema, root, and parentage assessment. The second view must retain every
+    first-view indexed record ID; an unstable snapshot is not a late arrival.
+    """
+
+    first = retained_events(account, token, start, end)
+    try:
+        assess(first, ids, denied_id, markers)
+        return "verified"
+    except CanaryError as error:
+        if error.args != ("rejected_request_event_missing",):
+            raise
+    first_ids = retained_record_ids(first)
+    sleep(LATE_REQUERY_DELAY_SECONDS)
+    second = retained_events(account, token, start, end)
+    missing_again = False
+    try:
+        assess(second, ids, denied_id, markers)
+    except CanaryError as error:
+        if error.args != ("rejected_request_event_missing",):
+            raise
+        missing_again = True
+    need(first_ids <= retained_record_ids(second), "observability_record_ids_regressed")
+    if missing_again:
+        raise CanaryError("still_missing")
+    return "late_arrival"
+
+
 def main() -> int:
     """Run only after an explicit staging confirmation and fixed preflight."""
 
@@ -554,14 +600,16 @@ def main() -> int:
         preflight(account, obs_token, deploy_token)
         start, end, ids, denied_id, markers = run_probes(cli, home)
         time.sleep(20)  # Allow Workers Logs indexing; absence remains fail-closed.
-        records = retained_events(account, obs_token, start, end)
-        assess(records, ids, denied_id, markers)
+        outcome = assess_with_delayed_requery(
+            account, obs_token, start, end, ids, denied_id, markers,
+        )
     except (CanaryError, OSError, sqlite3.Error, subprocess.TimeoutExpired,
             TypeError, ValueError, RecursionError) as error:
         label = error.args[0] if isinstance(error, CanaryError) else "local_probe_unavailable"
         print(f"staging_trace_canary: UNVERIFIED ({label})")
         return 1
-    print("staging_trace_canary: retained_marker_absence_and_cli_api_parentage_verified")
+    suffix = " (late_arrival)" if outcome == "late_arrival" else ""
+    print(f"staging_trace_canary: retained_marker_absence_and_cli_api_parentage_verified{suffix}")
     return 0
 
 

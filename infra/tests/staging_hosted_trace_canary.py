@@ -26,6 +26,7 @@ BUILT_BINARY = ROOT / "target" / "debug" / "amail.exe"
 CANARY = Path(__file__).with_name("staging_trace_canary.py")
 CONFIRMATION = "RUN_STAGING_TRACE_CANARY"
 CHILD_SUCCESS = b"staging_trace_canary: retained_marker_absence_and_cli_api_parentage_verified"
+CHILD_LATE_SUCCESS = CHILD_SUCCESS + b" (late_arrival)"
 HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 USERNAME = re.compile(r"[a-z0-9_]{3,32}\Z")
 PREFLIGHT_CODES = frozenset({
@@ -68,6 +69,8 @@ RETAINED_CHILD_CODES = PREFLIGHT_CODES | frozenset({
     "observability_count_malformed", "observability_window_too_busy",
     "observability_page_incomplete", "observability_cursor_missing",
     "observability_cursor_stalled", "retained_window_empty",
+    "observability_record_ids_unverified", "observability_record_ids_regressed",
+    "still_missing",
 })
 CLEANUP_RETRY_DELAYS = (0.2, 0.4, 0.8, 1.6)
 WINDOWS_LOCK_ERRORS = frozenset({5, 32, 33, 145})
@@ -155,6 +158,7 @@ def child_success_verified(output: object) -> bool:
 
     return isinstance(output, bytes) and len(output) <= 160 and output in (
         CHILD_SUCCESS + b"\n", CHILD_SUCCESS + b"\r\n",
+        CHILD_LATE_SUCCESS + b"\n", CHILD_LATE_SUCCESS + b"\r\n",
     )
 
 
@@ -223,7 +227,7 @@ def execute(mode: str, confirmation: str) -> None:
              "--amail", str(binary), "--home", str(home)],
             env=canary_environment(account, deploy_token, obs_token),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, timeout=240, check=False,
+            stderr=subprocess.DEVNULL, timeout=600, check=False,
         )
         if result.returncode:
             raise HostedTraceError(child_failure_code(getattr(result, "stdout", None)))
@@ -242,7 +246,9 @@ def execute(mode: str, confirmation: str) -> None:
                 code = str(primary) if isinstance(primary, HostedTraceError) else "unexpected_failure"
                 raise HostedTraceError(f"{code}; {cleanup_error}") from None
             raise
-    print("staging_trace_hosted: retained_canary_verified")
+    late = result.stdout in (CHILD_LATE_SUCCESS + b"\n", CHILD_LATE_SUCCESS + b"\r\n")
+    suffix = " (late_arrival)" if late else ""
+    print(f"staging_trace_hosted: retained_canary_verified{suffix}")
 
 
 def main() -> int:

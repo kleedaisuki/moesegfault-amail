@@ -28,6 +28,17 @@ SPEC.loader.exec_module(HOSTED)
 class HostedTraceSafetyTests(unittest.TestCase):
     """Reject unsafe or premature work without accessing live services."""
 
+    def test_late_success_requires_exact_fixed_line(self) -> None:
+        """Only the reviewed late-arrival proof may cross the child boundary."""
+
+        self.assertTrue(HOSTED.child_success_verified(HOSTED.CHILD_LATE_SUCCESS + b"\n"))
+        self.assertFalse(HOSTED.child_success_verified(
+            HOSTED.CHILD_LATE_SUCCESS + b" private-row\n",
+        ))
+        self.assertEqual(HOSTED.child_failure_code(
+            b"staging_trace_canary: UNVERIFIED (still_missing)\n",
+        ), "still_missing")
+
     def test_missing_observability_secret_stops_before_network(self) -> None:
         """A dedicated missing secret must be diagnosable without login."""
 
