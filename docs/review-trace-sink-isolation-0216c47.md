@@ -102,3 +102,51 @@ safe event retention, or production/public-send readiness.
 - [Worker Routes API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/) and [official SDK](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/resources/workers/routes.py): single-page Zone route inventory.
 - [Queue inventory API](https://developers.cloudflare.com/api/resources/queues/methods/list/): explicit Queue result counts and pagination metadata, which must not be ignored when asserting completeness.
 - [Version resource API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/get/): compiled default/named handler and binding resources.
+
+## Follow-up recheck: `a85ed12` + `94f3d50`
+
+The original P1 omission path is corrected: the shared Queue helper checks
+integral metadata, exact page cardinality, stable totals, unique IDs/names and
+final cardinality. The new integration denial test calls that actual helper
+through `queue_trigger_exact`, rather than replacing it with an assumed complete
+list. The original P2 Domain problem is corrected with an unfiltered bare
+SinglePage request and coherent optional metadata; tests assert that exact path
+and reject contradictory completeness claims. These findings are **resolved in
+source**, not yet reported as hosted-test passes.
+
+**GO for hosted synthetic CI; live checker acceptance still NO-GO pending the
+new P2 contract mismatch below.** This recheck found no additional isolation
+fail-open path in the changed code.
+
+### P2 follow-up — Queue inventory also assumes undocumented pagination
+
+Location: `infra/deploy/ensure_trace_queues.py:inventory` in `94f3d50`.
+
+Rechecking the exact official Queue SDK, rather than only its generic metadata
+example, shows that `QueuesResource.list` returns `SyncSinglePage[Queue]`, takes
+only account_id plus transport overrides, and sends no page/per_page query.
+The current API List Queues reference likewise has no declared query parameters
+and marks result_info optional. The helper now demands per_page 100 and all five
+pagination fields. Consequently a documented complete SinglePage response with
+absent metadata or default per_page 20 is rejected. This is an availability and
+API-contract problem; stricter denial closes the previous false acceptance but
+does not establish that the healthy deployed checker can ever pass.
+
+Correction guidance: use an endpoint-specific unfiltered Queue SinglePage
+inventory with bounded validated unique IDs/names and reject any **supplied**
+metadata contradicting completeness, including omitted rows or additional
+pages. Preserve the new integration denial for explicit total_count mismatch.
+Alternatively, retain a paginated path only with authoritative evidence for
+that runtime contract and a deliberate safe strategy for the documented shape;
+do not manufacture live evidence or replace completeness checks with a short
+first-page heuristic. A hosted synthetic fixture matching the official SDK/API
+shape should pass while an advertised omitted Queue must still fail.
+
+Confidence: high for the current official schema mismatch; the actual deployed
+account response was not queried. This refines the initial reference assessment:
+generic pagination metadata does not itself establish support for page/per_page
+request parameters, for either Domains or Queues.
+
+Additional primary reference retrieved 2026-09-30:
+[official Queue SDK list implementation](https://github.com/cloudflare/cloudflare-python/blob/main/src/cloudflare/resources/queues/queues.py)
+(list method: SinglePage, no declared pagination parameters).
