@@ -176,7 +176,7 @@ rows; inventory length must equal the aggregate count. Baseline ceiling
 to at most 197. At 198 the eleventh request can return `capacity_exhausted`
 before reaching the owner-slot check, obscuring the intended quota oracle.
 Count every owner and every state except `retired`, including unknown states;
-never infer this number from active provider rules or B alone.
+never infer this number from active provider rules or the selected owner alone.
 
 Capture global inventory/count in a consistent D1 read snapshot where
 possible. For paged observations, verify independent final count and canonical
@@ -208,7 +208,7 @@ run the campaign; it may only dispatch the separate reconciliation target.
 Freeze the 25 reserved names already declared in the existing harness as a
 source oracle. Validate their equality against the Worker source during
 hosted tests so a newly reserved microservice name cannot silently escape the
-campaign. Check representative uppercase spellings while B is empty, before
+campaign. Check representative uppercase spellings while A is empty, before
 quota filling, to separate normalization/reservation failures from the slot
 limit. The static reserved candidates are not run-unique and therefore need
 stronger recovery protection than nonce-scoped aliases.
@@ -217,7 +217,7 @@ Before the first mutating call, capture a versioned full-plan manifest:
 
 * repository, exact checkout SHA, workflow identity, original run/attempt,
   UTC preflight time and deployed serving-version pins;
-* exact issuer/subject owner B and protected username binding, in memory;
+* exact issuer/subject owner A and protected username binding, in memory;
 * ordered raw CLI submissions, including case variants, and a separate
   deduplicated canonical normalized resource-baseline map for all eleven
   nonce aliases and reserved candidates; multiple spellings intentionally
@@ -226,7 +226,7 @@ Before the first mutating call, capture a versioned full-plan manifest:
   state, owner, creation time, provider rule ID and reconciliation fields;
 * complete exact provider rule baseline for every candidate, including any
   existing operational rule; store unrelated rules only as canonical digest;
-* B's baseline owner count and the capacity/hold observations;
+* A's baseline owner count and the capacity/hold observations;
 * complete global non-retired D1 baseline rows, aggregate count at most 187,
   canonical digest and predicate/schema version, including all owners and
   pending/provisioning/deleting allocations.
@@ -272,14 +272,14 @@ can show only manifest-present/version/validated booleans and fixed labels.
 1. Authenticate and perform every gate above. Capture and durably seal the
    complete pre-mutation manifest. Stop on any unknown state; no cleanup of
    unrelated baseline state is allowed.
-2. While B has zero slots, submit each source-listed reserved local part plus
+2. While A has zero slots, submit each source-listed reserved local part plus
    representative case variants once. Require nonzero exit, **empty stdout**,
    bounded stderr parsed as exact HTTP 409/`reserved_or_invalid_name`. After
-   each call require B's owner count unchanged and candidate D1/rule baseline
+   each call require A's owner count unchanged and candidate D1/rule baseline
    unchanged. Stop immediately on unexpected success or side effect.
 3. Add `qt0` through `qt9` serially, once each. For each, require the CLI's
    returned exact address, owner-scoped D1 state `active`, matching issuer/sub,
-   one exact enabled API-owned ingress rule, and B's full list/count equal to
+   one exact enabled API-owned ingress rule, and A's full list/count equal to
    the expected prefix. Require global non-retired count equal to baseline
    plus prefix length and unchanged unrelated-row state. Activation polling
    is read-only; it must not replay
@@ -313,7 +313,7 @@ contract; a newer deployed revision needs deliberate review, not a wildcard
 override of the pin.
 
 For each candidate absent from both baseline D1 and provider rules, delete
-through the supported B CLI only if current D1 proves the exact authenticated owner,
+through the supported A CLI only if current D1 proves the exact authenticated owner,
 creation time not before the manifest's preflight, and current rule is either
 absent or the expected exact API-owned staging ingress rule bound by D1. A
 foreign owner, altered provider action, inconsistent rule ID or unowned orphan
@@ -331,8 +331,8 @@ baseline and require its unchanged readback. In particular do not delete an
 operational `abuse` or `postmaster` rule after a reserved-name regression.
 
 Retirement is intentionally not database restoration: successful aliases
-leave B-owned `retired` tombstones, with no rule ID, no reconciliation work and
-zero non-retired B slots. Record this as the allowed final state rather than
+leave A-owned `retired` tombstones, with no rule ID, no reconciliation work and
+zero non-retired A slots. Record this as the allowed final state rather than
 claiming all D1 rows are absent. Assert no messages/storage were created (zero
 SMTP budget), and compare unrelated provider state against its baseline
 digest. A preexisting tombstone is never deleted. Read-only retries may wait
@@ -343,7 +343,7 @@ reviewed same-manifest recovery path, not the quota campaign.
 This follows [AWS's production retry guidance](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/):
 an uncertain response is not evidence that the side effect did not happen.
 The test uses the original resource identity for reconciliation and does not
-consume new aliases to conceal ambiguous outcomes. The earlier two-principal
+consume new aliases to conceal ambiguous outcomes. The separate two-principal
 test supplies an independent security relation; this campaign supplies the
 serial capacity boundary, not a concurrent-race proof.
 
@@ -353,8 +353,9 @@ The future `test_staging_ten_address_*` suite must run only in hosted CI and
 must contact no live service. Required failures and positive contracts:
 
 * unconfirmed/nonbranch/attempt>1 dispatch stops before secret loading;
-* absent, pending, wrong username or same-subject B fails before mutation;
-* prior isolation provenance absent, wrong SHA or failed run is not a pass;
+* absent, pending or wrong-username synthetic A fails before mutation;
+* missing hosted source provenance or a fresh PKCE/Identity subject mismatch fails;
+* a quota pass never supplies or substitutes for two-principal isolation evidence;
 * split/mismatched Worker pin and a pin changed during the campaign fail;
 * paged counts changing, duplicate IDs, unknown matchers, 189 rules, or
   existing candidate state fail closed; 188 complete conservative rules pass;
@@ -386,9 +387,10 @@ must contact no live service. Required failures and positive contracts:
 
 Until these source, workflow and recovery contracts receive independent
 review and hosted tests, **leave `ci.yml` dispatch options unchanged**. No new
-secret is configured by this design. Once B verification and the smaller
-isolation run are established, implement the dormant wrapper/manifest layer,
-review it, run hosted CI, then permit one guarded campaign. Record checkout
+secret is configured by this design. Implement the dormant single-account wrapper/manifest layer using the already
+verified synthetic A, independently obtain fresh native PKCE and current
+Identity/service provenance, review it, run hosted CI, then permit one guarded
+campaign. B verification and two-principal isolation remain separate work. Record checkout
 SHA, deployed pins, Actions URL and privacy-safe outcome in validation notes.
 No current result claims ten-address, reserved-name, concurrent quota races,
 outbound ownership, production capacity or release readiness.
