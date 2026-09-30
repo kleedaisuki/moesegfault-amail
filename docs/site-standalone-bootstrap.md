@@ -31,6 +31,7 @@ strengthen candidate-only service-availability language.
 | `infra/release/test_candidate_site_workflow.py` | Hosted static workflow identity/no-secret/no-mutation source checks |
 | `docs/site-production-candidate-lane.md`, `docs/site-standalone-bootstrap.md` | Standalone operator contract, scope, migration, evidence and limits |
 | `docs/review-site-standalone-bootstrap-f8a4772.md` | Independent static review of bootstrap and hosted-syntax follow-up, with bounded GO |
+| `docs/site-standalone-bootstrap-review.md` | Root-assigned independent review, including separate static YAML parsing and bounded GO |
 | `.gitignore` | Repository-local fixture/interpreter cache exclusions |
 
 No `ci.yml`, `release.yml`, CLI, Mail/Identity runtime/configuration, Skill,

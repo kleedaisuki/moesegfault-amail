@@ -1,7 +1,7 @@
 # Independent standalone candidate-site bootstrap review
 
-Date: 2026-10-01. Reviewer scope: isolated worktree
-`D:/Code/moesegfault-amail/.temp/amail-site-candidate`, branch
+Date: 2026-10-01. Reviewer scope: repository-relative isolated worktree
+`.temp/amail-site-candidate`, branch
 `codex/amail-site-candidate`, base
 `7baea1adc0da08259a1f03f7307e989ec3bf8250`, implementation commits
 `59567d0`, `f8a4772`, and subsequently observed syntax-tooling correction
