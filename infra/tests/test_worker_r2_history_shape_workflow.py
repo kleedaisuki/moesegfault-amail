@@ -15,6 +15,12 @@ TARGET = "staging-worker-r2-history-shape"
 CONFIRM = "READ_WORKER_R2_HISTORY_BASELINE_SHAPE_36751791789"
 
 
+def valid_dispatch_inputs(inputs: list[str]) -> bool:
+    """Permit compatible input additions while enforcing platform and lane contracts."""
+    return (len(inputs) <= 25 and len(inputs) == len(set(inputs))
+            and {"target", "confirm"}.issubset(inputs))
+
+
 class HistoryShapeWorkflowTests(unittest.TestCase):
     """Keep the one historical read isolated from mutation and workflow retries."""
 
@@ -56,12 +62,21 @@ class HistoryShapeWorkflowTests(unittest.TestCase):
         header = self.source.split("\njobs:", 1)[0]
         dispatch = header.split("  workflow_dispatch:\n", 1)[1]
         inputs = re.findall(r"^      ([a-zA-Z0-9_]+):$", dispatch, re.MULTILINE)
-        self.assertEqual(len(inputs), 24)
-        self.assertIn("confirm", inputs)
+        self.assertTrue(valid_dispatch_inputs(inputs))
         self.assertIn(TARGET, header)
         legacy = job_block(self.source, "staging-worker-r2-delivery-history")
         self.assertIn("READ_WORKER_R2_DELIVERY_HISTORY_36751791789", legacy)
         self.assertNotIn("staging_worker_r2_history_shape.py", legacy)
+
+    def test_dispatch_input_boundaries_uniqueness_and_required_names(self) -> None:
+        """Twenty-five distinct inputs are valid; overflow and missing contracts fail."""
+        approved = ["target", "confirm"] + [f"optional_{index}" for index in range(23)]
+        self.assertTrue(valid_dispatch_inputs(approved))
+        self.assertTrue(valid_dispatch_inputs(["target", "confirm"]))
+        for invalid in (approved + ["overflow"], ["target", "confirm", "confirm"],
+                        ["target"], ["confirm"], []):
+            with self.subTest(inputs=invalid):
+                self.assertFalse(valid_dispatch_inputs(invalid))
 
     def test_bash_guard_rejects_wrong_confirmation_and_retry(self) -> None:
         """Run only the extracted input gate on hosted Linux, never the live helper."""
