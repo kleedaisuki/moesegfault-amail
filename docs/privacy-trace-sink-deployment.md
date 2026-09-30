@@ -75,6 +75,24 @@ Only fixed result labels are printed, never provider bodies or queue payloads.
    safe. A settings-only run also cannot impersonate the required successful
    deploy job/version provenance. Obtain a separately reviewed containment
    deployment/evidence path; do not repin old historical source to current intent.
+
+   The separately reviewed
+   [settings-only correction contract](staging-containment-settings-correction.md)
+   provides explicit `trace_containment_kind=settings-v1` / `--kind settings-v1`.
+   This one-shot kind accepts only the approved unchanged containment version
+   `c3f6401a-1e84-4f51-91df-ae77d90683e9`, a successful first-attempt immutable
+   `workflow_dispatch` run, and its dedicated
+   `Apply isolated staging API capture-off settings` job at the same run/SHA.
+   Require exactly one anchored
+   `staging_api_capture_off_attestation=settings-v1 version=<expected-uuid>`
+   marker and no deployment-version output. Historical TOML proves only the
+   extracted all-off observability intent; it does not claim that run-head Rust
+   or its future Queue binding was deployed. Current immutable version bindings
+   are separately checked using the exact pre-Queue Mail binding policy before
+   effective readback, rejecting extra Queue bindings. Default `deploy-v1`
+   remains deployment-only, with no inference or fallback between evidence kinds.
+   Source operation review and hosted verification remain prerequisites; this
+   gate source alone is not a successful settings attestation or privacy pass.
 3. Provision one-day queues, deploy the queue-only sink, then read back private
    sink settings/triggers. Deploy the producer API with explicit disabled
    observability and TRACE_EVENTS binding, then verify queue ownership and API
