@@ -44,3 +44,25 @@ token access, response schema, provider retention/completeness or the outcome of
 the earlier experiment. First-attempt gating excludes workflow reruns, not a
 separately created new dispatch; operationally authorize at most one new bounded
 diagnostic and do not treat the lane as an automated retry mechanism.
+
+## Compatible input-count correction review (2026-10-01)
+
+Narrowly reviewed `a2d0e941fecebfe04dc58ad1de14b63d134e010e` after a later
+workflow input addition raised the legal dispatch count to 25. **GO for hosted
+source checks; no substantive defect found.** The exact count of 24 above was an
+observation at the original reviewed revision, not an immutable contract.
+Encoding it as an equality in the test incorrectly rejected compatible input
+additions within the platform's limit; this was missed in the initial review.
+
+The correction replaces that equality with at most 25 distinct names and
+required `target`/`confirm` membership. Fixtures admit exactly 25 and the minimum
+required pair; they reject 26, a duplicate name, either missing required name,
+and no inputs. The unchanged extraction examines dispatch input keys, and all
+manual branch/staging, first-attempt confirmation, credential ordering,
+single-secret, fixed historical run and legacy isolation checks remain intact.
+No workflow or provider helper is modified by this commit. This restores the
+actual platform and lane contract rather than weakening a security boundary.
+
+No local tests or live operations were performed for this follow-up. Hosted
+execution is still required; the correction does not attest any provider read,
+delivery, R2 capability or release gate.
