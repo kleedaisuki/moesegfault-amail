@@ -27,7 +27,7 @@ def record(uri=TARGET, method="PATCH", status=200, outcome="success"):
 
 
 def envelope(rows=None):
-    """Build one explicitly complete synthetic page without provider fixtures."""
+    """Build a bounded synthetic page without asserting query exhaustion."""
     rows = [record()] if rows is None else rows
     return {"success": True, "errors": [], "result": rows,
             "result_info": {"count": str(len(rows)), "cursor": ""}}
@@ -37,15 +37,15 @@ class AuditClassifierTests(unittest.TestCase):
     """Unknown or incomplete evidence cannot authorize historical or live conclusions."""
 
     def test_unique_success_and_failure_are_provider_outcomes_only(self):
-        """Classify known outcome bins, not helper attribution or capture-off state."""
+        """Observe page outcomes without helper attribution or exhaustion claims."""
         status, result = subject.classify(envelope(), ACCOUNT)
-        self.assertEqual(status, "CLASSIFIED")
-        self.assertEqual(result, {"read": "ok", "complete": "yes", "matches": "one",
-            "http": "expected_success", "action": "success", "historical": "server_reported_success"})
+        self.assertEqual(status, "UNVERIFIED")
+        self.assertEqual(result, {"read": "ok", "complete": "unverified", "matches": "one",
+            "http": "expected_success", "action": "success", "historical": "page_reported_success"})
         for code, http in ((201, "other_success"), (403, "client_error"), (503, "server_error"), (302, "other")):
             outcome = "success" if code == 201 else "failure"
             status, result = subject.classify(envelope([record(status=code, outcome=outcome)]), ACCOUNT)
-            self.assertEqual(status, "CLASSIFIED")
+            self.assertEqual(status, "UNVERIFIED")
             self.assertEqual(result["http"], http)
         status, result = subject.classify(envelope([record(status=403)]), ACCOUNT)
         self.assertEqual(status, "UNVERIFIED")
@@ -71,13 +71,13 @@ class AuditClassifierTests(unittest.TestCase):
     def test_pagination_count_scope_and_unknown_shape_fail_closed(self):
         """Never widen, infer exhaustion or classify a malformed partial page."""
         for change in ({"cursor": "PRIVATE"}, {"cursor": None}, {"count": "2"},
-                       {"count": 1}, {"count": "01"}, {"next_cursor": "PRIVATE"}):
+                       {"count": "01"}, {"next_cursor": "PRIVATE"}):
             data = envelope()
             data["result_info"].update(change)
             status, result = subject.classify(data, ACCOUNT)
             self.assertEqual(status, "UNVERIFIED")
             self.assertEqual(result["complete"], "unverified")
-        for removed in ("cursor", "count"):
+        for removed in ("count",):
             data = envelope()
             del data["result_info"][removed]
             self.assertEqual(subject.classify(data, ACCOUNT)[0], "UNVERIFIED")
@@ -91,6 +91,34 @@ class AuditClassifierTests(unittest.TestCase):
             data = record()
             data.update(change)
             self.assertEqual(subject.classify(envelope([data]), ACCOUNT)[0], "UNVERIFIED")
+
+    def test_numeric_count_and_omitted_cursor_allow_positive_observation_only(self):
+        """The hosted representation cannot become exhaustive query evidence."""
+        for count in (1, "1"):
+            for cursor in (False, True):
+                data = envelope()
+                data["result_info"] = {"count": count}
+                if cursor:
+                    data["result_info"]["cursor"] = ""
+                status, result = subject.classify(data, ACCOUNT)
+                self.assertEqual(status, "UNVERIFIED")
+                self.assertEqual(result["complete"], "unverified")
+                self.assertEqual(result["matches"], "one")
+                self.assertEqual(result["historical"], "page_reported_success")
+        for count in (True, 1.0, -1, 101, None, "01", "1.0", "PRIVATE"):
+            data = envelope()
+            data["result_info"] = {"count": count}
+            status, result = subject.classify(data, ACCOUNT)
+            self.assertEqual(status, "UNVERIFIED")
+            self.assertEqual(result["read"], "shape")
+            self.assertEqual(result["historical"], "unresolved")
+        data = envelope([])
+        data["result_info"] = {"count": 0}
+        status, result = subject.classify(data, ACCOUNT)
+        self.assertEqual(status, "UNVERIFIED")
+        self.assertEqual(result["complete"], "unverified")
+        self.assertEqual(result["matches"], "zero")
+        self.assertEqual(result["historical"], "unresolved")
 
     def test_unknown_matching_fields_and_invalid_status_never_escape(self):
         """Unknown statuses/action outcomes are not cast to a known Boolean or class."""
@@ -183,7 +211,7 @@ class AuditClassifierTests(unittest.TestCase):
         out = io.StringIO()
         with patch.dict(os.environ, env, clear=True), patch.object(subject, "read_audit", return_value=envelope()) as reader, \
              contextlib.redirect_stdout(out):
-            self.assertEqual(subject.main(), 0)
+            self.assertEqual(subject.main(), 1)
         reader.assert_called_once()
         self.assertEqual(len(out.getvalue().splitlines()), len(subject.FIELDS) + 1)
         for secret in ("PRIVATE", ACCOUNT, TARGET, "200", "attestation", "Current Version ID"):

@@ -110,12 +110,26 @@ def http_category(value: object) -> str | None:
     return "other"
 
 
+def valid_count(value: object, length: int) -> bool:
+    """Accept canonical documented strings or the observed integer JSON shape.
+
+    The count is only a consistency check on this bounded page. Booleans,
+    floats, missing values and alternate string encodings cannot pass.
+    """
+    if type(value) is int:
+        return 0 <= value <= LIMIT and value == length
+    return (isinstance(value, str)
+            and re.fullmatch(r"(?:0|[1-9][0-9]{0,2})", value) is not None
+            and int(value) == length)
+
+
 def classify(payload: dict, account: str) -> tuple[str, dict]:
     """Validate the bounded envelope/page and match only exact method/URI in memory.
 
-    Optional unknown matching fields cannot authorize a conclusion. Explicit
-    empty cursor and canonical matching count establish only this query's page
-    completeness, never universal audit coverage or absence of a PATCH attempt.
+    Count measures returned records, not a query total. Neither an omitted nor
+    empty optional cursor documents exhaustion. A fully validated returned page
+    may expose a positive observation, but never completeness or uniqueness
+    beyond that page; the aggregate and exit status remain fail-closed.
     """
     result = {"read": "ok", "complete": "unverified", "matches": "unverified",
               "http": "unverified", "action": "unverified", "historical": "unresolved"}
@@ -127,14 +141,12 @@ def classify(payload: dict, account: str) -> tuple[str, dict]:
     rows, info = payload.get("result"), payload.get("result_info")
     if (not isinstance(rows, list) or len(rows) > LIMIT or not isinstance(info, dict)
             or set(info) - {"count", "cursor"}
-            or not isinstance(info.get("count"), str)
-            or not re.fullmatch(r"(?:0|[1-9][0-9]{0,2})", info["count"])
-            or int(info["count"]) != len(rows)):
+            or not valid_count(info.get("count"), len(rows))):
         result["read"] = "shape"
         return "UNVERIFIED", result
-    if info.get("cursor") != "":
-        # Missing/null/unknown cursor is not invented exhaustion. Never issue a
-        # second request even when a valid nonempty provider cursor is present.
+    if "cursor" in info and info["cursor"] != "":
+        # Only the observed omitted representation and legacy empty-string
+        # representation are inspected. Neither establishes exhaustion.
         return "UNVERIFIED", result
     target = f"/accounts/{account}/workers/scripts/amail-mail-staging/script-settings"
     matches = []
@@ -158,7 +170,6 @@ def classify(payload: dict, account: str) -> tuple[str, dict]:
         if http is None or action.get("result") not in ("success", "failure"):
             return "UNVERIFIED", result
         matches.append((http, action["result"]))
-    result["complete"] = "yes"
     result["matches"] = "zero" if not matches else "one" if len(matches) == 1 else "multiple"
     if not matches:
         return "UNVERIFIED", result
@@ -168,12 +179,12 @@ def classify(payload: dict, account: str) -> tuple[str, dict]:
     if len(matches) != 1:
         return "UNVERIFIED", result
     if result["action"] == "failure":
-        result["historical"] = "server_reported_failure"
+        result["historical"] = "page_reported_failure"
     elif result["http"] in ("expected_success", "other_success"):
-        result["historical"] = "server_reported_success"
+        result["historical"] = "page_reported_success"
     else:
         return "UNVERIFIED", result
-    return "CLASSIFIED", result
+    return "UNVERIFIED", result
 
 
 def main() -> int:
@@ -197,7 +208,9 @@ def main() -> int:
     print(f"staging_settings_patch_audit={status}")
     for field in FIELDS:
         print(f"staging_settings_patch_audit_{field}={result[field]}")
-    return 0 if status == "CLASSIFIED" else 1
+    # Optional cursor semantics do not prove query exhaustion. Even a positive
+    # page observation must never make this job an acceptance/attestation gate.
+    return 1
 
 
 if __name__ == "__main__":

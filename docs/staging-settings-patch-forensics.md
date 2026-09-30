@@ -204,3 +204,48 @@ row shapes, fixed private output, original object-policy preservation and real
 HTTP parser failure normalization. Static AST/YAML/whitespace checks are the
 only local verification; source review and hosted CI must precede one live
 shape discriminator. No new live request is claimed here.
+
+
+## Numeric-count correction: positive page observation, not completeness
+
+The parent supplied fixed shape evidence from hosted read-only run
+[`36756914170`](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36756914170):
+integer numeric count matching result length, omitted cursor, known-only typed
+rows. This source slice reuses that evidence without a private query or raw
+provider record. The previous strict string-count policy explains a schema
+mismatch, not a PATCH failure.
+
+Official [Audit v2 reference](https://developers.cloudflare.com/api/resources/accounts/subresources/logs/subresources/audit/methods/list/)
+was retrieved again on 2026-10-01. It defines optional string count as the number
+of records **returned in the response**, not the query total, and optional
+string cursor as a pagination token. It does not document missing or empty
+cursor as exhausted results. Thus neither count equality, a short page nor
+cursor omission can independently establish completeness. The older explicit
+empty-cursor completeness assumption is also removed rather than retained as
+an unsupported special case. This section supersedes the earlier completeness
+and CLASSIFIED acceptance descriptions above.
+
+The corrected bounded discriminator accepts canonical string counts and the
+observed integer JSON representation, rejecting booleans, floats, negatives,
+missing/mismatching counts and alternate strings. Only missing or explicitly
+empty string cursor permits inspecting this one returned page; null, nonempty
+or unknown pagination fields remain unresolved, with no continuation. All
+existing row, window, account, exact-path and private-output validation remains.
+
+A single matching fully validated **returned** row exposes fixed HTTP/action
+bins and `historical=page_reported_success` or `page_reported_failure`. This is
+positive evidence that the provider returned that exact method/path/time outcome;
+it is not uniqueness over the full query, helper attribution, client response
+parsing, current Issues-off, permission to retry PATCH or rollout acceptance.
+Zero or multiple page matches remain historically unresolved. Every branch
+keeps `complete=unverified`, aggregate `UNVERIFIED`, and exit status 1. Therefore
+an observation cannot accidentally satisfy a successful hosted acceptance gate.
+No additional fields, raw values or artifact output are introduced.
+
+Focused synthetic contracts now cover numeric-count/cursor omission, legacy
+string/empty-cursor pages, positive observation with fail-closed aggregate,
+zero-page non-absence, count type drift, and invariant private main output.
+Only source inspection, static AST parsing and whitespace checks are performed
+locally; no tests, builds, API queries or mutations were executed. Independent
+review and hosted tests must precede any one new historical read. `ci.yml` is
+unchanged by this source slice.
