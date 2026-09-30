@@ -29,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, build_opener
 
@@ -41,11 +42,13 @@ ROUTE_HELPER = ROOT / "workers" / "identity-test-inbox" / "ensure_route.py"
 LOGIN_ORIGIN = "https://login-staging.moesegfault.dev"
 ISSUER = "https://identity-staging.moesegfault.dev"
 MAIL_API = "https://mail-staging.moesegfault.dev"
+ACCOUNT_ORIGIN = "https://account-staging.moesegfault.dev"
 CLIENT = "amail-cli-staging"
 ALIAS = "amail-e2e@moesegfault.dev"
 CREDENTIAL_FILE = "credential.dpapi"
 DPAPI_ENTROPY = b"moesegfault-amail-staging-identity-test-v1"
 REGISTRATION = "/v1/password/registrations"
+PASSWORD_AUTH = "/v1/password/authentications"
 VERIFICATION_START = re.compile(r"^/v1/me/contacts/[^/]+/verification-transactions$")
 VERIFICATION_DONE = re.compile(r"^/v1/me/contacts/[^/]+/verification-transactions/[^/]+/completion$")
 # Hosted Windows Chrome can need longer than a dozen seconds to create its
@@ -193,7 +196,7 @@ def route(action: str | None = None, address: str = ALIAS) -> str:
     if result.returncode:
         raise ProbeError("exact_route_control_failed")
     state = result.stdout.strip()
-    if state not in {"enabled", "absent", "removed"}:
+    if state not in {"enabled", "absent", "removed", "created"}:
         raise ProbeError("exact_route_state_unexpected")
     return state
 
@@ -303,7 +306,8 @@ class Browser:
             parsed = urlsplit(url)
             path = parsed.path
             if f"{parsed.scheme}://{parsed.netloc}" == ISSUER and (
-                path == REGISTRATION or VERIFICATION_START.fullmatch(path) or VERIFICATION_DONE.fullmatch(path)
+                path in (REGISTRATION, PASSWORD_AUTH)
+                or VERIFICATION_START.fullmatch(path) or VERIFICATION_DONE.fullmatch(path)
             ):
                 self.responses.setdefault(path, []).append(
                     (int(params.get("response", {}).get("status", 0)), request_id)
@@ -355,7 +359,7 @@ class Browser:
         """
 
         parsed = urlsplit(url)
-        if f"{parsed.scheme}://{parsed.netloc}" not in {LOGIN_ORIGIN, ISSUER}:
+        if f"{parsed.scheme}://{parsed.netloc}" not in {LOGIN_ORIGIN, ISSUER, ACCOUNT_ORIGIN}:
             raise ProbeError("unexpected_navigation_origin")
         self.call("Page.navigate", {"url": url})
 
@@ -378,6 +382,12 @@ class Browser:
         """Refuse to type credentials on any other origin. / 拒绝向其他来源输入凭据。"""
 
         if self.evaluate("location.origin") != LOGIN_ORIGIN:
+            raise ProbeError("first_party_origin_mismatch")
+
+    def require_account_origin(self) -> None:
+        """Type a recovery code only on the reviewed staging Account Center."""
+
+        if self.evaluate("location.origin") != ACCOUNT_ORIGIN:
             raise ProbeError("first_party_origin_mismatch")
 
     def fill(self, selector: str, value: str) -> None:
@@ -460,7 +470,11 @@ class Browser:
                 self.process.wait(timeout=5)
 
 
-def registration(run_dir: Path, address: str = ALIAS) -> None:
+def registration(
+    run_dir: Path, address: str = ALIAS, *,
+    credential: tuple[str, str] | None = None,
+    code_source: Callable[[float], str] | None = None,
+) -> None:
     """Complete normal first-party registration, then remove route before OTP submit.
 
     中文：完成正常第一方注册，并在提交验证码前移除路由。
@@ -476,7 +490,8 @@ def registration(run_dir: Path, address: str = ALIAS) -> None:
         time.sleep(60)
         if route(address=address) != "enabled":
             raise ProbeError("exact_route_changed_during_settle")
-        username, password = generate_credential()
+        username, password = credential if credential is not None else generate_credential()
+        decoded_credential({"username": username, "password": password, "address": address})
         store_credential(run_dir, username, password, address)
         browser = Browser(run_dir / "registration-browser")
         browser.navigate(f"{LOGIN_ORIGIN}/register")
@@ -499,8 +514,11 @@ def registration(run_dir: Path, address: str = ALIAS) -> None:
         if started != 201:
             raise ProbeError(f"verification_start_http_{started}")
         challenge_started = time.monotonic()
-        print("registration_created_verification_started; inspect private MIME and enter code once")
-        code = getpass.getpass("Vetted eight-digit OTP (hidden): ").strip()
+        if code_source is None:
+            print("registration_created_verification_started; inspect private MIME and enter code once")
+            code = getpass.getpass("Vetted eight-digit OTP (hidden): ").strip()
+        else:
+            code = code_source(challenge_started).strip()
         if not re.fullmatch(r"[0-9]{8}", code):
             raise ProbeError("otp_shape_invalid")
         if time.monotonic() - challenge_started >= 9 * 60:

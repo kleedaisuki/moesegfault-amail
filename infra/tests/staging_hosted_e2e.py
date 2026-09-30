@@ -75,6 +75,18 @@ def semantic_requested() -> bool:
     return value == "1"
 
 
+def isolation_requested() -> bool:
+    """Require a second literal confirmation before adding principal B."""
+
+    value = os.environ.get("AMAIL_STAGING_ISOLATION_E2E", "0")
+    if value not in ("0", "1"):
+        raise HostedProbeError("isolation_switch_invalid")
+    if value == "1" and os.environ.get("AMAIL_STAGING_ISOLATION_CONFIRM") != \
+            "RUN_STAGING_TWO_PRINCIPAL_ISOLATION":
+        raise HostedProbeError("isolation_confirmation_missing")
+    return value == "1"
+
+
 def unique_auth_home(run_dir: Path) -> Path:
     """Select only the fresh home created by this run's successful native login."""
 
@@ -106,6 +118,7 @@ def execute() -> bool:
 
     username, password = validate_environment()
     semantic = semantic_requested()
+    isolation = isolation_requested()
     nonce = recoverable_run_nonce(password)
     if TEMP != ROOT / ".temp":
         raise HostedProbeError("repo_temp_redirected")
@@ -121,11 +134,39 @@ def execute() -> bool:
         shutil.copy2(BUILT_BINARY, binary)
         try:
             store_credential(run_dir, username, password)
-            del username, password
             native_login(run_dir, binary)
         except ProbeError as error:
             raise HostedProbeError(f"identity_{safe_stage_code(error)}") from None
         home = unique_auth_home(run_dir)
+        home_b = None
+        if isolation:
+            from staging_second_principal import ADDRESS, FIRST, identity_contacts
+            username_b = os.environ.pop("STAGING_E2E_B_USERNAME", "")
+            password_b = os.environ.pop("STAGING_E2E_B_PASSWORD", "")
+            if username_b == username or password_b == password:
+                raise HostedProbeError("principal_credentials_not_distinct")
+            run_b = run_dir / "principal-b"
+            run_b.mkdir()
+            try:
+                store_credential(run_b, username_b, password_b, ADDRESS)
+                native_login(run_b, binary, expected_address=ADDRESS)
+            except ProbeError as error:
+                raise HostedProbeError(f"identity_b_{safe_stage_code(error)}") from None
+            home_b = unique_auth_home(run_b)
+            try:
+                contacts = identity_contacts(os.environ["CLOUDFLARE_ACCOUNT_ID"],
+                                             os.environ["CLOUDFLARE_API_TOKEN"])
+            except Exception:
+                raise HostedProbeError("independent_subject_readback_failed") from None
+            if (FIRST not in contacts or ADDRESS not in contacts
+                    or contacts[FIRST][2] != "verified" or contacts[ADDRESS][2] != "verified"
+                    or contacts[FIRST][3] != username or contacts[ADDRESS][3] != username_b
+                    or not contacts[FIRST][1] or not contacts[ADDRESS][1]
+                    or contacts[FIRST][0] == contacts[ADDRESS][0]
+                    or contacts[FIRST][1] == contacts[ADDRESS][1]):
+                raise HostedProbeError("independent_subject_unverified")
+            del username_b, password_b
+        del username, password
 
         # The SMTP harness receives this bearer capability, but its CLI child
         # processes use a strict environment allowlist and never inherit it.
@@ -139,6 +180,8 @@ def execute() -> bool:
             ]
             if semantic:
                 sys.argv.append("--check-semantic")
+            if home_b is not None:
+                sys.argv.extend(("--isolation-home", str(home_b)))
             try:
                 outcome = staging_mail_e2e.main()
             except staging_mail_e2e.ProbeFailure as error:
@@ -173,10 +216,13 @@ def main() -> int:
     except Exception:
         print("staging_hosted_e2e_failed:unexpected_failure", file=sys.stderr)
         return 1
-    print(
-        "staging_hosted_native_login_inbound_and_semantic_verified"
-        if semantic else "staging_hosted_native_login_and_inbound_mail_verified"
-    )
+    if isolation_requested():
+        print("staging_hosted_two_principal_mail_isolation_verified")
+    else:
+        print(
+            "staging_hosted_native_login_inbound_and_semantic_verified"
+            if semantic else "staging_hosted_native_login_and_inbound_mail_verified"
+        )
     return 0
 
 

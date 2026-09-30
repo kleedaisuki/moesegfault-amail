@@ -1,6 +1,8 @@
 # Hosted two-principal mailbox isolation acceptance
 
-Status (2026-09-30): **design only**. No second Identity principal, route, login, mail, or hosted isolation run is established by this document. Run the first ordinary SMTP-to-ZIP staging acceptance and reconcile its exact run-owned alias before enabling this extension. The existing ten-address campaign in [`staging-address-isolation-e2e.md`](staging-address-isolation-e2e.md) remains a separate, higher-mutation quota/routing test.
+Status (2026-09-30): **opt-in hosted source implemented; live two-principal run not performed**. No second Identity principal, route, login, or hosted isolation result is established by this document. The first ordinary SMTP-to-ZIP staging acceptance passed separately; its exact run-owned alias was reconciled. The existing ten-address campaign in [`staging-address-isolation-e2e.md`](staging-address-isolation-e2e.md) remains a separate, higher-mutation quota/routing test.
+
+Once B is provisioned, dispatch the existing `staging-e2e` target with `confirm=RUN_STAGING_E2E`, `isolation=true`, and the **independent** `isolation_confirm=RUN_STAGING_TWO_PRINCIPAL_ISOLATION`. The B credential comes from repository-level `STAGING_E2E_B_USERNAME`/`STAGING_E2E_B_PASSWORD` Secrets and is never copied into A's home. The hosted wrapper completes B's separate native PKCE login, restricted Identity D1 readback of two verified and distinct pairwise subjects bound to the two protected CLI login usernames, and B's empty mailbox/address preflight **before A address creation**. `staging_mail_e2e` then passes B's home to `staging_two_principal_isolation.assert_foreign_isolation` only after A's existing real SMTP→ZIP and search positives, before A marks/deletes. No extra route or SMTP message is submitted. A negative failure still enters the original A fixture/address cleanup; never blindly replay a failed live run.
 
 ## Decision
 

@@ -1055,6 +1055,7 @@ def main() -> int:
     parser.add_argument("--home", required=True)
     parser.add_argument("--amail", required=True)
     parser.add_argument("--check-semantic", action="store_true")
+    parser.add_argument("--isolation-home", help="separate native B home; adds no SMTP or route")
     args = parser.parse_args()
     check(args.confirm_staging, "staging_confirmation_required")
     home, binary = inside_temp(args.home), inside_temp(args.amail)
@@ -1071,6 +1072,10 @@ def main() -> int:
     env = cli_env(home)
     status = amail(binary, env, "auth", "status", failure="auth_status_failed")
     check(len(status) == 1 and status[0].get("authenticated") is True, "not_authenticated")
+    isolation_home = inside_temp(args.isolation_home) if args.isolation_home else None
+    if isolation_home is not None:
+        from staging_two_principal_isolation import assert_b_ready
+        assert_b_ready(binary, home, isolation_home)
     # A hosted run may crash before cleanup. The protected synthetic password
     # plus run ID/attempt can reconstruct only its alias for exact-rule
     # reconciliation, without publishing the address; local probes stay random.
@@ -1148,6 +1153,14 @@ def main() -> int:
         print("smtp_to_zip_verified")
 
         search_cases(binary, env, address, rich_oracle, rich_row)
+        if isolation_home is not None:
+            from staging_two_principal_isolation import assert_foreign_isolation
+            assert_foreign_isolation(
+                binary, home, isolation_home, address, target, distractor_id,
+                (rich_oracle["subject"], distractor_oracle["subject"]),
+                rich_oracle["provider_message_id"], zone, routing_token,
+            )
+            print("two_principal_mail_isolation_verified")
         if args.check_semantic:
             semantic_cases(
                 binary, env, address, nonce, rich_row, rich_oracle,

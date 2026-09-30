@@ -38,6 +38,28 @@ class HostedHarnessSafetyTests(unittest.TestCase):
                 HARNESS.semantic_requested()
         self.assertEqual(str(caught.exception), "semantic_confirmation_invalid")
 
+    def test_isolation_requires_independent_literal_confirmation(self) -> None:
+        """A's SMTP confirmation cannot authorize B identity or ID operations."""
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(HARNESS.isolation_requested())
+        with patch.dict(os.environ, {"AMAIL_STAGING_ISOLATION_E2E": "1"}, clear=True):
+            with self.assertRaises(HARNESS.HostedProbeError) as caught:
+                HARNESS.isolation_requested()
+        self.assertEqual(str(caught.exception), "isolation_confirmation_missing")
+        with patch.dict(os.environ, {
+            "AMAIL_STAGING_ISOLATION_E2E": "1",
+            "AMAIL_STAGING_ISOLATION_CONFIRM": "RUN_STAGING_TWO_PRINCIPAL_ISOLATION",
+        }, clear=True):
+            self.assertTrue(HARNESS.isolation_requested())
+
+    def test_identity_readback_binds_b_login_to_b_contact(self) -> None:
+        """Different contact principals alone cannot prove the B CLI session."""
+
+        source = (HARNESS.ROOT / "infra/tests/staging_hosted_e2e.py").read_text(encoding="utf-8")
+        self.assertIn("contacts[FIRST][3] != username", source)
+        self.assertIn("contacts[ADDRESS][3] != username_b", source)
+
     def test_manual_workflow_wires_default_off_semantic_input(self) -> None:
         """A reviewer must be able to dispatch the optional stage explicitly."""
 
