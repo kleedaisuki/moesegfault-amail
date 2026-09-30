@@ -273,3 +273,42 @@ until the new escrow is migrated, permission-tested, encrypted-roundtrip-tested
 and independently accepted. Do not shorten retention, silently use D1 as an
 unimplemented fallback, register a source YAML as proof of running monitoring,
 create a new key, or dispatch a quota campaign while these gates remain open.
+
+## First dormant implementation slice
+
+The additive staging-only create-once schema is
+`infra/deploy/staging-acceptance-migrations/0001_quota_escrow.sql`, intentionally
+outside the public Mail migration stream. It creates only two operations tables,
+namespace indexes and constraints/triggers: one outstanding writing/sealed/armed
+record, insert-only parent identity/chunks, immutable artifact attachment,
+forward-only lifecycle, declared complete chunk sizes, all-nonpurged budget,
+receipt-gated chunk removal and permanent parent receipts. No production/tenant
+schema, TTL, migration helper or runtime Worker binding is changed. The logical
+16 MB reservation includes declared base64 payload plus conservative chunk/
+parent metadata allowances; it is not an exact SQLite physical-page estimate.
+
+`staging_ten_address_escrow.py` exposes fixed staging-only operations SQL, not a
+DB selector or general query surface. It authenticates the existing encrypted
+manifest before extracting public coordinates, inserts exact ciphertext slices
+once, rejects conflicting values, bounds each query/body/result, compares full
+namespaced DDL before row access, exhausts count/index/length/digest/canonical
+base64 chunks and repeats complete authenticated readback before sealing.
+Partial writes are retained. Existing sealed identical content can be read as
+durability evidence, never as lost arm acknowledgement. Artifact ID attachment
+is insert-once/equal-only. `arm` requires current-invocation response changes=1
+and subsequent complete authenticated readback; ambiguous write, zero-change,
+foreign identity or already-armed state never returns a permit.
+
+The adapter has **no terminal receipt, purge, acknowledgement, alias/DELETE or
+watchdog capability** in this first slice. It is not wired into the acceptance
+workflow and cannot replace its current 30-day immutable artifact readback.
+Real migrations, D1 permission/latency/schema readback, alert/intake proof and full
+wrapper receipt/recovery integration remain unimplemented live prerequisites.
+The budget and terminal constraints do not themselves prove actual recovery.
+
+Hosted synthetic fixtures use isolated in-memory SQLite and synthetic envelopes;
+no local tests or live migration were executed. The explicit pinned real AES-GCM
+CI check now also exercises its actual ciphertext through this in-memory escrow
+insert/seal/readback/arm boundary. Missing library still fails, never skips. This
+closes only a source integration test once its containing CI passes, not actual
+Cloudflare D1 behavior, migration acceptance, accountable escalation or quota.
