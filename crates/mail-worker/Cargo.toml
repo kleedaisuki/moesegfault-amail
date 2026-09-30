@@ -24,6 +24,7 @@ jsonwebtoken = { version = "10", default-features = false, features = ["rust_cry
 url = "2"
 uuid = { version = "1", features = ["v4", "js"] }
 sha2 = "0.10"
+hmac = "0.12"
 percent-encoding = "2"
 subtle = "2"
 email_address = "0.2"

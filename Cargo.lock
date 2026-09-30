@@ -129,6 +129,7 @@ dependencies = [
  "css-inline",
  "email_address",
  "getrandom 0.2.17",
+ "hmac",
  "html2text 0.16.7",
  "js-sys",
  "jsonwebtoken 10.4.0",

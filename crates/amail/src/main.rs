@@ -23,7 +23,10 @@ const SEMANTIC_PRIVACY_NOTICE: &str = concat!(
     "Privacy: Active received and sent mail subjects plus bounded body-text excerpts ",
     "(combined first 12,000 UTF-8 bytes) are sent to OpenRouter and its model provider ",
     "for background semantic indexing, even if --semantic is never used. ",
-    "--semantic also sends the search query. AMAIL_TELEMETRY=off does not disable indexing."
+    "--semantic also sends the search query. A multi-page semantic search keeps its query ",
+    "text and exact query vector in owner-scoped server state for up to 24 hours; ",
+    "later pages reuse that vector without another provider call. ",
+    "AMAIL_TELEMETRY=off does not disable indexing or this server retention."
 );
 
 /// Compact JSONL by default; `--human` opts into readable formatting.
@@ -705,6 +708,7 @@ mod tests {
                 "background semantic indexing",
                 "even if --semantic is never used",
                 "--semantic also sends the search query",
+                "up to 24 hours",
                 "AMAIL_TELEMETRY=off does not disable indexing",
             ] {
                 assert!(output.contains(phrase), "missing {phrase} from {args:?}");

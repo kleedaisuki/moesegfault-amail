@@ -1,5 +1,6 @@
 //! Owner-scoped, resumable exact search. / 按所有者隔离、可续扫的精确检索。
 
+use hmac::{Hmac, Mac};
 use std::collections::HashMap;
 
 use super::*;
@@ -128,6 +129,111 @@ fn check_semantic_state(
     check_vector(cursor, &actual)
 }
 
+/// Float equality is too weak for an exact rank contract: +0 and -0 have different bits.
+fn same_vector(left: &[f32], right: &[f32]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(a, b)| a.to_bits() == b.to_bits())
+}
+
+/// Authenticate the complete v5 rank boundary with a key kept only in its origin job.
+/// Fields use fixed-width little-endian integers and length-prefixed UTF-8 where needed.
+fn cursor_mac(
+    cursor: &SearchCursor,
+    model: &str,
+    input_version: u32,
+    key: &str,
+) -> AppResult<String> {
+    let secret = URL_SAFE_NO_PAD.decode(key).map_err(|_| stale())?;
+    if secret.len() != 32 {
+        return Err(stale());
+    }
+    let score = cursor.last_score_bits.ok_or_else(stale)?;
+    let digest = cursor.vector_commitment.as_deref().ok_or_else(stale)?;
+    let origin = cursor.origin_job_id.as_deref().ok_or_else(stale)?;
+    let id_len = u32::try_from(cursor.last_id.len()).map_err(|_| stale())?;
+    let model_len = u32::try_from(model.len()).map_err(|_| stale())?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(&secret).map_err(|_| stale())?;
+    mac.update(b"amail-semantic-cursor-v5\0");
+    mac.update(&[cursor.version]);
+    mac.update(cursor.hash.as_bytes());
+    mac.update(&cursor.high_water.to_le_bytes());
+    mac.update(&cursor.generation.to_le_bytes());
+    mac.update(&cursor.last_time.to_le_bytes());
+    mac.update(&id_len.to_le_bytes());
+    mac.update(cursor.last_id.as_bytes());
+    mac.update(&score.to_le_bytes());
+    mac.update(digest.as_bytes());
+    mac.update(origin.as_bytes());
+    mac.update(&model_len.to_le_bytes());
+    mac.update(model.as_bytes());
+    mac.update(&input_version.to_le_bytes());
+    Ok(format!("{:x}", mac.finalize().into_bytes()))
+}
+
+/// Load a cursor origin without revealing whether another account owns its UUID.
+async fn origin_state(
+    database: &D1Database,
+    user: &Principal,
+    cursor: &SearchCursor,
+) -> AppResult<(SearchState, i64)> {
+    let id = cursor.origin_job_id.as_deref().ok_or_else(stale)?;
+    let row = load_job(database, user, id).await.map_err(|error| {
+        if error.status == 404 {
+            AppError::conflict("search_cursor_stale")
+        } else {
+            error
+        }
+    })?;
+    if row.expires_at <= now() || row.state == "expired" {
+        return Err(AppError {
+            status: 410,
+            code: "search_cursor_expired",
+        });
+    }
+    if row.state != "done" || row.current_generation != cursor.generation {
+        return Err(AppError::conflict("search_cursor_stale"));
+    }
+    let input: SearchRequest = serde_json::from_str(&row.request_json).map_err(|_| stale())?;
+    let state: SearchState = serde_json::from_str(&row.state_json).map_err(|_| stale())?;
+    if input.cursor.is_some()
+        || input.semantic.is_none()
+        || !state.is_origin
+        || state.origin_job_id.as_deref() != Some(id)
+        || state.generation != cursor.generation
+        || state.high_water != cursor.high_water
+        || state.query_input_version != Some(QUERY_INPUT_VERSION)
+        || query_hash(&input, user)? != cursor.hash
+        || state.vector_commitment != cursor.vector_commitment
+    {
+        return Err(AppError::conflict("search_cursor_stale"));
+    }
+    check_semantic_state(None, &cursor.hash, &state).map_err(|_| stale())?;
+    Ok((state, row.expires_at))
+}
+
+/// Verify a v5 token before admission or any row scan, then return the exact origin vector.
+async fn verified_origin(
+    database: &D1Database,
+    user: &Principal,
+    cursor: &SearchCursor,
+) -> AppResult<(SearchState, i64)> {
+    let (state, expires_at) = origin_state(database, user, cursor).await?;
+    let expected = cursor_mac(
+        cursor,
+        state.query_model.as_deref().ok_or_else(stale)?,
+        state.query_input_version.ok_or_else(stale)?,
+        state.cursor_key.as_deref().ok_or_else(stale)?,
+    )?;
+    let provided = cursor.cursor_mac.as_deref().ok_or_else(stale)?;
+    if provided.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() != 1 {
+        return Err(AppError::bad("invalid_cursor"));
+    }
+    Ok((state, expires_at))
+}
+
 fn decode_cursor(
     input: &SearchRequest,
     hash: &str,
@@ -175,7 +281,26 @@ fn decode_cursor_at(
                         .bytes()
                         .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
             }) => {}
+        (5, true)
+            if cursor.vector_commitment.as_ref().is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            }) && cursor
+                .origin_job_id
+                .as_deref()
+                .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+                && cursor.cursor_mac.as_ref().is_some_and(|mac| {
+                    mac.len() == 64
+                        && mac
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                }) => {}
         _ => return Err(AppError::bad("invalid_cursor")),
+    }
+    if cursor.version != 5 && (cursor.origin_job_id.is_some() || cursor.cursor_mac.is_some()) {
+        return Err(AppError::bad("invalid_cursor"));
     }
     if cursor.generation != generation {
         return Err(AppError::conflict("search_cursor_stale"));
@@ -236,6 +361,12 @@ pub(super) async fn search(
     let hash = query_hash(&input, user)?;
     let cursor = decode_cursor(&input, &hash, epoch)?;
     let semantic = input.semantic.is_some();
+    // A v5 continuation obtains its scored vector before any quota or provider work.
+    let origin = if let Some(cursor) = cursor.as_ref().filter(|cursor| cursor.version == 5) {
+        Some(verified_origin(&database, user, cursor).await?)
+    } else {
+        None
+    };
     let mut state = SearchState {
         high_water: cursor.as_ref().map_or_else(|| now() + 1, |c| c.high_water),
         generation: epoch,
@@ -245,9 +376,21 @@ pub(super) async fn search(
             cursor.as_ref().map(|c| (c.last_time, c.last_id.clone()))
         },
         hits: Vec::new(),
-        query_vector: None,
-        query_model: None,
-        vector_commitment: None,
+        query_vector: origin
+            .as_ref()
+            .and_then(|(state, _)| state.query_vector.clone()),
+        query_model: origin
+            .as_ref()
+            .and_then(|(state, _)| state.query_model.clone()),
+        vector_commitment: origin
+            .as_ref()
+            .and_then(|(state, _)| state.vector_commitment.clone()),
+        origin_job_id: cursor
+            .as_ref()
+            .and_then(|cursor| cursor.origin_job_id.clone()),
+        is_origin: semantic && cursor.is_none(),
+        query_input_version: semantic.then_some(QUERY_INPUT_VERSION),
+        cursor_key: None,
     };
     if !semantic && expensive(&input) {
         reserve_search_work(&database, user).await?;
@@ -288,12 +431,25 @@ pub(super) async fn search(
     }
     let id = uuid::Uuid::new_v4().to_string();
     let created = now();
+    if state.is_origin {
+        let mut key = [0_u8; 32];
+        getrandom::getrandom(&mut key).map_err(|_| AppError {
+            status: 503,
+            code: "semantic_unavailable",
+        })?;
+        state.origin_job_id = Some(id.clone());
+        state.cursor_key = Some(URL_SAFE_NO_PAD.encode(key));
+    }
+    let expires = origin.as_ref().map_or(created + JOB_TTL_MS, |(_, until)| {
+        (created + JOB_TTL_MS).min(*until)
+    });
+    let preparing = semantic && origin.is_none();
     let inserted = database
         .prepare("INSERT INTO search_jobs(id,owner_iss,owner_sub,request_json,state_json,state,created_at,expires_at) SELECT ?1,?2,?3,?4,?5,?6,?7,?8 WHERE (SELECT COUNT(*) FROM search_jobs WHERE owner_iss=?2 AND owner_sub=?3 AND state IN ('preparing','running','advancing') AND expires_at>?7)<?9 AND (SELECT COUNT(*) FROM search_jobs WHERE owner_iss=?2 AND owner_sub=?3 AND state IN ('preparing','running','advancing','done','stale') AND expires_at>?7)<?10 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?2 AND owner_sub=?3),0)=?11")
         .bind(&[
             bind_str(&id), bind_str(&user.iss), bind_str(&user.sub), bind_str(&request_json),
             bind_str(&serde_json::to_string(&state).map_err(|_| AppError::bad("invalid_search"))?),
-            bind_str(if semantic {"preparing"} else {"running"}), bind_num(created), bind_num(created + JOB_TTL_MS), bind_num(JOB_LIMIT), bind_num(JOB_TOTAL_LIMIT),bind_num(epoch),
+            bind_str(if preparing {"preparing"} else {"running"}), bind_num(created), bind_num(expires), bind_num(JOB_LIMIT), bind_num(JOB_TOTAL_LIMIT),bind_num(epoch),
         ])?
         .run()
         .await?;
@@ -309,7 +465,16 @@ pub(super) async fn search(
     if !semantic {
         return running(&id, request_id);
     }
-    if let Some(term) = input.semantic.as_deref() {
+    if origin.is_some() {
+        if let Err(error) = reserve_search_work(&database, user).await {
+            if let Ok(query) = database.prepare("DELETE FROM search_jobs WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='running'")
+                .and_then(|query| query.bind(&[bind_str(&id),bind_str(&user.iss),bind_str(&user.sub)])) {
+                let _ = query.run().await;
+            }
+            return Err(error);
+        }
+    }
+    if let Some(term) = input.semantic.as_deref().filter(|_| origin.is_none()) {
         let prepared: AppResult<()> = async {
             // Reserve the D1 slot and daily provider budget before any billable call.
             // 任何可计费调用之前，先原子预留 D1 任务槽和每日供应商额度。
@@ -353,8 +518,8 @@ pub(super) async fn search(
     }
     let result = advance(env, user, &id, request_id).await;
     match result {
-        Ok((response, completed)) => {
-            if completed {
+        Ok((response, completed, retain_origin)) => {
+            if completed && !retain_origin {
                 // A fast POST never exposed its job ID; retain no query copy after its response.
                 // 快速 POST 不暴露任务 ID；应答后不保留查询副本。
                 let _ = database
@@ -388,7 +553,7 @@ pub(super) async fn poll(
     }
     advance(env, user, id, request_id)
         .await
-        .map(|(response, _)| response)
+        .map(|(response, _, _)| response)
 }
 
 async fn load_job(database: &D1Database, user: &Principal, id: &str) -> AppResult<SearchJobRow> {
@@ -474,10 +639,10 @@ async fn advance(
     user: &Principal,
     id: &str,
     request_id: &str,
-) -> AppResult<(Response, bool)> {
+) -> AppResult<(Response, bool, bool)> {
     let database = db(env)?;
     let Some(row) = claim(&database, user, id).await? else {
-        return Ok((running(id, request_id)?, false));
+        return Ok((running(id, request_id)?, false, false));
     };
     if row.state == "done" {
         let input: SearchRequest = serde_json::from_str(&row.request_json).map_err(|_| stale())?;
@@ -499,7 +664,8 @@ async fn advance(
             scrub_done(&database, id, row.version).await;
             return Err(stale());
         }
-        return Ok((Response::from_json(&result)?, true));
+        let retain_origin = state.is_origin && state.query_vector.is_some();
+        return Ok((Response::from_json(&result)?, true, retain_origin));
     }
     let work = advance_claimed(&database, user, &row, request_id).await;
     if let Err(error) = &work {
@@ -513,7 +679,7 @@ async fn advance_claimed(
     user: &Principal,
     row: &SearchJobRow,
     request_id: &str,
-) -> AppResult<(Response, bool)> {
+) -> AppResult<(Response, bool, bool)> {
     let input: SearchRequest = serde_json::from_str(&row.request_json).map_err(|_| stale())?;
     let mut state: SearchState = serde_json::from_str(&row.state_json).map_err(|_| stale())?;
     if generation(database, user).await? != state.generation {
@@ -523,6 +689,17 @@ async fn advance_claimed(
     let cursor = decode_cursor(&input, &hash, state.generation)?;
     if input.semantic.is_some() {
         check_semantic_state(cursor.as_ref(), &hash, &state)?;
+        if let Some(cursor) = cursor.as_ref().filter(|cursor| cursor.version == 5) {
+            let (origin, _) = verified_origin(database, user, cursor).await?;
+            if !origin
+                .query_vector
+                .as_deref()
+                .zip(state.query_vector.as_deref())
+                .is_some_and(|(left, right)| same_vector(left, right))
+            {
+                return Err(stale());
+            }
+        }
     }
     let previous_marker = state.marker.clone();
     let complete = scan_batch(database, user, &input, &mut state, cursor.as_ref()).await?;
@@ -540,16 +717,41 @@ async fn advance_claimed(
         if generation(database, user).await? != state.generation {
             return Err(stale());
         }
-        state.query_vector = None;
+        let retain_origin = state.is_origin && result["next_cursor"].is_string();
+        if !retain_origin {
+            state.query_vector = None;
+            state.cursor_key = None;
+        }
         let serialized = serde_json::to_string(&state).map_err(|_| stale())?;
+        let sql = if cursor.as_ref().is_some_and(|cursor| cursor.version == 5) {
+            "UPDATE search_jobs SET state='done',state_json=?1,version=version+1,lease_started_at=NULL WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='advancing' AND version=?5 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?6 AND EXISTS (SELECT 1 FROM search_jobs origin WHERE origin.id=?7 AND origin.owner_iss=?3 AND origin.owner_sub=?4 AND origin.state='done' AND origin.expires_at>?8)"
+        } else {
+            "UPDATE search_jobs SET state='done',state_json=?1,version=version+1,lease_started_at=NULL WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='advancing' AND version=?5 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?6"
+        };
+        let mut binds = vec![
+            bind_str(&serialized),
+            bind_str(&row.id),
+            bind_str(&user.iss),
+            bind_str(&user.sub),
+            bind_num(row.version),
+            bind_num(state.generation),
+        ];
+        if let Some(cursor) = cursor.as_ref().filter(|cursor| cursor.version == 5) {
+            binds.push(bind_str(cursor.origin_job_id.as_deref().ok_or_else(stale)?));
+            binds.push(bind_num(now()));
+        }
         let changed = database
-            .prepare("UPDATE search_jobs SET state='done',state_json=?1,version=version+1,lease_started_at=NULL WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='advancing' AND version=?5 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?6")
-            .bind(&[bind_str(&serialized),bind_str(&row.id),bind_str(&user.iss),bind_str(&user.sub),bind_num(row.version),bind_num(state.generation)])?
-            .run().await?.meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+            .prepare(sql)
+            .bind(&binds)?
+            .run()
+            .await?
+            .meta()?
+            .and_then(|meta| meta.changes)
+            .unwrap_or(0);
         if changed != 1 {
             return Err(stale());
         }
-        return Ok((Response::from_json(&result)?, true));
+        return Ok((Response::from_json(&result)?, true, retain_origin));
     }
     let serialized = serde_json::to_string(&state).map_err(|_| stale())?;
     let changed = database
@@ -559,7 +761,7 @@ async fn advance_claimed(
     if changed != 1 {
         return Err(stale());
     }
-    Ok((running(&row.id, request_id)?, false))
+    Ok((running(&row.id, request_id)?, false, false))
 }
 
 /// One invocation examines an ordered prefix, checkpointing only fully processed rows. / 每次调用扫描一个有序前缀，只检查点化完整处理过的记录。
@@ -702,8 +904,15 @@ async fn result_page(
     hits.truncate(limit);
     let next_cursor = if has_more {
         let last = hits.last().ok_or_else(stale)?;
-        let cursor = SearchCursor {
-            version: if input.semantic.is_some() { 4 } else { 3 },
+        let semantic_v5 = input.semantic.is_some() && state.origin_job_id.is_some();
+        let mut cursor = SearchCursor {
+            version: if semantic_v5 {
+                5
+            } else if input.semantic.is_some() {
+                4
+            } else {
+                3
+            },
             hash: hash.to_owned(),
             high_water: state.high_water,
             generation: state.generation,
@@ -715,7 +924,27 @@ async fn result_page(
             } else {
                 None
             },
+            origin_job_id: if semantic_v5 {
+                state.origin_job_id.clone()
+            } else {
+                None
+            },
+            cursor_mac: None,
         };
+        if semantic_v5 {
+            let key = if state.is_origin {
+                state.cursor_key.clone().ok_or_else(stale)?
+            } else {
+                let (origin, _) = origin_state(database, user, &cursor).await?;
+                origin.cursor_key.ok_or_else(stale)?
+            };
+            cursor.cursor_mac = Some(cursor_mac(
+                &cursor,
+                state.query_model.as_deref().ok_or_else(stale)?,
+                state.query_input_version.ok_or_else(stale)?,
+                &key,
+            )?);
+        }
         Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).map_err(|_| stale())?))
     } else {
         None
@@ -808,6 +1037,8 @@ mod tests {
             last_id: "synthetic-id".into(),
             last_score_bits: Some(0.9_f64.to_bits()),
             vector_commitment: Some(original.clone()),
+            origin_job_id: None,
+            cursor_mac: None,
         };
         let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).unwrap());
         let continued = SearchRequest {
@@ -830,6 +1061,10 @@ mod tests {
             query_vector: None,
             query_model: Some("model-a".into()),
             vector_commitment: Some(original.clone()),
+            origin_job_id: None,
+            is_origin: false,
+            query_input_version: None,
+            cursor_key: None,
         };
         let replay: SearchState =
             serde_json::from_slice(&serde_json::to_vec(&checkpoint).unwrap()).unwrap();
@@ -890,6 +1125,8 @@ mod tests {
                 last_id: "synthetic-id".into(),
                 last_score_bits: input.semantic.as_ref().map(|_| 0.5_f64.to_bits()),
                 vector_commitment: None,
+                origin_job_id: None,
+                cursor_mac: None,
             };
             let continued = SearchRequest {
                 cursor: Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).unwrap())),
@@ -926,6 +1163,8 @@ mod tests {
             last_id: "synthetic-id".into(),
             last_score_bits: Some(0.5_f64.to_bits()),
             vector_commitment: Some("a".repeat(64)),
+            origin_job_id: None,
+            cursor_mac: None,
         };
         for digest in [None, Some("bad".into()), Some("A".repeat(64))] {
             let cursor = SearchCursor {
@@ -953,6 +1192,128 @@ mod tests {
                 .code,
             "invalid_cursor"
         );
+    }
+
+    /// v5 signs the full boundary while preserving the exact origin-vector bits.
+    #[test]
+    fn semantic_v5_cursor_authenticates_rank_boundary() {
+        let user = Principal {
+            iss: "issuer".into(),
+            sub: "owner".into(),
+        };
+        let input = SearchRequest {
+            semantic: Some("meaning".into()),
+            limit: Some(1),
+            ..Default::default()
+        };
+        let hash = query_hash(&input, &user).unwrap();
+        let key = URL_SAFE_NO_PAD.encode([7_u8; 32]);
+        let mut cursor = SearchCursor {
+            version: 5,
+            hash: hash.clone(),
+            high_water: SYNTHETIC_NOW + 1,
+            generation: 3,
+            last_time: SYNTHETIC_NOW - 1,
+            last_id: "mail-a".into(),
+            last_score_bits: Some(0.75_f64.to_bits()),
+            vector_commitment: Some("a".repeat(64)),
+            origin_job_id: Some("00000000-0000-4000-8000-000000000001".into()),
+            cursor_mac: None,
+        };
+        let signed = cursor_mac(&cursor, "model-a", QUERY_INPUT_VERSION, &key).unwrap();
+        assert_eq!(signed.len(), 64);
+        cursor.cursor_mac = Some(signed.clone());
+        let continued = SearchRequest {
+            cursor: Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).unwrap())),
+            ..input
+        };
+        assert!(decode_cursor_at(&continued, &hash, 3, SYNTHETIC_NOW).is_ok());
+        for altered in [
+            SearchCursor {
+                last_score_bits: Some(0.74_f64.to_bits()),
+                ..cursor.clone()
+            },
+            SearchCursor {
+                last_time: SYNTHETIC_NOW - 2,
+                ..cursor.clone()
+            },
+            SearchCursor {
+                last_id: "mail-b".into(),
+                ..cursor.clone()
+            },
+            SearchCursor {
+                origin_job_id: Some("00000000-0000-4000-8000-000000000002".into()),
+                ..cursor.clone()
+            },
+        ] {
+            assert_ne!(
+                cursor_mac(&altered, "model-a", QUERY_INPUT_VERSION, &key).unwrap(),
+                signed
+            );
+        }
+        assert_ne!(
+            cursor_mac(&cursor, "model-b", QUERY_INPUT_VERSION, &key).unwrap(),
+            signed
+        );
+        assert_ne!(
+            cursor_mac(&cursor, "model-a", QUERY_INPUT_VERSION + 1, &key).unwrap(),
+            signed
+        );
+        assert!(!same_vector(&[0.0], &[-0.0]));
+    }
+
+    /// A v5 token without a valid origin reference or MAC never enters admission.
+    #[test]
+    fn malformed_semantic_v5_cursor_is_rejected() {
+        let user = Principal {
+            iss: "issuer".into(),
+            sub: "owner".into(),
+        };
+        let input = SearchRequest {
+            semantic: Some("meaning".into()),
+            ..Default::default()
+        };
+        let hash = query_hash(&input, &user).unwrap();
+        let base = SearchCursor {
+            version: 5,
+            hash: hash.clone(),
+            high_water: SYNTHETIC_NOW + 1,
+            generation: 0,
+            last_time: 1,
+            last_id: "mail-a".into(),
+            last_score_bits: Some(0.5_f64.to_bits()),
+            vector_commitment: Some("a".repeat(64)),
+            origin_job_id: Some("00000000-0000-4000-8000-000000000001".into()),
+            cursor_mac: Some("b".repeat(64)),
+        };
+        for altered in [
+            SearchCursor {
+                origin_job_id: None,
+                ..base.clone()
+            },
+            SearchCursor {
+                origin_job_id: Some("not-a-uuid".into()),
+                ..base.clone()
+            },
+            SearchCursor {
+                cursor_mac: None,
+                ..base.clone()
+            },
+            SearchCursor {
+                cursor_mac: Some("B".repeat(64)),
+                ..base.clone()
+            },
+        ] {
+            let request = SearchRequest {
+                semantic: input.semantic.clone(),
+                cursor: Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&altered).unwrap())),
+                ..Default::default()
+            };
+            let error = decode_cursor_at(&request, &hash, 0, SYNTHETIC_NOW)
+                .err()
+                .unwrap();
+            assert_eq!((error.status, error.code), (400, "invalid_cursor"));
+        }
     }
 
     /// Indexed list predicates stay free of daily write admission; broad Rust filters do not. / 可索引列表谓词免除每日写入准入，宽泛 Rust 过滤则不免除。

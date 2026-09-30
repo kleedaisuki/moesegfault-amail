@@ -1739,6 +1739,12 @@ struct SearchCursor {
     last_score_bits: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     vector_commitment: Option<String>,
+    /// The owner-scoped completed job holding the exact first-page query vector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin_job_id: Option<String>,
+    /// HMAC over every v5 pagination boundary field; the key stays in D1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cursor_mac: Option<String>,
 }
 
 /// Only rank keys, not message bodies, survive a continuation boundary. / 续扫边界只持久化排序键，不持久化邮件正文。
@@ -1772,6 +1778,18 @@ struct SearchState {
     /// A completed semantic job retains this binding, never its raw query vector.
     #[serde(default)]
     vector_commitment: Option<String>,
+    /// Every semantic page in a chain names its first-page origin.
+    #[serde(default)]
+    origin_job_id: Option<String>,
+    /// Only the first page may retain its query vector after completion.
+    #[serde(default)]
+    is_origin: bool,
+    /// Version of query-vector normalization and input semantics.
+    #[serde(default)]
+    query_input_version: Option<u32>,
+    /// Random per-origin HMAC key, never copied into later page jobs.
+    #[serde(default)]
+    cursor_key: Option<String>,
 }
 
 #[derive(Deserialize)]
