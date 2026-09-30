@@ -43,6 +43,14 @@ No local tests or builds were performed for implementation. This is a focused
 early guard, not a complete Actions schema/expression validator, not proof of
 deployment eligibility, and not a replacement for hosted execution and review.
 
+The first hosted guard run `36750216887` was itself rejected before jobs started:
+its plain `run` scalar contained `--only-binary=:all:` followed by a space. YAML
+interprets the final colon as mapping syntax. The install command now uses a
+literal block scalar. Regression fixtures explicitly parse the guard's source
+and compare this rejected plain scalar with its accepted block-scalar form.
+These tests run only after GitHub accepts the guard file; they do not remove the
+bootstrap limitation stated above. The corrected hosted run remains required.
+
 Sources:
 
 - [GitHub workflow syntax: workflow_dispatch inputs](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatchinputs): maximum 25 top-level inputs.

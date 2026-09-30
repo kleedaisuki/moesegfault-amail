@@ -2,7 +2,7 @@
 
 import unittest
 
-from check import WorkflowError, validate
+from check import WORKFLOWS, WorkflowError, validate
 
 
 def workflow(inputs: int, event: str = "workflow_dispatch") -> str:
@@ -13,6 +13,18 @@ def workflow(inputs: int, event: str = "workflow_dispatch") -> str:
 
 class WorkflowGuardTests(unittest.TestCase):
     """Catch the exact rejected workflow and YAML ambiguity independently."""
+
+    def test_guard_workflow_itself(self) -> None:
+        """Include the guard's own source in the hosted regression fixtures."""
+        validate((WORKFLOWS / "workflow-lint.yml").read_text(encoding="utf-8"))
+
+    def test_pip_colon_option_requires_block_scalar(self) -> None:
+        """A shell colon followed by space must not become YAML mapping syntax."""
+        header = "on: push\njobs:\n  check:\n    steps:\n"
+        command = "python -m pip install --only-binary=:all: -r requirements.txt"
+        with self.assertRaisesRegex(WorkflowError, "invalid YAML"):
+            validate(header + "      - run: " + command + "\n")
+        validate(header + "      - run: |\n          " + command + "\n")
 
     def test_dispatch_limit_inclusive(self) -> None:
         """The documented 25-input maximum remains accepted."""
