@@ -15,7 +15,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 BOUNDARY = ROOT / "infra/tests/worker-boundary"
-SUITES = {"core": ("test", 107), "entry": ("test:entry-split", 7),
+SUITES = {"core": ("test", 116), "entry": ("test:entry-split", 7),
           "liveness": ("test:maintenance-liveness", 6), "accepted": ("test:accepted-stage", 9),
           "routing": ("test:routing-deadline", 7), "embedding": ("test:embedding-deadline", 6),
           "diagnostics": ("test:maintenance-diagnostics", 13), "budget": ("test:outbound-budget", 1)}

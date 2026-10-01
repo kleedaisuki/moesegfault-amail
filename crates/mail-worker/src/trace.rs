@@ -58,6 +58,8 @@ pub(crate) struct Trace {
     request_bytes: Option<u64>,
     /// Invocation-owned safe records; no global request state.
     events: RefCell<Vec<QueuedEvent>>,
+    /// Authentication boundary only; never serialized into retained diagnostic records.
+    authenticated: bool,
 }
 
 /// The sole retained JSON schema. Adding a field requires a privacy review.
@@ -129,6 +131,7 @@ impl Trace {
             operation: Operation::Unknown,
             request_bytes: None,
             events: RefCell::new(Vec::new()),
+            authenticated: false,
         }
     }
 
@@ -140,6 +143,16 @@ impl Trace {
         self.trace_id = parent.trace_id;
         self.parent_span_id = Some(parent.span_id);
         self.sampled = parent.sampled;
+    }
+
+    /// Announcements follow successful user authentication, not health/internal admission.
+    pub(crate) fn authenticated(&mut self) {
+        self.authenticated = true;
+    }
+
+    /// Binding presence permits parser announcement, never proves Queue consumer readiness.
+    pub(crate) fn can_announce(&self, queue_bound: bool) -> bool {
+        self.authenticated && queue_bound
     }
 
     /// Set an operation from a closed set rather than from a URL segment.
@@ -400,6 +413,17 @@ fn bucket(value: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ordinary user authentication and the safe Queue boundary are both required to announce.
+    #[test]
+    fn capability_announcement_never_infers_authentication_or_queue_readiness() {
+        let mut trace = Trace::new();
+        assert!(!trace.can_announce(false));
+        assert!(!trace.can_announce(true));
+        trace.authenticated();
+        assert!(!trace.can_announce(false));
+        assert!(trace.can_announce(true));
+    }
 
     /// A 2xx body failure stays a failure; complete HTTP errors stay complete exchanges.
     #[test]

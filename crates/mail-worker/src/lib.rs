@@ -9,6 +9,7 @@ mod database;
 mod maintenance;
 mod platform;
 mod search_jobs;
+mod telemetry_read;
 mod trace;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -154,6 +155,12 @@ pub async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .headers_mut()
         .set("x-amail-request-id", &request_id)?;
     response.headers_mut().set("Cache-Control", "no-store")?;
+    if trace.can_announce(env.queue("TRACE_EVENTS").is_ok()) {
+        response.headers_mut().set(
+            amail_trace_schema::CAPABILITY_HEADER,
+            amail_trace_schema::ATTEMPT_CAPABILITY,
+        )?;
+    }
     trace.exit(
         &request_id,
         response.status_code(),
@@ -1178,6 +1185,7 @@ async fn dispatch(
         status: 401,
         code: "unauthorized",
     })?;
+    trace.authenticated();
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
     trace.accept_parent(req.headers().get("traceparent").ok().flatten().as_deref());
     trace.operation(operation_for(req.method(), &segments));
@@ -1245,6 +1253,16 @@ async fn dispatch(
         }
         (Method::Delete, ["v1", "messages", id]) => delete_message(&env, &user, id).await,
         (Method::Post, ["v1", "telemetry"]) => telemetry(&mut req, request_id, trace).await,
+        (Method::Post, ["v1", "telemetry", "attempts"]) => {
+            // Refuse before JSON parsing: no enrichment admission without the required safe sink boundary.
+            if env.queue("TRACE_EVENTS").is_err() {
+                return Err(AppError {
+                    status: 503,
+                    code: "service_unavailable",
+                });
+            }
+            telemetry_attempts(&mut req, request_id, trace).await
+        }
         _ => Err(AppError::not_found()),
     }
 }
@@ -1275,6 +1293,7 @@ fn operation_for(method: Method, segments: &[&str]) -> Operation {
         (Method::Patch, ["v1", "messages", _]) => Operation::MessagesMark,
         (Method::Delete, ["v1", "messages", _]) => Operation::MessagesDelete,
         (Method::Post, ["v1", "telemetry"]) => Operation::TelemetryUpload,
+        (Method::Post, ["v1", "telemetry", "attempts"]) => Operation::TelemetryUpload,
         _ => Operation::Unknown,
     }
 }
@@ -2982,11 +3001,36 @@ struct TelemetryBatch {
     events: Vec<TelemetryEvent>,
 }
 
+/// Preserve the historical platform JSON parser and acknowledgement contract.
 async fn telemetry(req: &mut Request, request_id: &str, trace: &Trace) -> AppResult<Response> {
     let batch: TelemetryBatch = req
         .json()
         .await
         .map_err(|_| AppError::bad("invalid_json"))?;
+    acknowledge_telemetry(batch, request_id, trace)
+}
+
+/// Enforce the closed attempts schema without the platform struct-field filter.
+/// serde-wasm-bindgen visits declared struct fields only, so deny_unknown_fields
+/// cannot reject unknown object keys through Request::json. Read the new route
+/// as bounded JSON bytes instead; never log the body or deserialize error text.
+/// The legacy route keeps its established parser rather than stricter admission.
+async fn telemetry_attempts(
+    req: &mut Request,
+    request_id: &str,
+    trace: &Trace,
+) -> AppResult<Response> {
+    let body = telemetry_read::read(req).await?;
+    let batch = serde_json::from_slice(&body).map_err(|_| AppError::bad("invalid_json"))?;
+    acknowledge_telemetry(batch, request_id, trace)
+}
+
+/// Both parsers share exact validation, safe reconstruction and existing ACK semantics.
+fn acknowledge_telemetry(
+    batch: TelemetryBatch,
+    request_id: &str,
+    trace: &Trace,
+) -> AppResult<Response> {
     if batch.events.len() > 100
         || batch.events.iter().any(|e| {
             trace::operation_from_cli(&e.operation).is_none()

@@ -2,6 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Exact additive response header; announcement is not authorization or Queue-delivery proof.
+pub const CAPABILITY_HEADER: &str = "x-amail-telemetry";
+/// Explicit parser contract understood by this client, never a guessed version range.
+pub const ATTEMPT_CAPABILITY: &str = "attempts-v1";
+/// An older strict server returns404 here before its legacy telemetry parser reads new fields.
+pub const ATTEMPT_UPLOAD_PATH: &str = "/v1/telemetry/attempts";
+
 /// The observed end of one attempt, not JSON interpretation or a whole command.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
