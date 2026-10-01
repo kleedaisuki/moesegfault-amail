@@ -54,6 +54,15 @@ do not retire the standalone Identity inbox or active native-tracing experiment.
   ambiguous write, rebuild a supposedly identical artifact silently, or turn a
   failed read into resource absence. Preserve held sending unless its separate
   release operation is explicitly admitted.
+  First held production bootstrap uses the protected CI
+  `production-fresh-bootstrap` target, not ordinary activation. See
+  `docs/fresh-mail-bootstrap-workstream.md` and
+  `docs/fresh-bootstrap-recovery.md`. The durable recovery workflow takes the
+  original protected run ID and observes immutable owned intent without replay;
+  it cannot create, adopt, activate, delete stores or emit a success receipt.
+  Initial admission refusal is diagnostic evidence only. Unknown submit versions
+  and failed provider reads never become absence. Cancelled creator runs and
+  expired artifacts are outside this bounded recovery admission.
 
 All runtime/cross-platform tests belong on GitHub Actions, not this developer
 machine. Local static syntax/diff work is fine. Keep task artifacts under root
