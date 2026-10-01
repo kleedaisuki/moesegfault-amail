@@ -258,6 +258,71 @@ def explore(actor: str, environment: dict[str, str], address: str, message: dict
     raise identity.ProbeError("automatic_semantic_index_not_ready")
 
 
+def owned_send_grant(actor: str, sender: str, recipient: str) -> None:
+    """Reuse the operator's one-use grant for only this owned two-user exchange.
+
+    Public sending remains held. Both exact aliases have already been confirmed
+    by their own native CLI sessions. No human mailbox or account is queried.
+    The adopted production database comes from the existing operator mapping,
+    never an ambient override or a hard-coded bootstrap UUID.
+    """
+    sys.path.insert(0, str(ROOT / "infra" / "operator"))
+    from send_control import DATABASES
+
+    database, issuer = DATABASES["production"]
+    require(issuer == REALM.issuer, "production_operator_issuer_mismatch")
+    account, token = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
+
+    def rows(sql: str, params: list[str]) -> list[dict]:
+        """Read one bounded, parameterized owned-resource query without logging."""
+        body = json.dumps({"sql": sql, "params": params}).encode()
+        response = inbox.json_result(inbox.request(
+            "POST", f"/accounts/{account}/d1/database/{database}/query", token, body))
+        batches = response.get("result")
+        require(isinstance(batches, list) and len(batches) == 1 and batches[0].get("success") is True,
+                "owned_grant_readback_failed")
+        result = batches[0].get("results")
+        require(isinstance(result, list) and len(result) <= 2, "owned_grant_query_shape_invalid")
+        return result
+
+    policy = rows("SELECT state FROM send_policy WHERE scope='global' AND owner_iss='*' AND owner_sub='*'", [])
+    require(len(policy) == 1 and policy[0].get("state") in ("held", "allowed"),
+            "production_global_policy_missing")
+    if policy[0]["state"] == "allowed":
+        return
+    require(os.environ.get("USER_JOURNEY_GRANT_CONFIRM") == "GRANT_OWNED_PRODUCTION_TWO_USER_SENDS",
+            "owned_two_user_grant_not_confirmed")
+    owners = rows("SELECT address,owner_iss,owner_sub,state FROM addresses WHERE address IN (?1,?2)",
+                  [sender, recipient])
+    require(len(owners) == 2 and {row.get("address") for row in owners} == {sender, recipient}
+            and all(row.get("owner_iss") == issuer and row.get("state") == "active"
+                    and isinstance(row.get("owner_sub"), str) and row["owner_sub"] for row in owners)
+            and len({row["owner_sub"] for row in owners}) == 2,
+            "dedicated_two_user_ownership_unverified")
+    owner = next(row["owner_sub"] for row in owners if row["address"] == sender)
+    # Run the existing auditable operator command once immediately before send.
+    # The workflow input is a root confirmation, never a raw recipient or subject.
+    environment = identity.browser_environment()
+    environment.update(INPUT_TARGET="production", INPUT_OWNER_SUB=owner,
+                       INPUT_RECIPIENT_SHA256=hashlib.sha256(recipient.lower().encode()).hexdigest(),
+                       INPUT_CASE_REF="owned_users_" + os.environ["GITHUB_RUN_ID"] + "_" + actor.lower(),
+                       GITHUB_ACTOR=os.environ["GITHUB_ACTOR"], CLOUDFLARE_ACCOUNT_ID=account,
+                       CLOUDFLARE_API_TOKEN=token)
+    result = subprocess.run([sys.executable, str(ROOT / "infra" / "operator" / "grant_canary.py")],
+                            env=environment, capture_output=True, text=True, timeout=45, check=False)
+    require(result.returncode == 0 and result.stdout.startswith("canary_grant=recorded target=production"),
+            "owned_single_send_grant_failed")
+    digest = environment["INPUT_RECIPIENT_SHA256"]
+    grant = rows("SELECT canary_owner_iss,canary_owner_sub,canary_recipient_sha256,canary_used_by "
+                 "FROM send_release_gates WHERE id=1 AND canary_expires_at>unixepoch()", [])
+    require(len(grant) == 1 and grant[0].get("canary_owner_iss") == issuer
+            and grant[0].get("canary_owner_sub") == owner
+            and grant[0].get("canary_recipient_sha256") == digest
+            and grant[0].get("canary_used_by") is None,
+            "owned_single_send_grant_readback_failed")
+    marker(f"actor_{actor.lower()}_existing_operator_single_send_grant_verified_global_held")
+
+
 def main() -> int:
     """Run exactly the dispatched normal-user phase, without implicit retries."""
     try:
@@ -278,6 +343,7 @@ def main() -> int:
             environment, address = sessions[sender]
             other_environment, other_address = sessions[recipient]
             archive, subject, attachment, filename, phrase = draft(sender, address, other_address, environment)
+            owned_send_grant(sender, address, other_address)
             cli(environment, "send", str(archive), "--idempotency-key", str(uuid.uuid4()))
             marker(f"actor_{sender.lower()}_normal_send_accepted")
             received = receive(recipient, other_environment, subject, attachment, filename, phrase)
