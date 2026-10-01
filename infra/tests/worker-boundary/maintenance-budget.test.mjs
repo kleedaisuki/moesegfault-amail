@@ -15,7 +15,7 @@ test("shared maintenance grant bounds accepted backlog and preserves later clean
   // invocation-only observer. The expected 379 remains a hypothesis until CI.
   assert.deepEqual(await d1Stats(), { statements: 0, individual: 0, batchCalls: 0, batchStatements: 0, unsupported: 0 });
   await tick();
-  assert.deepEqual(await d1Stats(), { statements: 379, individual: 364, batchCalls: 5, batchStatements: 15, unsupported: 0 });
+  assert.deepEqual(await d1Stats(), { statements: 379, individual: 34, batchCalls: 50, batchStatements: 345, unsupported: 0 });
   const { n } = await db.prepare("SELECT n FROM maintenance_chunk_audit").first();
   assert.equal(n, 5 * 66, "five maximum-valid texts consume their own grant, not the other phases'");
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM send_requests WHERE state='sent'").first()).n, 5);

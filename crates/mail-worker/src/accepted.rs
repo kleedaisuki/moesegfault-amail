@@ -4,7 +4,7 @@
 
 use crate::database::{Database, Statement};
 use wasm_bindgen::JsValue;
-use worker::{Error, Result};
+use worker::{D1Result, Error, Result};
 
 use crate::{archive::Draft, bind_num, bind_str, outbound_metadata, text_parts};
 
@@ -32,6 +32,10 @@ pub(crate) struct Projection<'a> {
 /// Token checks fence an older writer after reclaim, even if it is still alive.
 /// Durable leases use the platform clock, not a caller-supplied timestamp.
 const LEASE_MS: i64 = 20 * 60_000;
+
+/// Bound native staging round trips and transient bindings to eight text pieces.
+/// Each member still spends one statement token; only the binding calls shrink.
+const STAGE_BATCH_CHUNKS: usize = 8;
 
 /// The archive reservation and any legacy projection must belong to this journal.
 const OWNERSHIP: &str = "EXISTS (SELECT 1 FROM storage_reservations r
@@ -109,16 +113,43 @@ async fn stage(
         ON CONFLICT(message_id,chunk_index) DO UPDATE SET body=excluded.body",
         guard()
     );
-    for (index, chunk) in parts.iter().enumerate().skip(1) {
-        let mut values = projection.bindings(key, token);
-        values.extend([bind_num(index as i64), bind_str(chunk)]);
-        let result = db.prepare(&sql).bind(&values)?.run().await?;
-        if !result.success() {
-            return Err(pending());
-        }
-        // Equal-value UPSERT change counts are not an authority to stop a
-        // retry. This loop is bounded by the service-valid text-piece count;
-        // final completeness and journal fencing decide publication.
+    for (index, group) in parts[1..].chunks(STAGE_BATCH_CHUNKS).enumerate() {
+        let first = index * STAGE_BATCH_CHUNKS + 1;
+        let statements = stage_group(db, projection, key, token, &sql, first, group)?;
+        let results = db.batch(statements).await?;
+        validate_stage(&results, group.len())?;
+    }
+    Ok(())
+}
+
+/// Prepare only the current bounded group with one common lease-clock snapshot.
+/// Every member retains the exact journal/storage/tombstone SQL fence and index.
+fn stage_group(
+    db: &Database,
+    projection: &Projection<'_>,
+    key: &str,
+    token: &str,
+    sql: &str,
+    first: usize,
+    chunks: &[&str],
+) -> Result<Vec<Statement>> {
+    let common = projection.bindings_at(key, token, crate::now());
+    chunks
+        .iter()
+        .enumerate()
+        .map(|(index, chunk)| {
+            let mut values = common.clone();
+            values.extend([bind_num((first + index) as i64), bind_str(chunk)]);
+            db.prepare(sql).bind(&values)
+        })
+        .collect()
+}
+
+/// A rejected, malformed or ambiguous group cannot authorize publication.
+/// Equal-value/no-op change counts are not progress; final completeness decides.
+fn validate_stage(results: &[D1Result], expected: usize) -> Result<()> {
+    if results.len() != expected || results.iter().any(|result| !result.success()) {
+        return Err(pending());
     }
     Ok(())
 }

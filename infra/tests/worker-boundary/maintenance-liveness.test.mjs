@@ -61,6 +61,7 @@ async function backlog(db, bucket) {
 /** Completion means publication plus byte-exact independent text reconstruction. */
 async function completeFirst(db, stats) {
   assert.equal(stats.chunks, 66);
+  assert.deepEqual(stats.stageBatches, [8, 8, 8, 8, 8, 8, 8, 8, 2]);
   assert.equal(await indexedText(db, "liveness-first"), text);
   assert.equal((await db.prepare("SELECT state FROM send_requests WHERE message_id='liveness-first'").first()).state, "sent");
   assert.deepEqual(stats.due, ["liveness-first"]);
@@ -70,7 +71,7 @@ async function completeFirst(db, stats) {
 }
 
 /** The original 15-second mid-chunk cutoff fails this real 19.8-second workload. */
-test("66 slow native UPSERTs finish once while later cleanup remains live", { timeout: 120_000 }, async () => fixture(async ({ db, bucket, tick }) => {
+test("66 slow native batch members finish once while later cleanup remains live", { timeout: 120_000 }, async () => fixture(async ({ db, bucket, tick }) => {
   await backlog(db, bucket);
   const started = performance.now();
   const stats = await tick({ chunkDelayMs: 300 });
@@ -86,7 +87,7 @@ test("logical cutoff at chunk 40 finishes the admitted item without another phas
   const stats = await tick({ jumpAtChunk: 40, chunkJumpMs: 116_000 });
   await completeFirst(db, stats);
   assert.deepEqual(stats.phases, ["outbound"]);
-  assert.ok(stats.afterCutoff.length >= 26);
+  assert.equal(stats.afterCutoff.filter(row => row.chunk).length, 26, "continuation counts members, not native calls");
   assert.ok(stats.afterCutoff.every(row => row.phase === null), "only admitted continuation, no new business phase");
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM provider_events WHERE event_id='liveness-old-event'").first()).n, 1);
 }));
@@ -119,4 +120,14 @@ test("all eight scheduled slots rotate deterministically across duplicate delaye
   // checks deliberately reuse one isolate and omit intermediate schedule events.
   assert.deepEqual((await tick({}, base + 3 * 300_000)).phases, [...phases.slice(3), ...phases.slice(0, 3)]);
   assert.deepEqual((await tick({}, base + 19 * 300_000)).phases, [...phases.slice(3), ...phases.slice(0, 3)]);
+}));
+
+/** Grouping removes network-round-trip amplification without reducing SQL tokens. */
+test("nine staging round trips finish a maximum archive with two-second native RTT", { timeout: 120_000 }, async () => fixture(async ({ db, bucket, tick }) => {
+  await backlog(db, bucket);
+  const started = performance.now();
+  const stats = await tick({ stageCallDelayMs: 2_000 });
+  assert.ok(performance.now() - started >= 18_000, "nine genuine delayed native calls, not a logical clock claim");
+  await completeFirst(db, stats);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM provider_events WHERE event_id='liveness-old-event'").first()).n, 0);
 }));

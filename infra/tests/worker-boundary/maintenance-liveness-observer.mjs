@@ -6,7 +6,7 @@ let policy = {}, stats, offset = 0;
 /** Reset invocation evidence without intercepting fixture setup bindings. */
 function reset() {
   offset = 0;
-  stats = { phases: [], due: [], r2: [], chunks: 0, setup: 0, afterCutoff: [] };
+  stats = { phases: [], due: [], r2: [], chunks: 0, stageBatches: [], setup: 0, afterCutoff: [] };
 }
 reset();
 
@@ -52,7 +52,7 @@ function statement(native, sql, args = []) {
     if (["first", "all", "run"].includes(key)) return (...values) => submit(target, sql, args, key, values);
     throw new Error(`unsupported synthetic statement method: ${String(key)}`);
   } });
-  nativeStatements.set(proxy, native);
+  nativeStatements.set(proxy, { native, sql, args });
   return proxy;
 }
 
@@ -61,10 +61,24 @@ function database(native) {
   return new Proxy(native, { get(target, key) {
     if (key === "constructor") return target.constructor;
     if (key === "prepare") return sql => statement(target.prepare(sql), sql);
-    if (key === "batch") return statements => {
+    if (key === "batch") return async statements => {
       if (statements.some(value => !nativeStatements.has(value))) throw new Error("unobserved batch statement");
-      if (offset >= 115_000) stats.afterCutoff.push({ phase: null, chunk: false, publication: true });
-      return target.batch(statements.map(value => nativeStatements.get(value)));
+      const members = statements.map(value => nativeStatements.get(value));
+      const chunks = members.filter(value => /INSERT INTO message_text_chunks/.test(value.sql));
+      if (chunks.length && chunks.length !== members.length) throw new Error("mixed synthetic stage batch");
+      if (offset >= 115_000) members.forEach(() => stats.afterCutoff.push({ phase: null, chunk: chunks.length > 0, publication: chunks.length === 0 }));
+      if (chunks.length && policy.chunkDelayMs) await new Promise(resolve => setTimeout(resolve, policy.chunkDelayMs * chunks.length));
+      if (chunks.length && policy.stageCallDelayMs) await new Promise(resolve => setTimeout(resolve, policy.stageCallDelayMs));
+      // One real native batch, not an array of individual run() calls: preserve
+      // ordered transactional rollback while observing every submitted member.
+      const result = await target.batch(members.map(value => value.native));
+      if (chunks.length) {
+        const before = stats.chunks;
+        stats.chunks += chunks.length;
+        stats.stageBatches.push(chunks.length);
+        if (before < policy.jumpAtChunk && stats.chunks >= policy.jumpAtChunk) offset += policy.chunkJumpMs;
+      }
+      return result;
     };
     throw new Error(`unsupported synthetic database method: ${String(key)}`);
   } });
