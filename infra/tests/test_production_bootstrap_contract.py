@@ -192,8 +192,7 @@ class BootstrapInspectionTests(unittest.TestCase):
             ({**valid, "result": None}, "rows"),
             ({**valid, "result": [None]}, "row"),
             ({**valid, "result": [{**row, "id": None}]}, "id_type"),
-            ({**valid, "result": [{**row, "id": "00000000-0000-0000-0000-000000000001"}]}, "id_uuid_format"),
-            ({**valid, "result": [{**row, "id": "private-token"}]}, "id_format"),
+            ({**valid, "result": [{**row, "id": "private\nidentifier"}]}, "id_format"),
             ({**valid, "result": [row, row]}, "id_duplicate"),
             ({**valid, "result": [{**row, "service": None}]}, "service"),
             ({**valid, "result_info": {"count": None}}, "count_type"),
@@ -217,6 +216,61 @@ class BootstrapInspectionTests(unittest.TestCase):
         error = ValueError("sink_domains_unverified")
         error.domain_reason = "private-address@example.invalid"
         self.assertEqual(inspect.failure_reason(error), "custom_domain_inventory_unverified")
+
+    def test_domain_identifiers_are_opaque_not_account_hex(self):
+        """Documented string IDs retain uniqueness/completeness regardless of encoding."""
+        for identifier in ("opaque-domain-v2:one", "00000000-0000-0000-0000-000000000001", "A" * 32, "x" * 256, "domain/opaque?value#part", "域名:One"):
+            row = {"id": identifier, "service": "fixture", "hostname": "fixture.invalid"}
+            value = {"success": True, "result": [row], "result_info": {"count": 1, "total_count": 1}}
+            with self.subTest(identifier=identifier):
+                self.assertIs(isolation.worker_domain_rows(value)[0], row)
+                self.assertEqual(row["id"], identifier)
+            with self.assertRaises(isolation.DomainInventoryError):
+                isolation.worker_domain_rows({**value, "result": [row, row]})
+            with self.assertRaises(isolation.DomainInventoryError):
+                isolation.worker_domain_rows({**value, "result_info": {"total_count": 2}})
+        for identifier in ("", "x" * 257, "with space", "control\x7f", "c1\x85", "unicode\u2003space", "format\u200b", "surrogate\ud800"):
+            with self.subTest(identifier=identifier), self.assertRaises(isolation.DomainInventoryError):
+                isolation.worker_domain_rows({"success": True, "result": [
+                    {"id": identifier, "service": "fixture", "hostname": "fixture.invalid"}]})
+
+    def test_existing_domain_case_or_trailing_dot_cannot_hide_attachment(self):
+        """The target host is case-insensitive DNS data, not opaque identity data."""
+        provider = Mock(account="a" * 32, resources=resources())
+        provider.get.return_value = {"name": "moesegfault.dev", "account": {"id": provider.account}}
+        provider.envelope.side_effect = [{"success": True, "result": []}, {"success": True, "result": [
+            {"id": "opaque:one", "hostname": "MAIL.MOESEGFAULT.DEV.", "service": "fixture"}]}]
+        with self.assertRaisesRegex(ValueError, "^production_domain_already_attached$"):
+            inspect.unattached_route(provider, "b" * 32)
+
+    def test_domain_host_required_for_mail_attachment_inspection(self):
+        """Sink service-only checks stay compatible; Mail host absence needs a host."""
+        provider = Mock(account="a" * 32, resources=resources())
+        provider.get.return_value = {"name": "moesegfault.dev", "account": {"id": provider.account}}
+        provider.envelope.side_effect = [{"success": True, "result": []}, {"success": True, "result": [
+            {"id": "opaque:one", "service": "fixture"}]}]
+        with self.assertRaisesRegex(ValueError, "^production_domain_hostname_unverified$"):
+            inspect.unattached_route(provider, "b" * 32)
+
+    def test_domain_identity_is_exact_and_hostname_validation_is_fail_closed(self):
+        """Case-distinct IDs remain distinct; malformed DNS rows cannot prove absence."""
+        rows = [{"id": identifier, "service": "fixture", "hostname": "FIXTURE.INVALID."}
+                for identifier in ("Opaque:One", "opaque:one")]
+        self.assertEqual(isolation.worker_domain_rows({"success": True, "result": rows}), rows)
+        for hostname in (None, "", " leading.invalid", "two..invalid", "bad-.invalid",
+                         "bad.invalid..", "line\n.invalid", "x" * 64 + ".invalid"):
+            provider = Mock(account="a" * 32, resources=resources())
+            provider.get.return_value = {"name": "moesegfault.dev", "account": {"id": provider.account}}
+            provider.envelope.side_effect = [{"success": True, "result": []}, {"success": True,
+                                            "result": [{**rows[0], "hostname": hostname}]}]
+            with self.subTest(hostname=hostname), self.assertRaisesRegex(
+                    ValueError, "^production_domain_hostname_unverified$"):
+                inspect.unattached_route(provider, "b" * 32)
+        provider = Mock(account="a" * 32, resources=resources())
+        provider.get.return_value = {"name": "moesegfault.dev", "account": {"id": provider.account}}
+        provider.envelope.side_effect = [{"success": True, "result": []}, {"success": True, "result": rows}]
+        self.assertEqual(inspect.unattached_route(provider, "b" * 32)["domains"], rows)
+        self.assertEqual(rows[0]["hostname"], "FIXTURE.INVALID.")
 
     def test_domain_read_uses_one_no_redirect_provider_envelope(self):
         """Reuse validation, not a second transport or a raw provider artifact."""
