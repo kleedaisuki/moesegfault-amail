@@ -80,6 +80,39 @@ The narrow checks do not establish all business regressions, full lifecycle/rese
 equivalence, production compatibility-date behavior, fresh generated bootstrap
 configs, provider-uploaded module identity or live runtime retention.
 
+## Final hosted diagnostic assessment
+
+**Final GO:** exact frozen head `280092dc8bb954186156626ce825ce2aea8c4911`
+has successful revised scoped source CI 36889574697, syntax 36889574095 and
+actual diagnostic [36889796913](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36889796913).
+Independently checked API run/job metadata: workflow_dispatch, exact head,
+success, packaging job success and ordinary replay skipped. Source head remained
+unchanged after evidence collection.
+
+Inspected hosted job log and downloaded public evidence. Seven Python contracts
+passed; actual admission selected original main run 36888295197/bfb027 and fixed
+artifact 11175547155. Strict original manifest verification reported all 35
+generated files, compiler 1.98.1 and worker-build 0.8.5. TAP independently confirms
+16 passed, zero failed/cancelled/skipped/todo across eleven emitted packages.
+
+Using PowerShell `Get-FileHash` only (no runtime execution), independently
+rechecked every downloaded packaged file against `packages.json`: zero
+mismatches. Receipt source/probe/artifact coordinates match the hosted admission.
+All eleven bundled JS entry digests differ from generated JS; original Wasm
+identity and pre/post generated input rechecks passed in the hosted helper.
+Thus generated-tree hashes alone do not establish final JS upload identity.
+
+Public output artifact 11176321848 and owner's detailed receipt are retained at
+`.temp/worker-packaging-probe/.temp/packaging-analysis/run-36889796913` and
+`hosted-acceptance-36889796913.md`. The run took 55 seconds wall clock
+(16:09:03–16:09:58 UTC); this single diagnostic observation is not a benchmark
+or speedup claim. No source churn is required to repeat acceptance receipts.
+
+No substantive source/observed diagnostic issue found. The previously described
+packaging/business/lifecycle/provider limits remain: this is credential-free
+diagnostic evidence, not ordinary deployment/release or actual provider-uploaded
+bytes/native runtime acceptance.
+
 ## Review method and references
 
 Read maintainer/foundation, packaging runbook, existing module-validation note,
