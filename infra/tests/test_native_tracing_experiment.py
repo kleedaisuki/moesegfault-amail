@@ -26,6 +26,23 @@ class NativeTracingExperimentTests(unittest.TestCase):
         self.assertFalse(experiment.config(experiment.PROBE,NONCE)["workers_dev"])
         self.assertFalse(experiment.config(experiment.CALLER,NONCE)["observability"]["enabled"])
 
+    def test_disabled_capture_accepts_optional_omission_but_not_unknown_or_enabled(self):
+        for observation in ({"enabled": False},
+                            {"enabled": False, "logs": {"enabled": False}, "traces": {"enabled": False}}):
+            self.assertTrue(experiment.capture_accepted({"observability": observation}, experiment.CALLER))
+        for observation in ({}, {"enabled": True}, {"enabled": 0},
+                            {"enabled": False, "logs": {"enabled": True}},
+                            {"enabled": False, "traces": {}},
+                            {"enabled": False, "logs": None}):
+            self.assertFalse(experiment.capture_accepted({"observability": observation}, experiment.CALLER))
+        self.assertFalse(experiment.capture_accepted({}, experiment.CALLER))
+        self.assertTrue(experiment.capture_accepted({"observability": {"traces": {"enabled": True}}}, experiment.PROBE))
+        self.assertFalse(experiment.capture_accepted({"observability": {"enabled": True}}, experiment.PROBE))
+        self.assertEqual(experiment.capture_readback({"observability": {"enabled": False}}),
+                         {"enabled": False, "logs.enabled": "missing", "traces.enabled": "missing"})
+        self.assertEqual(experiment.capture_readback({"observability": {"enabled": "private-text", "logs": None}}),
+                         {"enabled": "str", "logs.enabled": "parent_NoneType", "traces.enabled": "missing"})
+
     def test_cleanup_ownership_requires_exact_run_and_role(self):
         settings={"bindings":[{"type":"plain_text","name":"PROBE_ID","text":NONCE},
                               {"type":"plain_text","name":"CANARY_ROLE","text":"probe"}]}
