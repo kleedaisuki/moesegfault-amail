@@ -92,6 +92,21 @@ class PrScopeTests(unittest.TestCase):
         self.assertEqual(scope.select([diagnostic, "crates/amail/src/main.rs", "site/src/pages/index.astro"]),
                          {"cli": True, "worker": False, "site": True})
 
+    def test_manual_queue_probe_is_an_exact_infrastructure_consumer(self):
+        """The pure Python diagnostic is not a compiler or promotion input."""
+        path = ".github/workflows/probe-queues.yml"
+        self.assertEqual(scope.select([path, "infra/provider/probe_queues.py",
+                                       "infra/tests/test_probe_queues.py",
+                                       "docs/maintenance-operational-lanes.md"]),
+                         dict.fromkeys(scope.COMPONENTS, False))
+        for nearby in (".github/workflows/probe-new.yml", ".github/workflows/ci.yml",
+                       ".github/workflows/release.yml", "infra/ci/pr_scope.py"):
+            with self.subTest(path=nearby):
+                self.assertEqual(scope.select([path, nearby]),
+                                 dict.fromkeys(scope.COMPONENTS, True))
+        self.assertEqual(scope.select([path, "workers/trace-sink/src/lib.rs"]),
+                         {"cli": False, "worker": True, "site": False})
+
     def test_exact_deployment_validator_is_not_a_compilation_input(self):
         """Only the audited file skips compilation; nearby inputs and mixed edits do not."""
         path = "crates/mail-worker/check_trace_sink_isolation.py"

@@ -28,12 +28,21 @@ do not retire the standalone Identity inbox or active native-tracing experiment.
   build only after mandatory hosted current infrastructure checks and its narrow unchanged-
   compiler-input proof; its receipt keeps both identities. See
   `docs/native-cloudflare-tracing-canary.md`. This is not release admission.
+  Its reviewed alternate Route transport uses only the fixed reserved infrastructure
+  hostname and nonce-owned DNS/Route; read `docs/native-route-dns-lifecycle.md`
+  before its distinct confirmation. Do not repeat historical workers.dev failures,
+  borrow a product host or treat read permission as successful write admission.
   Native artifacts alone do not qualify a release. An exact cache hit, partial/miss and unreported state are different;
   use `ci_cache_lookup` and suite receipts rather than green-step inference.
   For a test-only native fixture repair, use `docs/native-fixture-replay.md`
   for the hosted diagnostic lane: unchanged compilation inputs and
   original artifact provenance are required. Diagnostic replay is not full CI,
   deployment or release evidence.
+  For the final Wrangler packaging boundary, use the same diagnostic workflow
+  with explicit `fixture=packaging` and an original fully successful main CI
+  `build_run_id`. This is a separate credential-free dry-run job, not ordinary
+  fixture replay or provider-upload acceptance. See
+  `docs/worker-packaging-boundary-probe.md` for scope and evidence limits.
 * **Runtime tracing/privacy:** `docs/runtime-observability-foundation.md` and
   `crates/trace-schema`. Separate implemented correlation from actual observed
   native tracing. Retain timestamps, status, source/version and request/trace IDs;

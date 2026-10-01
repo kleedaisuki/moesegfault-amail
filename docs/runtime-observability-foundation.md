@@ -4,6 +4,29 @@ Status: implementation plan, not native-trace or production privacy acceptance.
 Owner priority is infrastructure first; no mailbox campaign or Mail redeploy is
 authorized by this document. The overall ledger is infrastructure-foundation.md.
 
+## Current source coverage (after PR 68, 2026-10-01)
+
+The dated problem statements and experiment plans below preserve their original
+scope. Current merged source has CLI request start/duration/body-failure capture,
+enriched API/Queue readers, search-poll compatibility, durable upload attempt
+receipts and bounded loss accounting. PR 68 additionally records whole public
+command completion and fixed auth dependency boundaries in a separate local-only
+`command_spans` table, without putting local/auth operations into the strict legacy
+API event wire. Hosted CI36886377574 passed on exact head
+`b4fddada8adbb5e104ab6a9fba41c0a297f5ce61`: each Linux/Windows/macOS job passed
+50 unit, five new command-process and four existing resilience tests. See
+[local/auth implementation](local-auth-command-journal.md) and its
+[independent review](review-local-auth-command-journal-pr68-20261001.md).
+
+Remaining coverage is concrete, not a claim that tracing is finished: enriched
+CLI producer capability rollout; causal connection between local command UUIDs
+and API request/trace coordinates; actual remote segments and sink delivery/loss;
+and independently retained native parentage, async/error and privacy evidence.
+The local command UUID is not a propagated native/W3C trace ID, and API upload
+acceptance is not Queue/log delivery. The latest isolated canary did not execute
+its four cases; both owned scripts were cleaned. No production login or Mail
+runtime acceptance follows from these synthetic source tests.
+
 ## Known coverage versus desired coverage
 
 Existing code propagates W3C CLI request IDs to authenticated API handling and

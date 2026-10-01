@@ -17,6 +17,19 @@ Four new empty Queue resources were created through local Wrangler OAuth on 2026
 
 The production mail subdomain has a 200-literal-rule provider limit. Reserve two operational rules for `postmaster@` and `abuse@`, leaving **198 user aliases** in the API's `capacity.limit`; the provider's actual rule state remains authoritative. [RFC 5321 §4.5.1](https://www.rfc-editor.org/info/rfc5321/) requires postmaster support on a receiving SMTP domain, and [RFC 2142](https://www.rfc-editor.org/info/rfc2142/) defines abuse as an operational contact. Mail-subdomain routing cannot use a catch-all, so both require explicit routes to a **controlled, monitored operator destination or Worker**, plus external delivery tests including mixed-case `Postmaster`. Do not publish a dead `mailto:` link or set `abuse_contact_verified=1` until this works. A provider destination address, if forwarding is chosen, must be operator-owned and verified; none is assumed here.
 
+## Queue capability diagnostic execution boundary (2026-10-02)
+
+The registered `probe-queues.yml` diagnostic is now **manual only**; ordinary
+source pushes/PRs do not query provider permissions. Its existing workflow name,
+no-input dispatch/ref API, environment variables and fixed helper status/exit
+outputs remain unchanged. It performs one Queue-list GET without provisioning
+or printing resource data. `read_available` is a coarse HTTP-status signal, not
+Queue Write proof or deployment readiness. Normal hosted source contracts use
+mocked HTTP; actual lifecycle/trace deployment keeps its separate resource graph,
+writer-lock, readback and hold admission. Do not duplicate tokens, reinterpret an
+old successful probe as current authorization or replay old source runs.
+See [current operational lanes](maintenance-operational-lanes.md#follow-on-isolate-queue-reads-from-ordinary-source-edits).
+
 ## Fail-closed send policy and controlled canary
 
 Migration `0006_outbound_abuse.sql` creates a singleton global `held` row and four release attestations initially false: `feedback_verified`, `abuse_contact_verified`, `delivery_canary_verified`, `preview_reviewed`. Every ordinary send checks both the global state **and all four attestations**; a missing D1 row/read error denies send. A recipient complaint inserts an account hold and block atomically. Holds do not block receiving, retrieval, search or address management. The public error is `send_held` (403), a local do-not-contact error is `recipient_blocked` (403), and exhausted quotas are `quota_exhausted` (429). Account/global state and gate changes leave append-only D1 audit rows with an opaque case reference. `send-control.yml` on `main` can hold immediately; a production global `allowed` action also requires literal `ENABLE_PRODUCTION_SEND` and all four recorded attestations. Revoking any gate automatically re-holds the global switch.

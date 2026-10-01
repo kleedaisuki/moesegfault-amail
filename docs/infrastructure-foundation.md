@@ -10,14 +10,18 @@ inspection, mailbox campaigns or release promotion until this foundation passes.
 
 This section supersedes dated implementation-status statements below. Product
 scope and remaining release requirements are in the [Goal progress snapshot](goal-progress-snapshot.md).
-Source baseline is main `6f63e1f559bc2d0a5c9d27c40294349fcf77dde1`;
-[exact-main CI 36883747018](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36883747018)
-passed. Historical receipts remain useful but do not imply current deployment.
+Source baseline is main `bfb02765c622bced2ad2b8a10f6717cce79c6199`;
+[exact-main CI 36888295197](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36888295197)
+passed all three CLI platforms, Astro, infrastructure, Worker producer, eight
+native suites and the stable aggregate. Historical receipts remain useful but
+do not imply current deployment.
 
 * PRs 52, 54 and 64 are merged: search-poll reader compatibility, enriched
   source-clock/error readers, and durable bounded CLI upload/loss accounting.
-  The CLI still produces legacy remote events; capability negotiation and
-  local/auth command coverage are separate ongoing source work.
+  PR 68 also merged local/auth command coverage (50 unit, five new command-process
+  and four existing resilience tests per hosted CLI platform). The CLI still
+  produces legacy remote events; capability negotiation and local-to-API causal
+  connection remain separate ongoing source work.
 * PRs 55 and 58 are merged: ordinary deploy jobs consume verified same-run module
   artifacts, and the standalone Identity inbox admits an original exact-main
   artifact. Their actual Mail/inbox deployment paths have not been executed by

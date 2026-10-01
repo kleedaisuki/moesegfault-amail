@@ -8,7 +8,7 @@ on:
         required: false
         type: string
       confirm:
-        description: RUN_NATIVE_TRACING_CANARY or read-only DIAGNOSE_NATIVE_TRACING_ENDPOINT / DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE
+        description: RUN_NATIVE_TRACING_ROUTE_CANARY (reserved owned DNS/Route), historical RUN_NATIVE_TRACING_CANARY, or read-only endpoint diagnosis
         required: true
         type: string
 permissions:
@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   experiment:
-    if: github.ref == 'refs/heads/main' && inputs.confirm == 'RUN_NATIVE_TRACING_CANARY' && github.run_attempt == 1
+    if: github.ref == 'refs/heads/main' && (inputs.confirm == 'RUN_NATIVE_TRACING_CANARY' || inputs.confirm == 'RUN_NATIVE_TRACING_ROUTE_CANARY') && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -61,21 +61,43 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: python infra/deploy/native_tracing_experiment.py deploy
+        run: |
+          if [ "$CANARY_CONFIRM" = "RUN_NATIVE_TRACING_ROUTE_CANARY" ]; then
+            python infra/deploy/native_tracing_experiment.py deploy-route
+          else
+            python infra/deploy/native_tracing_experiment.py deploy
+          fi
       - name: Invoke four synthetic native cases once
+        if: inputs.confirm == 'RUN_NATIVE_TRACING_CANARY'
         run: python infra/deploy/native_tracing_experiment.py trigger
+      - name: Revalidate owned ingress then invoke four synthetic native cases once
+        if: inputs.confirm == 'RUN_NATIVE_TRACING_ROUTE_CANARY'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python infra/deploy/native_tracing_experiment.py trigger-route
       - name: Collect complete retained native records and parentage
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
-        run: python infra/deploy/native_tracing_experiment.py collect
-      - name: Remove only receipt-owned infrastructure scripts and verify absence
+        run: |
+          if [ "$CANARY_CONFIRM" = "RUN_NATIVE_TRACING_ROUTE_CANARY" ]; then
+            python infra/deploy/native_tracing_experiment.py collect-route
+          else
+            python infra/deploy/native_tracing_experiment.py collect
+          fi
+      - name: Remove only receipt-owned ingress and scripts and verify absence
         if: always()
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: python infra/deploy/native_tracing_experiment.py cleanup
+        run: |
+          if [ "$CANARY_CONFIRM" = "RUN_NATIVE_TRACING_ROUTE_CANARY" ]; then
+            python infra/deploy/native_tracing_experiment.py cleanup-route
+          else
+            python infra/deploy/native_tracing_experiment.py cleanup
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:

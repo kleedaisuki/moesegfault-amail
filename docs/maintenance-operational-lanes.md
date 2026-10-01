@@ -51,7 +51,7 @@ it does not claim that every historical job has a new technical disable switch.
 | `native-fixture.yml` | Manual checked-artifact fixture replay | Credential-free diagnostic fast path only; unchanged compilation inputs required, not full CI/promotion |
 | `native-tracing-canary.yml` | Manual isolated infrastructure experiment/diagnosis | Current active foundation experiment; source-owned temporary probe/caller only, checked artifact and receipt-owned cleanup; **retain**, not replaced by old Mail canaries |
 | `cron-metrics-schema.yml` | PR synthetic contracts; manual fixed schema metadata read | Current schema diagnostic, not workload/capture/privacy acceptance; retain separate guarded lane |
-| `probe-queues.yml` | Historical capability read; manual **and legacy-branch path-filtered push** | Cloudflare Queue list read with project token; automatic provider surface exists, but no provider or repository disable action is taken here; do not treat as ordinary CI |
+| `probe-queues.yml` | Manual coarse Queue read-capability diagnostic only | Legacy-branch automatic push trigger removed; existing manual identity/no-input/ref/helper/output contract retained; not ordinary CI or Queue Write/deployment admission |
 | `staging-issues-create-probe.yml` | Manual code-free historical discriminator | Provider capture/Issues settings write and restoration; held research, preserve until lifecycle/cleanup obligations are explicitly resolved |
 | `staging-ten-address-acceptance.yml` | Manual campaign, retained escrow and exact recovery | Account/quota/alias/SMTP/provider state; held research with durable recovery obligations, preserve all recovery modes |
 | `staging-ten-address-d1-proof.yml` | Manual D1 synthetic proof | Real staging D1 writes/cleanup, not a unit test; held diagnostic, retain ownership/cleanup contracts |
@@ -120,7 +120,7 @@ admission after the foundation; do not widen an archived query as a shortcut.
 * GitHub supports whole-workflow disabling without deleting source, but disabling
   `ci.yml` would also disable required userspace/build/deployment gates. Job-level
   source retirement is therefore the right boundary here. The legacy branch,
-  supported recovery files, automatic Queue capability probe, unconsumed outbound
+  supported recovery files, manual coarse Queue capability probe, unconsumed outbound
   hook, compiler drift inside held diagnostic workflows and unfinished provider
   acceptance remain explicitly inventoried debt, not silently declared solved.
 * Replace the three obsolete workflow-presence assertions with one repository-wide
@@ -172,3 +172,38 @@ This section and the Identity baseline clarification are documentation-only
 followup to the checked executable source. They do not substitute an old source
 run for future exact-source deployment/release admission. Whole-foundation and
 runtime privacy acceptance remain incomplete.
+
+## Follow-on: isolate Queue reads from ordinary source edits
+
+At main `6f63e1f559bc2d0a5c9d27c40294349fcf77dde1`, the registered
+`probe-queues.yml` workflow still queried Cloudflare on a path-filtered push to
+`codex/amail-v0.1.0`. Removing that **push event only** makes source edits
+provider-free. Retain workflow filename/display name/job, no-input manual API,
+source-ref behavior, helper bytes, credential variables and fixed stdout/exit
+semantics. No branch restriction, confirmation parameter, new token, environment
+migration, live dispatch or resource change is introduced.
+
+The historical manual run `36521996961` and [registration evidence](staging-e2e-plan.md)
+remain evidence, not instructions to replay an old run. Current manual execution
+requires repository write access and the owner's operational authorization. Old
+branch/run source is not retroactively disabled by editing current source.
+
+| Need | Supported counterpart | Evidence boundary |
+| --- | --- | --- |
+| Check source changes | Always-on hosted infrastructure discovery and independent YAML guard | `test_probe_queues.py` mocks every HTTP interaction; source checks never call the live helper |
+| Explicit coarse credential diagnosis | Existing manual `probe-queues.yml` | One GET, no provisioning/cleanup/recovery; HTTP 200 `read_available` does not prove Queue Write or full response/resource correctness |
+| Deploy the actual lifecycle/trace graph | Existing `ensure_email_events.py` and `ensure_trace_queues.py` under admitted deployment | Preserve exact graph, writer locks, readback and sending hold; never substitute a permission probe for deployment admission |
+
+The workflow has no Rust/build/native artifact or promotion consumer: its only
+command calls the standalone Python GET helper, and repository references are
+its own invocation plus operations/historical evidence. Therefore add only this
+exact workflow path to the conservative PR infrastructure-only set. Mandatory
+source tests and syntax remain; nearby unknown workflows and shared/compiler/
+selector changes remain fail-full, and main/push/manual/release stay full.
+This PR's selector edit itself requests full hosted source CI once; it avoids
+irrelevant recompilation on later isolated diagnostic edits, not on its own
+acceptance run. Hosted evidence belongs in the PR/acceptance receipt after green,
+without another documentation-only push on the accepted source head.
+
+References: [GitHub manual workflow/ref API](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow),
+[Cloudflare Queue listing endpoint](https://developers.cloudflare.com/api/resources/queues/methods/list/).

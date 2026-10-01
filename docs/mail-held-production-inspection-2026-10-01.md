@@ -140,3 +140,34 @@ the single-read transport. The next actual inspection can discriminate identifie
 format from generic pagination metadata without printing hostnames, IDs, values or
 provider prose. Documentation alone does not yet identify which rule is wrong;
 do not request a Token change or permissively accept a partial inventory.
+
+## Provider domain schema correction (2026-10-02)
+
+Historical read-only run `36835234679` stopped at `custom_domain_id_format`.
+That is a local parser rejection, not evidence that a domain is absent, that
+production stores are held/empty, or that a provider write is authorized.
+
+The [Cloudflare List Worker Domains schema](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/list/)
+describes `result[].id` as an immutable string without a hexadecimal or UUID
+format. `cert_id`, in contrast, explicitly has UUID format. Reusing the account
+ID's 32-lowercase-hex validator for domain IDs conflated distinct provider types.
+The domain reader now accepts nonempty opaque IDs up to a local 256-character
+resource bound, excluding Unicode whitespace, control/format characters and
+surrogates. The bound is local policy, **not a claimed provider format**.
+Uniqueness uses exact unchanged strings; no case folding, trimming, URL parsing,
+or UUID conversion is applied. Rows and original IDs are returned unchanged for
+correlation. This reader never constructs a removal/request path from a domain ID;
+future such callers must separately encode path components rather than interpolate.
+
+Only DNS hostname comparison folds ASCII case and removes one final root dot.
+The production host-absence check rejects missing/malformed/overlong hostnames,
+including empty labels; it cannot infer absence from an uninspectable row. Original
+hostnames remain unchanged in the in-memory inventory. Service-only sink checks
+retain their established contract. Account/zone, version, and other identifiers
+are deliberately unchanged. Complete-array, duplicate-ID, envelope, and supplied
+pagination/count validation remain mandatory.
+
+Synthetic hosted regressions cover UUID-shaped and nonhex IDs, exact preservation,
+case-distinct IDs, bounds and Unicode controls, duplicates/incomplete metadata,
+case/root-dot attached hosts, malformed/missing hosts, and unchanged unrelated
+rows. No provider operation or business journey is part of this source correction.
