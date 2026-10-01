@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { checkReleaseState } from './check-release-state.mjs';
+import { releaseDownloads } from '../src/releaseDownloads.mjs';
 
 const tagUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0';
 const releasesUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases';
@@ -23,6 +24,7 @@ function fixture(state) {
      ${path === 'changelog/index' ? '<nav aria-label="更新日志目录"></nav>' : ''}
      <p>${state === 'candidate' ? candidate : published}</p>
      ${state === 'candidate' ? `<p>${serviceNotice}</p>` : ''}
+     ${state === 'published' && path === 'manual/index' ? releaseDownloads.map((asset) => `<a href="${asset.href}">${asset.label}</a>`).join('') : ''}
      ${state === 'published' || path !== 'index' ? `<a href="${state === 'published' ? tagUrl : releasesUrl}">Release</a>` : ''}`,
   ]));
 }
@@ -84,5 +86,24 @@ test('candidate service disclaimer is required locally and cannot leak into publ
     const published = fixture('published');
     published[path] += `<p>${serviceNotice}</p>`;
     assert.throws(() => checkReleaseState('published', published, headers), /service-availability boundary/);
+  }
+});
+
+test('published manual exposes every CLI, Skill and checksum download', () => {
+  assert.equal(releaseDownloads.length, 7);
+  for (const asset of releaseDownloads) {
+    const pages = fixture('published');
+    pages['manual/index'] = pages['manual/index'].replace(`href="${asset.href}"`, 'href="#removed"');
+    assert.throws(() => checkReleaseState('published', pages, headers), /published download is missing/);
+  }
+});
+
+test('candidate pages never expose not-yet-published asset links', () => {
+  for (const path of Object.keys(claims)) {
+    for (const asset of releaseDownloads) {
+      const pages = fixture('candidate');
+      pages[path] += `<a href="${asset.href}">premature download</a>`;
+      assert.throws(() => checkReleaseState('candidate', pages, headers), /unpublished asset download/);
+    }
   }
 });

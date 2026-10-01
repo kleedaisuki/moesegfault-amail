@@ -1,6 +1,7 @@
 /** Verify every rendered route has the selected release state and its own links. */
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { releaseDownloads } from '../src/releaseDownloads.mjs';
 
 const tagUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0';
 const releasesUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases';
@@ -59,6 +60,14 @@ export function checkReleaseState(state, htmlByPath, headers) {
     }
     if (state === 'candidate' && hasHref(html, tagUrl)) {
       throw new Error(`${page.label}: unpublished v0.1.0 Release link is present`);
+    }
+    for (const asset of releaseDownloads) {
+      if (state === 'candidate' && hasHref(html, asset.href)) {
+        throw new Error(`${page.label}: unpublished asset download is present`);
+      }
+      if (state === 'published' && page.label === 'manual' && !hasHref(html, asset.href)) {
+        throw new Error(`manual: published download is missing: ${asset.name}`);
+      }
     }
     if (state === 'candidate' && page.path !== 'index' && !hasHref(html, releasesUrl)) {
       throw new Error(`${page.label}: generic candidate Releases link is missing`);

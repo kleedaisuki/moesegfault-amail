@@ -18,7 +18,7 @@ amail 是一个面向 AI Agent 的命令行邮件客户端。你在浏览器里�
 
 ## 安装与首次登录
 
-以下步骤供正式发布后使用；候选页面不提供安装包。届时从页面顶部的发布状态进入 [GitHub Releases](https://github.com/kleedaisuki/moesegfault-amail/releases)，确认对应版本及全部五个平台安装包、Agent Skill 和 `SHA256SUMS` 已公开。不要把候选构建当作正式版。下载 `SHA256SUMS` 和与你系统匹配的安装包，放在同一个文件夹，再执行校验与安装。无需安装 Rust。
+请先查看页面顶部的发布状态，再从 [GitHub Releases](https://github.com/kleedaisuki/moesegfault-amail/releases) 选择已正式公开的版本。只有对应版本的全部五个平台安装包、Agent Skill 和 `SHA256SUMS` 已公开后才继续；候选构建不是正式安装来源。下载 `SHA256SUMS` 和与你系统匹配的安装包，放在同一个文件夹，再执行校验与安装。无需安装 Rust。
 
 | 你的设备 | 选择的安装包 |
 | --- | --- |
@@ -95,7 +95,7 @@ amail --version
 
 上面的 SHA-256 校验不通过时，`throw` 会中止该段，不要继续解压。用户 `PATH` 修改会对新开的终端生效；当前终端也已临时加入路径。若 PowerShell 受设备策略限制，请让设备管理员协助，而不是关闭安全策略。
 
-Agent Skill 的文件名为 `amail-agent-skill-v0.1.0.zip`；它应与 CLI 安装包来自同一个 GitHub Release。Agent 若支持安装 Skill，可将它解压到其 Skill 目录；这不是 CLI 的运行依赖，也不要用它替代上述安装包校验。准备好之后，让 Agent **在你的设备上**启动登录：
+Agent Skill 的文件名为 `amail-agent-skill-v0.1.0.zip`；它应与 CLI 安装包来自同一个 GitHub Release。解压前，按上面的系统校验步骤，将文件名换成 Skill ZIP，核对 `SHA256SUMS` 中对应的唯一记录。Agent 若支持安装 Skill，可将 ZIP 中的 `amail/` 文件夹及其引用文档一并放入其 Skill 目录；具体目录以该 Agent 的安装说明为准。这不是 CLI 的运行依赖，也不要用它替代 CLI 安装包校验。准备好之后，让 Agent **在你的设备上**启动登录：
 
 ```sh
 amail login
