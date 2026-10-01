@@ -87,12 +87,24 @@ export async function fixture(run) {
   } finally { await mf.dispose(); }
 }
 
-/** Seed the durable state left after provider acceptance but before local indexing. */
+/**
+ * Seed accepted recovery through the production one-use held-canary SQL guard.
+ * Each grant is confined to this fixture's fresh synthetic database and revoked
+ * after insertion. Re-arming for multi-row workloads is setup, never a live
+ * operator action or permission to send; all provider egress remains rejected.
+ */
 export async function accepted(db, bucket, id, body = text, archive = true) {
   const bytes = draftZip(body), now = Date.now();
   assert.ok(bytes.length < 5 * 1024 * 1024, "fixture satisfies service ZIP cap");
+  await db.prepare("UPDATE send_release_gates SET canary_owner_iss=?1,canary_owner_sub=?2,canary_recipient_sha256=?3,canary_expires_at=unixepoch()+600,canary_used_by=NULL,actor='synthetic-fixture',case_ref='synthetic-accepted-recovery',updated_at=unixepoch() WHERE id=1")
+    .bind(issuer, owner, createHash("sha256").update("synthetic@example.invalid").digest("hex")).run();
   await db.prepare("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,provider_id,quota_reserved,state,created_at) VALUES(?1,?2,?3,?4,?3,?5,1,'accepted',?6)")
     .bind(issuer, owner, id, createHash("sha256").update(bytes).digest("hex"), `synthetic-provider-${id}`, now).run();
+  const admitted = await db.prepare("SELECT p.state AS policy_state,g.canary_used_by,s.state AS request_state FROM send_policy p JOIN send_release_gates g ON g.id=1 JOIN send_requests s ON s.owner_iss=g.canary_owner_iss AND s.owner_sub=g.canary_owner_sub AND s.idem_key=g.canary_used_by WHERE p.scope='global' AND p.owner_iss='*' AND p.owner_sub='*' AND s.idem_key=?1")
+    .bind(id).first();
+  assert.deepEqual(admitted, { policy_state: "held", canary_used_by: id, request_state: "accepted" }, "production trigger consumes exactly this synthetic grant while global sending stays held");
+  // Expire even the consumed grant before dispatching any scheduled work.
+  await db.prepare("UPDATE send_release_gates SET canary_expires_at=unixepoch(),updated_at=unixepoch() WHERE id=1").run();
   await db.prepare("INSERT INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at) VALUES(?1,?2,?3,?4,'reserved',?5)")
     .bind(id, issuer, owner, bytes.length, now).run();
   if (archive) await bucket.put(`messages/${id}.zip`, bytes);

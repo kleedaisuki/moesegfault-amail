@@ -86,6 +86,14 @@ The original three-immediate-tick assertion was removed. It coupled fairness to 
 
 Accepted journal seeding now records the real SHA256 commitment of the independently encoded archive, matching the HTTP admission invariant rather than using a placeholder hash. Reservation bytes already equal actual ZIP bytes. Existing owned tombstones are obtained by completing real recovery before deletion, so their provider metadata is production-generated; the foreign-row fixture intentionally remains foreign and must be refused, not normalized into an owned projection.
 
+### Held-policy admission setup correction
+
+Hosted PR #22 run [36804402543](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36804402543), exact head `25acdf1`, failed all eleven standalone accepted-recovery cases during setup with D1 `send_held`, before testing recovery. Applying the production migrations preserves the default global hold: migration 0006 requires a consumed owner-scoped one-use canary for an INSERT while held, and migration 0009 explicitly permits that held-canary path without adopting a role-contact contract. The HTTP race fixture already arms this path; the standalone fixture had omitted it. These failures are not recovery verdicts.
+
+`accepted()` now arms a ten-minute synthetic-owner grant with the synthetic recipient's SHA256, inserts the accepted journal through the unchanged production triggers, and asserts that the exact idempotency key consumed the grant and the journal is accepted while global policy remains held. It immediately expires the consumed grant before Cron dispatch. Multi-row fixtures re-arm only this newly created, isolated Miniflare database for each row; no production policy is unheld, no release/contact flag is attested, and no production trigger is dropped or disabled. Setup statements are outside the invocation under measurement. This reproduces an already-accepted journal, not provider acceptance or a live canary. Strict synthetic egress rejection and the blocked embedding dependency remain unchanged.
+
+Static `node --check` and `git diff --check` are the only permitted local validation for this correction. Hosted execution on the corrected exact revision is still required; no runtime pass is claimed here.
+
 ## Deterministic HTTP fixture implementation (not yet executed)
 
 A separate `accepted-http-cron-race.test.mjs` and test-only `accepted-race-entry.mjs` implement the documented after-acceptance barrier, plus an independent Stored ZIP helper. The test copies its adapter under the existing built module root on the hosted runner; production shim, Wasm, and Rust source are not edited. The adapter subclasses the actual default WorkerEntrypoint and proxies only the exact acceptance UPDATE's native `.run()` return. All native D1 operations complete normally before the barrier is signaled. EMAIL uses a synthetic `.send(builder)` returning a fixed messageId; real Rust builder conversion remains active.
