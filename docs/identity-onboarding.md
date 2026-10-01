@@ -66,6 +66,14 @@ Production browser login, separate-process status, and one refresh after access 
 
 ### Native completion page delivery (2026-10-01)
 
+The artifact and anonymous Login observations below are a historical snapshot from approximately
+07:35 Asia/Singapore, not current provider deployment status. At this documentation integration,
+amail main is `89ce49f0166307ea6fcd7657459dd6b2e9726257` and sibling Identity main is
+`08576c0549c3ab8d6b8b90f0fb6591b59962f5dd`. The latter contains the issuer-origin OAuth resume
+correction; it does not establish that the separately reported production password pre-authentication
+401 is resolved. That rejection remains unresolved in the coordinating incident. No Identity
+main change or provider deployment moves the CLI's embedded result page to the Login origin.
+
 The co-branded success/error page change `9cb410a` is already in amail main. It is embedded
 in the native binary, not served by `login.moesegfault.dev`; updating Identity cannot replace
 an installed native page. The five-platform release dry-run
