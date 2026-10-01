@@ -35,6 +35,8 @@ The `from` address must belong to the logged-in account. `reply_to`, if specifie
 
 All paths are relative UTF-8 paths using `/`; place assets under `assets/`. Do not add undeclared files or symlinks. The archive requires at least one UTF-8 body. The CLI packer can generate plain-text fallback from HTML-only drafts, but author `body.txt` when its wording matters. The service compiles MIME, including text/html alternatives and related/attached assets; draft authors provide HTML, not raw MIME. Avoid remote resources and active content: outbound HTML is sanitized, and HTML rendering in recipients varies.
 
+Mail transport may normalize line endings in `text/*` bodies and attachments from LF to CRLF, as specified by [RFC 2046 section 4.1.1](https://www.rfc-editor.org/rfc/rfc2046#section-4.1.1); a text attachment is not a byte-exact transport contract. For an asset whose original bytes or hash must be preserved, declare `content_type = "application/octet-stream"` in the draft manifest, even when its filename ends in `.txt` or `.csv`.
+
 ZIP validation has size, entry count, decompression, and recipient limits; compressed size is not the same as provider MIME size. If pack/send rejects a draft, simplify or reduce it instead of weakening validation. A submitted ZIP can contain sensitive content: store and transmit it only as needed for the task.
 
 ## Sending policy and typed outcomes
@@ -48,7 +50,7 @@ Source policy is scoped to agent-workflow transactional notifications and replie
 | `quota_exhausted`, `provider_rate_limited`, `provider_daily_limit` | Local/provider limit. Do not retry aggressively or scatter recipients across new messages. Report the limit and wait for an authorized later attempt if still needed. |
 | `send_outcome_unknown` | Provider submission may have happened. **Never** blindly resend or change the idempotency key; preserve the original ZIP/key and seek status/reconciliation. |
 
-An accepted send means the provider accepted the request, not that a remote inbox received it. Replaying the same idempotency key and identical ZIP may recover an accepted or definitive rejected result without a second provider submission; a different payload under the same key is invalid. A new key after an uncertain outcome can duplicate mail. These controls are implemented in source but need hosted CI and deployed lifecycle canaries before general availability can be claimed.
+An accepted send means the provider accepted the request, not that a remote inbox received it. Replaying the same idempotency key and identical ZIP may recover an accepted or definitive rejected result without a second provider submission; a different payload under the same key is invalid. A new key after an uncertain outcome can duplicate mail. Delivered lifecycle feedback has been verified for the production owned-account workflow; it does not imply public sending is enabled.
 
 ## Retrieved archive
 
