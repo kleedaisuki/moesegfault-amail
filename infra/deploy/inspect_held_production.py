@@ -42,6 +42,8 @@ class Stage(str, Enum):
     R2 = "r2_inventory"
     SCRIPTS = "worker_inventory"
     ROUTES = "route_inventory"
+    DOMAIN_IMPORT = "domain_reader_import"
+    DOMAINS = "custom_domain_inventory"
     SCHEMA = "schema"
     HOLD = "held_state"
     MAIL = "empty_mail_state"
@@ -53,6 +55,15 @@ class Stage(str, Enum):
 class Progress:
     """Invocation-local stage only; no secret, object key or provider envelope retained."""
     stage: Stage = Stage.AUTHORIZATION
+
+
+
+def http_reason(status: object) -> str:
+    """Project only an actual numeric HTTP status into the shared closed bins."""
+    if type(status) is not int:
+        return "unexpected"
+    category = str(status) if status in (401, 403, 404, 429) else ("5xx" if 500 <= status <= 599 else "other")
+    return "production_provider_http_" + category
 
 
 def failure_reason(error: Exception) -> str:
@@ -81,6 +92,27 @@ def failure_reason(error: Exception) -> str:
     }
     if isinstance(error, ValueError) and len(error.args) == 1 and isinstance(error.args[0], str) and error.args[0] in known:
         return error.args[0]
+    # Legacy isolation readers chain HTTPError into their own fixed ValueError.
+    # Inspect only the status, never args/URL/body, and bound/cycle-check traversal.
+    cause, seen = error, set()
+    for _ in range(4):
+        if id(cause) in seen:
+            break
+        seen.add(id(cause))
+        if isinstance(cause, HTTPError):
+            return http_reason(cause.code)
+        cause = cause.__cause__
+        if cause is None:
+            break
+    if isinstance(error, ImportError):
+        return "domain_reader_dependency_missing"
+    if isinstance(error, ValueError) and len(error.args) == 1 and isinstance(error.args[0], str):
+        legacy = {
+            "sink_readback_unavailable": "custom_domain_read_unavailable",
+            "sink_domains_unverified": "custom_domain_inventory_unverified",
+        }
+        if error.args[0] in legacy:
+            return legacy[error.args[0]]
     response = getattr(error, "response", None)
     detail = response.get("Error") if isinstance(response, dict) else None
     code = detail.get("Code") if isinstance(detail, dict) else None
@@ -125,8 +157,7 @@ class Provider:
                 raise ValueError()
             return value
         except HTTPError as error:
-            category = str(error.code) if error.code in (401, 403, 404, 429) else ("5xx" if 500 <= error.code <= 599 else "other")
-            raise ValueError("production_provider_http_" + category) from None
+            raise ValueError(http_reason(error.code)) from None
         except (URLError, TimeoutError):
             raise ValueError("production_provider_transport_unverified") from None
         except Exception:
@@ -217,7 +248,7 @@ def script_inventory(provider: Provider) -> dict:
     return result
 
 
-def unattached_route(provider: Provider, zone: str) -> dict:
+def unattached_route(provider: Provider, zone: str, *, progress: Progress | None = None) -> dict:
     """Reject any Worker route or custom domain covering the intended Mail host."""
     if not ACCOUNT.fullmatch(zone):
         raise ValueError("production_zone_unverified")
@@ -238,8 +269,11 @@ def unattached_route(provider: Provider, zone: str) -> dict:
                 provider.resources.api, "amail-role-monitor", "amail-mail-maintenance"}:
             raise ValueError("production_route_already_attached")
     # Reuse the existing bounded paginated account-wide custom-domain reader.
+    progress = progress or Progress()
+    progress.stage = Stage.DOMAIN_IMPORT
     sys.path.insert(0, str(ROOT / "crates/mail-worker"))
     import check_trace_sink_isolation as isolation
+    progress.stage = Stage.DOMAINS
     domains = isolation.worker_domains(provider.account, provider.token)
     if any(row.get("hostname") == provider.resources.domain or row.get("service") == provider.resources.api
            for row in domains):
@@ -283,7 +317,7 @@ def collect(provider: Provider, zone: str, object_count: int, *, progress: Progr
     progress.stage = Stage.SCRIPTS
     scripts = script_inventory(provider)
     progress.stage = Stage.ROUTES
-    routes = unattached_route(provider, zone)
+    routes = unattached_route(provider, zone, progress=progress)
     progress.stage = Stage.SCHEMA
     schema_prefix = verify_recorded_schema(provider.query)
     progress.stage = Stage.HOLD

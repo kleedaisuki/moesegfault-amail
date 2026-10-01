@@ -155,6 +155,21 @@ class BootstrapInspectionTests(unittest.TestCase):
         error.response = {"Error": {"Code": ["unsafe-type"]}}
         self.assertEqual(inspect.failure_reason(error), "unexpected")
 
+    def test_legacy_domain_reader_classification_is_bounded_and_private(self):
+        """A reused checker preserves status/contract bins without returning cause prose."""
+        from urllib.error import HTTPError
+        error = ValueError("sink_readback_unavailable")
+        error.__cause__ = HTTPError("https://private.invalid/token", 403, "private-body", {}, None)
+        self.assertEqual(inspect.failure_reason(error), "production_provider_http_403")
+        self.assertEqual(inspect.failure_reason(ValueError("sink_domains_unverified")), "custom_domain_inventory_unverified")
+        self.assertEqual(inspect.failure_reason(ImportError("private module name")), "domain_reader_dependency_missing")
+        error.__cause__ = error
+        self.assertEqual(inspect.failure_reason(error), "custom_domain_read_unavailable")
+        unknown = ValueError("private-address@example.invalid")
+        unknown.__cause__ = unknown
+        self.assertEqual(inspect.failure_reason(unknown), "unexpected")
+        self.assertEqual(inspect.http_reason("private-code"), "unexpected")
+
     def test_provider_http_denial_has_no_url_or_body_in_reason(self):
         """A documented status category is sufficient to distinguish permission failures."""
         from urllib.error import HTTPError
