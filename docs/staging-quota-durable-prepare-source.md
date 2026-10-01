@@ -12,9 +12,11 @@ GitHub-hosted dispatch, source, identity, global-hold, complete baseline, effect
 privacy and native PKCE checks. The fixed generation is `ten-address-v1`; a
 mismatch fails before checkout/provider/native work.
 
-The module does not add a CLI option. `main()` and `execute()` retain their
-existing file-only preparation, artifact campaign and recovery contracts. No
-workflow, secret, repository variable or provider deployment is changed.
+Legacy `prepare`, `campaign`, `recover` and `execute()` retain their existing
+file-only preparation, artifact campaign and read-only recovery contracts.
+New explicit `prepare-escrow`, `campaign-escrow`, `recover-escrow` selectors choose
+only their named durable coordinator. No workflow, secret, repository variable
+or provider deployment is changed; existing workflows do not use these modes.
 
 The sequence is:
 
@@ -64,9 +66,10 @@ not exercise this new concrete native-account composition.
   record, attaches the exact artifact ID, repeats admission, and obtains a known
   `changes=1` arm ACK plus complete readback before the first add. It is not yet
   workflow-wired. No one may infer permission from observing an armed parent.
-- Bind the complete retained-ciphertext D1 recovery finalizer to a restricted
-  registered workflow only after original-run settlement/provenance admission.
-  Do not wire the artifact finalizer's per-chunk purge.
+- The explicit `recover-escrow` selector now chooses the complete retained-
+  ciphertext D1 finalizer. A future restricted registered workflow must admit
+  the original completed run and exact source. Do not wire the artifact
+  finalizer's per-chunk purge.
 - Before one supervised experiment is armed, record a specific capable primary
   supervisor, actual watch window and acknowledged interruption/handoff path.
   Same-day restricted intervention is the target; 24 hours is an escalation
@@ -107,3 +110,30 @@ verified cleanup receipt.
 Hosted synthetic contracts cover exact attach/arm/first-add order, complete
 ciphertext retention, legacy compatibility, pre-arm failures, already-armed,
 lost arm ACK and a mismatched permit. Tests remain unexecuted locally.
+
+## CLI interface for later reviewed workflow wiring
+
+All modes still require the existing exact manual attempt-1 GitHub-hosted Windows
+staging dispatch environment and independent source CI. These examples are
+hosted-wrapper arguments, not locally runnable commands or live authorization:
+
+```text
+python infra/tests/staging_ten_address_acceptance.py prepare-escrow --source-run SOURCE_RUN
+python infra/tests/staging_ten_address_acceptance.py campaign-escrow --source-run SOURCE_RUN --artifact-id EXACT_ID
+python infra/tests/staging_ten_address_acceptance.py recover-escrow --source-run CURRENT_SOURCE_RUN --prior-run ORIGINAL_RUN
+```
+
+The common optional `--mail-phase pre-queue|queue-api` and `--queue-id` retain
+existing exact service admission. `prepare-escrow` and `campaign-escrow` use
+`AMAIL_QUOTA_CONFIRM=RUN_STAGING_TEN_ADDRESSES`; `recover-escrow` uses
+`RECOVER_STAGING_TEN_ADDRESSES`. Retained recovery requires an empty artifact ID,
+a distinct completed original run, the retained generation/key, original source
+provenance and complete fresh read-only/native/teardown/postcheck evidence.
+It neither downloads an artifact nor purges any chunk. The fixed success label
+is `ten_address_escrow_receipt_retained`, not the three quota acceptance labels.
+An artifact transport exception never selects D1 recovery implicitly.
+
+The workflow owner must preserve exact supervision/handoff admission, global
+concurrency/writer exclusion, original workflow provenance registration, complete
+real-cipher/source checks, protected capabilities and privacy validation. Existing
+`accept` does not call these selectors and must not be described as durable.

@@ -34,6 +34,10 @@ require = manifest.require
 CONFIRMS = {"prepare": "RUN_STAGING_TEN_ADDRESSES", "campaign": "RUN_STAGING_TEN_ADDRESSES",
             "recover": "RECOVER_STAGING_TEN_ADDRESSES"}
 ESCROW_GENERATION = "ten-address-v1"
+# Explicit transport selectors normalize only the phase, never its confirmation
+# or original/current invocation identity. Legacy phase names stay unchanged.
+ESCROW_MODES = {"prepare-escrow": "prepare", "campaign-escrow": "campaign",
+                "recover-escrow": "recover"}
 
 
 def checkout() -> str:
@@ -122,7 +126,8 @@ def prepare_escrow(args: argparse.Namespace) -> tuple[str, ...]:
     """Dormant prepare-only D1 durability seam, before any artifact upload.
 
     A reviewed wrapper may call this with prepare, empty original/artifact IDs,
-    and the fixed retained-key generation. No CLI or workflow activates it.
+    and the fixed retained-key generation. Only the explicit prepare-escrow
+    CLI selector calls this seam; no existing workflow activates it.
     The exact authenticated ciphertext must be sealed in D1 before the upload
     file becomes available. This never attaches an artifact, arms a campaign,
     allocates/retires aliases, writes a receipt or purges ciphertext. Failure
@@ -186,7 +191,8 @@ def finalize_escrow_recovery(args: argparse.Namespace) -> tuple[str, ...]:
 
     This deliberate transport is never an artifact-error fallback. It cannot
     prepare/campaign, download the original artifact, purge chunks or replace
-    missing original GitHub run provenance. There is no CLI/workflow entrypoint.
+    missing original GitHub run provenance. Only explicit recover-escrow selects
+    it; the existing workflow does not activate this retained transport.
     """
     require(args.mode == "recover" and args.artifact_id == "", "quota_escrow_recovery_only")
     return _execute(args,terminal=True,transport="escrow")
@@ -356,15 +362,18 @@ def _execute(args: argparse.Namespace, *, terminal: bool = False, transport: str
 def main() -> int:
     """Emit only fixed source-owned outcome labels; no private provider/CLI exception text."""
     parser = argparse.ArgumentParser(description="Guarded hosted staging quota acceptance")
-    parser.add_argument("mode", choices=tuple(CONFIRMS))
+    parser.add_argument("mode", choices=tuple(CONFIRMS) + tuple(ESCROW_MODES))
     parser.add_argument("--source-run", required=True)
     parser.add_argument("--artifact-id", default="")
     parser.add_argument("--prior-run", default="")
     parser.add_argument("--mail-phase", choices=("pre-queue", "queue-api"), default="pre-queue")
     parser.add_argument("--queue-id", default="")
     args = parser.parse_args()
+    operation = {"prepare-escrow": prepare_escrow, "campaign-escrow": campaign_escrow,
+                 "recover-escrow": finalize_escrow_recovery}.get(args.mode, execute)
+    args.mode = ESCROW_MODES.get(args.mode, args.mode)
     try:
-        for label in execute(args):
+        for label in operation(args):
             print(label)
         return 0
     except manifest.ContractFailure as error:

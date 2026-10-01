@@ -20,6 +20,46 @@ SHA = "a" * 40
 PINS = provenance.Pins(VERSION, identity_provenance()["identity_revision"], identity_provenance()["login_revision"])
 
 
+class SelectorTests(unittest.TestCase):
+    """CLI transport selection is explicit and never an exception fallback."""
+
+    def test_explicit_modes_normalize_phase_without_changing_coordinates(self):
+        """Default modes stay legacy; each durable mode selects only its coordinator."""
+        operations = ("execute", "prepare_escrow", "campaign_escrow", "finalize_escrow_recovery")
+        for selected, expected, phase in (("prepare", "execute", "prepare"),
+                                          ("campaign", "execute", "campaign"),
+                                          ("recover", "execute", "recover"),
+                                          ("prepare-escrow", "prepare_escrow", "prepare"),
+                                          ("campaign-escrow", "campaign_escrow", "campaign"),
+                                          ("recover-escrow", "finalize_escrow_recovery", "recover")):
+            with self.subTest(selected=selected):
+                patches = [mock.patch.object(target, name, return_value=("fixed_result",)) for name in operations]
+                mocks = {name: patch.start() for name, patch in zip(operations, patches)}
+                try:
+                    with mock.patch.object(target.sys, "argv", ["acceptance", selected, "--source-run", "789",
+                                                              "--prior-run", RUN, "--artifact-id", "123"]), \
+                            mock.patch("builtins.print"):
+                        self.assertEqual(target.main(), 0)
+                    args = mocks[expected].call_args.args[0]
+                    self.assertEqual((args.mode, args.source_run, args.prior_run, args.artifact_id),
+                                     (phase, "789", RUN, "123"))
+                    for name, operation in mocks.items():
+                        self.assertEqual(operation.call_count, int(name == expected))
+                finally:
+                    for patch in reversed(patches):
+                        patch.stop()
+
+    def test_legacy_artifact_error_never_falls_back_to_escrow(self):
+        """An artifact failure retains the existing fixed failure result."""
+        with mock.patch.object(target, "execute", side_effect=manifest.ContractFailure("artifact_expired")), \
+                mock.patch.object(target, "finalize_escrow_recovery") as recover, \
+                mock.patch.object(target.sys, "argv", ["acceptance", "recover", "--source-run", "789"]), \
+                mock.patch("builtins.print") as output:
+            self.assertEqual(target.main(), 1)
+            recover.assert_not_called()
+            self.assertEqual(output.call_args.args, ("ten_address_acceptance_unverified",))
+
+
 class PhaseTests(unittest.TestCase):
     """Exercise real controller composition while replacing every external capability."""
 
