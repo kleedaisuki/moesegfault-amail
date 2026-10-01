@@ -15,6 +15,9 @@ service = "amail-mail"
 # 邮件事件自动链路可能包含无法在应用层脱敏的信封地址，故禁用此适配器观测。
 [observability]
 enabled = false
+# Keep the full production metadata contract even while every capture switch is off.
+head_sampling_rate = 1.0
+redact_query_string = true
 
 [observability.logs]
 enabled = false

@@ -110,6 +110,7 @@ class FreshOnlineWorkflowTests(unittest.TestCase):
         inputs = re.findall(r"^      [a-z][a-z0-9_]*:$", prefix, re.MULTILINE)
         self.assertEqual(len(inputs), 25)
         self.assertIn("      fresh_bootstrap_run:", prefix)
+        self.assertIn("paused-run:failed-online-run", prefix)
         header = self.block.split("    steps:", 1)[0]
         for required in ("name: Fresh production online deployment",
                          "inputs.target == 'production-fresh-online'",
