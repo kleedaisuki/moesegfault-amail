@@ -1619,6 +1619,9 @@ jobs:
       - name: Verify Cron complete-item liveness in native workerd (non-deploying)
         working-directory: infra/tests/worker-boundary
         run: pnpm test:maintenance-liveness
+      - name: Verify Cron Routing deadlines and useful repair in native workerd (non-deploying)
+        working-directory: infra/tests/worker-boundary
+        run: pnpm test:routing-deadline
       - name: Bundle Rust Email ingress for Wrangler
         working-directory: workers/mail-ingress
         run: worker-build --release

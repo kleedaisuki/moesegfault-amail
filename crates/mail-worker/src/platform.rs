@@ -7,6 +7,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Result};
 
 use crate::archive::Draft;
+use crate::maintenance::{self, ExternalDeadline};
 
 #[derive(Deserialize)]
 struct CfRuleResult {
@@ -168,6 +169,10 @@ fn checked_rule_list(
 /// Preserve only the first observable Rules GET failure boundary and numeric HTTP status.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum RuleListFailure {
+    /// No exchange was submitted because its absolute admission cutoff expired.
+    Deferred,
+    /// A submitted exchange exhausted its native connection/header/body timer.
+    Timeout,
     /// No HTTP response was observed; the request may nevertheless have reached Cloudflare.
     Request,
     /// Cloudflare returned a non-200 HTTP status.
@@ -182,7 +187,7 @@ impl RuleListFailure {
     /// Return the status only when a provider response was actually observed.
     pub(crate) fn provider_status(&self) -> Option<u16> {
         match self {
-            Self::Request => None,
+            Self::Request | Self::Deferred | Self::Timeout => None,
             Self::Http { status } | Self::Provider { status } | Self::Decode { status } => {
                 Some(*status)
             }
@@ -192,14 +197,33 @@ impl RuleListFailure {
 
 /// Shared address-phase egress allowance. Redirects are never followed.
 /// Inventory, fresh absence checks, current-ID reads and DELETEs all debit it.
-pub(crate) struct RoutingBudget {
+pub(crate) struct RoutingBudget<'a> {
+    /// Remaining native submissions, not attempts to construct a request.
     remaining: usize,
+    /// Foreground paths have no new timeout; Cron explicitly borrows its clock.
+    deadline: Option<ExternalDeadline<'a>>,
 }
 
-impl RoutingBudget {
+impl<'a> RoutingBudget<'a> {
     /// Reserve at most twenty external calls for one address invocation.
     pub(crate) fn new() -> Self {
-        Self { remaining: 20 }
+        Self {
+            remaining: 20,
+            deadline: None,
+        }
+    }
+
+    /// Bind Cron egress to the existing invocation and compound phase cutoff.
+    pub(crate) fn cron(deadline: ExternalDeadline<'a>) -> Self {
+        Self {
+            remaining: 20,
+            deadline: Some(deadline),
+        }
+    }
+
+    /// Count only exchanges handed to the native fetch API, including failures.
+    pub(crate) fn submitted(&self) -> usize {
+        20 - self.remaining
     }
 
     /// Admit a worst-case complete inventory before an absence recheck starts.
@@ -318,27 +342,171 @@ async fn rule_body(response: &mut worker::Response) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// One budget debit per nonredirecting provider exchange.
+/// Observed status survives body errors, preserving foreground HTTP mappings.
+struct RoutingResponse {
+    /// Numeric status only; provider text never escapes the transport boundary.
+    status: u16,
+    /// Only status 200 needs a body; error/absence bodies are canceled unread.
+    body: Result<Vec<u8>>,
+}
+
+/// One exact signal and timer enclose connection, headers, and bounded body.
+/// Request construction and time admission happen before submission accounting.
 async fn routing_fetch(
     env: &Env,
     url: &str,
     method: Method,
-    budget: &mut RoutingBudget,
-) -> Result<worker::Response> {
-    budget.take()?;
+    budget: &mut RoutingBudget<'_>,
+    deadline: Option<ExternalDeadline<'_>>,
+) -> Result<RoutingResponse> {
     let mut init = RequestInit::new();
     init.with_method(method)
         .with_headers(cf_headers(env)?)
         .with_redirect(worker::RequestRedirect::Manual);
-    Fetch::Request(Request::new_with_init(url, &init)?)
-        .send()
-        .await
+    let request = Request::new_with_init(url, &init)?;
+    let duration = deadline
+        .map(|value| value.exchange_duration())
+        .transpose()?;
+    let controller = worker::AbortController::default();
+    let signal = controller.signal();
+    // The reader owner is outside the raced future, including during pending read().
+    let mut reader = None;
+    budget.take()?;
+    let result = {
+        let exchange = Box::pin(routing_exchange(request, &signal, &mut reader));
+        match duration {
+            Some(duration) => {
+                let timer = Box::pin(worker::Delay::from(duration));
+                match futures_util::future::select(exchange, timer).await {
+                    futures_util::future::Either::Left((result, timer)) => {
+                        drop(timer);
+                        result
+                    }
+                    futures_util::future::Either::Right((_, exchange)) => {
+                        drop(exchange);
+                        Err(worker::Error::RustError("routing_exchange_timeout".into()))
+                    }
+                }
+            }
+            None => exchange.await,
+        }
+    };
+    let cancel = result.as_ref().map_or(true, |response| {
+        response.status != 200 || response.body.is_err()
+    });
+    // Only a failed exchange needs transport abort. A rejected/unused body is
+    // canceled through its reader without first erroring that native stream.
+    if result.is_err() {
+        controller.abort();
+    }
+    if let Some(reader) = reader {
+        finish_routing_reader(&reader, cancel);
+    }
+    result
+}
+
+/// Acquire native reader ownership before polling a body read; cap before copy.
+async fn routing_exchange(
+    request: Request,
+    signal: &worker::AbortSignal,
+    reader: &mut Option<JsValue>,
+) -> Result<RoutingResponse> {
+    let response = Fetch::Request(request).send_with_signal(signal).await?;
+    let status = response.status_code();
+    let body = match response.body() {
+        worker::ResponseBody::Stream(stream) => {
+            let stream = JsValue::from(stream.clone());
+            let acquired = reader_method(&stream, "getReader").and_then(|method| {
+                method
+                    .call0(&stream)
+                    .map_err(|_| EmbeddingFailure::Malformed)
+            });
+            let acquired = match acquired {
+                Ok(reader) => reader,
+                Err(_) => {
+                    return Ok(RoutingResponse {
+                        status,
+                        body: Err(worker::Error::RustError("routing_body_read_failed".into())),
+                    })
+                }
+            };
+            *reader = Some(acquired);
+            if status == 200 {
+                read_routing_reader(reader.as_ref().unwrap()).await
+            } else {
+                Ok(Vec::new())
+            }
+        }
+        worker::ResponseBody::Body(bytes) if status == 200 && bytes.len() > 256 * 1024 => {
+            Err(worker::Error::RustError("routing_body_limit".into()))
+        }
+        worker::ResponseBody::Body(bytes) if status == 200 => Ok(bytes.clone()),
+        _ => Ok(Vec::new()),
+    };
+    Ok(RoutingResponse { status, body })
+}
+
+/// Bound actual native chunk length before copying any chunk into Wasm memory.
+async fn read_routing_reader(reader: &JsValue) -> Result<Vec<u8>> {
+    let read = reader_method(reader, "read")
+        .map_err(|_| worker::Error::RustError("routing_body_read_failed".into()))?;
+    let mut bytes = Vec::new();
+    loop {
+        let pending = read.call0(reader)?;
+        let result =
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&pending)).await?;
+        if js_sys::Reflect::get(&result, &JsValue::from_str("done"))?.as_bool() == Some(true) {
+            return Ok(bytes);
+        }
+        let chunk = js_sys::Reflect::get(&result, &JsValue::from_str("value"))?
+            .dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| worker::Error::RustError("routing_body_read_failed".into()))?;
+        if chunk.length() as usize > (256 * 1024usize).saturating_sub(bytes.len()) {
+            return Err(worker::Error::RustError("routing_body_limit".into()));
+        }
+        bytes.extend(chunk.to_vec());
+    }
+}
+
+/// Initiate native cancellation synchronously, then release the lock.
+/// Do not await an untrusted cancellation promise after the exchange deadline.
+/// Handling rejection is native Promise bookkeeping, not detached read cleanup.
+fn finish_routing_reader(reader: &JsValue, cancel: bool) {
+    if cancel {
+        if let Ok(pending) = reader_method(reader, "cancel").and_then(|method| {
+            method
+                .call0(reader)
+                .map_err(|_| EmbeddingFailure::Malformed)
+        }) {
+            // Either settlement frees this one-shot callback; no eval or Rust task.
+            let ignore = wasm_bindgen::closure::Closure::once_into_js(|_: JsValue| {});
+            let promise = js_sys::Promise::resolve(&pending);
+            if let Ok(then) = reader_method(promise.as_ref(), "then") {
+                let _ = then.call2(promise.as_ref(), &ignore, &ignore);
+            }
+        }
+    }
+    if let Ok(release) = reader_method(reader, "releaseLock") {
+        let _ = release.call0(reader);
+    }
+}
+
+/// Keep closed deadline classes separate from ordinary provider transport errors.
+fn rule_list_transport_failure(error: worker::Error) -> RuleListFailure {
+    if maintenance::is_deferred(&error) {
+        RuleListFailure::Deferred
+    } else if matches!(&error, worker::Error::RustError(code) if code == "routing_exchange_timeout")
+    {
+        RuleListFailure::Timeout
+    } else {
+        RuleListFailure::Request
+    }
 }
 
 /// Bound the zone to ten pages / five hundred unique rules, requiring terminal proof.
 pub(crate) async fn rule_inventory(
     env: &Env,
-    budget: &mut RoutingBudget,
+    budget: &mut RoutingBudget<'_>,
 ) -> std::result::Result<CompleteRuleInventory, RuleListFailure> {
     let zone = env
         .var("CF_ZONE_ID")
@@ -348,17 +516,20 @@ pub(crate) async fn rule_inventory(
     let mut ids = BTreeSet::new();
     let mut known_pages = None;
     let mut known_count = None;
+    let deadline = budget
+        .deadline
+        .map(|value| value.clipped(std::time::Duration::from_secs(30)));
     for page in 1..=10 {
         let url = format!("https://api.cloudflare.com/client/v4/zones/{zone}/email/routing/rules?per_page=50&page={page}");
-        let mut response = routing_fetch(env, &url, Method::Get, budget)
+        let response = routing_fetch(env, &url, Method::Get, budget, deadline)
             .await
-            .map_err(|_| RuleListFailure::Request)?;
-        let status = response.status_code();
+            .map_err(rule_list_transport_failure)?;
+        let status = response.status;
         if status != 200 {
             return Err(RuleListFailure::Http { status });
         }
-        let bytes = rule_body(&mut response)
-            .await
+        let bytes = response
+            .body
             .map_err(|_| RuleListFailure::Decode { status })?;
         let data: CfRuleList =
             serde_json::from_slice(&bytes).map_err(|_| RuleListFailure::Decode { status })?;
@@ -517,7 +688,7 @@ pub(crate) async fn delete_owned_rule(
     address: &str,
     ingress: &str,
     rule_id: &str,
-    budget: &mut RoutingBudget,
+    budget: &mut RoutingBudget<'_>,
     database: &crate::database::Database,
 ) -> Result<()> {
     if !valid_rule_id(rule_id) || !budget.can_delete() {
@@ -526,11 +697,12 @@ pub(crate) async fn delete_owned_rule(
     let zone = env.var("CF_ZONE_ID")?.to_string();
     let url =
         format!("https://api.cloudflare.com/client/v4/zones/{zone}/email/routing/rules/{rule_id}");
-    let mut current = routing_fetch(env, &url, Method::Get, budget).await?;
-    if current.status_code() == 404 {
+    let deadline = budget.deadline;
+    let current = routing_fetch(env, &url, Method::Get, budget, deadline).await?;
+    if current.status == 404 {
         return Ok(());
     }
-    if current.status_code() != 200 {
+    if current.status != 200 {
         return Err(worker::Error::RustError("routing_read_failed".into()));
     }
     #[derive(Deserialize)]
@@ -538,7 +710,7 @@ pub(crate) async fn delete_owned_rule(
         success: bool,
         result: Option<CfListedRule>,
     }
-    let current: Current = serde_json::from_slice(&rule_body(&mut current).await?)
+    let current: Current = serde_json::from_slice(&current.body?)
         .map_err(|_| worker::Error::RustError("routing_read_failed".into()))?;
     let rule = current
         .result
@@ -566,15 +738,15 @@ pub(crate) async fn delete_owned_rule(
     if !allowed {
         return Err(worker::Error::RustError("routing_state_changed".into()));
     }
-    let mut response = routing_fetch(env, &url, Method::Delete, budget).await?;
-    match response.status_code() {
+    let response = routing_fetch(env, &url, Method::Delete, budget, deadline).await?;
+    match response.status {
         204 | 404 => Ok(()),
         200 => {
             #[derive(Deserialize)]
             struct Deleted {
                 success: bool,
             }
-            let deleted: Deleted = serde_json::from_slice(&rule_body(&mut response).await?)
+            let deleted: Deleted = serde_json::from_slice(&response.body?)
                 .map_err(|_| worker::Error::RustError("routing_delete_failed".into()))?;
             if deleted.success {
                 Ok(())
@@ -907,6 +1079,7 @@ mod tests {
     #[test]
     fn routing_budget_is_hard_and_shared() {
         let mut budget = RoutingBudget::new();
+        assert_eq!(budget.submitted(), 0);
         for _ in 0..10 {
             budget.take().unwrap();
         }
@@ -919,6 +1092,7 @@ mod tests {
         assert!(!budget.can_delete());
         budget.take().unwrap();
         assert!(budget.take().is_err());
+        assert_eq!(budget.submitted(), 20);
     }
 
     /// A saved ID or near match is never independent destructive authority.
@@ -986,6 +1160,8 @@ mod tests {
         );
 
         assert_eq!(RuleListFailure::Request.provider_status(), None);
+        assert_eq!(RuleListFailure::Deferred.provider_status(), None);
+        assert_eq!(RuleListFailure::Timeout.provider_status(), None);
         assert_eq!(
             RuleListFailure::Http { status: 403 }.provider_status(),
             Some(403)

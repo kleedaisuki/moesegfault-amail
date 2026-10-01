@@ -113,3 +113,46 @@ remove it. Owner/foreign/repeated DELETE and old HTTP no-resurrection/no-recharg
 assertions are unchanged. A narrow independent fixture review precedes rerun.
 Raw failed logs are retained only in worktree `.temp/ci-36811279260-failed.log`;
 this source correction is not yet new hosted-pass evidence.
+
+## Final hosted source acceptance
+
+PR #25 head `9aadfd1d7aafdb4ed491e069d0f37928a51711ef`:
+
+- [CI run 36812091255](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36812091255),
+  attempt 1, **success**, 2026-10-01 03:47:00 to 03:53:32 UTC.
+- [Workflow syntax run 36812090952](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36812090952),
+  **success**. Seven source checks were green: macOS/Linux/Windows CLI,
+  infrastructure, site, Rust Worker/Wasm, and workflow syntax.
+- Actions checked out PR merge revision
+  `3b66d616650b5b2e55087b971c8b78f129990e39`, merging the exact head into then-current
+  main `47d391615e671722c7f01bb7cf8963987f6150f9`. Do not call it a deployment
+  or confuse this merge ref with either public branch's revision.
+- Existing default built-workerd tests: **96/96**, zero failures. The corrected
+  owner/hidden-accepted/rotated-GC/resumed-HTTP workflow passed without weakening
+  deletion, journal or no-resurrection assertions.
+- Focused native liveness suite: **5/5**, zero failures, suite TAP duration
+  **27,024.268877 ms**. The 66 x 300-ms case TAP duration was **21,609.349357 ms**;
+  this includes fixture setup/teardown, not an independently reported handler
+  duration. Its internal real invocation wall assertion was >=19,800 ms.
+  Terminal sent, byte-exact four-million-character text, untouched second due
+  CAS/R2 read, and later retention cleanup all passed.
+- The other passing discriminators were the +116-second jump after chunk 40,
+  +16-second slow setup first entitlement, <60-second outbound headroom denial
+  before setup/CAS/R2, and eight scheduled-slot orders with duplicate/delayed/
+  skipped-event determinism. These logical offsets are policy fixtures, not
+  proof that a real 116-second workload fits platform CPU or lifetime limits.
+- Worker Rust unit suite: **62/62**, including the new pure admission tests;
+  trace-schema contract suite: **8/8**. Other existing Worker contract/build
+  steps completed successfully as required by the full hosted job.
+
+Independent source review and fixture review are committed in the PR. The latter
+retains the original R2 constructor P1, its 74e1db4 correction/re-review, and the
+narrow review of the order-sensitive nine-line fixture correction before rerun.
+Raw successful Worker logs are retained at worktree
+`.temp/ci-36812091255-worker.log`; failed predecessor logs remain separate.
+
+This final evidence update is initially a **local documentation-only follow-up**,
+not pushed into the already validated PR head. It reports the exact tested source,
+not a new untested source SHA. No local project runtime test/build, deployment,
+provider mutation, Cron enablement or unhold was performed. All separate provider,
+address-unit, diagnostic Queue, plan, CPU/RSS and release gates above remain.

@@ -196,12 +196,7 @@ async fn maintain_phase(
     let mut phase_turn = turn.enter(phase)?;
     let database = budget.database(env, phase)?;
     match phase {
-        MaintenancePhase::Addresses => {
-            // The existing claim/inventory batch remains one compound unit in
-            // this slice. Per-row timed deferral needs reserved release tokens.
-            let _permit = phase_turn.admit()?;
-            reconcile_addresses(env, &database).await
-        }
+        MaintenancePhase::Addresses => reconcile_addresses(env, &database, &mut phase_turn).await,
         MaintenancePhase::Outbound => reconcile_outbound(env, &database, &mut phase_turn).await,
         MaintenancePhase::Embeddings => reindex(env, &database, &mut phase_turn).await,
         MaintenancePhase::Storage => reconcile_storage(&database).await,
@@ -333,6 +328,11 @@ async fn clean_orphans(env: &Env, database: &Database, turn: &mut PhaseTurn<'_>)
 /// prioritize fresh user deletions without permanently starving other states.
 const ADDRESS_RECONCILE_SQL: &str = "SELECT address,state,cf_rule_id,created_at FROM addresses WHERE (state IN ('provisioning','deleting') OR needs_reconcile=1) AND next_reconcile_at<=?1 ORDER BY next_reconcile_at ASC,created_at ASC,address ASC LIMIT 30";
 
+/// Inventory spends at least one of twenty requests, leaving at most nine
+/// GET/DELETE pairs (one desired-state SELECT each) plus one terminal UPDATE.
+/// Provisioning adoption instead uses at most three conditional UPDATEs.
+const ADDRESS_REPAIR_SQL_MAX: usize = 10;
+
 /// One permanently allocated address lifetime; repair never changes its owner.
 #[derive(Deserialize)]
 struct AddressRepairRow {
@@ -421,14 +421,29 @@ async fn discover_retired_routes(
 
 /// Audit actual provider state every tick, including when no journal row is due.
 /// The twenty-call allowance includes every list page, current GET and DELETE.
-async fn reconcile_addresses(env: &Env, database: &Database) -> Result<()> {
+async fn reconcile_addresses(
+    env: &Env,
+    database: &Database,
+    turn: &mut PhaseTurn<'_>,
+) -> Result<()> {
     let scan_at = now();
+    let mut budget = platform::RoutingBudget::cron(turn.routing_deadline());
     let mut rows = claim_address_repairs(database, scan_at, 30).await?;
-    let mut budget = platform::RoutingBudget::new();
     let ingress = env.var("EMAIL_INGRESS_WORKER_NAME")?.to_string();
-    let inventory = platform::rule_inventory(env, &mut budget)
-        .await
-        .map_err(|_| worker::Error::RustError("routing_list_failed".into()))?;
+    let inventory = match platform::rule_inventory(env, &mut budget).await {
+        Ok(inventory) => inventory,
+        Err(failure) => {
+            // An incomplete inventory never authorizes a row repair. Time-denied
+            // claimed rows are unattempted, not ordinary provider retry failures.
+            if matches!(
+                &failure,
+                platform::RuleListFailure::Deferred | platform::RuleListFailure::Timeout
+            ) {
+                defer_address_repairs(database, &rows, scan_at).await?;
+            }
+            return Err(routing_list_error(failure));
+        }
+    };
     let mut failed = discover_retired_routes(env, &inventory, &ingress, database).await?;
     if rows.len() < 30 {
         rows.extend(claim_address_repairs(database, scan_at, 30 - rows.len()).await?);
@@ -436,15 +451,33 @@ async fn reconcile_addresses(env: &Env, database: &Database) -> Result<()> {
     if rows.len() == 30 {
         trace::diagnostic(env, trace::DiagnosticCode::AddressReconciliationBatchFull).await;
     }
-    for row in rows {
+    for (index, row) in rows.iter().enumerate() {
+        // A complete inventory plus one useful repair shares entry entitlement.
+        // Further repairs are new units; reserve exact-slot release writes for
+        // all unattempted rows before paying the worst-case complete repair.
+        if let Err(error) = turn.admit() {
+            defer_address_repairs(database, &rows[index..], scan_at).await?;
+            return Err(error);
+        }
+        if let Err(error) = database.ensure_remaining(rows.len() - index + ADDRESS_REPAIR_SQL_MAX) {
+            defer_address_repairs(database, &rows[index..], scan_at).await?;
+            return Err(error);
+        }
+        let submitted = budget.submitted();
         // Crash safety comes from the pre-I/O claim. Distinguish a denied
         // external turn from an attempted failure: identical retry slots would
         // let a permanently failing prefix consume every future call budget.
-        match repair_address(env, &row, &inventory, &ingress, &mut budget, database).await {
+        match repair_address(env, row, &inventory, &ingress, &mut budget, database).await {
             Ok(RepairTurn::Deferred) => {
-                database.prepare("UPDATE addresses SET next_reconcile_at=?1 WHERE address=?2 AND state=?3 AND next_reconcile_at=?4 AND (state IN ('provisioning','deleting') OR needs_reconcile=1)")
-                    .bind(&[bind_num(scan_at - 1),bind_str(&row.address),bind_str(&row.state),bind_num(scan_at + 5 * 60_000)])?.run().await?;
+                defer_address_repairs(database, std::slice::from_ref(row), scan_at).await?;
                 failed = true;
+            }
+            Err(error) if maintenance::is_deferred(&error) => {
+                // Once any request was submitted, keep this row's finite attempt
+                // slot: abort cannot undo a GET/DELETE already received remotely.
+                let pending = index + usize::from(budget.submitted() != submitted);
+                defer_address_repairs(database, &rows[pending..], scan_at).await?;
+                return Err(error);
             }
             Err(error) if database::is_deferred(&error) => return Err(error),
             Err(_) => failed = true,
@@ -455,6 +488,45 @@ async fn reconcile_addresses(env: &Env, database: &Database) -> Result<()> {
         return Err(worker::Error::RustError("routing_repair_incomplete".into()));
     }
     Ok(())
+}
+
+/// Prioritize only exact claimed, unattempted slots; every release is charged.
+/// Failure to pay/submit leaves remaining finite claims recoverable by expiry.
+async fn defer_address_repairs(
+    database: &Database,
+    rows: &[AddressRepairRow],
+    scan_at: i64,
+) -> Result<()> {
+    database.ensure_remaining(rows.len())?;
+    for row in rows {
+        database.prepare("UPDATE addresses SET next_reconcile_at=?1 WHERE address=?2 AND state=?3 AND next_reconcile_at=?4 AND (state IN ('provisioning','deleting') OR needs_reconcile=1)")
+            .bind(&[bind_num(scan_at - 1),bind_str(&row.address),bind_str(&row.state),bind_num(scan_at + 5 * 60_000)])?.run().await?;
+    }
+    Ok(())
+}
+
+/// Preserve submitted timeouts as dependency failures, not admission denials.
+fn routing_list_error(failure: platform::RuleListFailure) -> Error {
+    match failure {
+        platform::RuleListFailure::Deferred => maintenance::deferred(),
+        platform::RuleListFailure::Timeout => Error::RustError("routing_exchange_timeout".into()),
+        _ => Error::RustError("routing_list_failed".into()),
+    }
+}
+
+/// Foreground currently has no Cron deadline, but its exhaustive classification
+/// preserves the established header grammar: admission denial is state, never
+/// invented provider evidence; a submitted timeout is transient transport.
+fn routing_list_diagnostic_kind(failure: &platform::RuleListFailure) -> AddressDiagKind {
+    match failure {
+        platform::RuleListFailure::Deferred => AddressDiagKind::State,
+        platform::RuleListFailure::Timeout | platform::RuleListFailure::Request => {
+            AddressDiagKind::Request
+        }
+        platform::RuleListFailure::Http { .. } => AddressDiagKind::Http,
+        platform::RuleListFailure::Provider { .. } => AddressDiagKind::Provider,
+        platform::RuleListFailure::Decode { .. } => AddressDiagKind::Decode,
+    }
 }
 
 /// Whether this row received its external/state-only repair turn.
@@ -472,7 +544,7 @@ async fn repair_address(
     row: &AddressRepairRow,
     inventory: &platform::CompleteRuleInventory,
     ingress: &str,
-    budget: &mut platform::RoutingBudget,
+    budget: &mut platform::RoutingBudget<'_>,
     database: &Database,
 ) -> Result<RepairTurn> {
     let rules = inventory.for_address(&row.address, ingress, row.cf_rule_id.as_deref())?;
@@ -523,7 +595,7 @@ async fn repair_address(
             }
             let fresh = platform::rule_inventory(env, budget)
                 .await
-                .map_err(|_| worker::Error::RustError("routing_list_failed".into()))?;
+                .map_err(routing_list_error)?;
             if fresh
                 .for_address(&row.address, ingress, row.cf_rule_id.as_deref())?
                 .is_empty()
@@ -1691,13 +1763,11 @@ async fn add_address(
         trace::elapsed_ms(list_start),
     );
     let existing_rules = existing_rules.map_err(|error| {
-        let kind = match &error {
-            platform::RuleListFailure::Request => AddressDiagKind::Request,
-            platform::RuleListFailure::Http { .. } => AddressDiagKind::Http,
-            platform::RuleListFailure::Provider { .. } => AddressDiagKind::Provider,
-            platform::RuleListFailure::Decode { .. } => AddressDiagKind::Decode,
-        };
-        diagnostic.fail(kind, error.provider_status(), None);
+        diagnostic.fail(
+            routing_list_diagnostic_kind(&error),
+            error.provider_status(),
+            None,
+        );
         AppError::from(worker::Error::RustError("routing_list_failed".into()))
     })?;
     let rule_id = if let Some(id) = existing_rules.first_enabled() {
@@ -2929,6 +2999,53 @@ fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Closed Cron timing classes do not expand or misclassify foreground headers.
+    #[test]
+    fn routing_timing_failure_classification_preserves_existing_contracts() {
+        for (failure, kind, header) in [
+            (
+                platform::RuleListFailure::Deferred,
+                AddressDiagKind::State,
+                "v1:routing_list:state:0:0",
+            ),
+            (
+                platform::RuleListFailure::Timeout,
+                AddressDiagKind::Request,
+                "v1:routing_list:request:0:0",
+            ),
+        ] {
+            assert_eq!(routing_list_diagnostic_kind(&failure), kind);
+            assert_eq!(failure.provider_status(), None);
+            let mut diagnostic = AddressDiag::new();
+            diagnostic.enter(AddressDiagStage::RoutingList);
+            diagnostic.fail(kind, failure.provider_status(), None);
+            assert_eq!(diagnostic.header(false), header);
+        }
+        assert!(maintenance::is_deferred(&routing_list_error(
+            platform::RuleListFailure::Deferred
+        )));
+        let timeout = routing_list_error(platform::RuleListFailure::Timeout);
+        assert!(!maintenance::is_deferred(&timeout));
+        assert!(matches!(timeout, Error::RustError(code) if code == "routing_exchange_timeout"));
+        for (failure, kind) in [
+            (platform::RuleListFailure::Request, AddressDiagKind::Request),
+            (
+                platform::RuleListFailure::Http { status: 403 },
+                AddressDiagKind::Http,
+            ),
+            (
+                platform::RuleListFailure::Provider { status: 200 },
+                AddressDiagKind::Provider,
+            ),
+            (
+                platform::RuleListFailure::Decode { status: 200 },
+                AddressDiagKind::Decode,
+            ),
+        ] {
+            assert_eq!(routing_list_diagnostic_kind(&failure), kind);
+        }
+    }
 
     /// A full batch of failing deletes moves behind untouched due work.
     #[test]
