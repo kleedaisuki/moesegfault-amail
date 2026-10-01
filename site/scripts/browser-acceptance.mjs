@@ -24,6 +24,12 @@ async function check(result, name, fn) {
 
 /** Require actual visible focus, not only an element's presence in the DOM. */
 async function focusedOutline(page) {
+  // Keyboard dispatch can precede :focus-visible style resolution. Wait for
+  // the same observable contract, never replace it with a sleep or weaker ring.
+  await page.waitForFunction(() => {
+    const style = getComputedStyle(document.activeElement);
+    return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2;
+  }, null, { polling: 'raf', timeout: 1000 }).catch(() => {});
   return page.evaluate(() => {
     const el = document.activeElement;
     const style = getComputedStyle(el);

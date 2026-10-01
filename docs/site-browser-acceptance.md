@@ -179,3 +179,40 @@ viewing is inspection of hosted output, not local browser execution. No
 production source was changed by the validator. A separately owned source fix
 and diagnostic-only harness amendment require independent review before the
 next hosted run; no blind rerun or failure waiver is justified.
+
+### Diagnostic run: separate style timing from real anchor defects
+
+After independent approval of diagnostic-only `384c75e`, run
+[36809130233, attempt 1](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36809130233)
+ran the unchanged site with actual PR merge source
+`f050fa33db2ac48f5c6d4d05296759631b646aaa`. Build/install/launch again passed;
+behavioral checks failed. Active continuation elements were ordinary links,
+not automatically focusable prose containers. Diagnostics reported
+`:focus-visible=true`, `outlineStyle=solid` but `outlineWidth=0px` at immediate
+sampling. Yet the subsequent hosted `320-home-main-continuation-focus.png`
+visibly draws a clear outline around the focused privacy link. At 320 changelog,
+the same zero-width sample occurred even at the first skip-focus stage.
+
+This is evidence of a keyboard-event/style-resolution sampling gap in the
+harness: the screenshot is captured after the immediate diagnostic evaluation,
+and the site stylesheet specifies the existing 3-pixel focus outline. The
+focused element and contract must be checked after bounded browser presentation
+settling, not only immediately after keyboard dispatch. The amendment waits
+up to one second with animation-frame polling for the **same** non-none,
+at-least-2-pixel computed outline, then records and asserts it. A timeout does
+not become success; final computation still must satisfy the original predicate.
+It introduces no fixed sleep, manufactured focus, injected styles or weakened
+outline requirement. Actual success remains a hosted observation pending review.
+
+TOC measurements independently confirm a real source issue. Manual headings
+compute a 105-pixel margin, but their prose article has `overflowY=auto`,
+`scrollTop=0` and equal client/scroll heights (12977/11548/8429/7912 pixels for
+320/390/768/1440 respectively). The first heading still lands at root top ~0;
+subsequent installation headings land at ~105, below an insufficient margin
+on narrow screens. Changelog has no scrolling ancestor and its 110-pixel margin
+lands near 110; actual header bottom is 125.188 or 128.891 on narrow screens,
+versus 77 on desktop. Its desktop heading top was 110.344 and passed. These
+measurements are preserved in report `tocGeometry`; per-target failure images
+now include `320-manual-toc-0-failure.png` and
+`1440-manual-toc-0-failure.png`. The source owner must fix actual viewport anchor
+clearance rather than hiding this difference in the assertion.
