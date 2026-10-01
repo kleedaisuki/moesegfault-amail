@@ -1,6 +1,6 @@
 //! Native OIDC login, protected credentials, and refresh / 原生 OIDC 登录、安全凭据与刷新。
 
-use crate::config::Runtime;
+use crate::{config::Runtime, local_store};
 use anyhow::{bail, ensure, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chacha20poly1305::{
@@ -487,7 +487,7 @@ pub fn login(cfg: &Runtime, no_browser: bool) -> Result<String> {
             subject: subject.clone(),
         };
         let _lock = token_lock(cfg)?;
-        let conn = Connection::open(cfg.home.join("telemetry.sqlite3"))?;
+        let conn = local_store::open(cfg, Duration::from_secs(30))?;
         conn.execute_batch("CREATE TABLE IF NOT EXISTS refresh_state (session_key TEXT PRIMARY KEY, in_progress INTEGER NOT NULL)")?;
         conn.execute("INSERT INTO refresh_state(session_key,in_progress) VALUES(?1,0) ON CONFLICT(session_key) DO UPDATE SET in_progress=0", [format!("{}|{}", cfg.issuer, cfg.client_id)])?;
         // Persistence is the final fallible step before browser success.
@@ -519,8 +519,7 @@ fn callback_page(stream: &mut std::net::TcpStream, success: bool) -> Result<()> 
 pub fn access_token(cfg: &Runtime) -> Result<String> {
     cfg.require_oauth()?;
     let _lock = token_lock(cfg)?;
-    let conn = Connection::open(cfg.home.join("telemetry.sqlite3"))?;
-    conn.busy_timeout(Duration::from_secs(30))?;
+    let conn = local_store::open(cfg, Duration::from_secs(30))?;
     conn.execute_batch("CREATE TABLE IF NOT EXISTS refresh_state (session_key TEXT PRIMARY KEY, in_progress INTEGER NOT NULL)")?;
     let key = format!("{}|{}", cfg.issuer, cfg.client_id);
     conn.execute(

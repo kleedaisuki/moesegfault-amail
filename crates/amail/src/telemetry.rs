@@ -1,15 +1,16 @@
 //! Local redacted operation journal / 本地脱敏操作日志。
 
 use anyhow::Result;
+use rand::RngCore;
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::Serialize;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::config::Runtime;
+use crate::{config::Runtime, local_store};
 
-/// Only operational dimensions are retained; mail content and identifiers are forbidden.
-/// 仅保留运行维度；禁止邮件内容和个人标识。
+/// Legacy upload shape: never append fields rejected by older deployed servers.
+/// Mail content and personal identity are excluded, not operational identifiers.
 #[derive(Debug, Serialize)]
 struct Event {
     operation: String,
@@ -23,79 +24,186 @@ struct Event {
 }
 
 fn db(cfg: &Runtime) -> Result<Connection> {
-    let path = cfg.home.join("telemetry.sqlite3");
-    let mut conn = Connection::open(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    conn.busy_timeout(Duration::from_secs(30))?;
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS events (
+    // A contended journal must not add the command-state store's 30-second wait.
+    let mut conn = local_store::open(cfg, Duration::from_millis(250))?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY, operation TEXT NOT NULL, status INTEGER NOT NULL,
         duration_ms INTEGER NOT NULL, bytes_bucket INTEGER NOT NULL,
         trace_id TEXT NOT NULL, correlation_id TEXT, uploaded INTEGER NOT NULL DEFAULT 0,
-        span_id TEXT
+        span_id TEXT, started_at_ms INTEGER, elapsed_ms INTEGER, phase TEXT, error_kind TEXT
     ); CREATE INDEX IF NOT EXISTS events_pending ON events(uploaded, id);
-    CREATE TABLE IF NOT EXISTS send_attempts (
-        payload_hash TEXT PRIMARY KEY, attempt_key TEXT NOT NULL, accepted INTEGER NOT NULL DEFAULT 0
-    ); CREATE TABLE IF NOT EXISTS journal_state (
+    CREATE TABLE IF NOT EXISTS journal_state (
         key TEXT PRIMARY KEY, value INTEGER NOT NULL
-    );")?;
-    ensure_span_column(&mut conn)?;
+    );",
+    )?;
+    ensure_event_columns(&mut conn)?;
     Ok(conn)
 }
 
 /// Serialize the legacy schema check and ALTER across concurrent CLI processes.
-fn ensure_span_column(conn: &mut Connection) -> Result<()> {
+fn ensure_event_columns(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let has_span_id = tx
+    let names = tx
         .prepare("PRAGMA table_info(events)")?
         .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .iter()
-        .any(|name| name == "span_id");
-    if !has_span_id {
-        tx.execute("ALTER TABLE events ADD COLUMN span_id TEXT", [])?;
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (name, declaration) in [
+        ("span_id", "ALTER TABLE events ADD COLUMN span_id TEXT"),
+        (
+            "started_at_ms",
+            "ALTER TABLE events ADD COLUMN started_at_ms INTEGER",
+        ),
+        (
+            "elapsed_ms",
+            "ALTER TABLE events ADD COLUMN elapsed_ms INTEGER",
+        ),
+        ("phase", "ALTER TABLE events ADD COLUMN phase TEXT"),
+        (
+            "error_kind",
+            "ALTER TABLE events ADD COLUMN error_kind TEXT",
+        ),
+    ] {
+        if !names.iter().any(|column| column == name) {
+            tx.execute(declaration, [])?;
+        }
     }
     tx.commit()?;
     Ok(())
 }
 
-/// Prepare local tables before the first OAuth refresh lock.
-/// 在首次 OAuth 刷新锁之前准备本地表。
+/// Prepare the diagnostic schema without taking ownership of auth/send tables.
 pub fn init(cfg: &Runtime) -> Result<()> {
+    if std::env::var("AMAIL_TELEMETRY").ok().as_deref() == Some("off") {
+        return Ok(());
+    }
     db(cfg).map(|_| ())
 }
 
-/// Record safe timing/status dimensions, then start a detached bounded uploader.
-/// 记录安全的耗时和状态维度，再启动分离式有界上传器。
-pub fn record(
-    cfg: &Runtime,
-    operation: &str,
-    status: u16,
-    duration_ms: u64,
-    bytes: usize,
-    trace_id: &str,
-    span_id: &str,
-    correlation_id: Option<&str>,
-) {
-    if std::env::var("AMAIL_TELEMETRY").ok().as_deref() == Some("off") {
-        return;
+/// Failure boundaries contain static labels only, never error messages or URLs.
+#[derive(Clone, Copy, Debug)]
+pub enum Phase {
+    /// Credential acquisition failed before an HTTP request was sent.
+    Auth,
+    /// No HTTP response headers were received.
+    Transport,
+    /// Headers arrived but reading the complete body failed.
+    ResponseBody,
+    /// The HTTP exchange completed (including HTTP error responses).
+    Complete,
+}
+
+impl Phase {
+    /// Stable local journal value; this is not part of the legacy upload schema.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auth => "auth",
+            Self::Transport => "transport",
+            Self::ResponseBody => "response_body",
+            Self::Complete => "complete",
+        }
     }
-    let Ok(conn) = db(cfg) else {
-        return;
-    };
-    // Powers of two hide exact message/archive sizes while preserving useful scale.
-    // 2 的幂次桶隐藏精确邮件大小，同时保留调试需要的量级。
-    let bucket = if bytes == 0 {
-        0
+}
+
+/// One HTTP attempt's causal identity and clocks, created before credential work.
+/// Call finish exactly once at the observed boundary. No user data is stored here.
+pub struct RequestSpan<'a> {
+    cfg: &'a Runtime,
+    operation: &'a str,
+    trace_id: String,
+    span_id: String,
+    started_at_ms: Option<i64>,
+    start: Instant,
+}
+
+impl<'a> RequestSpan<'a> {
+    /// Start a request attempt with random W3C identifiers and both clock types.
+    pub fn new(cfg: &'a Runtime, operation: &'a str) -> Self {
+        let mut random = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut random);
+        let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect();
+        Self {
+            cfg,
+            operation,
+            trace_id: hex(&random[..16]),
+            span_id: hex(&random[16..]),
+            started_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|value| i64::try_from(value.as_millis()).ok()),
+            start: Instant::now(),
+        }
+    }
+
+    /// Propagate the same identity as the journaled HTTP attempt.
+    pub fn traceparent(&self) -> String {
+        format!("00-{}-{}-01", self.trace_id, self.span_id)
+    }
+
+    /// Finish consumes the span to prevent two rows for one HTTP attempt.
+    /// Status zero means no HTTP headers, not an invented provider error code.
+    pub fn finish(
+        self,
+        status: u16,
+        bytes: usize,
+        correlation: Option<&str>,
+        phase: Phase,
+        error_kind: Option<&'static str>,
+    ) {
+        if std::env::var("AMAIL_TELEMETRY").ok().as_deref() == Some("off") {
+            return;
+        }
+        let result = (|| -> Result<()> {
+            let conn = db(self.cfg)?;
+            self.insert(&conn, status, bytes, correlation, phase, error_kind)?;
+            maybe_spawn_flush(&conn)
+        })();
+        if let Err(error) = result {
+            report_loss("record_or_schedule", &error);
+        }
+    }
+
+    /// Retain exact elapsed time locally; the old wire field keeps its old bound.
+    fn insert(
+        &self,
+        conn: &Connection,
+        status: u16,
+        bytes: usize,
+        correlation: Option<&str>,
+        phase: Phase,
+        error_kind: Option<&str>,
+    ) -> Result<()> {
+        let elapsed = self.start.elapsed().as_millis().min(i64::MAX as u128) as i64;
+        // Message/archive sizes remain bucketed because they describe user data.
+        let bucket = if bytes == 0 {
+            0
+        } else {
+            1u64 << (usize::BITS - (bytes - 1).leading_zeros()).min(30)
+        };
+        conn.execute("INSERT INTO events(operation,status,duration_ms,bytes_bucket,trace_id,span_id,correlation_id,
+            started_at_ms,elapsed_ms,phase,error_kind) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![self.operation, status, elapsed.min(120_000), bucket, self.trace_id,
+                self.span_id, correlation, self.started_at_ms, elapsed, phase.as_str(), error_kind])?;
+        Ok(())
+    }
+}
+
+/// Report lost diagnostics on stderr without changing the command's result.
+/// Library error text can contain private paths, so retain structured codes only.
+pub fn report_loss(stage: &str, error: &anyhow::Error) {
+    if let Some(rusqlite::Error::SqliteFailure(code, _)) = error.downcast_ref::<rusqlite::Error>() {
+        eprintln!(
+            "amail: telemetry unavailable stage={stage} sqlite_code={:?} extended_code={}",
+            code.code, code.extended_code
+        );
+    } else if let Some(error) = error.downcast_ref::<std::io::Error>() {
+        eprintln!(
+            "amail: telemetry unavailable stage={stage} io_kind={:?}",
+            error.kind()
+        );
     } else {
-        1u64 << (usize::BITS - (bytes - 1).leading_zeros()).min(30)
-    };
-    let _ = conn.execute("INSERT INTO events(operation,status,duration_ms,bytes_bucket,trace_id,span_id,correlation_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-        params![operation, status, duration_ms.min(120_000), bucket, trace_id, span_id, correlation_id]);
-    let _ = maybe_spawn_flush(&conn);
+        eprintln!("amail: telemetry unavailable stage={stage}");
+    }
 }
 
 fn maybe_spawn_flush(conn: &Connection) -> Result<()> {
@@ -174,31 +282,20 @@ fn flush(cfg: &Runtime, token: &str, conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Reuse one idempotency key for an unresolved identical payload.
-/// 对相同但尚未确定结果的载荷复用同一个幂等键。
-pub fn send_key(cfg: &Runtime, hash: &str, random_key: &str) -> Result<String> {
-    let conn = db(cfg)?;
-    conn.execute(
-        "INSERT OR IGNORE INTO send_attempts(payload_hash,attempt_key) VALUES(?1,?2)",
-        params![hash, random_key],
-    )?;
-    Ok(conn.query_row(
-        "SELECT attempt_key FROM send_attempts WHERE payload_hash=?1",
-        [hash],
-        |r| r.get(0),
-    )?)
-}
-
-/// Release the key only after a definitive accepted response.
-/// 仅在明确获得接受响应后释放幂等键。
-pub fn accepted(cfg: &Runtime, hash: &str) -> Result<()> {
-    db(cfg)?.execute("DELETE FROM send_attempts WHERE payload_hash=?1", [hash])?;
-    Ok(())
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Synthetic configuration never opens the real user credential store.
+    pub(crate) fn config(home: &std::path::Path) -> Runtime {
+        Runtime {
+            home: home.to_owned(),
+            api_base: "https://mail.example.test".into(),
+            issuer: "https://identity.example.test".into(),
+            client_id: "synthetic".into(),
+            redirect_uri: "http://127.0.0.1/callback".into(),
+        }
+    }
 
     /// Existing rows must survive the additive span-ID migration unchanged.
     #[test]
@@ -209,15 +306,19 @@ mod tests {
              INSERT INTO events(trace_id) VALUES('0123456789abcdef0123456789abcdef');",
         )
         .unwrap();
-        ensure_span_column(&mut conn).unwrap();
-        ensure_span_column(&mut conn).unwrap();
-        let row: (String, Option<String>) = conn
-            .query_row("SELECT trace_id,span_id FROM events", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+        ensure_event_columns(&mut conn).unwrap();
+        ensure_event_columns(&mut conn).unwrap();
+        let row: (String, Option<String>, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT trace_id,span_id,started_at_ms,elapsed_ms FROM events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
             .unwrap();
         assert_eq!(row.0, "0123456789abcdef0123456789abcdef");
         assert_eq!(row.1, None);
+        assert_eq!(row.2, None);
+        assert_eq!(row.3, None);
     }
 
     /// Two old-CLI processes must not race into a duplicate-column startup failure.
@@ -243,7 +344,7 @@ mod tests {
                     let mut conn = Connection::open(path).unwrap();
                     conn.busy_timeout(Duration::from_secs(5)).unwrap();
                     barrier.wait();
-                    ensure_span_column(&mut conn).unwrap();
+                    ensure_event_columns(&mut conn).unwrap();
                 })
             })
             .collect();
@@ -259,7 +360,40 @@ mod tests {
             .unwrap()
             .collect::<std::result::Result<_, _>>()
             .unwrap();
-        assert_eq!(names.iter().filter(|name| *name == "span_id").count(), 1);
+        for column in [
+            "span_id",
+            "started_at_ms",
+            "elapsed_ms",
+            "phase",
+            "error_kind",
+        ] {
+            assert_eq!(names.iter().filter(|name| *name == column).count(), 1);
+        }
+    }
+
+    /// Exact local clocks and observed failure phase do not change legacy wire fields.
+    #[test]
+    fn records_exact_time_and_phase_with_matching_trace_identity() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir_in(root).unwrap();
+        let cfg = config(temp.path());
+        let conn = db(&cfg).unwrap();
+        let mut span = RequestSpan::new(&cfg, "messages.list");
+        span.start -= Duration::from_secs(121);
+        let parent = span.traceparent();
+        span.insert(&conn, 200, 0, None, Phase::ResponseBody, Some("decode"))
+            .unwrap();
+        let row: (i64, i64, i64, String, String, String, String) = conn.query_row(
+            "SELECT started_at_ms,elapsed_ms,duration_ms,phase,error_kind,trace_id,span_id FROM events",
+            [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))
+        ).unwrap();
+        assert!(row.0 > 0);
+        assert!(row.1 >= 121_000);
+        assert_eq!(row.2, 120_000);
+        assert_eq!(row.3, "response_body");
+        assert_eq!(row.4, "decode");
+        assert_eq!(parent, format!("00-{}-{}-01", row.5, row.6));
     }
 
     /// Older upload rows omit span_id instead of inventing a parent.
