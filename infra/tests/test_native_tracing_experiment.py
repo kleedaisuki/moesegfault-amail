@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, Mock, patch
 from email.message import Message
 from types import SimpleNamespace
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +19,164 @@ import native_tracing_experiment as experiment
 from test_native_route_lifecycle_contract import FakeProvider
 
 NONCE="a"*32
+
+
+class NativeReceiptDurabilityTests(unittest.TestCase):
+    """Hosted filesystem fault fixtures; no real provider or deployment process."""
+
+    def setUp(self):
+        """Keep synthetic public receipts inside this checkout's temporary root."""
+        folder = ROOT / ".temp"
+        folder.mkdir(exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(prefix="native-receipt-", dir=folder)
+        self.addCleanup(temporary.cleanup)
+        self.folder = Path(temporary.name)
+        self.receipt = self.folder / "experiment.json"
+        self.previous = {"schema": "native-tracing-experiment/v1", "probe_id": NONCE,
+                         "versions": {experiment.CALLER: "known-version"},
+                         "ingress": {"dns": {"id": "known-dns"}, "route": {"id": "known-route"}}}
+        self.original = json.dumps(self.previous, sort_keys=True).encode()
+        self.receipt.write_bytes(self.original)
+        for name, value in (("FOLDER", self.folder), ("RECEIPT", self.receipt)):
+            replacement = patch.object(experiment, name, value)
+            replacement.start()
+            self.addCleanup(replacement.stop)
+
+    def assert_previous_intact(self):
+        """Known nonce and resource coordinates survive byte-for-byte, without debris."""
+        self.assertEqual(self.receipt.read_bytes(), self.original)
+        self.assertEqual(json.loads(self.receipt.read_text()), self.previous)
+        self.assertEqual(list(self.folder.iterdir()), [self.receipt])
+
+    def test_success_replaces_closed_same_directory_file_with_identical_json(self):
+        """The sole visibility boundary occurs after file fsync and close."""
+        create = experiment.tempfile.NamedTemporaryFile
+        replace = experiment.os.replace
+        outputs = []
+        events = []
+
+        def temporary(**kwargs):
+            output = create(**kwargs)
+            outputs.append(output)
+            return output
+
+        def install(source, target):
+            self.assertTrue(outputs[-1].closed)
+            self.assertEqual(Path(source).parent, self.receipt.parent)
+            self.assertNotEqual(Path(source), self.receipt)
+            self.assertEqual(Path(target), self.receipt)
+            self.assertEqual(self.receipt.read_bytes(), self.original)
+            self.assertEqual(events, ["file_sync"])
+            replace(source, target)
+            events.append("replace")
+
+        value = {**self.previous, "extra": "synthetic"}
+        with patch.object(experiment.tempfile, "NamedTemporaryFile", side_effect=temporary), \
+             patch.object(experiment.os, "fsync", side_effect=lambda _: events.append("file_sync")), \
+             patch.object(experiment.os, "replace", side_effect=install), \
+             patch.object(experiment, "sync_receipt_directory", side_effect=lambda: events.append("directory_sync")):
+            experiment.write_receipt(value)
+        self.assertEqual(events, ["file_sync", "replace", "directory_sync"])
+        self.assertEqual(self.receipt.read_bytes(), json.dumps(value, sort_keys=True).encode())
+        self.assertEqual(list(self.folder.iterdir()), [self.receipt])
+
+    def test_partial_write_failure_preserves_previous_receipt(self):
+        """Even a partially filled pending file never truncates the recovery boundary."""
+        create = experiment.tempfile.NamedTemporaryFile
+
+        def temporary(**kwargs):
+            output = create(**kwargs)
+            write = output.write
+
+            def interrupted(value):
+                write(value[:12])
+                raise OSError("synthetic_write_failure")
+
+            output.write = interrupted
+            return output
+
+        with patch.object(experiment.tempfile, "NamedTemporaryFile", side_effect=temporary), \
+             patch.object(experiment.os, "replace") as replace:
+            with self.assertRaisesRegex(OSError, "synthetic_write_failure"):
+                experiment.write_receipt({**self.previous, "next": True})
+        replace.assert_not_called()
+        self.assert_previous_intact()
+
+    def test_file_sync_and_replace_failures_preserve_previous_receipt(self):
+        """Disk durability and atomic installation failures stop advancement."""
+        for boundary in ("fsync", "replace"):
+            with self.subTest(boundary=boundary), \
+                 patch.object(experiment.os, boundary, side_effect=OSError("synthetic_failure")), \
+                 patch.object(experiment, "sync_receipt_directory") as directory:
+                with self.assertRaisesRegex(OSError, "synthetic_failure"):
+                    experiment.write_receipt({**self.previous, "next": True})
+                directory.assert_not_called()
+                self.assert_previous_intact()
+
+    def test_serialization_failure_never_opens_temporary_file(self):
+        """An invalid value cannot disturb the existing receipt or staging area."""
+        with patch.object(experiment.tempfile, "NamedTemporaryFile") as create:
+            with self.assertRaises(TypeError):
+                experiment.write_receipt({"unsupported": object()})
+        create.assert_not_called()
+        self.assert_previous_intact()
+
+    def test_directory_sync_failure_keeps_complete_new_receipt_and_raises(self):
+        """Post-replace failure is not falsely described as an old-receipt rollback."""
+        value = {**self.previous, "next": True}
+        with patch.object(experiment, "sync_receipt_directory", side_effect=OSError("synthetic_directory_sync")):
+            with self.assertRaisesRegex(OSError, "synthetic_directory_sync"):
+                experiment.write_receipt(value)
+        self.assertEqual(json.loads(self.receipt.read_text()), value)
+        self.assertEqual(list(self.folder.iterdir()), [self.receipt])
+
+    def test_initial_receipt_failure_stops_before_provider_construction(self):
+        """No provider read/write is admitted without the durable initial boundary."""
+        build = MagicMock()
+        build.__truediv__ = Mock(return_value=build)
+        build.read_text.return_value = "{}"
+        with patch.object(experiment, "ROOT", build), \
+             patch.object(experiment, "Provider") as provider, \
+             patch.object(experiment.os, "replace", side_effect=OSError("synthetic_replace")), \
+             patch.object(experiment.subprocess, "run") as process, \
+             patch.dict(experiment.os.environ, {"GITHUB_SHA": "b" * 40, "GITHUB_RUN_ID": "123"}):
+            with self.assertRaisesRegex(OSError, "synthetic_replace"):
+                experiment.deploy(route=True)
+        provider.assert_not_called()
+        process.assert_not_called()
+        self.assert_previous_intact()
+
+    def test_verified_receipt_failure_admits_no_dns_route_or_worker_write(self):
+        """A successful GET-only preflight cannot bypass failed persisted admission."""
+        build = MagicMock()
+        build.__truediv__ = Mock(return_value=build)
+        build.read_text.return_value = "{}"
+        replace = experiment.os.replace
+        calls = []
+
+        def install(source, target):
+            calls.append(source)
+            if len(calls) == 2:
+                raise OSError("synthetic_admission_replace")
+            replace(source, target)
+
+        with patch.object(experiment, "ROOT", build), \
+             patch.object(experiment, "Provider") as provider, \
+             patch.object(experiment.ingress, "preflight", return_value={"accepted": True}), \
+             patch.object(experiment.ingress, "create_dns") as dns, \
+             patch.object(experiment.ingress, "create_route") as route, \
+             patch.object(experiment.os, "replace", side_effect=install), \
+             patch.object(experiment.subprocess, "run") as process, \
+             patch.dict(experiment.os.environ, {"GITHUB_SHA": "b" * 40, "GITHUB_RUN_ID": "123"}):
+            with self.assertRaisesRegex(OSError, "synthetic_admission_replace"):
+                experiment.deploy(route=True)
+        provider.return_value.request.assert_not_called()
+        for operation in (dns, route, process):
+            operation.assert_not_called()
+        retained = json.loads(self.receipt.read_text())
+        self.assertEqual(retained["preflight_state"]["phase"], "attempted")
+        self.assertFalse(retained["preflight_state"]["mutation_admitted"])
+        self.assertEqual(list(self.folder.iterdir()), [self.receipt])
 
 
 class NativeTracingExperimentTests(unittest.TestCase):

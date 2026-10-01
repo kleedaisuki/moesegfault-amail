@@ -92,6 +92,39 @@ advancing. The parent must bind receipt source/run/attempt, nonce, zone, hostnam
 script roles and actual serving versions, not accept arbitrary user-supplied
 coordinates. IDs alone do not establish ownership.
 
+### Atomic receipt durability
+
+`native_tracing_experiment.write_receipt()` serializes the existing JSON schema
+unchanged, writes a unique temporary file in the receipt's own directory, flushes
+and fsyncs it, closes it, and uses `os.replace()` as the visibility boundary.
+Unlike an in-place rewrite, a partial write, file-sync failure or failed replacement
+cannot truncate the previous valid nonce, versions or resource IDs. Failed pending
+files are removed best-effort; an orphan pending file is never read as a receipt.
+This follows the existing repository receipt pattern in
+`infra/tests/private_provider_operator.py` without introducing a deployment
+dependency on a test-only operator or a general persistence framework.
+
+On the hosted Linux control plane, the parent directory is fsynced after the
+replacement and before returning to the next provider mutation. A directory-sync
+failure propagates: the new complete receipt is already visible, but advancing is
+refused, and recovery must inspect that receipt rather than assume a rollback.
+Windows closes the temporary handle before replacement and skips directory fsync,
+which has no portable Python contract there. Atomic visibility does not promise
+survival of every power-loss/filesystem failure or persistence of newly created
+ancestor directories. Existing workflow writer serialization is still required;
+atomic replacement is not a multi-writer ownership protocol.
+
+Hosted fixtures in `test_native_tracing_experiment.py` cover partial writes,
+serialization/file-sync/replacement failure, post-replacement directory-sync
+failure, exact JSON compatibility and failed initial/preflight receipt admission
+without DNS, Route or Worker writes. Legacy recovery and the preflight-refused
+no-provider cleanup contract retain their existing reader semantics. This is a
+source durability improvement, not permission to rerun the SSL-read-refused actual
+operation `36896672169` or evidence of native tracing acceptance.
+
+Primary contracts: [Python os.replace and fsync](https://docs.python.org/3/library/os.html)
+and [Python named temporary files](https://docs.python.org/3/library/tempfile.html#tempfile.NamedTemporaryFile).
+
 Creation order is: full GET-only preflight; owned DNS create and exact readback;
 checked-artifact private probe and caller; ownership/version readback; owned Route
 create and exact readback. DNS creation does not require scripts to exist; Route
