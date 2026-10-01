@@ -70,7 +70,7 @@ class RoleMonitorLiveAuditTests(unittest.TestCase):
             audit.inspect_bindings(settings, QUEUE_ID)
 
     def test_effective_observability_rejects_automatic_capture(self) -> None:
-        """Current Worker settings must explicitly disable every independent collector."""
+        """Explicit capture switches and opt-in Issues defaults determine effective safety."""
 
         obs = {"enabled": False, "logs": {"enabled": False},
                "traces": {"enabled": False}, "issues": {"enabled": False}}
@@ -85,8 +85,9 @@ class RoleMonitorLiveAuditTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 audit.inspect_observability({}, {}, missing)
         missing_issues = {key: value for key, value in obs.items() if key != "issues"}
+        audit.inspect_observability({}, {}, {**worker, "observability": missing_issues})
         with self.assertRaises(RuntimeError):
-            audit.inspect_observability({}, {}, {**worker, "observability": missing_issues})
+            audit.inspect_observability({}, {}, {**worker, "observability": {**obs, "issues": None}})
         with self.assertRaises(RuntimeError):
             audit.inspect_observability({"observability": {"logs": {"enabled": True}}}, {}, worker)
 
