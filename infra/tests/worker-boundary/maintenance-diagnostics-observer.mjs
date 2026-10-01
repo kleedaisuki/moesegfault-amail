@@ -1,5 +1,5 @@
 /** Synthetic native-boundary observer; production receives no fixture policy. */
-import BuiltWorker from "../../../crates/mail-worker/build/worker/shim.mjs";
+import MailMaintenance from "../../../crates/mail-worker/entry/maintenance.mjs";
 
 const nativeStatements = new WeakMap();
 let policy = {}, stats, offset = 0;
@@ -160,7 +160,7 @@ function queue(native) {
 }
 
 /** No production HTTP requests; fixture control remains synthetic-only. */
-export default class MaintenanceDiagnosticsObserver extends BuiltWorker {
+export default class MaintenanceDiagnosticsObserver extends MailMaintenance {
   constructor(ctx, env) {
     const nativeQueue = queue(env.TRACE_EVENTS);
     const wrapped = { ...env, MAIL_DB: database(env.MAIL_DB), MAIL_BODIES: bucket(env.MAIL_BODIES) };

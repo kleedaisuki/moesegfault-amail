@@ -1,5 +1,5 @@
 /** Test-only submission counter around unchanged built Rust/Wasm + native D1. */
-import BuiltWorker from "../../../crates/mail-worker/build/worker/shim.mjs";
+import MailMaintenance from "../../../crates/mail-worker/entry/maintenance.mjs";
 
 const nativeStatements = new WeakMap();
 const stats = { statements: 0, individual: 0, batchCalls: 0, batchStatements: 0, unsupported: 0 };
@@ -47,10 +47,10 @@ function database(native) {
 }
 
 /** Only fresh synthetic fixture invocations can observe these numeric counters. */
-export default class MaintenanceCounterObserver extends BuiltWorker {
+export default class MaintenanceCounterObserver extends MailMaintenance {
   constructor(ctx, env) { super(ctx, { ...env, MAIL_DB: database(env.MAIL_DB) }); }
   async fetch(request) {
     if (request.url === "https://synthetic.invalid/d1-stats") return Response.json(stats);
-    return super.fetch(request);
+    throw new Error("no application HTTP surface in maintenance observer");
   }
 }

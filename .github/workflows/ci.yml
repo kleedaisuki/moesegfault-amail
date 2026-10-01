@@ -1613,6 +1613,9 @@ jobs:
       - name: Bundle Worker for Wrangler
         working-directory: crates/mail-worker
         run: worker-build --release
+      - name: Verify actual SDK split entry surfaces and lifecycle in workerd (non-deploying)
+        working-directory: infra/tests/worker-boundary
+        run: pnpm test:entry-split
       - name: Run built Rust Worker address-add boundary tests in workerd
         working-directory: infra/tests/worker-boundary
         run: pnpm test
@@ -1789,7 +1792,7 @@ jobs:
           python-version: '3.12'
       - name: Install deploy tools
         run: |
-          cargo install worker-build --version 0.8.3 --locked
+          cargo install worker-build --version 0.8.5 --locked
           npm install --global wrangler@4.142.0
           python -m pip install -r ../../infra/dns/requirements.txt
       - name: Verify authoritative Email Sending DNS
@@ -2158,7 +2161,7 @@ jobs:
         run: python ../../infra/deploy/check_staging.py
       - name: Install deploy tools
         run: |
-          cargo install worker-build --version 0.8.3 --locked
+          cargo install worker-build --version 0.8.5 --locked
           npm install --global wrangler@4.142.0
           python -m pip install -r ../../infra/dns/requirements.txt
       - name: Verify staging authoritative Email Sending DNS

@@ -1,5 +1,7 @@
 /** Test-only observer of native APIs, scoped to the single synthetic OpenRouter exchange. */
-import RustWorker from "../../../crates/mail-worker/build/worker/shim.mjs";
+import { WorkerEntrypoint } from "cloudflare:workers";
+import MailApi from "../../../crates/mail-worker/entry/api.mjs";
+import MailMaintenance from "../../../crates/mail-worker/entry/maintenance.mjs";
 
 const endpoint = "https://openrouter.ai/api/v1/embeddings";
 const streams = new WeakSet();
@@ -92,16 +94,17 @@ function cronDatabase(native) {
   });
 }
 
-/** Subclass the generated WorkerEntrypoint, retaining its environment and context. */
-export default class EmbeddingNativeObserver extends RustWorker {
+/** Fixture-only dual surface delegates to the actual independently owned adapters. */
+export default class EmbeddingNativeObserver extends WorkerEntrypoint {
   constructor(ctx, env) { super(ctx, { ...env, MAIL_DB: cronDatabase(env.MAIL_DB) }); }
+  scheduled(event) { return new MailMaintenance(this.ctx, this.env).scheduled(event); }
   async fetch(request) {
     if (request.url === "https://synthetic.invalid/cron-policy") {
       ({ claimJumpMs = 0 } = await request.json());
       return new Response(null, { status: 204 });
     }
     if (request.url === "https://synthetic.invalid/embedding-stats") return Response.json(stats);
-    const response = await super.fetch(request);
+    const response = await new MailApi(this.ctx, this.env).fetch(request);
     const headers = new Headers(response.headers);
     for (const [name, value] of Object.entries(stats)) {
       headers.set(`x-synthetic-native-${name.toLowerCase()}`, String(value));

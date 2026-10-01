@@ -1,5 +1,7 @@
 /** Test-only native batch observer; production receives no test-policy switches. */
-import BuiltWorker from "../../../crates/mail-worker/build/worker/shim.mjs";
+import { WorkerEntrypoint } from "cloudflare:workers";
+import MailApi from "../../../crates/mail-worker/entry/api.mjs";
+import MailMaintenance from "../../../crates/mail-worker/entry/maintenance.mjs";
 
 const nativeStatements = new WeakMap();
 let policy = {}, stats;
@@ -67,8 +69,10 @@ function database(native, control) {
 }
 
 /** The real compiled Rust HTTP and Cron handlers retain all business contracts. */
-export default class AcceptedStageObserver extends BuiltWorker {
+export default class AcceptedStageObserver extends WorkerEntrypoint {
   constructor(ctx, env) { super(ctx, { ...env, MAIL_DB: database(env.MAIL_DB, env.TEST_CONTROL) }); }
+  /** Exercise the actual scheduled-only adapter with the same observed native state. */
+  scheduled(event) { return new MailMaintenance(this.ctx, this.env).scheduled(event); }
   async fetch(request) {
     if (request.url === "https://synthetic.invalid/stage-policy") {
       policy = await request.json();
@@ -76,6 +80,6 @@ export default class AcceptedStageObserver extends BuiltWorker {
       return Response.json({ configured: true });
     }
     if (request.url === "https://synthetic.invalid/stage-stats") return Response.json(stats);
-    return super.fetch(request);
+    return new MailApi(this.ctx, this.env).fetch(request);
   }
 }
