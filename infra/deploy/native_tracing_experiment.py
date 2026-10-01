@@ -209,29 +209,66 @@ def deploy() -> None:
     write_receipt(receipt)
 
 
+def trigger_facts(response, raw: bytes) -> dict:
+    """Classify a credential-free synthetic endpoint reply, never dump a challenge body.
+
+    Header names are public schema facts; values are restricted to reviewed
+    operational fields. Cookies, challenge tokens, redirect URLs and prose never
+    enter the receipt. A bare Forbidden response differs from our JSON receipt.
+    """
+    headers = response.headers
+    result = {"http_status": response.code, "body_bytes": len(raw),
+              "body_class": "bare_forbidden" if raw.strip() == b"Forbidden" else "other",
+              "header_names": sorted(key.lower() for key in headers.keys())}
+    media = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    result["media_type"] = media if media in ("application/json", "text/html", "text/plain") else "other"
+    ray = headers.get("cf-ray", "")
+    if re.fullmatch(r"[A-Za-z0-9-]{1,64}", ray):
+        result["cf_ray"] = ray
+    result["cloudflare_server"] = headers.get("server", "").lower() == "cloudflare"
+    result["cloudflare_challenge"] = headers.get("cf-mitigated", "").lower() == "challenge"
+    return result
+
+
 def trigger() -> None:
-    """Single synthetic trigger; never send credentials or retry an uncertain invocation."""
+    """Single trigger with persisted failure boundary; never retry an uncertain invocation."""
     receipt = json.loads(RECEIPT.read_text())
     receipt["from"] = int(time.time() * 1000) - 2000
     write_receipt(receipt)
     request = Request(receipt["url"], data=b"", method="POST")
-    with build_opener(NoRedirect).open(request, timeout=60) as response:
-        raw = response.read(65537)
-    if len(raw) > 65536:
-        raise ValueError("canary_receipt_body_limit")
-    value = json.loads(raw)
-    rows = value.get("receipts", [])
-    if len(rows) != 4:
-        raise ValueError("four_canary_case_receipts_required")
-    for row in rows:
-        report = row["report"]
-        if (report.get("available") is not True or report.get("sampled") is not True
-                or report.get("stage") != "complete" or report["case"]["run"] != receipt["probe_id"]):
-            raise ValueError(f"native_api_not_accepted: stage={report.get('stage')} sampled={report.get('sampled')}")
-        if row.get("status") != (200 if report["case"]["kind"] == "success" else 500):
-            raise ValueError("canary_case_status_mismatch")
-    receipt["receipts"], receipt["to"] = rows, int(time.time() * 1000) + 2000
-    write_receipt(receipt)
+    try:
+        with span("canary.trigger", "post", component="native_tracing", script_name=CALLER) as facts:
+            try:
+                response = build_opener(NoRedirect).open(request, timeout=60)
+            except HTTPError as error:
+                response_facts(facts, error.code, error.headers)
+                with error:
+                    raw = error.read(65537)
+                    receipt["trigger"] = trigger_facts(error, raw)
+                facts.reason = "http_status"
+                raise ValueError("canary_trigger_http_failed") from None
+            with response:
+                response_facts(facts, response.status, response.headers)
+                raw = response.read(65537)
+                receipt["trigger"] = trigger_facts(response, raw)
+        if len(raw) > 65536:
+            raise ValueError("canary_receipt_body_limit")
+        value = json.loads(raw)
+        rows = value.get("receipts", [])
+        if len(rows) != 4:
+            raise ValueError("four_canary_case_receipts_required")
+        # The caller constructs all reports itself, without reading user data.
+        receipt["receipts"] = rows
+        for row in rows:
+            report = row["report"]
+            if (report.get("available") is not True or report.get("sampled") is not True
+                    or report.get("stage") != "complete" or report["case"]["run"] != receipt["probe_id"]):
+                raise ValueError("native_api_not_accepted")
+            if row.get("status") != (200 if report["case"]["kind"] == "success" else 500):
+                raise ValueError("canary_case_status_mismatch")
+    finally:
+        receipt["to"] = int(time.time() * 1000) + 2000
+        write_receipt(receipt)
     print(json.dumps({"event": "native_canary_invoked", "probe_id": receipt["probe_id"], "cases": 4}, sort_keys=True))
 
 
