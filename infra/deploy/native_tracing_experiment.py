@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from urllib.error import HTTPError
@@ -49,6 +50,7 @@ class Provider:
         if not re.fullmatch(r"[0-9a-f]{32}", self.account) or not self.token:
             raise ValueError("canary_provider_context_missing")
         self.opener = build_opener(NoRedirect)
+        self.last_request = None
 
     def request(self, method: str, suffix: str, data=None, *, token=None, envelope=False):
         """No automatic retry, query/SQL/body log or guessed absence on read failure."""
@@ -66,6 +68,21 @@ class Provider:
         elif path == f"/accounts/{self.account}/workers/domains":
             endpoint = "workers.canary.domain_inventory"
         with span("cloudflare.canary", method.lower(), component="native_tracing", account_id=self.account, endpoint=endpoint) as facts:
+            started = time.monotonic()
+            self.last_request = {"endpoint": endpoint, "method": method,
+                                 "started_at": datetime.now(timezone.utc).isoformat()}
+            # Keep the specific preread boundary even when tracing groups several
+            # resources as existing_tls; never copy the input suffix/query itself.
+            resources = {ingress.ZONE: "zone",
+                         ingress.ZONE + "/ssl/universal/settings": "universal_ssl_settings",
+                         ingress.ZONE + "/ssl/certificate_packs": "certificate_inventory",
+                         ingress.ZONE + "/dns_records": "dns_inventory",
+                         ingress.ZONE + "/workers/routes": "route_inventory",
+                         f"/accounts/{self.account}/workers/domains": "domain_inventory"}
+            resources.update({self.script(name): "probe_settings" if name == PROBE else "caller_settings"
+                              for name in NAMES})
+            if path in resources:
+                self.last_request["resource"] = resources[path]
             headers = {"Authorization": "Bearer " + (token or self.token), "Content-Type": "application/json"}
             request = Request(API + suffix, method=method, headers=headers,
                               data=None if data is None else json.dumps(data).encode())
@@ -90,6 +107,15 @@ class Provider:
                 except (ValueError, OSError):
                     pass
                 raise
+            finally:
+                # Only typed fields already admitted to control-plane diagnostics
+                # cross into the receipt; suffixes, bodies and exception prose do not.
+                self.last_request.update({"finished_at": datetime.now(timezone.utc).isoformat(),
+                                          "duration_ms": round((time.monotonic() - started) * 1000, 3)})
+                for key in ("http_status", "cf_ray", "provider_error_codes"):
+                    value = getattr(facts, key)
+                    if value is not None:
+                        self.last_request[key] = value
 
     def script(self, name: str, suffix: str = "settings") -> str:
         """Only the two source-owned scripts can be read, deployed or removed."""
@@ -99,9 +125,45 @@ class Provider:
 
 
 def write_receipt(value: dict) -> None:
-    """Persist public operational state before advancing to the next side effect."""
+    """Atomically persist unchanged public JSON before the next side effect.
+
+    A failed write, file sync or replacement leaves the previous receipt intact.
+    The same-directory temporary file is closed before replacement for Windows.
+    POSIX directory sync must succeed before returning; if it fails after replace,
+    the new complete receipt remains visible but no following mutation is admitted.
+    Windows has no portable directory fsync, so power-loss durability is weaker.
+    The workflow's existing single-writer lock remains required.
+    """
+    serialized = json.dumps(value, sort_keys=True)
     FOLDER.mkdir(parents=True, exist_ok=True)
-    RECEIPT.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+    output = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False,
+                                         prefix=".experiment-", suffix=".json", dir=RECEIPT.parent)
+    pending = Path(output.name)
+    try:
+        with output:
+            output.write(serialized)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(pending, RECEIPT)
+        sync_receipt_directory()
+    finally:
+        # An orphan is never a recovery receipt. Do not mask a failed durability
+        # boundary with temporary-file cleanup errors or remove the old receipt.
+        try:
+            pending.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def sync_receipt_directory() -> None:
+    """Persist the POSIX replacement entry; never pretend a failed sync succeeded."""
+    if os.name == "nt":
+        return
+    descriptor = os.open(RECEIPT.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def config(name: str, probe_id: str, *, route: bool = False) -> dict:
@@ -182,26 +244,44 @@ def capture_accepted(settings: dict, name: str) -> bool:
 
 def deploy(*, route: bool = False) -> None:
     """Create only absent scripts; an ambiguous process result is never retried."""
-    provider = Provider()
-    preflight = ingress.preflight(provider) if route else None
-    if not route:
-        for name in NAMES:
-            try:
-                provider.request("GET", provider.script(name))
-            except HTTPError as error:
-                if error.code != 404:
-                    raise
-            else:
-                raise ValueError(f"canary_script_already_exists: {name}")
     receipt = {"schema": "native-tracing-experiment/v1", "source_sha": os.environ["GITHUB_SHA"],
                "run_id": os.environ["GITHUB_RUN_ID"], "probe_id": uuid.uuid4().hex, "versions": {},
                "build_identity": json.loads((ROOT / ".temp/ci/validated-worker-build.json").read_text())}
-    write_receipt(receipt)
+    receipt["preflight_state"] = {"phase": "attempted", "mutation_admitted": False,
+                                  "started_at": datetime.now(timezone.utc).isoformat()}
     if route:
         receipt["transport"] = "owned_zone_route_v1"
         receipt["ingress"] = {"schema": "native-route-ingress/v1", "zone_id": ingress.ZONE_ID,
-                              "hostname": ingress.HOST, "preflight": preflight}
+                              "hostname": ingress.HOST}
+    write_receipt(receipt)
+    provider = None
+    try:
+        provider = Provider()
+        preflight = ingress.preflight(provider) if route else None
+        if not route:
+            for name in NAMES:
+                try:
+                    provider.request("GET", provider.script(name))
+                except HTTPError as error:
+                    if error.code != 404:
+                        raise
+                else:
+                    raise ValueError(f"canary_script_already_exists: {name}")
+    except Exception as error:
+        state = receipt["preflight_state"]
+        state.update({"phase": "refused", "finished_at": datetime.now(timezone.utc).isoformat(),
+                      "error_type": type(error).__name__ if type(error).__name__ in
+                      ("HTTPError", "URLError", "ValueError", "KeyError", "TypeError", "TimeoutError", "OSError") else "other"})
+        if provider is not None and isinstance(provider.last_request, dict):
+            state["last_request"] = provider.last_request
         write_receipt(receipt)
+        raise
+    if route:
+        receipt["ingress"]["preflight"] = preflight
+    receipt["preflight_state"].update({"phase": "verified", "mutation_admitted": True,
+                                       "finished_at": datetime.now(timezone.utc).isoformat()})
+    write_receipt(receipt)
+    if route:
         # This bounded first mutation establishes actual DNS permission; GETs
         # never substitute for a successful nonce-owned write/readback.
         ingress.create_dns(provider, receipt, write_receipt)
@@ -535,8 +615,25 @@ def cleanup() -> None:
     """Delete only receipt-owned scripts, caller first; unknown replacement is retained."""
     if not RECEIPT.exists():
         return
-    provider = Provider()
     receipt = json.loads(RECEIPT.read_text())
+    preflight = receipt.get("preflight_state")
+    if isinstance(preflight, dict) and preflight.get("phase") in ("attempted", "refused"):
+        # A persisted preread is not write ownership. Do not turn an early refusal
+        # into fresh provider reads, deletion, or a verified-absence claim.
+        child = receipt.get("ingress", {})
+        if (preflight.get("mutation_admitted") is not False or receipt.get("versions") != {}
+                or not isinstance(child, dict) or "dns" in child or "route" in child
+                or "url" in receipt or "cases" in receipt):
+            raise ValueError("canary_preflight_no_write_state_invalid")
+        receipt["cleanup"] = {"outcome": "not_needed_no_mutation_admitted",
+                              "resource_absence_verified": False,
+                              "recorded_at": datetime.now(timezone.utc).isoformat()}
+        write_receipt(receipt)
+        return
+    if preflight is not None and (not isinstance(preflight, dict)
+            or preflight.get("phase") != "verified" or preflight.get("mutation_admitted") is not True):
+        raise ValueError("canary_preflight_state_invalid")
+    provider = Provider()
     if receipt.get("transport") == "owned_zone_route_v1":
         # A live/uncertain route or DNS ownership conflict must stop script
         # removal; never leave the route pointing at a deleted caller.

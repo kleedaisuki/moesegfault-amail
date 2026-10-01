@@ -1,0 +1,61 @@
+# Observe immutable bootstrap intent; never create, deploy, activate or replay.
+name: Observe fresh Mail bootstrap recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      prior_run:
+        description: Original first-attempt protected fresh bootstrap run ID
+        required: true
+        type: string
+      confirm:
+        description: Enter OBSERVE_FRESH_BOOTSTRAP_NO_REPLAY
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+# Readbacks share the graph owner's fence so a cooperative writer cannot interleave.
+concurrency:
+  group: amail-production-graph-writer
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: Observe owned fresh bootstrap intent without replay
+    if: >-
+      github.ref == 'refs/heads/main' && github.run_attempt == 1 &&
+      inputs.confirm == 'OBSERVE_FRESH_BOOTSTRAP_NO_REPLAY'
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify source recovery contracts without provider capabilities
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m unittest discover -s infra/tests -p 'test_fresh*.py'
+      - name: Admit original protected journals before observing owned coordinates
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          GH_TOKEN: ${{ github.token }}
+          PRIOR_RUN: ${{ inputs.prior_run }}
+          AMAIL_BOOTSTRAP_RECOVERY_CONFIRM: ${{ inputs.confirm }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python infra/deploy/fresh_mail_bootstrap.py --recover-run "$PRIOR_RUN"
+      - name: Preserve bounded observation without ownership or success promotion
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mail-fresh-bootstrap-observation-${{ github.run_id }}-1
+          path: .temp/fresh-bootstrap-recovery/*/observation.json
+          if-no-files-found: error
+          retention-days: 30
