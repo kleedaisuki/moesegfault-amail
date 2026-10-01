@@ -1,5 +1,53 @@
 # Hosted candidate-site browser acceptance
 
+## Current fixed hosted live-candidate pass (2026-10-01)
+
+**PASS for the bounded automated browser contract at deployed source
+`47d391615e671722c7f01bb7cf8963987f6150f9`; not full visual/accessibility or
+Mail/release acceptance.** [Live run 36812450154](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36812450154),
+attempt 1, main, workflow_dispatch, completed success. Its report records:
+
+| Identity / measurement | Observed value |
+| --- | --- |
+| Target / base | `live-candidate` / `https://amail.moesegfault.dev` |
+| Workflow source / deployedRevision | Both `47d391615e671722c7f01bb7cf8963987f6150f9` |
+| Capture interval (UTC) | 2026-10-01 03:52:23.131–03:52:52.938 |
+| Matrix | `/`, `/manual/`, `/changelog/` at 320, 390, 768 and 1440 CSS pixels: 12 cases |
+| Named check totals | 78 passed, 0 failed; includes screenshot capture, which is not human visual approval |
+| Artifact | `site-browser-36812450154-1`, ID `11140635520`; report and 66 PNG screenshots |
+
+The downloaded report was inspected at repository-relative
+`.temp/live-site-browser-36812450154/site-browser-36812450154-1/site-browser-evidence/report.json`.
+Counts were recomputed from `cases[].checks[].passed`; screenshots were counted,
+not independently visually reviewed. The hosted report/artifact remains the
+primary evidence; this local retrieval path is not a permanent published asset.
+Retrieve it while retained via `gh run download 36812450154 --name
+site-browser-36812450154-1 --dir .temp/live-site-browser-36812450154`.
+
+Exact route/candidate identity, no page-wide overflow, skip-link/continuation
+focus, CTA/local installation/privacy destinations, all local TOC target
+clearances, rendered privacy emphasis, manual cell readability/reachability
+thresholds and mobile table column visibility without horizontal scrolling
+passed where applicable. Table checks
+measure their declared thresholds, not human comprehension. This run performs
+browser GET/navigation only; it does not build/deploy the live site.
+
+[Main source-preview run 36811172838](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36811172838)
+also completed success at the same workflow source before deployment. It is
+separate source-preview evidence, not the reason the live site passes. The
+[deployment ledger](site-production-candidate-lane.md#current-fixed-candidate-update-and-live-browser-outcome-2026-10-01)
+connects the corrected deployment, fixed Worker version and same-run live smoke.
+Earlier failed hosted runs below retain their real failure observations and
+fix rationale; they are historical, not current failures.
+
+No new human screenshot judgment, screen-reader announcement/reading-order
+check, contrast/zoom certification, cross-browser/OS/font guarantee, clean
+archive install, provider/DNS health or Identity/Mail/send readiness follows.
+The [earlier human visual review](review-site-visual-artifact-36809632215.md)
+is scoped to its own source-preview artifact; do not relabel it as review of
+this live artifact. No local tests, browser execution or mutation occurred in
+this documentation curation.
+
 ## Purpose and evidence boundary
 
 The candidate deployment ledger in `site-production-candidate-lane.md` proves
@@ -13,7 +61,8 @@ skip link and main navigation in `BaseLayout.astro`, generated local TOCs in
 `ManualLayout.astro` and `changelog.astro`, native installation/privacy links,
 and the page-local candidate state/service boundary in `candidate_site.py`.
 Expected results below derive from these user-facing contracts, not screenshots
-of the current implementation. No browser pass is claimed by this document.
+of the current implementation. This original implementation section claimed no
+browser pass; later run-specific outcomes are recorded separately above and below.
 
 ## Invocation and target identity
 
