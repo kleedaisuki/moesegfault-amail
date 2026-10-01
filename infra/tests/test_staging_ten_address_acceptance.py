@@ -67,7 +67,8 @@ class PhaseTests(unittest.TestCase):
                 tombstones=False, final_drift="", transport="artifact", historical_sha=SHA,
                 original_status="completed", original_record_sha=None, same_run=False,
                 selected_generation=GEN, selected_key=KEY, corrupt_chunk=False, original_missing=False,
-                prior_terminal=False, late_chunk_loss=""):
+                prior_terminal=False, late_chunk_loss="", durable_prepare=False,
+                preparation_failure=""):
         """Run controller with synthetic authenticated envelopes and no environment tools."""
         world, reader, services, cli, native, artifacts, values = self.setup_world()
         terminal = terminal or transport == "escrow"
@@ -169,6 +170,35 @@ class PhaseTests(unittest.TestCase):
                     return result
                 escrow_client._query = corrupt
             self.last_terminal = escrow_client,database,native_state
+            if durable_prepare:
+                # Narrow prepare must not acquire later campaign/terminal powers.
+                for name in ("attach", "arm", "_finalize", "_purge"):
+                    setattr(escrow_client, name, mock.Mock(side_effect=AssertionError("forbidden prepare capability")))
+                prepare_put, prepare_read = escrow_client.put, escrow_client.read
+                def unpublished_put(*args):
+                    self.assertFalse(target.prepared_file(RUN).exists())
+                    return prepare_put(*args)
+                def unpublished_read(*args):
+                    self.assertFalse(target.prepared_file(RUN).exists())
+                    return prepare_read(*args)
+                escrow_client.put, escrow_client.read = unpublished_put, unpublished_read
+            if preparation_failure:
+                if preparation_failure == "lost-write":
+                    original_put = escrow_client.put
+                    def lost_put(*args):
+                        original_put(*args)
+                        raise manifest.ContractFailure("escrow_seal_unverified")
+                    escrow_client.put = lost_put
+                elif preparation_failure == "readback":
+                    original_put = escrow_client.put
+                    def sealed_then_changed(*args):
+                        sealed = original_put(*args)
+                        database.db.execute(f"UPDATE {target.escrow.PARENT} SET artifact_id='321' WHERE original_run=?", (RUN,))
+                        database.db.commit()
+                        return sealed
+                    escrow_client.put = sealed_then_changed
+                else:
+                    raise AssertionError("unknown synthetic preparation failure")
             def dispatch_record(run,token,*,checkout_sha=None):
                 if checkout_sha is None and original_missing:
                     raise manifest.ContractFailure("dispatch_provenance_unverified")
@@ -193,7 +223,11 @@ class PhaseTests(unittest.TestCase):
                     remove.start()
                 try:
                     args = self.args(mode)
-                    if transport == "escrow":
+                    if durable_prepare:
+                        args.artifact_id = ""
+                        args.prior_run = ""
+                        result = target.prepare_escrow(args)
+                    elif transport == "escrow":
                         args.artifact_id = ""
                         result = target.finalize_escrow_recovery(args)
                     else:
@@ -201,10 +235,14 @@ class PhaseTests(unittest.TestCase):
                 finally:
                     if scratch_failure:
                         remove.stop()
-                    if mode == "recover":
+                    if mode == "recover" or durable_prepare:
                         cli.add.assert_not_called()
                         cli.delete.assert_not_called()
-                    self.assertLessEqual(escrow_factory.call_count,int(terminal))
+                    self.assertLessEqual(escrow_factory.call_count,int(terminal or durable_prepare))
+                    if durable_prepare:
+                        for name in ("attach", "arm", "_finalize", "_purge"):
+                            getattr(escrow_client, name).assert_not_called()
+                        escrow_client.read = prepare_read
             self.assertEqual(source.call_count, 1)
             self.assertIs(service_factory.call_args.args[2], reader.sending_state)
             self.assertEqual(list(target.TEMP.glob("ten-address-hosted-*")), [])
@@ -221,6 +259,62 @@ class PhaseTests(unittest.TestCase):
             value = manifest.open_manifest(target.prepared_file(RUN).read_bytes(), KEY, RUN, GEN)
         self.assertEqual(value["owner_sub"], OWNER)
         self.assertEqual(value["provenance"], identity_provenance())
+
+    def test_dormant_durable_prepare_seals_exact_bytes_without_arming(self):
+        """An upload file is exposed only after complete independent D1 authentication."""
+        result, world, artifacts, privacy, cli = self.execute("prepare", durable_prepare=True)
+        client, database, native_state = self.last_terminal
+        with mock.patch.object(manifest, "_cipher", SyntheticAEAD):
+            retained, blob = client.read(RUN, KEY, GEN)
+        self.assertEqual(result, ("ten_address_escrow_prepared",))
+        self.assertEqual(blob, target.prepared_file(RUN).read_bytes())
+        self.assertEqual(retained["state"], "sealed")
+        self.assertIsNone(retained["artifact_id"])
+        self.assertIsNone(retained["armed_at"])
+        self.assertIsNone(retained["cleanup_receipt_sha"])
+        self.assertTrue(native_state["closed"])
+        self.assertEqual(world.calls, [])
+        cli.add.assert_not_called(); cli.delete.assert_not_called()
+        artifacts.content.assert_not_called()
+
+    def test_durable_prepare_ambiguous_write_or_drift_never_exposes_upload(self):
+        """Retain provider evidence without file-only fallback or alias permissions."""
+        for failure in ("lost-write", "readback"):
+            with self.subTest(failure=failure):
+                with self.assertRaises(manifest.ContractFailure):
+                    self.execute("prepare", durable_prepare=True, preparation_failure=failure)
+                client, database, native_state = self.last_terminal
+                self.assertFalse(target.prepared_file(RUN).exists())
+                self.assertEqual(client.parent(RUN)["state"], "sealed")
+                self.assertIsNone(client.parent(RUN)["armed_at"])
+                self.assertGreater(database.query(target.escrow.SQL["aggregate"], (RUN,)).rows[0]["bytes"], 0)
+
+    def test_durable_prepare_corrupt_chunk_keeps_writing_evidence_without_upload(self):
+        """Failed chunk authentication cannot become a seal, upload or mutation grant."""
+        with self.assertRaises(manifest.ContractFailure):
+            self.execute("prepare", durable_prepare=True, corrupt_chunk=True)
+        client, database, native_state = self.last_terminal
+        self.assertFalse(target.prepared_file(RUN).exists())
+        self.assertEqual(client.parent(RUN)["state"], "writing")
+        self.assertIsNone(client.parent(RUN)["armed_at"])
+
+    def test_durable_prepare_rejects_campaign_recovery_and_attached_inputs(self):
+        """Wrong phase/coordinates fail before reading private environment capabilities."""
+        for mode in ("campaign", "recover", "prepare"):
+            with self.subTest(mode=mode), mock.patch.object(target, "environment") as env:
+                with self.assertRaisesRegex(manifest.ContractFailure, "quota_escrow_prepare_only"):
+                    target.prepare_escrow(self.args(mode))
+                env.assert_not_called()
+
+    def test_durable_prepare_rejects_nonretained_generation(self):
+        """Generation mismatch is rejected before provider or native account work."""
+        with mock.patch.object(target, "environment", return_value={"AMAIL_TEN_ADDRESS_KEY_GENERATION": "other"}), \
+                mock.patch.object(target, "checkout") as checkout:
+            args = self.args("prepare")
+            args.artifact_id = args.prior_run = ""
+            with self.assertRaisesRegex(manifest.ContractFailure, "escrow_generation_unsupported"):
+                target.prepare_escrow(args)
+            checkout.assert_not_called()
 
     def test_campaign_reads_same_ciphertext_then_ten_addresses_and_cleanup(self):
         """Complete synthetic campaign is gated by source/artifact/privacy/hold/pins."""

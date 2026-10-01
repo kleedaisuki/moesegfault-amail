@@ -118,6 +118,44 @@ def execute(args: argparse.Namespace) -> tuple[str, ...]:
     return _execute(args)
 
 
+def prepare_escrow(args: argparse.Namespace) -> tuple[str, ...]:
+    """Dormant prepare-only D1 durability seam, before any artifact upload.
+
+    A reviewed wrapper may call this with prepare, empty original/artifact IDs,
+    and the fixed retained-key generation. No CLI or workflow activates it.
+    The exact authenticated ciphertext must be sealed in D1 before the upload
+    file becomes available. This never attaches an artifact, arms a campaign,
+    allocates/retires aliases, writes a receipt or purges ciphertext. Failure
+    preserves any provider-side writing/sealed record for explicit recovery.
+    """
+    require(args.mode == "prepare" and args.artifact_id == "" and args.prior_run == "",
+            "quota_escrow_prepare_only")
+    return _execute(args, durable_prepare=True)
+
+
+def _publish_prepared(blob: bytes, run: str, secret: str, generation: str,
+                      client: escrow.Escrow | None) -> None:
+    """Expose upload bytes only after optional independently authenticated D1 seal.
+
+    Existing file-only preparation retains its contract. Durable preparation
+    cannot silently fall back to that mode after a write/readback failure.
+    Neither provider records nor partial local files are deleted on failure.
+    """
+    destination = prepared_file(run)
+    require(not destination.parent.exists() and not destination.parent.is_symlink(),
+            "quota_prepared_path_exists")
+    if client is not None:
+        sealed = client.put(blob, secret, run, generation)
+        retained, actual = client.read(run, secret, generation)
+        require(retained == sealed and retained["state"] == "sealed"
+                and retained["artifact_id"] is None and retained["armed_at"] is None
+                and retained["cleanup_receipt_sha"] is None and actual == blob,
+                "quota_escrow_preparation_unverified")
+    destination.parent.mkdir(exist_ok=False)
+    with destination.open("xb") as output:
+        require(output.write(blob) == len(blob), "quota_prepared_file_incomplete")
+
+
 def finalize_recovery(args: argparse.Namespace) -> tuple[str, ...]:
     """Dormant concrete read-only recovery/teardown coordinator; no CLI/workflow entry.
 
@@ -141,12 +179,18 @@ def finalize_escrow_recovery(args: argparse.Namespace) -> tuple[str, ...]:
     return _execute(args,terminal=True,transport="escrow")
 
 
-def _execute(args: argparse.Namespace, *, terminal: bool = False, transport: str = "artifact") -> tuple[str, ...]:
+def _execute(args: argparse.Namespace, *, terminal: bool = False, transport: str = "artifact",
+             durable_prepare: bool = False) -> tuple[str, ...]:
     """Compose concrete observed checks; terminal enables work, never asserts success."""
     require(not terminal or args.mode == "recover", "quota_terminal_recovery_only")
     require(transport == "artifact" or transport == "escrow" and terminal and args.mode == "recover",
             "quota_transport_unreviewed")
+    require(not durable_prepare or args.mode == "prepare" and not terminal
+            and transport == "artifact" and args.artifact_id == "" and args.prior_run == "",
+            "quota_escrow_prepare_only")
     values = environment(args.mode)
+    require(not durable_prepare or values["AMAIL_TEN_ADDRESS_KEY_GENERATION"] == ESCROW_GENERATION,
+            "escrow_generation_unsupported")
     sha = checkout()
     current_run = os.environ["GITHUB_RUN_ID"]
     token = values["GITHUB_TOKEN"]
@@ -225,11 +269,11 @@ def _execute(args: argparse.Namespace, *, terminal: bool = False, transport: str
                                        ("amail-mail-staging", "amail-inbound-staging", manifest.DOMAIN, manifest.ISSUER), "held")
             if args.mode == "prepare":
                 _, blob = hosted.prepare(evidence, secret, generation, int(now.timestamp() * 1000), adapter)
-                destination = prepared_file(original_run)
-                destination.parent.mkdir(exist_ok=False)
-                with destination.open("xb") as output:
-                    output.write(blob)
-                return ("ten_address_recovery_prepared",)
+                client = (escrow.Escrow(values["CLOUDFLARE_ACCOUNT_ID"], values["CLOUDFLARE_API_TOKEN"])
+                          if durable_prepare else None)
+                _publish_prepared(blob, original_run, secret, generation, client)
+                return (("ten_address_escrow_prepared",) if durable_prepare
+                        else ("ten_address_recovery_prepared",))
             require(plan["owner_sub"] == owner and plan["provenance"]["verified_username"] == values["STAGING_E2E_USERNAME"],
                     "recovery_owner_mismatch")
             if args.mode == "recover":
