@@ -57,4 +57,3 @@ Required hosted additions: surviving owned tombstone with no ZIP terminalizes wi
 ## Limits and required next evidence
 
 This is not a runtime proof. Real built Rust/Wasm hosted cases must cover chunk-write failure, final-transaction rollback, fresh/expired/stale lease, cross-path delayed HTTP after Cron/delete/GC, legacy partial visibility, foreign storage/message guards, exact maximum body, and the derived-index regression above. Record exact final source/test SHA and run URL. No privacy, live provider, production rollout, CPU/RSS, or full-Cron budget gate was verified here.
-
