@@ -4,7 +4,7 @@ A failed or cancelled creator may have performed real writes. Its immutable GitH
 not current inventory or operator JSON, supplies the original recovery epoch.
 """
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import hashlib
 import io
 import json
@@ -311,8 +311,28 @@ def load(run_id: str, folder: Path) -> tuple[Epoch, Path]:
     return epoch, folder / "controller.jsonl"
 
 
-def _sink_checkpoint(raw: bytes, sha: str, run_id: str) -> tuple[str, Epoch, str, str, str, bool]:
-    """Admit only the observed sink followed by the known readback failure.
+@dataclass(frozen=True)
+class Checkpoint:
+    """Validated observed deployments; never permission to replay a Worker write."""
+
+    creation_run: str
+    """Original storage creator, independently proved by the caller."""
+    deployment_epoch: Epoch
+    """Latest protected attempt whose immutable modules are verified."""
+    sink_epoch: Epoch
+    """Source of the observed sink, which may predate the latest attempt."""
+    pins: dict[str, str]
+    """Observed role/version identities; consumers must not mutate this mapping."""
+    queue: str
+    """Observed trace-events Queue ID, not its display name."""
+    dlq: str
+    """Observed dead-letter Queue ID, distinct from the events Queue."""
+    replace_sink: bool
+    """Only the legacy sink prefix requires replacement."""
+
+
+def _sink_checkpoint(raw: bytes, sha: str, run_id: str) -> Checkpoint:
+    """Admit only observed deployments followed by a known readback failure.
 
     The captured creation scope is type-checked, not treated as creation proof.
     Callers must independently load the original creator's ownership journal.
@@ -329,15 +349,16 @@ def _sink_checkpoint(raw: bytes, sha: str, run_id: str) -> tuple[str, Epoch, str
     if epoch.source_sha != sha or epoch.run_id != run_id:
         raise ValueError("fresh_recovery_epoch_origin_mismatch")
     base = {"schema": "mail-fresh-resume/v1", "deployment_epoch": value, "creation_run": creation_run}
-    # Only the two observed production prefixes are admitted; not a replay engine.
+    # Only observed production prefixes are admitted; not a replay engine.
     prefixes = {
-        ("ownership", "migrate", "queues", "sink", "sink_readback"): (0, 5, 7, True),
-        ("ownership", "retained_sink", "sink_replacement", "sink_readback"): (11, 3, 5, False),
+        ("ownership", "migrate", "queues", "sink", "sink_readback"): (0, 5, {"sink": 7}, True, "FreshError"),
+        ("ownership", "retained_sink", "sink_replacement", "sink_readback"): (11, 3, {"sink": 5}, False, "FreshError"),
+        ("ownership", "retained_sink", "maintenance", "api", "receipt"): (11, 3, {"sink": 3, "maintenance": 5, "api": 7}, False, "ValueError"),
     }
     phases = tuple(row.get("phase") for row in rows[::2])
     if any(not isinstance(phase, str) for phase in phases) or phases not in prefixes:
         raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
-    schema_prefix, queue_index, sink_index, replace_needed = prefixes[phases]
+    schema_prefix, queue_index, role_indices, replace_needed, error_type = prefixes[phases]
     expected = [{**base, "phase": phase, "state": state}
                 for phase in phases
                 for state in ("intent", "observed")]
@@ -356,38 +377,46 @@ def _sink_checkpoint(raw: bytes, sha: str, run_id: str) -> tuple[str, Epoch, str
         raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
     Scope(creation_epoch, scope["database"], scope["database_created_at"], scope["bucket_created_at"])
     queue, dlq = rows[queue_index].get("queue"), rows[queue_index].get("dlq")
-    version = rows[sink_index].get("version")
+    pins = {role: rows[index].get("version") for role, index in role_indices.items()}
     if (any(not isinstance(item, str) or re.fullmatch(r"[0-9a-f]{32}", item) is None
             for item in (queue, dlq)) or queue == dlq
-            or not isinstance(version, str) or UUID.fullmatch(version) is None):
+            or any(not isinstance(version, str) or UUID.fullmatch(version) is None for version in pins.values())
+            or len(set(pins.values())) != len(pins)):
         raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
     expected[1].update(creation_epoch=creation_value, scope=scope, schema_prefix=schema_prefix)
     expected[queue_index].update(queue=queue, dlq=dlq)
-    expected[sink_index].update(version=version)
-    expected[-1].update(state="failed", error_type="FreshError")
+    for role, index in role_indices.items():
+        expected[index].update(version=pins[role])
+    expected[-1].update(state="failed", error_type=error_type)
+    sink_epoch = epoch
     if not replace_needed:
         retained = rows[queue_index]
         source_value, previous = retained.get("source_epoch"), retained.get("version")
         if (not isinstance(source_value, dict) or set(source_value) != fields
-                or not isinstance(previous, str) or UUID.fullmatch(previous) is None or previous == version):
+                or not isinstance(previous, str) or UUID.fullmatch(previous) is None):
             raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
         source_epoch = Epoch(**source_value)
         if source_epoch.run_id in {run_id, creation_run}:
             raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
         expected[queue_index].update(source_epoch=source_value, version=previous)
-        expected[sink_index - 1].update(previous_version=previous)
+        if "sink_replacement" in phases:
+            if previous == pins["sink"]:
+                raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+            expected[role_indices["sink"] - 1].update(previous_version=previous)
+        else:
+            sink_epoch = source_epoch
     if rows != expected:
         raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
-    return creation_run, epoch, version, queue, dlq, replace_needed
+    return Checkpoint(creation_run, epoch, sink_epoch, pins, queue, dlq, replace_needed)
 
 
-def load_sink_checkpoint(run_id: str, folder: Path) -> tuple[str, Epoch, str, str, str, bool] | None:
-    """Load one protected sink-readback failure without granting replay or ownership.
+def load_sink_checkpoint(run_id: str, folder: Path) -> Checkpoint | None:
+    """Load protected observed deployments without granting replay or ownership.
 
-    Example: ``creator, epoch, version, queue, dlq, replace_needed = load_sink_checkpoint(
+    Example: ``checkpoint = load_sink_checkpoint(
     latest_attempt, ROOT / '.temp/recovery/sink')``. The caller separately proves
     original storage ownership and reads back this exact sink before proceeding.
-    ``replace_needed`` distinguishes the legacy sink from an already observed
+    ``checkpoint.replace_sink`` distinguishes the legacy sink from an already observed
     replacement; the latter must be preserved, not redeployed.
     A fully downloaded original controller artifact returns ``None`` so the caller
     can use the existing original-creation admission path. Missing or ambiguous
@@ -405,7 +434,7 @@ def load_sink_checkpoint(run_id: str, folder: Path) -> tuple[str, Epoch, str, st
     if not set(files) <= allowed:
         raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
     checkpoint = _sink_checkpoint(files["resume.jsonl"], sha, run_id)
-    creation_run, epoch, version, queue, dlq, replace_needed = checkpoint
+    epoch = checkpoint.deployment_epoch
     if "preflight.jsonl" in files:
         preflight(files["preflight.jsonl"], sha, run_id)
     build = artifact(rows, f"worker-native-modules-{sha}", MODULE_LIMIT)
@@ -416,7 +445,7 @@ def load_sink_checkpoint(run_id: str, folder: Path) -> tuple[str, Epoch, str, st
         raw = files["trace-queue-provision-production.json"]
         queue_receipt(raw)
         identities = {row["queue_name"]: row["queue_id"] for row in decode(raw)}
-        expected = {"amail-trace-events": queue, "amail-trace-dlq": dlq}
+        expected = {"amail-trace-events": checkpoint.queue, "amail-trace-dlq": checkpoint.dlq}
         if any(identity != expected[name] for name, identity in identities.items()):
             raise ValueError("fresh_recovery_sink_queue_mismatch")
     folder = Path(folder)
@@ -428,4 +457,4 @@ def load_sink_checkpoint(run_id: str, folder: Path) -> tuple[str, Epoch, str, st
         with (folder / name).open("xb") as output:
             output.write(data)
         (folder / name).chmod(0o600)
-    return creation_run, epoch, version, queue, dlq, replace_needed
+    return checkpoint

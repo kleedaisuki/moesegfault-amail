@@ -360,8 +360,8 @@ class RecoveryAdmissionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             admission.scope_journal(wrong, self.epoch)
 
-    def sink_checkpoint(self, replacement=False):
-        """Reproduce both observed production prefixes with synthetic module bytes."""
+    def sink_checkpoint(self, replacement=False, all_workers=False):
+        """Reproduce the three observed production prefixes with synthetic module bytes."""
         creation = Epoch("87acaaa4ddbc2c22233fb5e5fc74f1778f86f3aa", "36912824752",
                          11188385927, "ea687638b68ec1791c9754c92e0df9aad3105a909cf92163d1dc68140a4619ec",
                          "1.98.1")
@@ -377,7 +377,7 @@ class RecoveryAdmissionTests(unittest.TestCase):
         rows[5].update(queue="e7a80fba65b0471aa4a267527d83d2d3", dlq="7eab75daab9345e9ad6d0c1fa6f0e37c")
         rows[7].update(version="c56c8062-ef7f-48ed-b91f-91394b03cd69")
         rows[9].update(state="failed", error_type="FreshError")
-        if replacement:
+        if replacement or all_workers:
             rows[1]["schema_prefix"] = 11
             source = Epoch("b2b64ae76fb8096cc566f50b6510e2e6522822ec", "36916937613", 11190151442,
                            "ed1b076b54fbee527c33378021e5a391eea6ea7eff2fa371acbba4afa2cee7c3", "1.98.1")
@@ -387,6 +387,17 @@ class RecoveryAdmissionTests(unittest.TestCase):
                     {**base, "phase": "sink_replacement", "state": "intent", "previous_version": rows[7]["version"]},
                     {**base, "phase": "sink_replacement", "state": "observed", "version": "d372b6f0-42ed-4536-b7ee-15273b50d6a3"},
                     rows[8], rows[9]]
+        if all_workers:
+            source = Epoch("56fdf41ffe5463fa211b9ce9807da3cae80d5959", "36925573432", 11194156308,
+                           "dd02a72f7d20d2f15c8f4669c3bc0bc1088950bf858e361bb42d60ebfde83508", "1.98.1")
+            rows[3].update(source_epoch=asdict(source), version=rows[5]["version"])
+            rows = rows[:4] + [
+                {**base, "phase": "maintenance", "state": "intent"},
+                {**base, "phase": "maintenance", "state": "observed", "version": "d1f2946b-4001-4a82-bb75-3c30441b25a8"},
+                {**base, "phase": "api", "state": "intent"},
+                {**base, "phase": "api", "state": "observed", "version": "a2eba957-43e1-4ba1-af67-44d368f03b6f"},
+                {**base, "phase": "receipt", "state": "intent"},
+                {**base, "phase": "receipt", "state": "failed", "error_type": "ValueError"}]
         return rows
 
     def load_checkpoint(self, rows, queue=None):
@@ -402,14 +413,18 @@ class RecoveryAdmissionTests(unittest.TestCase):
 
     def test_known_sink_readback_failure_admits_exact_observed_coordinates(self):
         """The actual failure shape yields sink coordinates, not replacement creation proof."""
-        for replacement, queue_index, sink_index in ((False, 5, 7), (True, 3, 5)):
-            rows = self.sink_checkpoint(replacement)
-            self.destination = Path(self.folder.name) / f"admitted-{replacement}"
+        for replacement, all_workers, queue_index, sink_index in ((False, False, 5, 7), (True, False, 3, 5), (False, True, 3, 3)):
+            rows = self.sink_checkpoint(replacement, all_workers)
+            self.destination = Path(self.folder.name) / f"admitted-{replacement}-{all_workers}"
             queue = [{"target": "production", "queue_name": name, "queue_id": rows[queue_index][key]}
                      for name, key in (("amail-trace-events", "queue"), ("amail-trace-dlq", "dlq"))]
             result = self.load_checkpoint(rows, queue)
-            self.assertEqual(result, ("36912824752", self.epoch, rows[sink_index]["version"],
-                                      rows[queue_index]["queue"], rows[queue_index]["dlq"], not replacement))
+            pins = {"sink": rows[sink_index]["version"]}
+            if all_workers:
+                pins.update(maintenance=rows[5]["version"], api=rows[7]["version"])
+            sink_epoch = Epoch(**rows[3]["source_epoch"]) if all_workers else self.epoch
+            self.assertEqual(result, admission.Checkpoint("36912824752", self.epoch, sink_epoch, pins,
+                             rows[queue_index]["queue"], rows[queue_index]["dlq"], not (replacement or all_workers)))
             self.assertEqual(admission.lines((self.destination / "resume.jsonl").read_bytes(), 10), rows)
             self.assertEqual({path.name for path in self.destination.iterdir()},
                              {"resume.jsonl", "trace-queue-provision-production.json"})
@@ -437,6 +452,14 @@ class RecoveryAdmissionTests(unittest.TestCase):
             rows = self.sink_checkpoint(replacement=True)
             rows[index][key] = value
             with self.subTest(replacement=True, index=index, key=key), self.assertRaises(ValueError):
+                self.load_checkpoint(rows)
+            self.assertFalse(self.destination.exists())
+        for index, key, value in ((5, "state", "failed"), (7, "version", "d1f2946b-4001-4a82-bb75-3c30441b25a8"),
+                                  (9, "error_type", "FreshError"), (6, "phase", "sink_replacement"),
+                                  (3, "source_epoch", asdict(self.epoch)), (1, "schema_prefix", 0)):
+            rows = self.sink_checkpoint(all_workers=True)
+            rows[index][key] = value
+            with self.subTest(all_workers=True, index=index, key=key), self.assertRaises(ValueError):
                 self.load_checkpoint(rows)
             self.assertFalse(self.destination.exists())
         rows = self.sink_checkpoint()
