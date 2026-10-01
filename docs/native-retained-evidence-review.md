@@ -172,3 +172,74 @@ No academic mechanism or general tracing framework is needed to close this bound
 acceptance gap. Production practice here is to preserve native causal identities,
 inspect the actual retention surface, and separate execution from observability
 and privacy claims.
+
+## Actual admitted normal run: no native evidence reached
+
+Root dispatched **one** run `36884872446` at exact main
+`6f63e1f559bc2d0a5c9d27c40294349fcf77dde1`, consuming successful full source CI
+`36883747018` and checked build artifact `11172022967`. Reviewed safe receipt:
+`.temp/native-tracing-retained-evidence/.temp/native-observation/run-36884872446/experiment.json`,
+public receipt artifact `11174410747`.
+
+- Both owned deployments passed capture/serving/isolation readbacks. Probe version
+  `ff5ff33e-63bb-4ee6-b02b-c2edcf1dcba6`; caller version
+  `b9d576c9-bd49-4e8f-a050-f9f0f4bbeaa7`.
+- Fixed self-identified compatibility client POST returned **HTTP 404 / code 1042**,
+  text/plain, 17 bytes, CF-Ray `a43c844c1c628c81-EWR`, no challenge indicator.
+  This was not the source JSON aggregate. No case receipts were obtained.
+- Collection was skipped. Therefore there is **no observed native provider
+  representation**, no native API/context/error acceptance, and no privacy outcome
+  from this run. Collector limitations above remain source-level evidence gaps,
+  not a diagnosis of this failed trigger.
+- Root verified deletion/absence of both owned scripts; receipt records cleanup
+  `2026-10-01T15:31:53.852080+00:00`. The reviewed receipt has no retained resource
+  to invoke again. No additional dispatch or provider operation by this reviewer.
+
+Do not repeat the same admitted deployment to reinterpret 1042 as a healthy 404.
+A transport change is a new reviewed experiment, not a retry of uncertain runtime
+execution, and must preserve original compiled-product admission where applicable.
+
+## Finite alternative trigger choices (design review, not authorization)
+
+The public trigger is the failed boundary. The existing caller-to-private-probe
+HTTP service binding is already the right separation; official documentation
+supports manually constructed requests with fully qualified URLs. Do not replace
+it with business forwarding or expose the private probe.
+
+| Alternative | Benefit | New obligation / limitation | Assessment |
+| --- | --- | --- | --- |
+| Dedicated absent hostname on an owned zone, caller Custom Domain only | preserves the fetch-based product and returned four-case aggregate; removes reliance on shared workers.dev hostname | prove hostname/domain/DNS ownership and absence, no overlapping existing route; admission and cleanup for new zone resources; endpoint can still be denied | smaller source change; prefer if root already has authorized isolated hostname and lifecycle capability |
+| Private scheduled caller, no public endpoint | avoids public HTTP admission entirely; private probe still receives controlled HTTP requests | adds scheduled Rust handler and a new verified product build; UTC execution window and retry/duplicate policy; caller response receipts have no synchronous external recipient | use only when avoiding public exposure matters enough to justify scheduling and receipt redesign |
+
+A Custom Domain is not just a string replacement: Cloudflare creates DNS and a
+certificate. Its current documentation explicitly says deleting the Custom Domain
+does **not** automatically delete the associated Advanced Certificate. Receipt and
+cleanup must therefore account for the domain, DNS ownership/readback and residual
+certificate, or explicitly classify a retained owned certificate; no wildcard or
+existing Mail/Identity hostname should be borrowed. Do not weaken WAF or add auth
+capabilities merely to make the experiment reachable. Exact custom-domain matching
+still permits an earlier zone route to intercept requests, so route overlap is a
+preflight concern, not an inferred guarantee of direct reachability.
+
+Cron is periodic, not a one-shot execution primitive. Cloudflare documents up to
+15-minute propagation for additions, updates and deletion. A bounded source-owned
+scheduled-time gate limits which invocation may call the probe but does not by
+itself prove exactly-once delivery. Keep duplicate invocations visible/refused or
+accounted for; do not fake uniqueness with isolate-global state. A four-case safe
+completion receipt must be returned through an independently reviewed retained
+synthetic channel because there is no external POST response. That changes the
+current requirement that the caller retains zero records if the channel is caller
+console logging; make that change explicit rather than silently waiving it. Do not
+assume `/cdn-cgi/local/scheduled` is a deployed Cloudflare trigger endpoint: the
+reference documents it only for local development, which is not current-runtime
+acceptance. No scheduled option is presently implemented or admitted.
+
+Primary references retrieved 2026-10-01:
+
+- [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/): domain matching, automatic DNS/certificate creation and residual certificate cleanup.
+- [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/): scheduled handler, UTC schedules and up-to-15-minute propagation.
+- [HTTP service bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/http/): private bound requests and fully qualified constructed URLs.
+
+Recommendation: choose one alternative on actual lifecycle authority, not a broad
+transport matrix. Preserve the per-case retained evidence contract above. Do not
+build a guessed native-record parser while no native record shape has been observed.
