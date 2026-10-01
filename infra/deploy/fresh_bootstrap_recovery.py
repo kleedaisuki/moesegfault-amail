@@ -1,6 +1,6 @@
 """Read protected prior-bootstrap evidence without replaying a provider operation.
 
-A failed creator may have performed real writes. Its immutable GitHub artifact,
+A failed or cancelled creator may have performed real writes. Its immutable GitHub artifact,
 not current inventory or operator JSON, supplies the original recovery epoch.
 """
 
@@ -31,10 +31,12 @@ JOB = "Fresh held production bootstrap"
 ALLOWED = {"controller.jsonl", "controller.scope.jsonl", "trace-queue-provision-production.json", "preflight.jsonl"}
 PHASES = ("admission", "old_scope", "create_scope", "render", "migrate", "queues", "sink",
           "sink_readback", "maintenance", "api", "readback", "receipt")
+# A terminal conclusion is not ownership evidence; immutable journals still gate every read.
+TERMINAL = {"success", "failure", "timed_out", "cancelled"}
 
 
 def origin(run_id: str) -> tuple[str, list[dict]]:
-    """Require a terminal protected creator, including failed or timed-out writes."""
+    """Require a terminal protected creator, including interrupted ambiguous writes."""
     if not isinstance(run_id, str) or RUN.fullmatch(run_id) is None:
         raise ValueError("fresh_recovery_run_unreviewed")
     run = github(f"runs/{run_id}")
@@ -42,14 +44,14 @@ def origin(run_id: str) -> tuple[str, list[dict]]:
             or type(run.get("run_attempt")) is not int or run["run_attempt"] != 1
             or run.get("status") != "completed" or run.get("event") != "workflow_dispatch"
             or run.get("head_branch") != "main" or run.get("path") != ".github/workflows/ci.yml"
-            or run.get("conclusion") not in {"success", "failure", "timed_out"}
+            or run.get("conclusion") not in TERMINAL
             or not isinstance(run.get("head_sha"), str) or SHA.fullmatch(run["head_sha"]) is None
             or not isinstance(run.get("repository"), dict) or run["repository"].get("full_name") != REPO):
         raise ValueError("fresh_recovery_protected_origin_required")
     jobs = inventory(github(f"runs/{run_id}/attempts/1/jobs?per_page=100"), "jobs")
     selected = [row for row in jobs if row.get("name") == JOB]
     if (len(selected) != 1 or selected[0].get("status") != "completed"
-            or selected[0].get("conclusion") not in {"success", "failure", "timed_out"}
+            or selected[0].get("conclusion") not in TERMINAL
             or selected[0].get("run_id") != int(run_id) or selected[0].get("head_sha") != run["head_sha"]):
         raise ValueError("fresh_recovery_protected_job_required")
     for name in REQUIRED:
@@ -63,6 +65,8 @@ def origin(run_id: str) -> tuple[str, list[dict]]:
 def artifact(rows: list[dict], name: str, limit: int) -> dict:
     """Select one nonexpired immutable ID with bounded declared download size."""
     matches = [row for row in rows if row.get("name") == name]
+    if not matches:
+        raise ValueError("fresh_recovery_artifact_unavailable")
     if (len(matches) != 1 or type(matches[0].get("id")) is not int or matches[0]["id"] <= 0
             or matches[0].get("expired") is not False or type(matches[0].get("size_in_bytes")) is not int
             or not 0 < matches[0]["size_in_bytes"] <= limit):
@@ -281,6 +285,11 @@ def load(run_id: str, folder: Path) -> tuple[Epoch, Path]:
     if "controller.jsonl" not in files:
         raise ValueError("fresh_recovery_controller_unavailable")
     epoch = controller(files["controller.jsonl"], sha, run_id)
+    # Cancellation can stop before the scope journal exists; never infer its contents.
+    intent = lines(files["controller.jsonl"], 32)
+    if (any(row["phase"] == "create_scope" and row["state"] == "intent" for row in intent)
+            and "controller.scope.jsonl" not in files):
+        raise ValueError("fresh_recovery_scope_unavailable")
     build = artifact(rows, f"worker-native-modules-{sha}", MODULE_LIMIT)
     if build["id"] != epoch.artifact_id:
         raise ValueError("fresh_recovery_original_artifact_id_mismatch")
