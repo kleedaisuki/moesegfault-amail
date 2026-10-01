@@ -113,4 +113,3 @@ Primary references retrieved during this review:
 Run exact candidate hosted, non-deploying CI and retain exact checkout/head SHA,
 suite counts and timings for both new cases. The prior green 4c27631 run is evidence
 only for the older body-only wait policy, not validation of this follow-up.
-

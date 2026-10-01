@@ -150,3 +150,14 @@ misrepresented as verification of this new GET-race source.
 - [AWS timeout/retry production guidance](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/): timeout selection must follow a supported latency envelope, and timeout does not imply remote side effects did not occur.
 - [Beldi, OSDI 2020](https://www.usenix.org/conference/osdi20/presentation/zhang-haoran): durable execution/state primitives are the structural alternative when an ephemeral invocation boundary is insufficient.
 - Existing `docs/embedding-cancellation-oracle-2026-10-01.md`: native workerd cancellation is not the Node loopback producer callback; keep these evidence claims separate.
+
+## Narrow GET-wait review and strengthened authority oracle
+
+`docs/review-cron-r2-get-508c68d.md` records independent GO on the GET-race
+source `508c68d3e7b1d75248648be647ac1f3a7327fd2c` (original review candidate).
+After that review, only hosted fixture assertions were strengthened: both never-
+settling and 35-second GET cases directly require a five-minute due advance,
+null/zero projection lease identity, unchanged `quota_reserved`, and byte/state/
+owner-identical storage reservation authority. Production source is unchanged
+from the reviewed GET-race candidate. The final PR head will be separately bound
+to its exact hosted run; the old body-only green is not acceptance of this head.
