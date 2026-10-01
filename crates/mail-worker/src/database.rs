@@ -12,7 +12,7 @@ const TOTAL: usize = 800;
 /// Fixed grants do not borrow from each other; 18 control tokens remain unused.
 const GRANTS: [usize; 8] = [170, 380, 90, 2, 65, 65, 5, 5];
 
-/// Closed maintenance identity; array order preserves the established schedule.
+/// Closed maintenance identity; fixed grant indices do not follow rotated order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MaintenancePhase {
     Addresses,

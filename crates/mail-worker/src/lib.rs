@@ -6,6 +6,7 @@ mod archive;
 mod archive_read;
 mod auth;
 mod database;
+mod maintenance;
 mod platform;
 mod search_jobs;
 mod trace;
@@ -21,6 +22,7 @@ use crate::address_diag::{AddressDiag, Kind as AddressDiagKind, Stage as Address
 use crate::archive::{parse_draft, Draft};
 use crate::auth::Principal;
 use crate::database::{Database, MaintenanceBudget, MaintenancePhase};
+use crate::maintenance::{MaintenanceTurn, PhaseTurn, WorkPermit};
 use crate::trace::{Operation, Phase, Trace};
 
 /// Bound one synchronous search below D1's request query cap and Worker memory. / 将同步搜索限制在 D1 单次请求查询上限与 Worker 内存以内。
@@ -164,13 +166,16 @@ pub async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
 
 /// Retry missing semantic projections outside SMTP and user send critical paths. / 在 SMTP 与用户发送关键路径之外重试缺失的语义投影。
 #[event(scheduled)]
-pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    let turn = MaintenanceTurn::new();
     let budget = MaintenanceBudget::new();
-    for phase in MaintenancePhase::ALL {
-        let result = maintain_phase(&env, &budget, phase).await;
+    for phase in maintenance::phase_order(event.schedule()) {
+        let result = maintain_phase(&env, &budget, &turn, phase).await;
         let Err(error) = result else { continue };
         let code = if database::is_deferred(&error) {
             trace::DiagnosticCode::MaintenanceBudgetDeferred
+        } else if maintenance::is_deferred(&error) {
+            trace::DiagnosticCode::MaintenanceDeadlineDeferred
         } else {
             maintenance_failure(phase)
         };
@@ -183,16 +188,25 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
 async fn maintain_phase(
     env: &Env,
     budget: &MaintenanceBudget,
+    turn: &MaintenanceTurn,
     phase: MaintenancePhase,
 ) -> Result<()> {
+    // Admission includes setup and the first complete item. SQL accounting is
+    // deliberately independent: admitted completion never gets a clock cutoff.
+    let mut phase_turn = turn.enter(phase)?;
     let database = budget.database(env, phase)?;
     match phase {
-        MaintenancePhase::Addresses => reconcile_addresses(env, &database).await,
-        MaintenancePhase::Outbound => reconcile_outbound(env, &database).await,
-        MaintenancePhase::Embeddings => reindex(env, &database).await,
+        MaintenancePhase::Addresses => {
+            // The existing claim/inventory batch remains one compound unit in
+            // this slice. Per-row timed deferral needs reserved release tokens.
+            let _permit = phase_turn.admit()?;
+            reconcile_addresses(env, &database).await
+        }
+        MaintenancePhase::Outbound => reconcile_outbound(env, &database, &mut phase_turn).await,
+        MaintenancePhase::Embeddings => reindex(env, &database, &mut phase_turn).await,
         MaintenancePhase::Storage => reconcile_storage(&database).await,
-        MaintenancePhase::Deleted => garbage_collect(env, &database).await,
-        MaintenancePhase::Orphans => clean_orphans(env, &database).await,
+        MaintenancePhase::Deleted => garbage_collect(env, &database, &mut phase_turn).await,
+        MaintenancePhase::Orphans => clean_orphans(env, &database, &mut phase_turn).await,
         MaintenancePhase::Search => search_jobs::cleanup(&database).await,
         MaintenancePhase::Abuse => expire_abuse_data(&database).await,
     }
@@ -237,7 +251,7 @@ async fn reconcile_storage(database: &Database) -> Result<()> {
 }
 
 /// Reclaim deleted per-delivery content after D1 tombstones hide it from readers. / D1 墓碑阻止读取后，回收已删除投递的内容。
-async fn garbage_collect(env: &Env, database: &Database) -> Result<()> {
+async fn garbage_collect(env: &Env, database: &Database, turn: &mut PhaseTurn<'_>) -> Result<()> {
     #[derive(Deserialize)]
     struct Deleted {
         id: String,
@@ -250,6 +264,8 @@ async fn garbage_collect(env: &Env, database: &Database) -> Result<()> {
         .results::<Deleted>()?;
     let bucket = env.bucket("MAIL_BODIES")?;
     for row in rows {
+        let _permit = turn.admit()?;
+        database.ensure_remaining(3)?;
         bucket.delete(&row.r2_key).await?;
         bucket.delete(format!("raw/{}.eml", row.id)).await?;
         database
@@ -272,7 +288,7 @@ async fn garbage_collect(env: &Env, database: &Database) -> Result<()> {
 }
 
 /// Remove old R2 objects whose pre-write ledger never reached a visible message row. / 清除预写入账本未转为可见邮件的陈旧 R2 对象。
-async fn clean_orphans(env: &Env, database: &Database) -> Result<()> {
+async fn clean_orphans(env: &Env, database: &Database, turn: &mut PhaseTurn<'_>) -> Result<()> {
     #[derive(Deserialize)]
     struct Orphan {
         id: String,
@@ -285,6 +301,8 @@ async fn clean_orphans(env: &Env, database: &Database) -> Result<()> {
         .bind(&[bind_num(now()-60*60_000)])?.all().await?.results::<Orphan>()?;
     let bucket = env.bucket("MAIL_BODIES")?;
     for row in rows {
+        let _permit = turn.admit()?;
+        database.ensure_remaining(3)?;
         let send = database
             .prepare("SELECT state FROM send_requests WHERE message_id=?1")
             .bind(&[bind_str(&row.id)])?
@@ -597,7 +615,11 @@ const ACCEPTED_DUE_SQL: &str = "SELECT s.owner_iss,s.owner_sub,s.idem_key,s.payl
 
 /// Recover already-accepted sends without resubmission. Per-item failures do not
 /// suppress other admitted items; resource denial alone ends this phase's turn.
-async fn reconcile_outbound(env: &Env, database: &Database) -> Result<()> {
+async fn reconcile_outbound(
+    env: &Env,
+    database: &Database,
+    turn: &mut PhaseTurn<'_>,
+) -> Result<()> {
     database
         .prepare(
             "UPDATE send_requests SET state='preparing',reservation_started_at=NULL WHERE state='reserving' AND reservation_started_at<?1",
@@ -614,13 +636,14 @@ async fn reconcile_outbound(env: &Env, database: &Database) -> Result<()> {
         .results::<AcceptedDue>()?;
     let mut failed = false;
     for row in rows {
+        let permit = turn.admit()?;
         // Includes the due UPDATE plus the existing projector's maximum 74:
         // 2 setup +5*75=377 stays within this phase's non-borrowable 380 grant.
         database.ensure_remaining(75)?;
         if !advance_accepted_due(database, &row, scan_at).await? {
             continue;
         }
-        match repair_accepted(env, database, &row).await {
+        match repair_accepted(permit, env, database, &row).await {
             Err(error) if database::is_deferred(&error) => return Err(error),
             Err(_) => failed = true,
             Ok(()) => {}
@@ -666,7 +689,12 @@ async fn advance_accepted_due(
 
 /// A single due attempt preserves the immutable ZIP and accepted journal on any
 /// malformed/missing/foreign input; later due items must still get their turn.
-async fn repair_accepted(env: &Env, database: &Database, row: &AcceptedDue) -> Result<()> {
+async fn repair_accepted(
+    _permit: WorkPermit,
+    env: &Env,
+    database: &Database,
+    row: &AcceptedDue,
+) -> Result<()> {
     if let Some(bytes) = row.deleted_bytes.filter(|bytes| *bytes >= 0) {
         accepted::finish_deleted(
             database,
@@ -799,7 +827,7 @@ struct EmbeddingLease<'a> {
 }
 
 /// Sweep a bounded, owner-fair set of due IDs until a provider cooldown begins.
-async fn reindex(env: &Env, database: &Database) -> Result<()> {
+async fn reindex(env: &Env, database: &Database, turn: &mut PhaseTurn<'_>) -> Result<()> {
     let current = now();
     let dependency = database
         .prepare("SELECT blocked_until FROM embedding_dependency WHERE id=1")
@@ -811,6 +839,7 @@ async fn reindex(env: &Env, database: &Database) -> Result<()> {
     let due = embedding_due(database, current).await?;
     let mut invalid_requests = 0;
     for item in due {
+        let _permit = turn.admit()?;
         let Some(lease) = claim_embedding(database, &item.message_id).await? else {
             continue;
         };
