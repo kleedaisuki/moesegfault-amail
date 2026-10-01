@@ -3,6 +3,7 @@
 mod api;
 mod archive;
 mod auth;
+mod command_journal;
 mod config;
 mod local_store;
 mod send_state;
@@ -577,6 +578,49 @@ fn run() -> Result<()> {
             telemetry::report_loss("initialize", &error);
         }
     }
+    command_journal::run(&cfg, command_kind(&cli.command), || execute(cli, &cfg))
+}
+
+/// Canonical diagnostic names never include arguments or alias spellings.
+fn command_kind(command: &Command) -> Option<command_journal::CommandKind> {
+    use command_journal::CommandKind as K;
+    Some(match command {
+        Command::TelemetryFlush { .. } => return None,
+        Command::Config => K::Config,
+        Command::Pack { .. } => K::Pack,
+        Command::Unpack { .. } => K::Unpack,
+        Command::Auth {
+            command: AuthCommand::Login { .. },
+        }
+        | Command::Login { .. } => K::AuthLogin,
+        Command::Auth {
+            command: AuthCommand::Status,
+        } => K::AuthStatus,
+        Command::Auth {
+            command: AuthCommand::Logout,
+        }
+        | Command::Logout => K::AuthLogout,
+        Command::Address {
+            command: AddressCommand::List,
+        } => K::AddressList,
+        Command::Address {
+            command: AddressCommand::Add { .. },
+        } => K::AddressAdd,
+        Command::Address {
+            command: AddressCommand::Delete { .. },
+        } => K::AddressDelete,
+        Command::Sync { .. } => K::Sync,
+        Command::Search(_) => K::Search,
+        Command::Get { .. } => K::Get,
+        Command::Read { .. } => K::Read,
+        Command::Mark { .. } => K::Mark,
+        Command::Delete { .. } => K::Delete,
+        Command::Send { .. } => K::Send,
+    })
+}
+
+/// Execute the unchanged public behavior inside a best-effort completion boundary.
+fn execute(cli: Cli, cfg: &config::Runtime) -> Result<()> {
     match cli.command {
         Command::Config => emit(
             &json!({"api_base":cfg.api_base,"issuer":cfg.issuer,"client_id":cfg.client_id,
