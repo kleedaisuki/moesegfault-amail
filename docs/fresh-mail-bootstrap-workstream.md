@@ -68,6 +68,29 @@ targets. Public CLI/domain/Identity/ZIP contracts remain unchanged; no migration
 or hash-Secret ceremony. Ordinary deployment/release remain fail-closed until
 source truth matches the actual receipt-owned graph.
 
+### First actual bootstrap refusal (2026-10-02)
+
+Protected run [36906562887](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36906562887)
+passed its source gates but stopped in old-scope inspection. The first D1 query
+was `SELECT name FROM d1_migrations ORDER BY id`; it returned HTTP400, CF-Ray
+`a43d8a26bf6c6bfb-DFW`, at October1 18:30:38 UTC. The provider body was not
+retained, so a missing migration table is **not yet an observed fact**.
+Immutable recovery artifact `11185461013` contains only admission intent/observed
+and old_scope intent/failed: no fresh creation intent, scope journal or receipt.
+No D1/R2/Queue/Worker creation phase was reached.
+
+The existing inspector now lets this first-bootstrap caller read successful
+complete `sqlite_master` metadata before querying the migration table. A database
+with no non-platform schema objects, zero whole-bucket R2 objects, absent current
+store callers and unattached product route may be retained as uninitialized old
+storage. Missing policy/grant tables are not reported as held rows. Both metadata
+snapshots and forwarding brackets must still agree. Nonempty unrecorded schema
+and failed reads stop with safe structural reasons; recorded prefixes retain
+their exact migration/held-state checks. Old stores are never migrated/deleted.
+This correction permits a new changed-source initial deployment, not an unchanged
+retry or an activation. Cloudflare documents [SQLite metadata inspection](https://developers.cloudflare.com/d1/sql-api/sql-statements/)
+and the separate [Wrangler migration ledger](https://developers.cloudflare.com/d1/reference/migrations/).
+
 The old-scope opaque-domain reader repair is integrated from main PR 73. It
 preserves incomplete-read refusal; this source integration does not imply actual
 inspection or first receipt acceptance.

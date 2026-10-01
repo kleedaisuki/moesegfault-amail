@@ -98,7 +98,10 @@ def inspect_old_scope(provider, s3) -> dict:
     first_forward = forward_snapshot(provider.account)
     snapshots = []
     for _ in range(2):
-        snapshot = old.collect(reader, zone, old.r2_count(s3, resources.bucket))
+        snapshot = old.collect(reader, zone, old.r2_count(s3, resources.bucket), allow_uninitialized=True)
+        if snapshot["schema_prefix"] == 0:
+            snapshots.append(snapshot)  # Positive metadata absence, never a failed table read.
+            continue
         contract = expected_schema(snapshot["schema_prefix"])
         with sqlite3.connect(":memory:") as reference:
             for name in contract.migrations:
@@ -433,7 +436,8 @@ def main() -> int:
     except Exception as error:
         if writer_started:
             preflight("failed", type(error).__name__)
-        print(f"fresh_production_bootstrap=UNVERIFIED error_type={type(error).__name__} replay=NOT_GRANTED")
+        print(f"fresh_production_bootstrap=UNVERIFIED error_type={type(error).__name__} "
+              f"reason={old.failure_reason(error)} replay=NOT_GRANTED")
         return 1
 
 
