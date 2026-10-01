@@ -326,3 +326,75 @@ The live attempt did not reach any classification branch except UNVERIFIED;
 the other table rows remain prospective protocol semantics, not observations.
 Any further operation requires a separately reviewed decision and fresh
 authorization; the retired approval does not carry forward.
+
+## Failure localization of run 36793625509 (2026-10-01)
+
+**Conclusion: the first attempt stopped inside the namespace-absence check,
+not inside Worker creation or Issues readback. The exact failed assertion or
+transport outcome cannot be recovered from the deliberately categorical logs.**
+No repeat or provider request was performed for this analysis. The evidence is
+the [first run](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36793625509)
+and source at `3cc82499ad2fe7ee2c0f8008fedf1edc5085d61c`.
+
+The credential-free contract job passed. The provider job's guarded invocation
+at 23:56:33 UTC ended at 23:56:36 UTC with:
+
+```text
+staging_issues_create_probe=UNVERIFIED
+staging_issues_create_phases=absence:checking original_pin:before_match hold:before_match create:skipped identity:skipped isolation:skipped readback:skipped recovery:skipped
+```
+
+Tracing `probe` -> `name_absent` -> `Client.workers_page` -> `_request` shows:
+
+- The original exact serving/binding/current-resource comparison and aggregate
+  held/idle checks completed before the inventory check began. Those are
+  time-local checks, not indefinite guarantees or an Issues-off attestation.
+- `create:attempted` is assigned only after `name_absent` returns true. Thus the
+  probe did not issue its Worker-create POST. D1's earlier read-only SQL uses
+  HTTP POST, so saying *no POST of any kind* would be inaccurate.
+- `name_occupied` would be assigned if a valid inventory contained the fixed
+  name. It was not emitted. This does **not** prove the name absent: malformed
+  pagination/identity or transport failure can stop before name detection.
+- An exception somewhere within `name_absent` escaped into `main`'s broad,
+  privacy-preserving exception handler. Neither page number, HTTP status,
+  assertion identity, response size nor exception class survives in the output.
+  A roughly three-second duration does not establish a single successful page
+  or rule out later-page failure.
+
+### Competing explanations, not established causes
+
+| Candidate | Why it fits the observed phase | What current evidence says |
+| --- | --- | --- |
+| List-specific HTTP rejection, redirect, transport or timeout | `_request` fails before inventory validation | Earlier successful current-Worker GET does not prove List access; no status was retained |
+| Response decoding/envelope rejection | Bounded bytes, duplicate JSON keys, nonfinite values, successful envelope and empty errors are required | No raw payload/size/category was retained; unknown |
+| Missing or differently represented pagination metadata | All five metadata fields must be Python integers and internally consistent | Plausible contract strictness mismatch: official metadata fields are optional; not a demonstrated live mismatch |
+| Inventory outside safety bounds or inconsistent across pages | More than 500 Workers, changed totals, incomplete count/pages fail closed | No count/page diagnostics retained; unknown |
+| Item identity/name or duplicate rejection | Every returned item needs a bounded valid ID/name; IDs and names must be unique | No item diagnostics retained; unknown |
+
+The official [List Workers API](https://developers.cloudflare.com/api/resources/workers/subresources/beta/subresources/workers/methods/list/)
+inspected on 2026-10-01 accepts sorting by name and a page size of 100. It marks
+`result_info` and its count/page/page-size/total fields optional. Consequently,
+the helper requests a documented query but imposes **stronger absence-proof
+requirements than the published minimum response schema**. Failing those
+requirements is a valid fail-closed stop, not proof of a provider bug, missing
+permission, or a reason to accept partial inventory. The illustrative response
+example is not observed account data and cannot diagnose this run.
+
+### One minimal discriminating next step (proposal only)
+
+If inventory diagnosis is still worth pursuing, separately review one **read-only
+first-page List request** with the same documented query and credential context;
+no creation, automatic pagination, dispatch replay, settings write or relaxed
+absence acceptance. Retain only a fixed enum for HTTP/transport versus decoding
+versus metadata versus item-validation failure, bounded response-size category,
+and allowlisted metadata-presence/type/consistency booleans. Do not emit worker
+names, IDs, URLs, raw bodies, provider error text or credentials. Hosted synthetic
+checks must verify that sensitive sentinel fixtures cannot escape before a
+credential-bearing diagnostic is authorized. This is not implemented here.
+
+That single diagnostic can distinguish several competing explanations, but
+cannot establish complete absence or any Issues state. If page one is valid or
+still uninformative, **stop rather than walking more pages, trying another token,
+changing the proof rules or creating a replacement resource**. The remaining
+route is a resource-bound Dashboard/provider clarification already identified
+above. No unchanged rerun of 36793625509 is justified by this analysis.
