@@ -276,3 +276,51 @@ uses app name/version), cover all relevant clients and retain existing auth/data
 contracts. Do not copy the experimental compatibility profile into business
 clients automatically or add a broad WAF exception. No CLI Rust file is changed
 by this diagnostic work.
+
+## Observed client variant and guarded normal trigger
+
+Root-dispatched no-write run36879843995 passed on merged orchestration
+b7023002a6aaa20a238ac2aad130bb1d5fefe4c5 after PR59's exact-head full hosted
+CI36878606178 and syntax36878605762 passed. Both scripts were positively absent.
+The fixed self-identified compatibility profile returned **HTTP404 / code1042**,
+text/plain17bytes, CF-Ray a43c4bc5a8c8be38-DFW, Cloudflare server, no managed
+challenge. Artifact11171470700 retains those facts; run14:52:49--14:53:21UTC.
+This is different from the default-profile403/1010. Separate hosted runs can
+differ in egress IP, edge and time, so this supports header-sensitive refusal
+without being a strictly controlled causal proof. No provider write or pair
+invocation occurred.
+
+Do not reinterpret1042 as a generic healthy-not-found page. Cloudflare's
+[Worker error table](https://developers.cloudflare.com/workers/observability/errors/)
+defines1042 for a same-zone Worker-fetch limitation. Our pair absence is known;
+the identity of any provider routing/proxy layer producing this absent-host
+reply is not. No compatibility flag, WAF policy, token or custom route is changed
+on the strength of it.
+
+The normal synthetic trigger now uses the **same fixed client identity**, still
+one empty anonymous POST with no retry/redirect/provider credential. Its receipt
+records the client profile and requires the exact distinct baseline/redacted
+success/failure set. Collection requires one custom child and an observed native
+parent on the same trace inside each mapped invocation, not four global children
+whose parent IDs happen to appear somewhere in the window.
+
+A new fully successful original-main compiled artifact is required when accepted
+CLI/reader/Rust changes differ from the historical dcc4eed build. Root alone
+admits/displays/dispatches that exact normal experiment. The404 discriminator
+does not waive artifact, serving-version, capture, cleanup or native coverage
+gates. Keep current Mail sending and ordinary deployment admission held.
+
+### Native retention still to be checked
+
+`available=true` source reports mean getActiveSpan/startSpan/setAttributes/
+recordException/end and the after-await getter returned successfully. They are
+not independent proof that the after-await attribute or fixed error event was
+retained on the intended native root/child. The current summary preserves causal
+coordinates and per-case protected-marker locations, but not those retained
+attribute/error facts. Do not report full async/error retention acceptance from
+an existing green aggregate. First actual pair records must establish their
+provider representation, then a bounded typed extraction/check can retain that
+evidence without copying arbitrary provider data or guessing hundreds of keys.
+Likewise, marker absence is conclusive only for a surface whose baseline marker
+was actually retained; path baseline alone does not prove deletion of a header
+or body that the provider never captured.

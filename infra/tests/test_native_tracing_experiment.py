@@ -177,7 +177,16 @@ class NativeTracingExperimentTests(unittest.TestCase):
         report = {"available": kind != "unsupported", "sampled": True,
                   "stage": "complete" if kind != "unsupported" else "getter",
                   "case": {"run": NONCE, "mode": "baseline", "kind": "success"}}
-        rows = [{"status": 200, "report": deepcopy(report)} for _ in range(4)]
+        rows = []
+        for mode in ("baseline", "redacted"):
+            for case_kind in ("success", "failure"):
+                row_report = deepcopy(report)
+                row_report["case"].update(mode=mode, kind=case_kind)
+                rows.append({"status": 200 if case_kind == "success" else 500, "report": row_report})
+        if kind == "duplicate":
+            rows[-1] = deepcopy(rows[0])
+        if kind == "unknown":
+            rows[0]["report"]["case"]["mode"] = "unknown"
         headers = Message(); headers["Content-Type"] = "application/json"
         body = b"not-json" if kind == "invalid_json" else json.dumps({"receipts": rows}).encode()
         response = io.BytesIO(body)
@@ -200,7 +209,12 @@ class NativeTracingExperimentTests(unittest.TestCase):
             else:
                 with self.assertRaises(ValueError): experiment.trigger()
         opener.open.assert_called_once()
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.data, b"")
+        self.assertEqual(request.header_items(), [("User-agent", experiment.CLIENT_USER_AGENT)])
         final = writes[-1]
+        self.assertEqual(final["client_profile"], experiment.CLIENT_PROFILE)
         self.assertEqual(final["to"] - final["from"], 4000)
         self.assertEqual(final["trigger"]["http_status"], 403 if kind == "http_error" else 200)
         self.assertNotIn("SYNTHETIC_PRIVATE_ERROR_PROSE", str(final))
@@ -218,6 +232,44 @@ class NativeTracingExperimentTests(unittest.TestCase):
 
     def test_trigger_success_persists_reports_and_window(self):
         self._trigger_case("success")
+
+    def test_trigger_refuses_duplicate_case_receipts(self):
+        self._trigger_case("duplicate")
+
+    def test_trigger_refuses_unknown_case_receipts(self):
+        self._trigger_case("unknown")
+
+    def test_each_case_has_one_child_and_its_own_same_trace_parent(self):
+        """Global counts cannot substitute for per-invocation native causal evidence."""
+        cases = {}
+        for mode in ("baseline", "redacted"):
+            for kind in ("success", "failure"):
+                key = mode + "." + kind
+                cases[key] = {"spans": [{"spanId": key + ".root", "traceId": key + ".trace"},
+                    {"spanId": key + ".child", "parentSpanId": key + ".root", "traceId": key + ".trace",
+                     "spanName": "amail.canary.operation"}]}
+        summary = {"cases": cases}
+        experiment.verify_case_parentage(summary)
+        for broken in ("missing_child", "duplicate_child", "foreign_parent", "wrong_trace", "missing_trace", "self_parent"):
+            value = deepcopy(summary)
+            spans = value["cases"]["baseline.success"]["spans"]
+            if broken == "missing_child":
+                spans.pop()
+            elif broken == "duplicate_child":
+                spans.append(deepcopy(spans[1]))
+            elif broken == "foreign_parent":
+                spans[1]["parentSpanId"] = "redacted.success.root"
+            elif broken == "wrong_trace":
+                spans[1]["traceId"] = "wrong"
+            elif broken == "missing_trace":
+                spans[1].pop("traceId")
+            else:
+                spans[1]["parentSpanId"] = spans[1]["spanId"]
+            with self.subTest(broken=broken), self.assertRaises(ValueError):
+                experiment.verify_case_parentage(value)
+        value = deepcopy(summary)
+        value["cases"]["unknown.success"] = value["cases"].pop("baseline.success")
+        with self.assertRaises(ValueError): experiment.verify_case_parentage(value)
 
     def test_workflow_never_builds_or_injects_mail_capabilities(self):
         source=(ROOT/".github/workflows/native-tracing-canary.yml").read_text()

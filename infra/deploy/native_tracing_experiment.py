@@ -278,8 +278,9 @@ def trigger() -> None:
     """Single trigger with persisted failure boundary; never retry an uncertain invocation."""
     receipt = json.loads(RECEIPT.read_text())
     receipt["from"] = int(time.time() * 1000) - 2000
+    receipt["client_profile"] = CLIENT_PROFILE
     write_receipt(receipt)
-    request = Request(receipt["url"], data=b"", method="POST")
+    request = Request(receipt["url"], data=b"", method="POST", headers={"User-Agent": CLIENT_USER_AGENT})
     try:
         with span("canary.trigger", "post", component="native_tracing", script_name=CALLER) as facts:
             try:
@@ -303,17 +304,45 @@ def trigger() -> None:
             raise ValueError("four_canary_case_receipts_required")
         # The caller constructs all reports itself, without reading user data.
         receipt["receipts"] = rows
+        observed = set()
+        expected = {f"{mode}.{kind}" for mode in ("baseline", "redacted") for kind in ("success", "failure")}
         for row in rows:
             report = row["report"]
             if (report.get("available") is not True or report.get("sampled") is not True
                     or report.get("stage") != "complete" or report["case"]["run"] != receipt["probe_id"]):
                 raise ValueError("native_api_not_accepted")
+            key = report["case"].get("mode", "") + "." + report["case"].get("kind", "")
+            if key not in expected or key in observed:
+                raise ValueError("four_distinct_canary_cases_required")
+            observed.add(key)
             if row.get("status") != (200 if report["case"]["kind"] == "success" else 500):
                 raise ValueError("canary_case_status_mismatch")
     finally:
         receipt["to"] = int(time.time() * 1000) + 2000
         write_receipt(receipt)
     print(json.dumps({"event": "native_canary_invoked", "probe_id": receipt["probe_id"], "cases": 4}, sort_keys=True))
+
+
+def verify_case_parentage(summary: dict) -> None:
+    """Each controlled invocation needs its own child and same-trace native parent.
+
+    A global count or a parent observed in another invocation cannot establish
+    the causal relationship. Public native coordinates are retained unchanged.
+    """
+    expected = {f"{mode}.{kind}" for mode in ("baseline", "redacted") for kind in ("success", "failure")}
+    if set(summary["cases"]) != expected:
+        raise ValueError("four_distinct_native_cases_required")
+    for case in summary["cases"].values():
+        spans = case["spans"]
+        children = [item for item in spans if item.get("spanName") == "amail.canary.operation"]
+        if len(children) != 1:
+            raise ValueError("native_case_child_unverified")
+        child = children[0]
+        parent_id, trace_id = child.get("parentSpanId"), child.get("traceId")
+        if (not isinstance(parent_id, str) or not parent_id or parent_id == child.get("spanId")
+                or not isinstance(trace_id, str) or not trace_id
+                or not any(item.get("spanId") == parent_id and item.get("traceId") == trace_id for item in spans)):
+            raise ValueError("native_case_parentage_unverified")
 
 
 def strings(value, path=()):
@@ -428,10 +457,7 @@ def collect() -> None:
         if time.monotonic() >= deadline:
             raise ValueError("native_span_or_baseline_control_missing")
         time.sleep(10)
-    children = [item for item in summary["spans"] if item.get("spanName") == "amail.canary.operation"]
-    ids = {item["spanId"] for item in summary["spans"]}
-    if len(children) != 4 or any(item.get("parentSpanId") not in ids for item in children):
-        raise ValueError("native_child_parentage_unverified")
+    verify_case_parentage(summary)
     for key, case in summary["cases"].items():
         if key.startswith("baseline.") and not case["marker_locations"]["path"]:
             raise ValueError("baseline_marker_control_missing")
