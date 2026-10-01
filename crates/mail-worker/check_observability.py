@@ -71,7 +71,11 @@ def capture_disabled(value: object, *, complete: bool = True) -> bool:
 
     Cloudflare documents logs.enabled and traces.enabled as their capture
     switches. Invocation/persistence/redaction preferences do not enable a
-    disabled subsystem. Issues is independently controlled and must be off.
+    disabled subsystem. Current-resource Issues is independently opt-in: only an
+    absent section means off; a present section must contain enabled=False. This
+    read contract does not permit omitting explicit source intent. Partial legacy
+    views remain secondary noncontradictory evidence, never capture-off authority.
+    See https://developers.cloudflare.com/workers/observability/issues/ (2026-09-30).
     Legacy partial objects may omit fields, but cannot contradict the resource.
     """
     if not isinstance(value, dict):
@@ -82,6 +86,8 @@ def capture_disabled(value: object, *, complete: bool = True) -> bool:
     if (complete or value.get("enabled") is not None) and value.get("enabled") is not False:
         return False
     for name in ("logs", "traces", "issues"):
+        if name == "issues" and name not in value:
+            continue
         if value.get(name) is None and not complete:
             continue
         section = value.get(name)
@@ -139,6 +145,7 @@ def effective_api_settings(worker: object, script: str, *legacy: object) -> bool
     """Require the exact current Worker resource and explicit no-capture/no-export.
 
     Preview templates and absent legacy representations cannot establish safety.
+    Missing opt-in Issues is off, but root/logs/traces switches remain explicit.
     This policy does not change the enabled private Queue sink's stricter policy.
     """
     if not isinstance(worker, dict):
