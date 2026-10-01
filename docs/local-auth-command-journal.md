@@ -96,3 +96,36 @@ materially improve failure localization without leaking semantic content; this
 slice supplies controlled observables rather than claiming a new tracing result.
 Future export needs an explicitly reviewed schema/capability contract and reader
 acceptance. It must not silently inject these local operations into API batches.
+
+## Explicit command-to-request linkage (source follow-up)
+
+Ordinary dispatch passes its generated optional command UUID explicitly into
+the API client. Each request attempt retains that value in the additive nullable
+local `events.command_id` column. A local analyst can join:
+
+```sql
+SELECT c.command, e.operation, e.trace_id, e.span_id, e.phase
+FROM events e
+JOIN command_spans c ON c.command_id = e.command_id AND c.phase = 'command';
+```
+
+The UUID joins a command to zero or more independent HTTP attempts. It is **not**
+a native span parent, W3C trace ID, user/account/mail identifier, credential
+fingerprint or argument-derived value. Request trace/span generation and HTTP
+`traceparent` stay unchanged. Neither legacy nor enriched telemetry wire
+payloads include this local relationship. Unscoped callers retain the existing
+constructors and record null; historical rows remain null after a transactional,
+idempotent column migration. No fabricated historical relationship is backfilled.
+
+The existing bounded histories can independently prune either side of the join;
+a missing counterpart is not proof of a missing command/request. Abrupt command
+termination can retain request events without completed command spans. Opt-out
+and hidden uploader dispatch pass no ordinary command context. API diagnostics
+do not read implicit thread-local state: explicit context travels from the
+command closure through dispatch and the API instance to each request span.
+
+Hosted checks must cover migration, shared UUID with distinct attempt traces,
+null unscoped context, unchanged wire, and an actual subprocess pre-HTTP auth
+failure joining its request event to command and access-token records. This
+follow-up does not claim real browser/account authentication or platform-native
+parentage acceptance.

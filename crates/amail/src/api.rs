@@ -51,6 +51,8 @@ where
 pub struct Api<'a> {
     cfg: &'a Runtime,
     http: Client,
+    /// Local command linkage only; never included in HTTP headers or payloads.
+    command_id: Option<uuid::Uuid>,
 }
 
 /// A search either has complete results or an owner-scoped continuation job.
@@ -264,8 +266,14 @@ pub(crate) fn transport_kind(error: &reqwest::Error) -> &'static str {
 impl<'a> Api<'a> {
     /// Construct bounded-time client / 创建具有超时的客户端。
     pub fn new(cfg: &'a Runtime) -> Result<Self> {
+        Self::for_command(cfg, None)
+    }
+
+    /// Associate attempts with an explicitly supplied local command UUID.
+    pub fn for_command(cfg: &'a Runtime, command_id: Option<uuid::Uuid>) -> Result<Self> {
         Ok(Self {
             cfg,
+            command_id,
             http: Client::builder().timeout(Duration::from_secs(30)).build()?,
         })
     }
@@ -281,7 +289,7 @@ impl<'a> Api<'a> {
         zip: Option<&[u8]>,
         idempotency: Option<&str>,
     ) -> Result<(StatusCode, Vec<u8>)> {
-        let journal = telemetry::RequestSpan::new(self.cfg, operation);
+        let journal = telemetry::RequestSpan::with_command(self.cfg, operation, self.command_id);
         let token = match auth::access_token(self.cfg) {
             Ok(token) => token,
             Err(err) => {

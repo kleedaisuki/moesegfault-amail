@@ -141,6 +141,21 @@ fn auth_aliases_are_canonical_and_hidden_upload_is_excluded() {
     assert!(records
         .iter()
         .any(|r| r.0 == "get" && r.1 == "access_token" && r.2 == "failure"));
+    // The actual get dispatch fails before HTTP, but still has an attempt identity.
+    // Its local UUID links to the command and access-token boundary, not a native parent.
+    let conn = Connection::open(home.path().join("telemetry.sqlite3")).unwrap();
+    let linked: (String, String, String) = conn
+        .query_row(
+            "SELECT e.command_id,e.trace_id,e.span_id FROM events e
+         JOIN command_spans c ON c.command_id=e.command_id
+         WHERE c.command='get' AND c.phase='command' AND e.operation='messages.get'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!(uuid::Uuid::parse_str(&linked.0).is_ok());
+    assert_eq!(linked.1.len(), 32);
+    assert_eq!(linked.2.len(), 16);
     let before = records.len();
     assert!(invoke(home.path(), &["_telemetry-flush"], true)
         .status
