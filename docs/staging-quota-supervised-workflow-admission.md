@@ -115,3 +115,20 @@ The read-only secret-name audit preceding this correction found
 set it, relax generation checks, or admit any live mode. The named key and all
 other external supervision/privacy prerequisites must be resolved separately
 before a real preparation or recovery dispatch.
+
+### Key lifecycle update (2026-10-01)
+
+The root executed the existing create_ten_address_recovery_key.ps1 helper during
+an isolated repository Secret administration operation. Exact repository admin
+metadata and versioned-key absence were checked before creation; successful
+metadata readback returned only `ten_address_recovery_key_created`. V1 is now a
+repository-level Secret, matching project-level Secret management. The 256-bit
+CSPRNG value went only through a redirected private gh stdin; no key value was
+printed, persisted in files, supplied on argv or reused from another credential.
+Existing generations were not overwritten. Retain V1 until all corresponding
+fixture artifacts have expired after exact verified cleanup.
+
+This removes only the missing-key setup issue. No quota preparation/campaign,
+address mutation, provider request, native credential provisioning, retained
+record/privacy admission, send unhold or Release was executed. The earlier
+absence audit remains a correct historical observation, not the current state.
