@@ -206,7 +206,7 @@ def receive(actor: str, environment: dict[str, str], subject: str, attachment: b
     before = cli(environment, "get", message["id"])[0]
     cli(environment, "read", message["id"], "-o", str(directory), "--unpack")
     after = cli(environment, "get", message["id"])[0]
-    require(before["is_read"] == after["is_read"], "archive_read_changed_read_state")
+    require(before["read"] == after["read"], "archive_read_changed_read_state")
     require(phrase in (directory / "body.txt").read_text(encoding="utf-8").lower(),
             "received_text_body_changed")
     require(phrase in (directory / "body.html").read_text(encoding="utf-8").lower(),
