@@ -96,7 +96,7 @@ Keep project Secret management and the existing send hold unchanged.
 * docs/mail-trace-privacy-decision.md — historical path-enrichment evidence and
   the current safe-event isolation boundary, not a universal future API verdict.
 
-## Local journal repair (source under hosted validation)
+## Local journal repair (hosted source accepted)
 
 The first bounded implementation retains the legacy upload JSON unchanged:
 old Mail servers use deny_unknown_fields, so blindly uploading new attributes
@@ -128,3 +128,68 @@ request-construction and pre-network auth failures, timestamp/identity equality,
 legacy and concurrent additive migrations, unresolved key reuse and concurrent
 writers, plus actual CLI process behavior with an unavailable journal and opt-out.
 No local project tests/builds and no provider/mail changes accompany this patch.
+
+PR 44 head 46a6cbe9e7dc79242358521d73ab7273aa514095 passed CI 36849720707
+and syntax 36849720535. Linux/Windows/macOS each passed 33 unit and 2 actual
+CLI-process tests; all three compiler-aware dependency lookups were exact_hit.
+Observed scoped workflow duration was 2m01s; platform job durations including
+setup were 33s, 105s and 45s. This is not a controlled performance benchmark.
+Merged main a0626aae5f79edab85755670902d1df358d91826 preserves the tested tree.
+
+## Queue clock reader upgrade (source under hosted validation)
+
+Mail Event schema v1 gains optional occurred_at_ms, duration_ms and http_status.
+The first is the producer's UTC event time, not Queue receipt time. Exact elapsed
+milliseconds and status are operational facts, not mail content. Legacy records
+remain byte-shape compatible after decoding/re-encoding and retain no fabricated
+clock. Integer measurements must survive JavaScript without precision loss;
+HTTP status must agree with its legacy class and be an actual HTTP code (zero
+only for client attempts that observed no headers). Unknown/personal fields and
+existing service/phase combinations are still rejected.
+
+This change upgrades readers only. It does not turn on enriched producers or
+redeploy anything. Readers must deploy before producers; retaining schema v1
+alone does not make an old strict reader understand optional additions. Hosted
+native tests dispatch the actual compiled Queue handler, verify acknowledgements
+without guessed delivery sleeps, retain old/new event identity and clocks, and
+reject malformed/poisoned records with a positive control. The native file is
+assigned to core, raising its required minimum to 105 and total coverage to 154.
+Cloudflare's retained-log enrichment/native-span privacy canary remains separate.
+
+Primary native Queue testing mechanism:
+https://developers.cloudflare.com/workers/testing/miniflare/migrations/from-v2/
+(service binding queue() replaces removed dispatchQueue()).
+
+First reader source check 36850591693 passed Rust/Wasm/unit/build, all three CLI
+platforms and seven existing native suites. Core passed its existing 102 tests
+but all three new Queue dispatches failed before the sink with a native integer
+conversion error. The direct service-binding fixture omitted delivery attempts;
+provide an explicit first-attempt integer rather than relying on an obsolete
+example's optional default. This is a fixture boundary failure, not evidence that
+the sink/schema ran. No partial pass or deployment is accepted; hosted rerun is
+required with the complete native message descriptor.
+
+Second source check 36851779508 reached the actual Rust Queue handler after the
+attempt descriptor correction (synthetic legacy/enriched output was visible).
+The fixture then failed on outdated result-field names: the native response has
+retryBatch.retry and retryMessages, not the archived example's retryAll and
+explicitRetries. The current workerd API declaration and the pinned Miniflare
+4.20260730.0 source confirm that shape. Also capture native console stdout/stderr
+with the pinned runtime's handleRuntimeStdio hook; Log.logWithLevel alone captures
+Miniflare operational logs, not all Worker console output. Drain both native pipes
+after disposal before asserting absence, instead of a guessed delay/global console
+patch. This avoids a false-positive poison check or an empty positive-control log.
+
+Primary inspected source (the exact pinned SDK/runtime, not an archived example):
+https://github.com/cloudflare/workers-sdk/blob/miniflare%404.20260730.0/packages/miniflare/src/runtime/index.ts
+and workerd QueueResponse in https://github.com/cloudflare/workerd/blob/main/src/workerd/api/queue.h.
+
+Third source check 36852863632 accepted the updated Queue response fields and
+reached Rust, but the fixture awaited finished() on Miniflare's startup/restart
+Transform streams: these are not closed by disposal as assumed. Node correctly
+cancelled pending tests rather than silently passing. Replace that guessed stream
+lifetime with a test-only subclass of the unchanged SDK bridge: after Rust queue
+returns, write a static same-console barrier. Await its actual captured arrival
+with a missing-barrier timeout, then inspect the preceding console stream. No
+sleep, raw exception, global monkey patch or production-handler change is added.
+This is still pending complete hosted acceptance, not a platform privacy claim.
