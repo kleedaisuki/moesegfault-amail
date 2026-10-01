@@ -34,6 +34,23 @@ Foreign message or reservation collisions are refused, not overwritten. Body/rea
 
 Apply migration before deploying code. Drain old **unfenced** Worker revisions and do not serve a mixed old/new rollout before relying on this invariant: a token cannot constrain code that never checks it. After all serving revisions use the token contract, different compiler revisions cannot mix chunk prefixes because only the current lease holder can stage or publish. A new holder rewrites all indices and the prefix before publication.
 
+### Future staging cutover admission checklist
+
+This is an executable ordering contract for the deployment owner, **not a deployment performed by this change**. The independent privacy/Issues gate must pass first. Do not use this checklist to bypass it. Production Mail is not presently deployed; staging can still have old scheduled invocations.
+
+| Required action/evidence | Admission condition |
+|---|---|
+| Verify held public sending using the existing private hosted operator checker | `python infra/operator/check_send_hold.py --target staging` succeeds; no public unhold accompanies this cutover |
+| Record an aggregate-only journal baseline | Count accepted/provider-positive journals and surviving owned tombstones; retain counts/state distributions and exact source/version, not owner keys, mail IDs, ZIPs or raw SQL results in public artifacts |
+| Apply migration 0010 before any new code | Hosted staging D1 migration succeeds; verify the two lease columns, lookup index and semantic-work requeue trigger exist |
+| Stop assigning work to old revisions | All effective HTTP/service routing and active Worker deployment percentages serve fenced revisions only; no old Cron trigger can start another old invocation |
+| Record `T_stop`, the latest verified instant old HTTP/service/Cron work could start | Record UTC timestamp and provider deployment/trigger readback; source configuration alone is insufficient |
+| Drain old unfenced work | Independently observe all old-version invocations finished, **or** wait at least the platform's full 15-minute maximum wall window after `T_stop` before any correctness acceptance dependent on fencing; retain timestamped evidence and separately account for deployment propagation uncertainty |
+| Recheck the effective deployment and journal aggregates after drain | No old version serves traffic or newly starts Cron; compare the accepted journal/status counts to the baseline and investigate unexpected divergence before resuming acceptance |
+| Run narrowly scoped staged integrity acceptance on exact deployed revision | The post-accepted HTTP/Cron/delete/GC case and supported legacy-tombstone recovery pass, then existing Cron can resume under the fenced-only revision contract |
+
+If effective routing, trigger state, old invocation termination or timestamp provenance cannot be verified, keep the cutover admission false. Waiting while an old trigger is still able to start more work is **not** draining. Applying a migration is not proof that old source stopped serving. This checklist does not authorize a provider mutation, public send, production cutover or release by itself.
+
 The platform clock supplies durable expiry. Forward clock movement can defer a running holder; backward movement can prolong recovery. The 20-minute value is a finite configured retry window under a progressing platform clock, not a formal wall-time guarantee under arbitrary clock changes. A new holder's UUID, rather than timestamp uniqueness, fences old work.
 
 This change deliberately does **not** add accepted-item fairness, LIMIT 5, a shared D1 budget, phase rotation, timeouts, deadline slices or a durable chunk cursor. A later phase deadline must prove that one maximum valid archive finishes within its admitted turn, or introduce continuation; repeatedly replaying a short prefix is not progress. Current twenty-row accepted recovery can still exceed Paid's documented D1 allowance. No deployment admission or Free-safety claim follows from this integrity repair.
