@@ -50,7 +50,7 @@ class ControlPlaneTraceTests(unittest.TestCase):
         """One failed invocation is observable and never replayed."""
         output = io.StringIO()
         response = subprocess.CompletedProcess([], 2, "private-output", "private-secret")
-        with redirect_stdout(output), patch.object(sink.subprocess, "run", return_value=response) as call:
+        with redirect_stdout(output), patch.object(sink, "require_artifact"), patch.object(sink.subprocess, "run", return_value=response) as call:
             with self.assertRaises(ValueError):
                 sink.deploy("production")
         event = json.loads(output.getvalue().splitlines()[-1])
