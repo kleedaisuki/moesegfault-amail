@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging, staging-containment-settings, staging-current-worker-capture-off, staging-capture-preflight, staging-settings-patch-audit, staging-settings-audit-shape, staging-containment-readback, staging-worker-resource-readback, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-worker-r2-delivery-history, staging-worker-r2-history-shape, staging-worker-r2-history-error, staging-private-provider-error-capture, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-marker-location, staging-trace-marker-discriminator, staging-trace-http-compare, staging-trace-security-events, production, production-api-only-maintenance]
+        options: [checks, staging, staging-containment-settings, staging-current-worker-capture-off, staging-capture-preflight, staging-settings-patch-audit, staging-settings-audit-shape, staging-containment-readback, staging-worker-resource-readback, staging-e2e, staging-r2-object-capability, staging-r2-object-recover, staging-worker-r2-delivery-history, staging-worker-r2-history-shape, staging-worker-r2-history-error, staging-private-provider-error-capture, staging-second-principal-preflight, staging-second-principal, staging-second-principal-recover, staging-semantic-query-only, staging-prior-alias-reconcile, staging-hosted-alias-reconcile, staging-fifth-mail-audit, staging-fifth-mail-cleanup, staging-serving-pin, staging-routing-policy, staging-routing-write-probe, staging-routing-write-recover, staging-routing-write-audit, staging-routing-diagnostic, staging-current-address-diagnostic, staging-fourth-invocation-metrics, staging-role-smtp, staging-role-timeout-audit, staging-role-token-phase-probe, staging-role-phase-logs, staging-trace-canary, staging-trace-sink-canary, staging-trace-http-compare, production, production-api-only-maintenance]
       confirm:
         description: Documented RUN_* confirmation; production bootstrap or api-only maintenance is explicit
         required: false
@@ -1466,87 +1466,6 @@ jobs:
       source-version: ${{ inputs.expected_worker_version }}
       sink-version: ${{ inputs.trace_sink_version }}
     secrets: inherit
-
-  staging-trace-marker-location:
-    name: Classify one historical retained staging marker without raw logs
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.target == 'staging-trace-marker-location' &&
-      inputs.confirm == 'READ_STAGING_TRACE_MARKER_LOCATION' &&
-      github.ref == 'refs/heads/codex/amail-v0.1.0'
-    runs-on: ubuntu-latest
-    environment: staging
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    concurrency:
-      group: staging-trace-marker-location
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.14'
-      - name: Classify the exact historical retained window with fixed labels only
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: python infra/tests/staging_trace_marker_location.py --confirm READ_STAGING_TRACE_MARKER_LOCATION
-
-  staging-trace-marker-discriminator:
-    name: Refine one historical retained staging marker with fixed structural bins
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.target == 'staging-trace-marker-discriminator' &&
-      inputs.confirm == 'READ_STAGING_TRACE_MARKER_DISCRIMINATOR' &&
-      github.ref == 'refs/heads/codex/amail-v0.1.0'
-    runs-on: ubuntu-latest
-    environment: staging
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    concurrency:
-      group: staging-trace-marker-discriminator
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.14'
-      - name: Classify the exact historical retained window with fixed labels only
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_OBSERVABILITY_TOKEN: ${{ secrets.CF_OBSERVABILITY_TOKEN }}
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: python infra/tests/staging_trace_marker_discriminator.py --confirm READ_STAGING_TRACE_MARKER_DISCRIMINATOR
-
-  staging-trace-security-events:
-    name: Read only sampled Security Events for one staging trace incident
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.target == 'staging-trace-security-events' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
-    runs-on: ubuntu-latest
-    environment: staging
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.14'
-      - name: Classify one bounded, sampled zone-host event window
-        env:
-          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          DIAGNOSTIC_CONFIRM: ${{ inputs.confirm }}
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: |
-          python infra/provider/probe_staging_trace_security_events.py "$DIAGNOSTIC_CONFIRM" 36671177226
 
   staging-trace-http-compare:
     name: Compare staging urllib and reqwest anonymous transport

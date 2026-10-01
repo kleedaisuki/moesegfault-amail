@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import staging_trace_marker_discriminator as target
 from test_staging_trace_marker_location import PATH_MARKER, QUERY_MARKER, SUFFIX, row
 
-from workflow_source import job_block
 
 
 class DiscriminatorTests(unittest.TestCase):
@@ -94,21 +93,6 @@ class DiscriminatorTests(unittest.TestCase):
             query.assert_called_once_with("f" * 32, "secret", target.first.START, target.first.END)
             for private in (SUFFIX, "private-exception", "secret", PATH_MARKER):
                 self.assertNotIn(private, output.getvalue())
-
-    def test_workflow_requires_branch_confirmation_and_final_step_secrets(self) -> None:
-        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
-        job = job_block(workflow, "staging-trace-marker-discriminator")
-        for clause in ("github.event_name == 'workflow_dispatch'", "inputs.target == 'staging-trace-marker-discriminator'",
-                       "inputs.confirm == 'READ_STAGING_TRACE_MARKER_DISCRIMINATOR'",
-                       "github.ref == 'refs/heads/codex/amail-v0.1.0'", "environment: staging",
-                       "timeout-minutes: 5", "contents: read", "cancel-in-progress: false"):
-            self.assertIn(clause, job)
-        before, final = job.split("      - name: Classify the exact historical retained window with fixed labels only\n")
-        self.assertNotIn("secrets.", before)
-        self.assertNotIn("inputs.", final)
-        self.assertIn("python infra/tests/staging_trace_marker_discriminator.py --confirm "
-                      "READ_STAGING_TRACE_MARKER_DISCRIMINATOR", final)
-
 
 if __name__ == "__main__":
     unittest.main()

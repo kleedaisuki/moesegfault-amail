@@ -7,9 +7,14 @@ historical request's producer. The canary's 403 occurred near **2026-09-30
 04:59:42 UTC** without an application request ID; see
 [staging-trace-canary.md](staging-trace-canary.md).
 
+Maintenance update (2026-10-01): the completed fixed-window dispatch target and
+job are retired from current `ci.yml`; source classifier and synthetic tests are
+retained. The wiring described below is historical evidence, not current run
+instructions. See [current operational lanes](maintenance-operational-lanes.md).
+
 ## Bounded query and invocation
 
-The manual GitHub Actions `ci.yml` target `staging-trace-security-events` is
+The retired GitHub Actions `ci.yml` target `staging-trace-security-events` was
 fixed to run `36671177226`, the staging environment, and the exact confirmation
 `READ_STAGING_TRACE_SECURITY_EVENTS_36671177226`. It uses the repository's
 fixed, public zone ID and the existing `CLOUDFLARE_API_TOKEN` secret, injected
@@ -28,13 +33,9 @@ rows, a WAF action, or the producer of the mail API's 403. The provider's raw
 error messages were not logged. This is a **fail-closed diagnostic result**:
 do not repeat the unchanged query or infer that no edge intervention occurred.
 The invocation below is retained as the bounded contract, not a retry
-instruction. Example dispatch:
-
-```text
-gh workflow run ci.yml --ref codex/amail-v0.1.0 \
-  -f target=staging-trace-security-events \
-  -f confirm=READ_STAGING_TRACE_SECURITY_EVENTS_36671177226
-```
+instruction. Its retired confirmation was
+`READ_STAGING_TRACE_SECURITY_EVENTS_36671177226`; do not replay the historical
+workflow or widen the expired incident window.
 
 The script performs one POST to Cloudflare Analytics GraphQL, no redirect and
 no retry. It selects only `datetime`, `clientRequestHTTPHost`, `action`,

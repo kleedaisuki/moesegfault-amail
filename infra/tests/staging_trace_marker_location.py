@@ -3,6 +3,9 @@
 This manual, read-only diagnostic is bound to the failed staging Actions step
 from run 36703733769. It never generates a request, creates a marker, or
 changes Cloudflare settings. A classification is not a privacy acceptance.
+
+The completed workflow lane is retired; retain this module for synthetic safety
+tests and historical evidence, not as a current provider-read runbook.
 """
 
 from __future__ import annotations

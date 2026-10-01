@@ -6,7 +6,6 @@ from contextlib import redirect_stdout
 from io import StringIO
 import json
 from pathlib import Path
-import re
 import sys
 import unittest
 from unittest.mock import patch
@@ -34,21 +33,6 @@ def payload(rows: list[dict]) -> dict:
 
 class SecurityEventTests(unittest.TestCase):
     """Fail closed on scope, page, and provider-controlled output ambiguity."""
-
-    def test_workflow_wires_existing_zone_identifier(self) -> None:
-        """The diagnostic must not depend on a nonexistent zone-ID secret."""
-
-        workflow = (Path(__file__).resolve().parents[2] / ".github" / "workflows" /
-                    "ci.yml").read_text(encoding="utf-8")
-        match = re.search(
-            r"(?ms)^  staging-trace-security-events:\n(.*?)(?=^  [a-z][\w-]*:\n|\Z)",
-            workflow,
-        )
-        self.assertIsNotNone(match)
-        job = match.group(1)
-        self.assertRegex(job, r"(?m)^          CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e$")
-        self.assertIn("CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}", job)
-        self.assertNotIn("secrets.CF_ZONE_ID", job)
 
     def test_query_is_zone_host_time_scoped_and_minimal(self) -> None:
         """The query must not request identifiers or sensitive request details."""
