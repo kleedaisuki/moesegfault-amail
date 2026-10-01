@@ -55,6 +55,11 @@ fn guard() -> String {
 impl Projection<'_> {
     /// Bind the common fence without interpolating any private value into SQL.
     fn bindings(&self, key: &str, token: &str) -> Vec<JsValue> {
+        self.bindings_at(key, token, crate::now())
+    }
+
+    /// Use one clock snapshot for all statements of the atomic final batch.
+    fn bindings_at(&self, key: &str, token: &str, current: i64) -> Vec<JsValue> {
         vec![
             bind_str(self.id),
             bind_str(self.issuer),
@@ -65,7 +70,7 @@ impl Projection<'_> {
             bind_num(self.bytes as i64),
             bind_str(key),
             bind_str(token),
-            bind_num(crate::now()),
+            bind_num(current),
         ]
     }
 }
@@ -136,8 +141,9 @@ fn message_statement(
     key: &str,
     token: &str,
     parts: &[&str],
+    current: i64,
 ) -> Result<D1PreparedStatement> {
-    let mut values = projection.bindings(key, token);
+    let mut values = projection.bindings_at(key, token, current);
     values.extend([
         bind_num(parts.len() as i64 - 1),
         bind_str(&draft.manifest.from),
@@ -156,7 +162,9 @@ fn message_statement(
         attachment_count,r2_key,size_bytes,storage_bytes)
         SELECT ?1,?12,?2,?3,'outbound',?12,?13,?14,?15,?16,?17,1,?18,1,?19,?8,?7,?7
         WHERE {} AND {}
-        ON CONFLICT(id) DO UPDATE SET body_text=excluded.body_text
+        ON CONFLICT(id) DO UPDATE SET body_text=excluded.body_text,
+            embedding_json=NULL,embedding_model=NULL,embedding_dimensions=NULL,
+            embedding_input_version=NULL,embedding_truncated=NULL
         WHERE messages.deleted_at IS NULL",
         guard(),
         ready()
@@ -223,8 +231,9 @@ async fn publish_leased(
 ) -> Result<()> {
     let parts = text_parts(&draft.text);
     stage(db, projection, key, token, &parts).await?;
-    let message = message_statement(db, projection, draft, key, token, &parts)?;
-    let mut values = projection.bindings(key, token);
+    let current = crate::now();
+    let message = message_statement(db, projection, draft, key, token, &parts, current)?;
+    let mut values = projection.bindings_at(key, token, current);
     values.extend([bind_num(parts.len() as i64 - 1), bind_str(parts[0])]);
     let completed = format!(
         "{} AND {} AND EXISTS (
