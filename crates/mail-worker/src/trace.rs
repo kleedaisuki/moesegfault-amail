@@ -761,5 +761,8 @@ fn diagnostic_record(code: DiagnosticCode) -> QueuedEvent {
         provider_http_status: None,
         provider_error_code: None,
         diagnostic_code: Some(code),
+        occurred_at_ms: None,
+        duration_ms: None,
+        http_status: None,
     }
 }

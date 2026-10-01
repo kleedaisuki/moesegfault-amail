@@ -177,6 +177,15 @@ pub struct Event {
     /// HTTP status hundred class; zero only for historical CLI failures.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_status_class: Option<u16>,
+    /// Producer UTC event time, not sink receipt time; absent for legacy records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occurred_at_ms: Option<u64>,
+    /// Exact operational elapsed milliseconds, independent of content-size buckets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Exact observed HTTP status; zero is reserved for CLI attempts with no headers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
     /// Power-of-two elapsed bucket bounded to one hour rounded upward.
     pub duration_ms_bucket: u64,
     /// Measured request byte bucket, never content or a path.
@@ -220,6 +229,12 @@ impl Event {
                 .request_id
                 .as_deref()
                 .is_some_and(|id| !canonical_uuid(id))
+            || self.occurred_at_ms.is_some_and(|n| n > MAX_SAFE_INTEGER)
+            || self.duration_ms.is_some_and(|n| n > MAX_SAFE_INTEGER)
+            || self.http_status.is_some_and(|n| {
+                (!(100..=599).contains(&n) && !(n == 0 && self.service == Service::MailCli))
+                    || self.http_status_class != Some(n / 100)
+            })
             || !valid_bucket(self.duration_ms_bucket, 1 << 22)
             || self
                 .request_bytes_bucket
@@ -350,6 +365,9 @@ impl Event {
     }
 }
 
+/// JSON integers crossing JavaScript must not silently lose precision.
+const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+
 /// Exact lowercase nonzero W3C correlation identifier, never arbitrary text.
 pub fn valid_hex_id(id: &str, length: usize) -> bool {
     id.len() == length
@@ -399,6 +417,45 @@ mod tests {
         assert_eq!(first.trace_id, second.trace_id);
         assert_eq!(first.parent_span_id, second.parent_span_id);
         assert!(serde_json::to_string(&second).unwrap().len() < 1024);
+    }
+
+    /// A reader upgrade preserves legacy shape and exact operational measurements.
+    #[test]
+    fn enriched_measurements_roundtrip_without_adding_fields_to_legacy_rows() {
+        let old = fixture();
+        assert_eq!(
+            serde_json::to_value(Record::from_value(old.clone()).unwrap()).unwrap(),
+            old
+        );
+        let mut enriched = fixture();
+        enriched["occurred_at_ms"] = json!(1_790_000_000_123u64);
+        enriched["duration_ms"] = json!(7);
+        enriched["http_status"] = json!(201);
+        assert_eq!(
+            serde_json::to_value(Record::from_value(enriched.clone()).unwrap()).unwrap(),
+            enriched
+        );
+    }
+
+    /// Typed useful measurements do not open a channel for arbitrary personal text.
+    #[test]
+    fn enriched_fields_reject_wrong_types_precision_loss_and_inconsistent_status() {
+        for (field, bad) in [
+            ("occurred_at_ms", json!(-1)),
+            ("occurred_at_ms", json!("private-time")),
+            ("occurred_at_ms", json!(MAX_SAFE_INTEGER + 1)),
+            ("duration_ms", json!(-1)),
+            ("duration_ms", json!(0.5)),
+            ("duration_ms", json!(MAX_SAFE_INTEGER + 1)),
+            ("http_status", json!("private-status")),
+            ("http_status", json!(0)),
+            ("http_status", json!(600)),
+            ("http_status", json!(503)),
+        ] {
+            let mut value = fixture();
+            value[field] = bad;
+            assert!(Record::from_value(value).is_none(), "accepted {field}");
+        }
     }
 
     /// Poison fields, arbitrary enums and malformed identifiers never enter retained source.
