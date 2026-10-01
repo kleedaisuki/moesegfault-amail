@@ -168,11 +168,12 @@ def login(actor: str, material: tuple[str, str, str]) -> tuple[dict[str, str], s
     return environment, address
 
 
-def draft(actor: str, sender: str, recipient: str, environment: dict[str, str]) -> tuple[Path, str, bytes, str, str]:
+def draft(actor: str, sender: str, recipient: str, environment: dict[str, str],
+          authored_run: str) -> tuple[Path, str, bytes, str, str]:
     """Author TEXT, HTML and an attachment, then let amail pack the ZIP."""
     directory = RUN / actor / "draft"
     (directory / "assets").mkdir(parents=True)
-    subject = "Research Notification " + os.environ["GITHUB_RUN_ID"] + " " + actor
+    subject = "Research Notification " + authored_run + " " + actor
     text = "Research note: simple invariants make mail delivery reproducible.\n"
     html = '<html><body><h1>Research note</h1><p>Simple invariants make mail delivery reproducible.</p></body></html>'
     attachment = b"Claim,Evidence\nNative authorization,PKCE\nDelivery,Received archive\n"
@@ -197,7 +198,7 @@ def draft(actor: str, sender: str, recipient: str, environment: dict[str, str]) 
 
 
 def receive(actor: str, environment: dict[str, str], subject: str, attachment: bytes,
-            filename: str, phrase: str) -> dict:
+            filename: str, phrase: str, receipt: dict) -> dict:
     """Require actual inbound delivery and inspect the retrieved safe archive."""
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
@@ -206,6 +207,8 @@ def receive(actor: str, environment: dict[str, str], subject: str, attachment: b
         if inbound:
             require(len(inbound) == 1, "received_delivery_ambiguous")
             message = inbound[0]
+            receipt.setdefault("received", {})[actor] = {"id": message["id"]}
+            save_receipt(receipt)
             break
         time.sleep(10)
     else:
@@ -219,10 +222,26 @@ def receive(actor: str, environment: dict[str, str], subject: str, attachment: b
             "received_text_body_changed")
     require(phrase in (directory / "body.html").read_text(encoding="utf-8").lower(),
             "received_html_body_missing")
+    progress = receipt["received"][actor]
+    progress.update(text_checked=True, html_checked=True, read_state_unchanged=True)
     manifest = tomllib.loads((directory / "manifest.toml").read_text(encoding="utf-8"))
     files = [asset for asset in manifest.get("assets", []) if asset.get("filename") == filename]
-    require(len(files) == 1 and (directory / files[0]["path"]).read_bytes() == attachment,
-            "received_attachment_changed")
+    observations = []
+    for asset in manifest.get("assets", []):
+        data = (directory / asset["path"]).read_bytes()
+        observations.append({"path": asset["path"], "filename": asset.get("filename"),
+                             "content_type": asset.get("content_type"), "size_bytes": len(data),
+                             "sha256": hashlib.sha256(data).hexdigest(),
+                             "expected_filename_match": asset.get("filename") == filename,
+                             "expected_bytes_match": data == attachment,
+                             "text_crlf_canonical_equal": data.replace(b"\r\n", b"\n") == attachment.replace(b"\r\n", b"\n")})
+    progress["attachment_observation"] = {"asset_count": len(observations),
+                                           "expected_size_bytes": len(attachment),
+                                           "expected_sha256": hashlib.sha256(attachment).hexdigest(),
+                                           "assets": observations}
+    save_receipt(receipt)
+    require(len(files) == 1, "received_attachment_filename_not_preserved")
+    require((directory / files[0]["path"]).read_bytes() == attachment, "received_attachment_bytes_changed")
     marker(f"actor_{actor.lower()}_actual_received_archive_text_html_attachment_verified")
     return message
 
@@ -328,6 +347,32 @@ def save_receipt(receipt: dict) -> None:
     (RUN / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
 
 
+def journey_receipt() -> dict:
+    """Continue the same actual owned operations, never resend accepted mail."""
+    receipt = {"workflow_source_sha": os.environ["GITHUB_SHA"],
+               "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+               "candidate_run_id": "36909041053", "sends": {}, "received_archive_verified": {}}
+    prior = os.environ.get("USER_JOURNEY_PRIOR_RUN", "")
+    if not prior:
+        return receipt
+    require(bool(re.fullmatch(r"[1-9][0-9]{0,19}", prior)), "prior_journey_run_invalid")
+    previous = json.loads((ROOT / ".temp" / "prior-journey" / "receipt.json").read_text(encoding="utf-8"))
+    require(previous.get("workflow_run_id") == prior and previous.get("candidate_run_id") == "36909041053"
+            and isinstance(previous.get("sends"), dict) and set(previous["sends"]) <= {"A", "B"},
+            "prior_journey_receipt_invalid")
+    for actor, sent in previous["sends"].items():
+        # Unknown/partial provider outcomes require reconciliation, not a retry.
+        require(sent.get("state") == "accepted", "prior_send_outcome_requires_reconciliation")
+        uuid.UUID(sent["id"])
+        uuid.UUID(sent["request_id"])
+        uuid.UUID(sent["idempotency_key"])
+        require(bool(re.fullmatch(r"[a-f0-9]{64}", sent.get("archive_sha256", ""))), "prior_send_digest_invalid")
+        receipt["sends"][actor] = {**sent, "authored_run_id": sent.get("authored_run_id", prior)}
+    receipt["received_archive_verified"] = previous.get("received_archive_verified", {})
+    receipt["previous_run_id"] = prior
+    return receipt
+
+
 def delivered_feedback(sent: dict[str, dict]) -> dict:
     """Observe provider-to-consumer feedback for only the two actual sent IDs.
 
@@ -396,30 +441,35 @@ def main() -> int:
             return 0
         sessions = {actor: login(actor, material) for actor, material in materials.items()}
         time.sleep(60)
-        receipt = {"workflow_source_sha": os.environ["GITHUB_SHA"],
-                   "workflow_run_id": os.environ["GITHUB_RUN_ID"],
-                   "candidate_run_id": "36909041053", "sends": {}, "received_archive_verified": {}}
+        receipt = journey_receipt()
         save_receipt(receipt)
         delivered = {}
         for sender, recipient in (("A", "B"), ("B", "A")):
             environment, address = sessions[sender]
             other_environment, other_address = sessions[recipient]
-            archive, subject, attachment, filename, phrase = draft(sender, address, other_address, environment)
-            owned_send_grant(sender, address, other_address)
-            key = str(uuid.uuid4())
-            receipt["sends"][sender] = {"idempotency_key": key,
+            previous = receipt["sends"].get(sender)
+            authored = previous["authored_run_id"] if previous else os.environ["GITHUB_RUN_ID"]
+            archive, subject, attachment, filename, phrase = draft(sender, address, other_address, environment, authored)
+            if previous:
+                require(hashlib.sha256(archive.read_bytes()).hexdigest() == previous["archive_sha256"],
+                        "prior_accepted_payload_changed")
+                marker(f"actor_{sender.lower()}_prior_accepted_send_reused_without_submission")
+            else:
+                owned_send_grant(sender, address, other_address)
+                key = str(uuid.uuid4())
+                receipt["sends"][sender] = {"idempotency_key": key, "authored_run_id": authored,
                                        "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
-            save_receipt(receipt)
-            submitted = cli(environment, "send", str(archive), "--idempotency-key", key)
-            require(len(submitted) == 1 and submitted[0].get("state") == "accepted", "actual_send_response_invalid")
-            result = submitted[0]
-            uuid.UUID(result["id"])
-            uuid.UUID(result["request_id"])
-            receipt["sends"][sender].update({name: result[name] for name in ("id", "state", "request_id")})
-            receipt["sends"][sender]["accepted_at"] = datetime.now(timezone.utc).isoformat()
-            save_receipt(receipt)
-            marker(f"actor_{sender.lower()}_normal_send_accepted")
-            received = receive(recipient, other_environment, subject, attachment, filename, phrase)
+                save_receipt(receipt)
+                submitted = cli(environment, "send", str(archive), "--idempotency-key", key)
+                require(len(submitted) == 1 and submitted[0].get("state") == "accepted", "actual_send_response_invalid")
+                result = submitted[0]
+                uuid.UUID(result["id"])
+                uuid.UUID(result["request_id"])
+                receipt["sends"][sender].update({name: result[name] for name in ("id", "state", "request_id")})
+                receipt["sends"][sender]["accepted_at"] = datetime.now(timezone.utc).isoformat()
+                save_receipt(receipt)
+                marker(f"actor_{sender.lower()}_normal_send_accepted")
+            received = receive(recipient, other_environment, subject, attachment, filename, phrase, receipt)
             cli(environment, "get", received["id"], allow_failure=True)
             require(cli(other_environment, "get", received["id"])[0]["id"] == received["id"],
                     "owner_message_disappeared_after_foreign_denial")

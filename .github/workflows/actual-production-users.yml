@@ -17,6 +17,11 @@ on:
         type: string
         default: ''
         required: false
+      prior_run:
+        description: Optional exact prior actual-user run; reuse accepted sends and owned mail without resending
+        type: string
+        default: ''
+        required: false
 
 permissions:
   contents: read
@@ -61,11 +66,22 @@ jobs:
           gh run download 36909041053 -n amail-x86_64-pc-windows-msvc -D .temp/release-candidate
           if ($LASTEXITCODE -ne 0) { throw 'candidate_download_failed' }
           Expand-Archive -LiteralPath .temp/release-candidate/amail-v0.1.0-x86_64-pc-windows-msvc.zip -DestinationPath .temp/production-cli
+      - name: Recover only the named previous opaque journey receipt
+        if: inputs.prior_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIOR_RUN: ${{ inputs.prior_run }}
+          JOURNEY_PHASE: ${{ inputs.phase }}
+        run: |
+          if ($env:JOURNEY_PHASE -cne 'journey' -or $env:PRIOR_RUN -cnotmatch '^[1-9][0-9]{0,19}$') { throw 'prior_journey_invalid' }
+          gh run download $env:PRIOR_RUN -n "actual-owned-user-receipt-$env:PRIOR_RUN" -D .temp/prior-journey
+          if ($LASTEXITCODE -ne 0) { throw 'prior_journey_receipt_unavailable' }
       - name: Perform authorized owned production user actions
         env:
           USER_JOURNEY_CONFIRM: ${{ inputs.confirm }}
           USER_JOURNEY_PHASE: ${{ inputs.phase }}
           USER_JOURNEY_GRANT_CONFIRM: ${{ inputs.grant_confirm }}
+          USER_JOURNEY_PRIOR_RUN: ${{ inputs.prior_run }}
           PRODUCTION_ACTOR_A_USERNAME: ${{ secrets.PRODUCTION_ACTOR_A_USERNAME }}
           PRODUCTION_ACTOR_A_PASSWORD: ${{ secrets.PRODUCTION_ACTOR_A_PASSWORD }}
           PRODUCTION_ACTOR_B_USERNAME: ${{ secrets.PRODUCTION_ACTOR_B_USERNAME }}
