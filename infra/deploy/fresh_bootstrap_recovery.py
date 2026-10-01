@@ -28,6 +28,7 @@ from worker_artifact import TREES, ENTRY_FILES
 LIMIT = 65_536
 MODULE_LIMIT = 32 * 1024 * 1024
 JOB = "Fresh held production bootstrap"
+ONLINE_JOB = "Fresh production online deployment"
 ALLOWED = {"controller.jsonl", "controller.scope.jsonl", "trace-queue-provision-production.json", "preflight.jsonl"}
 PHASES = ("admission", "old_scope", "create_scope", "render", "migrate", "queues", "sink",
           "sink_readback", "maintenance", "api", "readback", "receipt")
@@ -35,9 +36,9 @@ PHASES = ("admission", "old_scope", "create_scope", "render", "migrate", "queues
 TERMINAL = {"success", "failure", "timed_out", "cancelled"}
 
 
-def origin(run_id: str) -> tuple[str, list[dict]]:
+def origin(run_id: str, *, job: str = JOB) -> tuple[str, list[dict]]:
     """Require a terminal protected creator, including interrupted ambiguous writes."""
-    if not isinstance(run_id, str) or RUN.fullmatch(run_id) is None:
+    if job not in (JOB, ONLINE_JOB) or not isinstance(run_id, str) or RUN.fullmatch(run_id) is None:
         raise ValueError("fresh_recovery_run_unreviewed")
     run = github(f"runs/{run_id}")
     if (not isinstance(run, dict) or type(run.get("id")) is not int or str(run["id"]) != run_id
@@ -48,11 +49,15 @@ def origin(run_id: str) -> tuple[str, list[dict]]:
             or not isinstance(run.get("head_sha"), str) or SHA.fullmatch(run["head_sha"]) is None
             or not isinstance(run.get("repository"), dict) or run["repository"].get("full_name") != REPO):
         raise ValueError("fresh_recovery_protected_origin_required")
+    if job == ONLINE_JOB and run["conclusion"] != "failure":
+        raise ValueError("fresh_recovery_protected_origin_required")
     jobs = inventory(github(f"runs/{run_id}/attempts/1/jobs?per_page=100"), "jobs")
-    selected = [row for row in jobs if row.get("name") == JOB]
+    selected = [row for row in jobs if row.get("name") == job]
     if (len(selected) != 1 or selected[0].get("status") != "completed"
             or selected[0].get("conclusion") not in TERMINAL
             or selected[0].get("run_id") != int(run_id) or selected[0].get("head_sha") != run["head_sha"]):
+        raise ValueError("fresh_recovery_protected_job_required")
+    if job == ONLINE_JOB and selected[0]["conclusion"] != "failure":
         raise ValueError("fresh_recovery_protected_job_required")
     for name in REQUIRED:
         matches = [row for row in jobs if row.get("name") == name]

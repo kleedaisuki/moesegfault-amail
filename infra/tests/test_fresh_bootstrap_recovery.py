@@ -15,6 +15,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/deploy"))
 import fresh_bootstrap_recovery as admission
+import fresh_online_checkpoint as online_checkpoint
 from fresh_mail_bootstrap import Bootstrap
 from fresh_bootstrap_contract import Epoch
 
@@ -459,6 +460,51 @@ class RecoveryAdmissionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.load_checkpoint(changed)
         self.assertFalse(self.destination.exists())
+
+    def test_online_checkpoint_admits_only_two_observed_adapters_before_capture_failure(self):
+        """The actual 22-row prefix binds protected modules, original stores and pins."""
+        creation = self.sink_checkpoint()[1]["creation_epoch"]
+        resources = {"database": "d9be9bb4-5a73-4223-85d6-b04763e6f03b",
+                     "bucket": Epoch(**creation).bucket_name}
+        phases = ("admission", "receipt_origin", "source_adoption", "capabilities", "paused_readback",
+                  "sending_dns", "sending_privacy", "email_queues", "mail_ingress", "mail_events", "mail_ingress_capture_off")
+        rows = []
+        for index, phase in enumerate(phases):
+            base = {"schema": "mail-fresh-online-controller/v1", "phase": phase}
+            if index >= 1:
+                base["source_epoch"] = asdict(self.epoch)
+            if index >= 2:
+                base.update(creation_epoch=creation, resources=resources)
+            rows.extend({**base, "state": state} for state in ("intent", "observed"))
+        versions = {"mail_ingress": "5c296407-5048-43b3-aad6-ac106676e7f2",
+                    "mail_events": "7fa0c130-d4bc-45c4-8c22-c16293821df8"}
+        rows[17].update(version=versions["mail_ingress"])
+        rows[19].update(version=versions["mail_events"])
+        rows[-1].update(state="failed", error_type="ValueError")
+        raw = b"\n".join(json.dumps(row).encode() for row in rows) + b"\n"
+        self.jobs[-1]["name"] = admission.ONLINE_JOB
+        self.artifacts[0]["name"] = f"mail-fresh-online-recovery-{self.epoch.run_id}-1"
+        self.recovery = zipped([("controller.jsonl", raw)])
+        with patch.object(admission, "github", side_effect=self.github), patch.object(admission, "module_zip", return_value=self.modules):
+            result = online_checkpoint.load(self.epoch.run_id, self.destination)
+        self.assertEqual(result, online_checkpoint.OnlineCheckpoint(self.epoch, Epoch(**creation), resources, versions))
+        self.assertEqual((self.destination / "controller.jsonl").read_bytes(), raw)
+        for index, key, value in ((17, "state", "failed"), (19, "version", versions["mail_ingress"]),
+                                  (20, "worker_id", "a" * 32), (21, "state", "observed"),
+                                  (21, "error_type", "FreshError"), (12, "phase", "unknown_write"),
+                                  (0, "source_epoch", asdict(self.epoch))):
+            changed = json.loads(json.dumps(rows))
+            changed[index][key] = value
+            with self.subTest(index=index, key=key), self.assertRaises(ValueError):
+                online_checkpoint.journal(b"\n".join(json.dumps(row).encode() for row in changed),
+                                          self.epoch.source_sha, self.epoch.run_id)
+        for changed in (rows[:-1], rows + [rows[-1]]):
+            with self.assertRaises(ValueError):
+                online_checkpoint.journal(b"\n".join(json.dumps(row).encode() for row in changed),
+                                          self.epoch.source_sha, self.epoch.run_id)
+        self.run["conclusion"] = "success"
+        with patch.object(admission, "github", side_effect=self.github), self.assertRaises(ValueError):
+            online_checkpoint.load(self.epoch.run_id, Path(self.folder.name) / "rejected-online")
 
     def test_known_sink_readback_failure_admits_exact_observed_coordinates(self):
         """The actual failure shape yields sink coordinates, not replacement creation proof."""
