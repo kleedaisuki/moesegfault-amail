@@ -98,6 +98,50 @@ def owned(settings: dict, nonce: str, role: str) -> bool:
     return values.get("PROBE_ID") == nonce and values.get("CANARY_ROLE") == role
 
 
+def capture_readback(settings: dict) -> dict:
+    """Retain only reviewed capture fields, including missing/type diagnostics.
+
+    The provider may omit optional per-signal objects when observability is
+    disabled. Missing is not false: it is recorded separately, and admission
+    still requires the explicit root disable flag and rejects any signal enable.
+    """
+    observation = settings.get("observability")
+    result = {}
+    for path in (("enabled",), ("logs", "enabled"), ("traces", "enabled")):
+        value = observation
+        label = None
+        for key in path:
+            if not isinstance(value, dict):
+                label = "parent_" + type(value).__name__
+                break
+            if key not in value:
+                label = "missing"
+                break
+            value = value[key]
+        result[".".join(path)] = label if label is not None else value if type(value) is bool else type(value).__name__
+    return result
+
+
+def capture_accepted(settings: dict, name: str) -> bool:
+    """Check effective source policy without requiring optional object repetition.
+
+    Script Settings defines logs/traces as optional. Explicit observability false
+    disables capture; optional signal objects may be absent but, when returned,
+    must affirm false. A true/ill-typed override is never treated as disabled.
+    """
+    observation = settings.get("observability")
+    if not isinstance(observation, dict):
+        return False
+    if name == PROBE:
+        traces = observation.get("traces")
+        return isinstance(traces, dict) and traces.get("enabled") is True
+    if name != CALLER or observation.get("enabled") is not False:
+        return False
+    return all(key not in observation or
+               (isinstance(observation[key], dict) and observation[key].get("enabled") is False)
+               for key in ("logs", "traces"))
+
+
 def deploy() -> None:
     """Create only absent scripts; an ambiguous process result is never retried."""
     provider = Provider()
@@ -130,13 +174,10 @@ def deploy() -> None:
         settings = provider.request("GET", provider.script(name))
         if not owned(settings, receipt["probe_id"], "probe" if name == PROBE else "caller"):
             raise ValueError("canary_deploy_ownership_readback_failed")
-        observation = settings.get("observability", {})
-        if name == CALLER:
-            if (observation.get("enabled") is not False or observation.get("traces", {}).get("enabled") is not False
-                    or observation.get("logs", {}).get("enabled") is not False):
-                raise ValueError("untraced_caller_settings_readback_failed")
-        elif observation.get("traces", {}).get("enabled") is not True:
-            raise ValueError("traced_probe_settings_readback_failed")
+        receipt.setdefault("capture_readback", {})[name] = capture_readback(settings)
+        write_receipt(receipt)
+        if not capture_accepted(settings, name):
+            raise ValueError("canary_capture_settings_readback_failed")
         deployed = provider.request("GET", provider.script(name, "deployments"))["deployments"]
         active = deployed[0]["versions"]
         if len(active) != 1 or active[0].get("version_id") != receipt["versions"][name] or active[0].get("percentage") != 100:

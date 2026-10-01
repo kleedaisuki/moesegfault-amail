@@ -94,3 +94,29 @@ have observed native parents. Redacted marker leakage is an experimental outcome
 rather than something to suppress or waive. This result cannot by itself prove
 all Mail/Email/D1/R2 surfaces safe; those have separate content/metadata origins.
 Actual controlled deployment/collection/cleanup is still pending.
+
+## First deployed lifecycle result (2026-10-01)
+
+Exact-main full source CI 36865492327 passed for 9d0a9599723a0887cc05a49376be54552252d64b.
+Experiment 36866726157 consumed that checked artifact without a Rust rebuild,
+created probe version 705c7bcb-553d-4993-90a8-ca70c19b28ff and caller version
+5a8b33a3-071e-47d4-b290-617d1a48d5af. Probe ownership, trace enablement,
+serving version and endpoint isolation passed. Caller ownership passed but its
+capture readback failed before trigger. No synthetic runtime cases or native
+records were collected: this is lifecycle evidence, not tracing acceptance.
+
+Always-cleanup verified ownership, deleted caller then probe and observed both
+GET settings as 404. Public receipt artifact 11164052040 records cleaned_at
+2026-10-01T13:10:49.477215+00:00. There is no retained canary resource to retry or
+inspect. No Mail resource, routing, identity, user account or sending was changed.
+
+The original guard required explicit false for both optional signal objects and
+the root flag, but did not persist their returned shape. The failure alone does
+not establish which field differed. Repair records only reviewed boolean fields,
+missing/type information before admission. The official Script Settings contract
+defines logs/traces as optional: explicit root disable may omit these objects;
+any returned signal enable or invalid shape is still refused. Actual returned
+configuration and runtime acceptance remain to be verified on the next admitted
+experiment. Do not attribute this failure to token permissions or native Rust API.
+
+Reference: https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/settings/methods/get/
