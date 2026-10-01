@@ -425,7 +425,7 @@ async function withProvider({ rules = [], listPage, getRule, beforeDelete, creat
     await body({ db, insert, row, tick, store, calls, add, remove });
     assert.equal(unexpected, 0);
   } finally {
-    await mf.dispose();
+    await waitForPhase(mf.dispose(), "synthetic provider disposal", 10000);
   }
 }
 
@@ -665,6 +665,20 @@ async function waitForPhase(promise, phase, timeoutMs = 20000) {
 test("an unfulfilled synthetic barrier fails with a finite phase deadline", async () => {
   await assert.rejects(waitForPhase(new Promise(() => {}), "never-submitted", 50),
     /synthetic phase timed out: never-submitted/);
+});
+
+test("a real pre-POST refusal produces a bounded submission diagnostic", async () => {
+  await withProvider({ listPage: async (_page, _store, json) => json({ success: false }, 503) },
+    async ({ add, calls }) => {
+      const submitted = barrier();
+      const creator = add().then((response) => ({ response }), (error) => ({ error }));
+      await assert.rejects(waitForPhase(Promise.race([submitted.promise, creator.then(() => {
+        throw new Error("creator settled before synthetic POST submission");
+      })]), "refused POST submission", 1000), /creator settled before synthetic POST submission/);
+      const outcome = await waitForPhase(creator, "refused creator cleanup", 1000);
+      assert.equal(outcome.response.status, 503);
+      assert.equal(calls.filter((call) => call.method === "POST").length, 0);
+    });
 });
 
 /** Create deterministic promise barriers without timers or live provider traffic. */
