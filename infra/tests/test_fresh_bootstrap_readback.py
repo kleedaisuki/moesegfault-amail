@@ -86,7 +86,7 @@ class Provider:
             expected, handler = {}, "queue"
         else:
             expected = (readback.expected_bindings("queue-api", QUEUE, realm="production")
-                        if script == readback.API else readback.maintenance.expected_bindings("production", QUEUE))
+                        if script == readback.API else readback.maintenance.expected_bindings("production", QUEUE, active=True))
             expected.update({"MAIL_DB": ("d1", self.scope.database), "MAIL_BODIES": ("r2_bucket", self.scope.bucket)})
             handler = "fetch" if script == readback.API else "scheduled"
         self.data[path + "/versions/" + VERSION] = {"id": VERSION, "resources": {
@@ -147,7 +147,7 @@ class FreshReadbackTests(unittest.TestCase):
 
     def verify(self):
         """Exercise the material full graph integration, not a predicate-only stub."""
-        return readback.verify(self.provider.scope, self.provider.pins, QUEUE, DLQ, self.provider)
+        return readback.verify(self.provider.scope, self.provider.pins, QUEUE, DLQ, self.provider, source_active=True)
 
     def reader_fixture(self):
         """Install only the fixed sink with one consumer and zero producers."""
@@ -321,7 +321,7 @@ class CaptureOffTests(unittest.TestCase):
     def execute(self, script=readback.API, *, patch_action=None):
         """Require intent before a synthetic single PATCH, then perform separate GETs."""
         expected = (readback.expected_bindings("queue-api", QUEUE, realm="production") if script == readback.API
-                    else readback.maintenance.expected_bindings("production", QUEUE))
+                    else readback.maintenance.expected_bindings("production", QUEUE, active=True))
         expected.update({"MAIL_DB": ("d1", DATABASE), "MAIL_BODIES": ("r2_bucket", self.provider.scope.bucket)})
         def record(state, **facts):
             """Keep closed private journal coordinates in memory for assertions."""

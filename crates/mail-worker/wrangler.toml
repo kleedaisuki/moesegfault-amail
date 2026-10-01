@@ -3,6 +3,7 @@ name = "amail-mail"
 main = "entry/api.mjs"
 compatibility_date = "2026-09-25"
 workers_dev = false
+preview_urls = false
 routes = [{ pattern = "mail.moesegfault.dev", custom_domain = true }]
 
 [vars]
@@ -17,13 +18,13 @@ OPENROUTER_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
 # Direct-forward contact policy and health share Mail D1; no role-Worker lease is bound.
 [[d1_databases]]
 binding = "MAIL_DB"
-database_name = "moesegfault-mail-production"
-database_id = "ad06f7f3-8897-4150-b9a9-7a46a8e55b30"
+database_name = "moesegfault-mail-production-708b6d6c734779d657f5abb3"
+database_id = "d9be9bb4-5a73-4223-85d6-b04763e6f03b"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
 binding = "MAIL_BODIES"
-bucket_name = "moesegfault-mail-raw-production"
+bucket_name = "moesegfault-mail-raw-production-708b6d6c734779d657f5abb3"
 
 [[send_email]]
 name = "EMAIL"

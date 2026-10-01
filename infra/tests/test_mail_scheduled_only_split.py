@@ -35,19 +35,20 @@ class ScheduledOnlySourceTests(unittest.TestCase):
     """Tracked paused truth, exact capability ownership and closed migration edges."""
 
     def test_explicit_realm_configs_and_no_inbound_callers(self):
-        """API forever empty; maintenance source initial cadence is paused in each realm."""
+        """API forever empty; only adopted production requests maintenance activation."""
         for realm in maintenance.REALMS:
             self.assertEqual(maintenance.api_config(realm)["triggers"], {"crons": []})
-            selected = maintenance.maintenance_config(realm)
-            self.assertEqual(selected["triggers"], {"crons": []})
-            expected = maintenance.expected_bindings(realm, QUEUE)
+            active = realm == "production"
+            selected = maintenance.maintenance_config(realm, active=active)
+            self.assertEqual(selected["triggers"], {"crons": list(maintenance.CADENCE) if active else []})
+            expected = maintenance.expected_bindings(realm, QUEUE, active=active)
             self.assertEqual({name for name, (kind, _) in expected.items() if kind == "secret_text"}, set(maintenance.SECRETS))
             self.assertEqual(expected["VERSION_METADATA"], ("version_metadata", None))
             self.assertEqual(expected["MAIL_DOMAIN"], ("plain_text", maintenance.api_config(realm)["vars"]["MAIL_DOMAIN"]))
             for name in ("EMAIL", "OFFICIAL_EMAIL", "INGRESS_SECRET", "IDENTITY_ISSUER", "ROLE_MONITOR"):
                 self.assertNotIn(name, expected)
             with self.assertRaises(ValueError):
-                maintenance.maintenance_config(realm, active=True)
+                maintenance.maintenance_config(realm, active=not active)
         maintenance.reject_inbound_bindings()
 
     def test_no_omitted_or_dual_trigger_acceptance(self):

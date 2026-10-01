@@ -9,12 +9,12 @@ import sys
 import tempfile
 import tomllib
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "deploy"))
 import fresh_bootstrap_scope as fresh
-from fresh_bootstrap_contract import Epoch, Scope, ORIGINAL_DATABASE, STAGING_DATABASE
+from fresh_bootstrap_contract import Epoch, Scope, ORIGINAL_BUCKET, ORIGINAL_DATABASE, STAGING_DATABASE
 
 EPOCH = Epoch("a" * 40, "123", 42, "b" * 64, "1.90.0")
 DATABASE = "c8f64bb6-748b-4a97-9d37-310be3f0d523"
@@ -259,6 +259,24 @@ class FreshScopeTests(unittest.TestCase):
 
     def test_render_preserves_staging_and_changes_only_reviewed_fields(self):
         """No source rebuild, route override, secret value or Cron activation is added."""
+        # The bootstrap renderer intentionally refuses the adopted/active source.
+        # Preserve its original cold-source contract in a repository-owned fixture.
+        source_root = self.folder / "original-source"
+        for name in ("wrangler.toml", "wrangler-maintenance.toml"):
+            source = fresh.ROOT / "crates/mail-worker" / name
+            text = source.read_text(encoding="utf-8")
+            production, marker, staging = text.partition("[env.staging]")
+            config = tomllib.loads(text)
+            production = production.replace(config["d1_databases"][0]["database_id"], ORIGINAL_DATABASE)
+            production = production.replace(config["d1_databases"][0]["database_name"], "moesegfault-mail-production")
+            production = production.replace(config["r2_buckets"][0]["bucket_name"], ORIGINAL_BUCKET)
+            production = production.replace('crons = ["*/5 * * * *"]', "crons = []")
+            target = source_root / "crates/mail-worker" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(production + marker + staging, encoding="utf-8")
+        source_patch = patch.object(fresh, "ROOT", source_root)
+        source_patch.start()
+        self.addCleanup(source_patch.stop)
         scope = Scope(EPOCH, DATABASE, "2026-10-01T12:34:56Z", "2026-10-01T12:34:56Z")
         paths = fresh.render_configs(scope, self.folder / "configs")
         self.assertEqual(set(paths), {"api", "maintenance"})

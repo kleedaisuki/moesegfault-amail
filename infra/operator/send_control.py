@@ -14,7 +14,7 @@ import urllib.request
 
 DATABASES = {
     "staging": ("74f35f95-42ce-482c-86e6-dffbdd35cbbe", "https://identity-staging.moesegfault.dev"),
-    "production": ("ad06f7f3-8897-4150-b9a9-7a46a8e55b30", "https://identity.moesegfault.dev"),
+    "production": ("d9be9bb4-5a73-4223-85d6-b04763e6f03b", "https://identity.moesegfault.dev"),
 }
 REASON = re.compile(r"^[a-z][a-z0-9_]{2,47}$")
 CASE = re.compile(r"^[A-Za-z0-9_-]{3,96}$")
