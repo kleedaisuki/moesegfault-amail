@@ -12,7 +12,25 @@ The post-PR #32 rebase was conflict-free; all three changed Rust source files
 and both diagnostic fixture files remain byte-identical to that reviewed source.
 Accepted staging and both `test:accepted-stage` / `test:maintenance-diagnostics`
 script and CI registrations are retained without changes in this slice. Subsequent
-local commits only clarify documentation and include independent review evidence.
+local commits initially only clarified documentation and included independent review evidence.
+
+## First hosted failure and corrective drop scope
+
+PR #33 head `324ec4fc86259a62d8786510fc7ec390203d09f8`,
+[run 36822226342](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36822226342),
+attempt 1, failed before native workerd execution with Rust `E0597` at
+`trace.rs:697`: the final `match select(...).await` expression retained its
+temporary destructor scope until function exit while its pending future borrowed
+the local Queue binding. Source review missed this compile-time lifetime defect.
+The compiler explicitly recommended terminating the match with a semicolon.
+
+The correction makes that match an expression statement, so its temporary is
+dropped before the local Queue binding. Both branch bodies and the single-submit,
+timeout/delivery-unknown semantics are unchanged; no clone, new lifetime, or
+detached continuation is introduced. This follows the Rust Reference's
+[temporary/drop scopes](https://doc.rust-lang.org/reference/destructors.html#temporary-scopes).
+Only formatting and diff checks run locally. A new exact-head hosted compile and
+native-suite run is required; the original failure is not runtime acceptance.
 
 ## Retrieved knowledge and narrow scope
 

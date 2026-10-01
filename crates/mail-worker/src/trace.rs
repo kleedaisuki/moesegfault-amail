@@ -699,7 +699,7 @@ pub(crate) async fn flush_maintenance(
     match futures_util::future::select(pending, timer).await {
         futures_util::future::Either::Left((_, timer)) => drop(timer),
         futures_util::future::Either::Right((_, pending)) => drop(pending),
-    }
+    };
 }
 
 /// Validate the entire buffer and actual UTF-8 body bytes before binding access.
