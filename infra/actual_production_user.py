@@ -427,14 +427,18 @@ def main() -> int:
             receipt["received_archive_verified"][recipient] = True
             save_receipt(receipt)
             delivered[recipient] = received, filename, phrase
-        receipt["delivered_feedback"] = delivered_feedback(receipt["sends"])
-        save_receipt(receipt)
         for actor, (message, filename, phrase) in delivered.items():
             environment, address = sessions[actor]
             explore(actor, environment, address, message, filename, phrase)
             cli(environment, "delete", message["id"])
             cli(environment, "get", message["id"], allow_failure=True)
             marker(f"actor_{actor.lower()}_owned_delivery_deleted_and_absence_verified")
+        receipt["normal_user_commands_complete"] = True
+        save_receipt(receipt)
+        # Finish the ordinary user commands before observing lifecycle feedback.
+        # A feedback lag must not prevent search, export or owned-state usage.
+        receipt["delivered_feedback"] = delivered_feedback(receipt["sends"])
+        save_receipt(receipt)
         marker("actual_production_two_user_journey_complete")
         receipt["normal_journey_complete"] = True
         save_receipt(receipt)
