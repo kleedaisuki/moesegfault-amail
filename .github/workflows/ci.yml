@@ -195,6 +195,22 @@ jobs:
           path: .temp/fresh-bootstrap/receipt.json
           if-no-files-found: error
           retention-days: 30
+      - name: Stage bounded Queue intent beside owned recovery journals
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          source = Path('.temp/trace-queue-provision-production.json')
+          if source.exists():
+              if source.is_symlink() or not source.is_file() or source.stat().st_size > 65536:
+                  raise SystemExit('fresh_queue_intent_unverified')
+              target = Path('.temp/fresh-bootstrap/recovery/trace-queue-provision-production.json')
+              target.parent.mkdir(parents=True, exist_ok=True)
+              if target.exists():
+                  raise SystemExit('fresh_queue_intent_replay_refused')
+              shutil.copyfile(source, target)
+          PY
       - name: Preserve owned partial intent without secrets provider bodies or automatic retry
         if: always()
         uses: actions/upload-artifact@v4
@@ -202,7 +218,7 @@ jobs:
           name: mail-fresh-bootstrap-recovery-${{ github.run_id }}-1
           path: |
             .temp/fresh-bootstrap/recovery/*.jsonl
-            .temp/trace-queue-provision-production.json
+            .temp/fresh-bootstrap/recovery/trace-queue-provision-production.json
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 30

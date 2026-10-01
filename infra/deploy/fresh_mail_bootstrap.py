@@ -343,14 +343,75 @@ class Bootstrap:
         return result
 
 
+def recover_main(run_id: str) -> int:
+    """Admit immutable prior protected intent before one read-only observation.
+
+    This separate operational lane has no build, secret mutation, migration,
+    deploy, create, successful receipt or activation code path.
+    """
+    if (os.getenv("GITHUB_ACTIONS") != "true" or os.getenv("GITHUB_REPOSITORY") != REPO
+            or os.getenv("GITHUB_REF") != "refs/heads/main"
+            or os.getenv("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or os.getenv("GITHUB_RUN_ATTEMPT") != "1"
+            or os.getenv("GITHUB_JOB") != "recover"
+            or os.getenv("GITHUB_WORKFLOW_REF") != f"{REPO}/.github/workflows/fresh-mail-bootstrap-recovery.yml@refs/heads/main"
+            or os.getenv("AMAIL_BOOTSTRAP_RECOVERY_CONFIRM") != "OBSERVE_FRESH_BOOTSTRAP_NO_REPLAY"):
+        raise ValueError("fresh_recovery_protected_context_required")
+    from fresh_bootstrap_recovery import load
+    folder = ROOT / ".temp/fresh-bootstrap-recovery" / run_id
+    epoch, path = load(run_id, folder)
+    provider = FreshProvider(os.getenv("CLOUDFLARE_ACCOUNT_ID", ""), os.getenv("CLOUDFLARE_API_TOKEN", ""))
+    value = Bootstrap(provider, None, epoch, path, folder / "receipt.json").recover()
+    with (folder / "observation.json").open("x", encoding="utf-8") as output:
+        json.dump(value, output, sort_keys=True, allow_nan=False)
+        output.write("\n")
+    print("fresh_bootstrap_recovery=observed replay=NOT_GRANTED receipt=NOT_GRANTED")
+    return 0
+
+
+def preflight(state: str, error_type: str | None = None) -> None:
+    """Retain bounded initial admission/refusal even when no controller can start.
+
+    This diagnostic record is not a receipt, creation witness or recovery grant.
+    Source/run metadata is accepted only in the established syntactic namespace;
+    provider bodies, exception prose, private destinations and secrets are absent.
+    """
+    if state not in {"intent", "admitted", "failed"} or (
+            error_type is not None and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,63}", error_type) is None):
+        raise ValueError("fresh_preflight_record_unreviewed")
+    sha, run = os.getenv("GITHUB_SHA", ""), os.getenv("GITHUB_RUN_ID", "")
+    value = {"schema": "mail-fresh-preflight/v1", "state": state,
+             "source_sha": sha if re.fullmatch(r"[0-9a-f]{40}", sha) else "UNVERIFIED",
+             "run_id": run if re.fullmatch(r"[1-9][0-9]{0,19}", run) else "UNVERIFIED",
+             "activation": "NOT_GRANTED", "replay": "NOT_GRANTED"}
+    if error_type is not None:
+        value["error_type"] = error_type
+    path = ROOT / ".temp/fresh-bootstrap/recovery/preflight.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x" if state == "intent" else "a", encoding="utf-8") as output:
+        output.write(json.dumps(value, sort_keys=True, allow_nan=False) + "\n")
+        output.flush()
+        os.fsync(output.fileno())
+
+
 def main() -> int:
     """Expose only first held bootstrap; no active, legacy adoption or replay CLI."""
+    writer_started = False
     try:
+        import argparse
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument("--recover-run", help="Observe one immutable prior protected bootstrap without replay")
+        arguments = parser.parse_args()
+        if arguments.recover_run is not None:
+            return recover_main(arguments.recover_run)
+        preflight("intent")
+        writer_started = True
         manifest = worker_artifact.FOLDER / "manifest.json"
         identity = worker_artifact.context()
         epoch = Epoch(identity["source_sha"], identity["run_id"], int(os.environ["AMAIL_WORKER_ARTIFACT_ID"]),
                       hashlib.sha256(manifest.read_bytes()).hexdigest(), identity["rust"])
         verify_same_run_artifact(epoch)  # Credentials/SDK creation occurs only after admission.
+        preflight("admitted")
         required = ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCESS_KEY_ID",
                     "CLOUDFLARE_SECRET_ACCESS_KEY", "CF_EMAIL_ROUTING_TOKEN", "OPENROUTER_API_KEY",
                     "INGRESS_SECRET", "ROLE_FORWARD_DESTINATION")
@@ -370,6 +431,8 @@ def main() -> int:
         print("fresh_production_bootstrap=paused_receipt activation=NOT_GRANTED source_adoption=REQUIRED")
         return 0
     except Exception as error:
+        if writer_started:
+            preflight("failed", type(error).__name__)
         print(f"fresh_production_bootstrap=UNVERIFIED error_type={type(error).__name__} replay=NOT_GRANTED")
         return 1
 

@@ -79,6 +79,22 @@ class FreshBootstrapWorkflowTests(unittest.TestCase):
         self.assertNotIn("--activate", self.block)
         self.assertNotIn("--rollback", self.block)
 
+    def test_recovery_is_durable_readonly_lane_with_shared_graph_lock(self):
+        """Prior intent is admitted on a credential-free tested path, never a new epoch."""
+        source = (ROOT / ".github/workflows/fresh-mail-bootstrap-recovery.yml").read_text(encoding="utf-8")
+        self.assertIn("prior_run:", source)
+        self.assertIn("OBSERVE_FRESH_BOOTSTRAP_NO_REPLAY", source)
+        self.assertIn("group: amail-production-graph-writer", source)
+        self.assertIn("cancel-in-progress: false", source)
+        self.assertIn("refs/heads/main", source)
+        self.assertIn("github.run_attempt == 1", source)
+        check = source.index("python -m unittest discover")
+        self.assertLess(check, source.index("secrets.CLOUDFLARE_API_TOKEN"))
+        self.assertIn('--recover-run "$PRIOR_RUN"', source)
+        for forbidden in ("wrangler deploy", "migrations apply", "worker-build", "OPENROUTER_API_KEY",
+                          "CLOUDFLARE_SECRET_ACCESS_KEY", "receipt.json", "overwrite: true"):
+            self.assertNotIn(forbidden, source)
+
 
 if __name__ == "__main__":
     unittest.main()

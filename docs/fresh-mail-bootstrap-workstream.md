@@ -68,10 +68,31 @@ targets. Public CLI/domain/Identity/ZIP contracts remain unchanged; no migration
 or hash-Secret ceremony. Ordinary deployment/release remain fail-closed until
 source truth matches the actual receipt-owned graph.
 
-Known old-scope inspector domain-ID debt must remain a failure, not absence or
-permissions speculation. The separately preserved opaque-domain fix is not
-copied into this workstream; source acceptance cannot imply that actual inspection
-or first receipt will pass before that control-plane reader is repaired.
+The old-scope opaque-domain reader repair is integrated from main PR 73. It
+preserves incomplete-read refusal; this source integration does not imply actual
+inspection or first receipt acceptance.
+
+## Executable source integration
+
+`infra/deploy/fresh_mail_bootstrap.py` now implements the protected controller and
+the CI `production-fresh-bootstrap` target. It verifies all original same-run
+source jobs and the immutable module artifact before provider construction,
+preserves old stores and owner state, creates the new epoch once, migrates only
+that epoch, verifies default-held state, installs and attests the sink before the
+two paused producers, then persists the closed v2 observation.
+
+An initial bounded `preflight.jsonl` survives admission refusal before controller
+creation. Append-only controller/scope intent plus the bounded Queue provisioning
+receipt survive partial failure; secrets and arbitrary provider outputs do not.
+All intended Worker submissions are observed during recovery, including those
+whose timed-out Wrangler invocation never yielded a version. Failed recovery
+reads remain UNVERIFIED, not absence. The durable read-only recovery workflow
+admits the original protected run and immutable recovery archive before any
+provider observation; it never replays writes, creates a success receipt, adopts
+stores, activates schedules or lifts the send hold.
+
+PR 75 source checks and independent review are ongoing. No actual production
+bootstrap, new-store adoption, activation or rollback has been executed.
 
 Runtime validation is GitHub Actions only; local AST/diff work only. Root alone
 may authorize/perform provider operations. The successful future first receipt

@@ -279,6 +279,29 @@ class FreshBootstrapControllerTests(unittest.TestCase):
         self.assertNotIn("private arbitrary prose", json.dumps(result))
         self.assertFalse(result["may_replay_write"])
 
+    def test_initial_refusal_evidence_exists_without_artifact_or_provider(self):
+        """Admission failure has a closed diagnostic trail before controller creation."""
+        root = self.folder / "preflight-root"
+        with patch.object(controller, "ROOT", root), patch.dict(controller.os.environ, {
+                "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "123456", "PRIVATE_TOKEN": "never-retained"}):
+            controller.preflight("intent")
+            controller.preflight("failed", "FileNotFoundError")
+        rows = [json.loads(line) for line in (root / ".temp/fresh-bootstrap/recovery/preflight.jsonl")
+                .read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([row["state"] for row in rows], ["intent", "failed"])
+        self.assertEqual(rows[1]["error_type"], "FileNotFoundError")
+        self.assertTrue(all(row["activation"] == "NOT_GRANTED" for row in rows))
+        self.assertNotIn("never-retained", json.dumps(rows))
+        self.provider.get.assert_not_called()
+
+    def test_recovery_cli_refuses_wrong_context_before_loader_or_provider(self):
+        """A local invocation or arbitrary job cannot admit a protected recovery."""
+        with patch.dict(controller.os.environ, {}, clear=True), \
+                patch.object(controller, "FreshProvider") as provider:
+            with self.assertRaisesRegex(ValueError, "fresh_recovery_protected_context_required"):
+                controller.recover_main("123456")
+        provider.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
