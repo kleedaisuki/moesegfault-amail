@@ -20,8 +20,9 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/ci"))
 sys.path.insert(0, str(ROOT / "infra/provider"))
-from fresh_bootstrap_contract import Epoch, Scope, REPO, STAGING_DATABASE
+from fresh_bootstrap_contract import Epoch, Scope, REPO, STAGING_DATABASE, RUN
 from fresh_bootstrap_receipt import load
+from fresh_online_checkpoint import load as load_online_checkpoint
 from fresh_bootstrap_scope import FreshProvider
 import fresh_bootstrap_readback as readback
 import fresh_mail_bootstrap as bootstrap
@@ -34,6 +35,8 @@ from check_production_role_graph import forward_snapshot
 import check_observability as capture
 import check_mail_maintenance as maintenance
 import worker_artifact
+import configure_sending_privacy as privacy
+from urllib.parse import quote
 
 CONFIRM = "RUN_FRESH_PRODUCTION_ONLINE"
 FOLDER = ROOT / ".temp/fresh-online"
@@ -65,7 +68,9 @@ ERROR_REASONS = {
     "fresh_graph_changed", "process_exit", "version_count", "output_limit",
     "fresh_capture_coordinates_unreviewed", "fresh_capture_capabilities_unverified",
     "fresh_capture_serving_changed", "fresh_capture_patch_unverified", "fresh_capture_readback_unverified",
-    "fresh_capture_projection_unverified",
+    "fresh_capture_projection_unverified", "fresh_online_run_ids_unreviewed", "fresh_online_privacy_unverified",
+    "fresh_online_checkpoint_unreviewed", "fresh_online_checkpoint_origin_mismatch",
+    "fresh_online_checkpoint_scope_unreviewed", "fresh_online_checkpoint_versions_unreviewed",
 }
 
 
@@ -100,6 +105,33 @@ def admit() -> Epoch:
                  int(os.environ["AMAIL_WORKER_ARTIFACT_ID"]),
                  hashlib.sha256(manifest.read_bytes()).hexdigest(),
                  identity["rust"], identity["worker_build"])
+
+
+def run_ids(value: str) -> tuple[str, str | None]:
+    """Preserve single paused-run calls; online resume accepts paused-run:failed-run.
+
+    Both IDs are closed positive decimal identifiers. This only selects protected
+    evidence; it grants neither adapter replay nor resource creation authority.
+    """
+    parts = value.split(":") if isinstance(value, str) else []
+    if len(parts) not in (1, 2) or any(RUN.fullmatch(part) is None for part in parts):
+        raise ValueError("fresh_online_run_ids_unreviewed")
+    if len(parts) == 2 and parts[0] == parts[1]:
+        raise ValueError("fresh_online_run_ids_unreviewed")
+    return parts[0], parts[1] if len(parts) == 2 else None
+
+
+def verify_sending_privacy(provider) -> None:
+    """Re-observe completed privacy configuration without issuing its prior PATCH."""
+    rows = privacy.call("", provider.token)["result"]
+    if not isinstance(rows, list) or len(rows) > 1000 or not all(isinstance(row, dict) for row in rows):
+        raise ValueError("fresh_online_privacy_unverified")
+    domain = privacy.unique_domain(rows, privacy.DOMAINS["production"])
+    after = privacy.call("/" + quote(domain["tag"], safe=""), provider.token)["result"]
+    if (not isinstance(after, dict) or after.get("name") != privacy.DOMAINS["production"]
+            or after.get("preview_enabled") is not False
+            or after.get("drop_suppressed_recipients") is not False):
+        raise ValueError("fresh_online_privacy_unverified")
 
 
 def receipt_scope(value: dict) -> Scope:
@@ -336,10 +368,16 @@ class Online:
         os.close(descriptor)
         try:
             self.epoch = self.step("admission", admit)
-            receipt = self.step("receipt_origin", lambda: load(os.getenv("AMAIL_FRESH_BOOTSTRAP_RUN_ID", "")))
+            paused_run, prior_online = run_ids(os.getenv("AMAIL_FRESH_BOOTSTRAP_RUN_ID", ""))
+            receipt = self.step("receipt_origin", lambda: load(paused_run))
             value = receipt.value
             scope = receipt_scope(value)
             self.scope = scope
+            checkpoint = (self.step("online_checkpoint", lambda: load_online_checkpoint(
+                prior_online, self.folder / "prior")) if prior_online else None)
+            if checkpoint is not None and (checkpoint.creation_epoch != scope.epoch
+                    or checkpoint.resources != {"database": scope.database, "bucket": scope.bucket}):
+                raise ValueError("fresh_online_checkpoint_scope_unreviewed")
             self.step("source_adoption", lambda: check_configs(scope))
             provider, s3 = self.step("capabilities", lambda: capabilities(scope))
             queue, dlq = value["resources"]["queue"], value["resources"]["dlq"]
@@ -352,15 +390,24 @@ class Online:
             dns_env = {**os.environ, "CF_ZONE_ID": "6edff81c6ed02f412e70868076411a5e",
                        "MAIL_SENDING_DOMAIN": "mail.moesegfault.dev"}
             self.step("sending_dns", lambda: captured([sys.executable, str(ROOT / "infra/dns/verify_sending.py")], env=dns_env))
-            self.step("sending_privacy", lambda: captured(
-                [sys.executable, str(ROOT / "infra/provider/configure_sending_privacy.py"), "--target", "production"],
-                "sending_privacy=verified target=production preview=false drop_suppressed=false"))
-            self.step("email_queues", lambda: email_events("queues"))
-            versions = {component: self.step(component, lambda component=component: deploy_adapter(component))
-                        for component in ADAPTERS}
-            for component, version in versions.items():
-                self.step(component + "_capture_off", lambda component=component, version=version:
-                          correct_adapter_capture(provider, scope, component, version, self.record))
+            if checkpoint is not None:
+                self.step("sending_privacy", lambda: verify_sending_privacy(provider))
+                self.step("email_queues", lambda: verify_event_consumer(provider))
+                versions = dict(checkpoint.adapter_versions)
+                # These two source-owned uploads are positively observed already.
+                # Read them and their effective capture/consumer graph; never send
+                # their upload, Queue creation, or privacy PATCH a second time.
+                self.step("retained_adapters", lambda: verify_adapters(provider, scope, versions))
+            else:
+                self.step("sending_privacy", lambda: captured(
+                    [sys.executable, str(ROOT / "infra/provider/configure_sending_privacy.py"), "--target", "production"],
+                    "sending_privacy=verified target=production preview=false drop_suppressed=false"))
+                self.step("email_queues", lambda: email_events("queues"))
+                versions = {component: self.step(component, lambda component=component: deploy_adapter(component))
+                            for component in ADAPTERS}
+                for component, version in versions.items():
+                    self.step(component + "_capture_off", lambda component=component, version=version:
+                              correct_adapter_capture(provider, scope, component, version, self.record))
             self.step("email_subscription", lambda: email_events("subscription"))
             pins["amail-mail-maintenance"] = self.step("maintenance", lambda: bootstrap.submit_once(
                 "maintenance", ROOT / CONFIGS["maintenance"], scope))
@@ -378,6 +425,8 @@ class Online:
                       "adapter_pins": adapters_before, "sendHeld": True, "external_activation": {"maintenance_cron": True},
                       "sending_privacy": "VERIFIED", "sending_dns": "VERIFIED",
                       "send_release": "NOT_GRANTED", "old_work_end": "UNVERIFIED"}
+            if checkpoint is not None:
+                result["retained_adapters"] = {"source_epoch": asdict(checkpoint.epoch), "pins": adapters_before}
             self.step("receipt", lambda: self.persist(result))
             return result
         except Exception as error:
