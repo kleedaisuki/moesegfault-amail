@@ -155,11 +155,18 @@ or claim that actual remote computation stopped.
 The first E0004 failed candidate remains separate historical evidence. Committed
 source and fixture review records preserve that compiler omission/correction,
 the initial header/body timing discriminator gap, its seven-second correction,
-and exact source hashes. Root final review and merge remain separate decisions.
+and exact source hashes. After root's final independent review GO, PR #27 was
+merged as main `59ab7a55f38c4646e08cdf2539176fff2ab4a46d`. This records source
+integration, not deployment, Cron activation, unhold or a new exact-main runtime
+acceptance claim.
 Raw successful Worker logs are retained at worktree
 `.temp/ci-36815435803-worker.log`, separate from the failed predecessor.
 
-This evidence update is a local documentation-only follow-up, initially not
-pushed into the exact validated PR head. No project runtime tests/builds were
-run locally, no provider/deployment/Cron/unhold mutation occurred. All deferred
+This evidence update was first recorded in local documentation-only commit
+`1f3a15d7dd7846400275ee20440eb304620ad1bc`, based on the exact validated remote
+head `2325828b1402e40e61580091a2765a5c87c7f702`, and not pushed into that tested
+source PR. It is now carried by a separate documentation-only branch based on
+merged main `59ab7a55f38c4646e08cdf2539176fff2ab4a46d`; this creates no new runtime
+source change or transferable exact-SHA build/deployment proof. No project runtime
+tests/builds were run locally, no provider/deployment/Cron/unhold mutation occurred. All deferred
 embedding/R2/Queue, privacy, plan/CPU/RSS and old-writer drain gates above remain.
