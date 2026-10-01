@@ -3,6 +3,7 @@ name = "amail-events"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-09-25"
 workers_dev = false
+preview_urls = false
 
 [vars]
 CF_ACCOUNT_ID = "07109e406d4e1ab7a0997dd399db6fd5"
@@ -27,9 +28,20 @@ dead_letter_queue = "amail-sending-events-dlq"
 [observability]
 enabled = false
 
+[observability.logs]
+enabled = false
+invocation_logs = false
+
+[observability.traces]
+enabled = false
+
+[observability.issues]
+enabled = false
+
 [env.staging]
 name = "amail-events-staging"
 workers_dev = false
+preview_urls = false
 
 [env.staging.vars]
 CF_ACCOUNT_ID = "07109e406d4e1ab7a0997dd399db6fd5"
@@ -50,4 +62,14 @@ retry_delay = 120
 dead_letter_queue = "amail-sending-events-dlq-staging"
 
 [env.staging.observability]
+enabled = false
+
+[env.staging.observability.logs]
+enabled = false
+invocation_logs = false
+
+[env.staging.observability.traces]
+enabled = false
+
+[env.staging.observability.issues]
 enabled = false
