@@ -62,6 +62,10 @@ function bucket(native) {
       if (field === "constructor") return target.constructor;
       if (field === "get") return async (...args) => {
         stats.gets++;
+        if (String(args[0]).includes("archive-get-never")) return new Promise(() => {});
+        if (String(args[0]).includes("archive-get-delayed")) {
+          await new Promise(resolve => setTimeout(resolve, 35_000));
+        }
         const result = await target.get(...args);
         if (!result || !String(args[0]).includes("archive-")) return result;
         if (String(args[0]).includes("archive-late-get")) offset += 35_000;

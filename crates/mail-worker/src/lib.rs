@@ -788,12 +788,13 @@ async fn repair_accepted(
         .await?;
         return Ok(());
     }
-    // Capture the immutable body cutoff before the uncancellable native GET.
-    // A late GET can return, but cannot restart this allowance or trigger parsing.
+    // Bound our read-only GET waiter and body under one immutable cutoff.
+    // Dropping the waiter does not claim native/remote cancellation.
     let deadline = deadline.clipped(std::time::Duration::from_secs(30));
     deadline.remaining()?;
     let key = format!("messages/{}.zip", row.message_id);
-    let Some(object) = env.bucket("MAIL_BODIES")?.get(&key).execute().await? else {
+    let bucket = env.bucket("MAIL_BODIES")?;
+    let Some(object) = archive_read::get(&bucket, &key, deadline).await? else {
         return Ok(());
     };
     let Some(bytes) = archive_read::read(&object, deadline).await? else {

@@ -15,6 +15,49 @@ enum Failure {
     Dependency,
 }
 
+/// Bound the local wait for one read-only native GET under the original cutoff.
+/// Timeout drops only our waiter: it does not cancel native R2 work, await a late
+/// object, retry, or touch accepted/quota authority. No projection lease has been
+/// acquired at this pre-parse boundary; the durable due CAS remains advanced.
+pub(crate) async fn get(
+    bucket: &worker::Bucket,
+    key: &str,
+    deadline: maintenance::ExternalDeadline<'_>,
+) -> Result<Option<Object>> {
+    let duration = deadline.remaining()?;
+    let pending = Box::pin(bucket.get(key).execute());
+    let timer = Box::pin(worker::Delay::from(duration));
+    let result = match futures_util::future::select(pending, timer).await {
+        futures_util::future::Either::Left((result, timer)) => {
+            drop(timer);
+            result
+        }
+        futures_util::future::Either::Right((_, pending)) => {
+            drop(pending);
+            return Err(maintenance::deferred());
+        }
+    };
+    // select polls GET first; both branches may be ready. Recheck the immutable
+    // cutoff rather than granting a successful late object new body/parse time.
+    if let Err(error) = deadline.remaining() {
+        if let Ok(Some(object)) = &result {
+            cancel_returned(object);
+        }
+        return Err(error);
+    }
+    result
+}
+
+/// Cancel only a body already returned to this waiter; never await a late GET.
+fn cancel_returned(object: &Object) {
+    let Some(body) = object.body() else {
+        return;
+    };
+    if let Ok(ResponseBody::Stream(stream)) = body.response_body() {
+        platform::finish_native_reader(&JsValue::from(stream), true);
+    }
+}
+
 /// Read only an admitted retained object. No HEAD/second GET/retry is introduced.
 /// `None` preserves accepted state for missing/oversized/inconsistent content.
 /// The caller captures a thirty-second absolute cutoff before GET, clipped to

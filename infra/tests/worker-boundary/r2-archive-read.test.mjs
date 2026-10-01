@@ -65,3 +65,23 @@ test("never-settling native R2 cancel cannot block following healthy work", { ti
   assert.equal(await indexedText(db, "healthy-following"), "healthy after untrusted cancel");
   assert.deepEqual(await r2Stats(), { gets: 2, reads: 0, cancels: 1, arrayBuffers: 0 });
 }, { observeR2: true }));
+
+for (const mode of ["never", "delayed"]) {
+  /** Dropping a read-only waiter must not be confused with native cancellation. */
+  test(`native R2 ${mode} GET wait yields at the absolute cutoff`, { timeout: 45_000 }, async () => fixture(async ({ db, bucket, tick, r2Stats }) => {
+    const id = `archive-get-${mode}`;
+    await accepted(db, bucket, id, "retained unanswered GET");
+    await accepted(db, bucket, "untouched-following", "following body");
+    await db.exec(`UPDATE send_requests SET created_at=CASE WHEN message_id='${id}' THEN 1 ELSE 2 END;`);
+    await db.exec("INSERT INTO provider_events(event_id,provider_id,local_message_id,owner_iss,owner_sub,recipient,kind,occurred_at,received_at) VALUES('r2-get-old-event','synthetic','synthetic','https://synthetic.invalid','synthetic-owner','synthetic@example.invalid','delivered',0,0);");
+    const started = Date.now();
+    await tick(1_680_000_300_000);
+    assert.ok(Date.now() - started >= 29_000 && Date.now() - started < 34_500, "Cron does not await a never-settling or 35-second GET");
+    assert.equal(await indexedText(db, id), null);
+    assert.equal((await db.prepare("SELECT state,index_projection_token,index_projection_lease_until FROM send_requests WHERE message_id=?1").bind(id).first()).state, "accepted");
+    assert.equal((await db.prepare("SELECT index_next_attempt_at FROM send_requests WHERE message_id='untouched-following'").first()).index_next_attempt_at, 0);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM provider_events WHERE event_id='r2-get-old-event'").first()).n, 0, "later retention cleanup remains live");
+    assert.deepEqual(await r2Stats(), { gets: 1, reads: 0, cancels: 0, arrayBuffers: 0 });
+    assert.ok(await bucket.get(`messages/${id}.zip`), "source remains durable; timeout did not delete it");
+  }, { observeR2: true }));
+}

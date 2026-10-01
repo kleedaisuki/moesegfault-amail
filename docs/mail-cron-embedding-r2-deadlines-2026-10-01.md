@@ -2,8 +2,10 @@
 
 Date: 2026-10-01. Base: merged PR #27 main
 `59ab7a55f38c4646e08cdf2539176fff2ab4a46d`. Status: source implementation and
-hosted-only discriminators; independent source review and exact-SHA hosted runtime
-validation pending. Not deployment/release approval or production timing evidence.
+hosted-only discriminators. Initial body-only source `ef94105` received independent
+review and hosted acceptance at PR head `4c27631`; the subsequent focused GET-wait
+race correction is pending renewed review and exact-head hosted acceptance.
+Not deployment/release approval or production timing evidence.
 Worktree: `.temp/cron-embedding-r2-deadlines`.
 
 ## Reused contract and focused decision
@@ -17,7 +19,7 @@ full admitted accepted projector and statement accounting remain unchanged.
 | --- | --- | --- |
 | Foreground embedding | Existing 30-second headers-plus-body race | Existing `provider_transient` timeout and provider classes; existing awaited reader cleanup |
 | Cron embedding | min(10 seconds, original 115-second invocation cutoff remainder) covering headers and bounded body | Typed `CronEmbeddingFailure::Deferred`, exact-token lease release; no attempts/cooldown/quarantine update |
-| Retained R2 GET plus body | min(30 seconds from **before GET**, original phase-entry+60-second allowance, 115-second invocation cutoff) | Uncancelable GET is still awaited; late returned body canceled before first read; pending body read canceled on deadline; accepted journal/archive retained |
+| Retained R2 local GET wait plus body | min(30 seconds from **before GET**, original phase-entry+60-second allowance, 115-second invocation cutoff) | Race/drop the read-only GET waiter, not native R2 work; a returned late body is canceled before first read; pending body read canceled on deadline; accepted journal/archive retained |
 | Successful accepted SQL projection | Complete admitted sequence, no time check between chunks | Existing lease/fences, budget, genuine dependency failure only |
 | Native Cron cancellation cleanup | Synchronous `cancel()` initiation, release lock, native Promise rejection bookkeeping | Never await an arbitrary cancel promise after a deadline |
 
@@ -78,7 +80,8 @@ provider, Identity, SMTP, deployment, or sending-unhold action is involved.
 3. Retained R2: real 66x300-ms valid body completion, real pending-read thirty-second
    timeout with retained archive/journal and untouched following due item, a late
    GET with no first body read, a never-settling cancellation promise that cannot
-   block following healthy work, plus all existing metadata/chunk/total caps.
+   block following healthy work, delayed/never-settling GET wait returning at the
+   original cutoff with later cleanup live, plus all existing metadata/chunk/total caps.
 4. Existing complete-item liveness suite: 66x300-ms UPSERT success, setup entitlement,
    cutoff during chunk 40, phase fairness and exact SQL accounting remain unchanged.
 
@@ -89,14 +92,55 @@ required **after independent source review**; source checks are not runtime succ
 
 ## Scope limitations and next discriminator
 
-This is not a hard 120-second invocation guarantee. Native R2 GET, D1 calls, CPU
+This is not a hard 120-second invocation guarantee. Native R2 work, D1 calls, CPU
 ZIP/DOM/hash work and successful complete projection cannot be preempted by these
-stream deadlines. A submitted binding is never raced and abandoned as if canceled.
-The policy prevents a late GET from buying a fresh body allowance once it returns.
+deadlines. The **read-only GET waiter** can be safely raced/dropped because it has
+no durable write side effect. No D1/R2 mutation is abandoned as if canceled. The
+policy bounds this local wait, not native GET completion or remote cancellation.
+The policy also prevents a returned late GET from buying a fresh body allowance.
 The next evidence-driven structural step is batching or durable progress only if
 measured complete-item feasibility fails; it is not justified merely by adding a
 stopwatch. Beldi's durable serverless execution offers a research comparison, not
 a drop-in cancellation capability for these existing native bindings.
+
+## Initial exact hosted acceptance and GET-wait correction
+
+[Run 36816867455](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36816867455)
+completed successfully at head `4c27631ec77e7ad804cd32ddfb1bcde6bbe4e910`.
+Checkout tested synthetic merge `4425440ed9412ed5929359f7fbb005c93978d147`
+(head plus base `59ab7a55`). CLI Ubuntu/macOS/Windows, site, infra probes, Wasm
+worker and workflow guard succeeded; provider/deployment/live-contract jobs skipped.
+The built native workerd suite passed 100/100; complete-item liveness 5/5; routing
+deadlines 7/7; Cron embedding deadlines 6/6, all with zero failed/canceled tests.
+
+| Hosted test | Total fixture duration (includes setup) |
+| --- | ---: |
+| 66 valid R2 chunks x 300 ms | 21,321 ms |
+| Stalled native R2 body | 30,709 ms |
+| Late GET returned after logical cutoff, zero body reads | 622 ms |
+| Never-settling cancellation, following healthy completion | 691 ms |
+| Cron embedding header stall | 10,653 ms |
+| Cron embedding body stall | 10,551 ms |
+| Seven-second remaining invocation allowance | 7,489 ms |
+
+That first head intentionally **did not bound awaiting native GET**. Its deadline
+only bounded the body and denied body/parse after an eventually returning GET.
+Although documentation and review identified this, it left a never-settling GET
+able to own the invocation. The focused follow-up races the existing worker-rs
+read-only `get(...).execute()` future against the same absolute cutoff, drops the
+local waiter on timeout, and rechecks cutoff after a ready GET (because select
+polls GET first and both futures can be ready). It adds real delayed (35-second)
+and never-settling native-interface GET fixtures, requiring return around 30 seconds,
+zero body reads/no publication, source/journal retention, untouched following due
+item and later privacy cleanup.
+
+There is **no projection lease to release at GET timeout**: the due CAS is retry
+scheduling only, and `accepted::publish` acquires its opaque projection lease only
+after GET/hash/ZIP validation. The due slot stays advanced by five minutes; accepted
+state, quota reservation and retained archive remain authoritative. No late-object
+wait, callback machinery, speculative retry or mutation cancellation is introduced.
+The first hosted success is retained as evidence for its exact narrower head, not
+misrepresented as verification of this new GET-race source.
 
 ## Primary-source references
 
