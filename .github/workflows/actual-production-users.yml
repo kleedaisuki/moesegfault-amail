@@ -12,6 +12,11 @@ on:
         description: RUN_OWNED_PRODUCTION_USERS
         type: string
         required: true
+      grant_confirm:
+        description: Optional GRANT_OWNED_PRODUCTION_TWO_USER_SENDS for exact dedicated actors under the global hold
+        type: string
+        default: ''
+        required: false
 
 permissions:
   contents: read
@@ -60,6 +65,7 @@ jobs:
         env:
           USER_JOURNEY_CONFIRM: ${{ inputs.confirm }}
           USER_JOURNEY_PHASE: ${{ inputs.phase }}
+          USER_JOURNEY_GRANT_CONFIRM: ${{ inputs.grant_confirm }}
           PRODUCTION_ACTOR_A_USERNAME: ${{ secrets.PRODUCTION_ACTOR_A_USERNAME }}
           PRODUCTION_ACTOR_A_PASSWORD: ${{ secrets.PRODUCTION_ACTOR_A_PASSWORD }}
           PRODUCTION_ACTOR_B_USERNAME: ${{ secrets.PRODUCTION_ACTOR_B_USERNAME }}

@@ -39,9 +39,18 @@ Workflow `actual-production-users.yml` has two explicit phases:
   of only the two intended owned inbound deliveries.
 
 Both require `confirm=RUN_OWNED_PRODUCTION_USERS`. The root coordinates temporary
-verification-route mutation. Sending policy is not changed by this lane. A
-`send_held` outcome is an actual normal-user blocker and must be resolved by the
-authorized operator, not bypassed. Sends are single submissions; an ambiguous
+verification-route mutation. The global sending hold is never changed by this
+lane. The root explicitly authorized an optional existing 15-minute one-use
+operator grant immediately before each of the two synthetic normal sends. It
+requires the separate exact `grant_confirm=GRANT_OWNED_PRODUCTION_TWO_USER_SENDS`,
+production issuer, two distinct owner subjects read from only the two addresses
+already positively owned by their normal CLI sessions, and SHA-256 of the other
+exact owned recipient. It dynamically uses the adopted `send_control.DATABASES`
+mapping and invokes the existing `grant_canary.py` once; it is not a generic grant
+API. An independent narrow readback requires the unconsumed matching grant. No
+grant is needed when the global policy is allowed. Other `send_held` outcomes
+remain ordinary user blockers, not permission to evade policy. Sends are single
+submissions; an ambiguous
 provider outcome is not permission to dispatch the journey again. A successful
 CLI send alone never proves delivery: recipient search plus safe archive
 download, TEXT/HTML checks and exact attachment bytes are required.
