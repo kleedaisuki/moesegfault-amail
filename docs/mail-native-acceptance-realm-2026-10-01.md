@@ -63,3 +63,12 @@ Neither reference proves a test harness is secure by itself. Exact origin pinnin
 credential non-inheritance and discriminating negative tests are concrete safeguards
 at the harness boundary; serving provenance/containment remain separate deployment
 obligations. No speculative authentication abstraction is introduced.
+
+### First hosted result and mock correction
+
+Run 36823925172 executed 1,004 infrastructure tests; one existing failed-add
+ordering fixture did not reach its snapshot side effect because that mock omitted
+the newly propagated realm keyword. All eleven new realm tests passed. The mock
+signature now accepts keyword context, restoring the real snapshot-before-cleanup
+failure path; production snapshot behavior is unchanged. This failed run is not
+accepted evidence. Automatic corrected-source CI must pass before merge.

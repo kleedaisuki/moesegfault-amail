@@ -737,7 +737,7 @@ class CleanupTests(unittest.TestCase):
                     raise HARNESS.ProbeFailure("address_register_failed_http_503_routing_unavailable")
                 raise AssertionError("unexpected CLI operation")
 
-            def snapshot(*_args):
+            def snapshot(*_args, **_kwargs):
                 order.append("snapshot")
                 raise RuntimeError("private-address@example.test")
 
