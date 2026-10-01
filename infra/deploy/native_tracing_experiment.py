@@ -15,6 +15,7 @@ import sys
 import time
 import tomllib
 from urllib.error import HTTPError
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 
@@ -51,8 +52,19 @@ class Provider:
 
     def request(self, method: str, suffix: str, data=None, *, token=None, envelope=False):
         """No automatic retry, query/SQL/body log or guessed absence on read failure."""
-        family = suffix.rsplit("/", 1)[-1]
+        path = urlsplit(suffix).path
+        family = path.rsplit("/", 1)[-1]
         endpoint = "workers.canary." + family if family in ("settings", "deployments", "subdomain", "query") else "workers.canary.script"
+        if path.startswith(ingress.ZONE + "/dns_records"):
+            endpoint = "workers.canary.dns"
+        elif path.startswith(ingress.ZONE + "/workers/routes"):
+            endpoint = "workers.canary.route"
+        elif path.startswith(ingress.ZONE + "/ssl/"):
+            endpoint = "workers.canary.existing_tls"
+        elif path == ingress.ZONE:
+            endpoint = "workers.canary.zone"
+        elif path == f"/accounts/{self.account}/workers/domains":
+            endpoint = "workers.canary.domain_inventory"
         with span("cloudflare.canary", method.lower(), component="native_tracing", account_id=self.account, endpoint=endpoint) as facts:
             headers = {"Authorization": "Bearer " + (token or self.token), "Content-Type": "application/json"}
             request = Request(API + suffix, method=method, headers=headers,
