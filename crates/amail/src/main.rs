@@ -578,7 +578,9 @@ fn run() -> Result<()> {
             telemetry::report_loss("initialize", &error);
         }
     }
-    command_journal::run(&cfg, command_kind(&cli.command), || execute(cli, &cfg))
+    command_journal::run_with_context(&cfg, command_kind(&cli.command), |command_id| {
+        execute(cli, &cfg, command_id)
+    })
 }
 
 /// Canonical diagnostic names never include arguments or alias spellings.
@@ -620,7 +622,7 @@ fn command_kind(command: &Command) -> Option<command_journal::CommandKind> {
 }
 
 /// Execute the unchanged public behavior inside a best-effort completion boundary.
-fn execute(cli: Cli, cfg: &config::Runtime) -> Result<()> {
+fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> Result<()> {
     match cli.command {
         Command::Config => emit(
             &json!({"api_base":cfg.api_base,"issuer":cfg.issuer,"client_id":cfg.client_id,
@@ -680,12 +682,12 @@ fn execute(cli: Cli, cfg: &config::Runtime) -> Result<()> {
                 let random = uuid::Uuid::new_v4().to_string();
                 send_state::send_key(&cfg, &hash, &random)?
             };
-            let result = api::Api::new(&cfg)?.send(&bytes, &key)?;
+            let result = api::Api::for_command(&cfg, command_id)?.send(&bytes, &key)?;
             send_state::accepted(&cfg, &hash)?;
             emit(&result, cli.human)?;
         }
         command => {
-            let api = api::Api::new(&cfg)?;
+            let api = api::Api::for_command(&cfg, command_id)?;
             match command {
                 Command::Address { command } => match command {
                     AddressCommand::List => {

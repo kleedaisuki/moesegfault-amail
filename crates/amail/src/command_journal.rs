@@ -146,6 +146,16 @@ pub fn run<T>(
     command: Option<CommandKind>,
     work: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
+    run_with_context(cfg, command, |_| work())
+}
+
+/// Pass a generated local command identity explicitly to HTTP request diagnostics.
+/// The UUID is not exported and is absent for opt-out or detached upload commands.
+pub fn run_with_context<T>(
+    cfg: &Runtime,
+    command: Option<CommandKind>,
+    work: impl FnOnce(Option<uuid::Uuid>) -> Result<T>,
+) -> Result<T> {
     let command = command
         .filter(|_| enabled())
         .map(|kind| (kind, uuid::Uuid::new_v4()));
@@ -154,7 +164,7 @@ pub fn run<T>(
         pending: PENDING.with(|pending| std::mem::take(&mut *pending.borrow_mut())),
     };
     let span = Span::start(Phase::Command);
-    let result = work();
+    let result = work(command.map(|(_, id)| id));
     span.finish(cfg, result.is_ok(), None, None);
     let pending = PENDING.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
     if !pending.records.is_empty() && persist_batch(cfg, &pending).is_err() {
@@ -337,6 +347,23 @@ mod tests {
             redirect_uri: String::new(),
         };
         (home, cfg)
+    }
+
+    /// Explicit API context uses the same UUID as retained command completion.
+    #[test]
+    fn explicit_context_matches_completion_and_hidden_scope_is_absent() {
+        let (_home, cfg) = fixture();
+        let observed = run_with_context(&cfg, Some(CommandKind::Search), |id| Ok(id)).unwrap();
+        let conn = local_store::open(&cfg, Duration::from_millis(250)).unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT command_id FROM command_spans WHERE phase='command'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(observed.unwrap().to_string(), stored);
+        assert!(run_with_context(&cfg, None, |id| Ok(id)).unwrap().is_none());
     }
 
     /// Insertion, bounded retention and cumulative eviction do not touch command state.

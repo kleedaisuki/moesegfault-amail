@@ -33,7 +33,7 @@ fn db(cfg: &Runtime) -> Result<Connection> {
         id INTEGER PRIMARY KEY, operation TEXT NOT NULL, status INTEGER NOT NULL,
         duration_ms INTEGER NOT NULL, bytes_bucket INTEGER NOT NULL,
         trace_id TEXT NOT NULL, correlation_id TEXT, uploaded INTEGER NOT NULL DEFAULT 0,
-        span_id TEXT, started_at_ms INTEGER, elapsed_ms INTEGER, phase TEXT, error_kind TEXT
+        span_id TEXT, command_id TEXT, started_at_ms INTEGER, elapsed_ms INTEGER, phase TEXT, error_kind TEXT
     ); CREATE INDEX IF NOT EXISTS events_pending ON events(uploaded, id);
     CREATE TABLE IF NOT EXISTS journal_state (
         key TEXT PRIMARY KEY, value INTEGER NOT NULL
@@ -54,6 +54,10 @@ fn ensure_event_columns(conn: &mut Connection) -> Result<()> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     for (name, declaration) in [
         ("span_id", "ALTER TABLE events ADD COLUMN span_id TEXT"),
+        (
+            "command_id",
+            "ALTER TABLE events ADD COLUMN command_id TEXT",
+        ),
         (
             "started_at_ms",
             "ALTER TABLE events ADD COLUMN started_at_ms INTEGER",
@@ -120,6 +124,8 @@ pub struct RequestSpan<'a> {
     operation: &'a str,
     trace_id: String,
     span_id: String,
+    /// Explicit local relationship, not a W3C parent or uploadable identifier.
+    command_id: Option<uuid::Uuid>,
     started_at_ms: Option<i64>,
     start: Instant,
     /// Header metadata remains in memory until the actual attempt clock is frozen.
@@ -129,12 +135,22 @@ pub struct RequestSpan<'a> {
 impl<'a> RequestSpan<'a> {
     /// Start a request attempt with random W3C identifiers and both clock types.
     pub fn new(cfg: &'a Runtime, operation: &'a str) -> Self {
+        Self::with_command(cfg, operation, None)
+    }
+
+    /// Link this local attempt to its command without changing trace propagation.
+    pub fn with_command(
+        cfg: &'a Runtime,
+        operation: &'a str,
+        command_id: Option<uuid::Uuid>,
+    ) -> Self {
         let mut random = [0u8; 24];
         rand::thread_rng().fill_bytes(&mut random);
         let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect();
         Self {
             cfg,
             operation,
+            command_id,
             trace_id: hex(&random[..16]),
             span_id: hex(&random[16..]),
             started_at_ms: SystemTime::now()
@@ -223,9 +239,9 @@ impl<'a> RequestSpan<'a> {
         };
         let tx = delivery::transaction(conn)?;
         tx.execute("INSERT INTO events(operation,status,duration_ms,bytes_bucket,trace_id,span_id,correlation_id,
-            started_at_ms,elapsed_ms,phase,error_kind) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            started_at_ms,elapsed_ms,phase,error_kind,command_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             params![self.operation, status, elapsed.min(120_000), bucket, self.trace_id,
-                self.span_id, correlation, self.started_at_ms, elapsed, phase.as_str(), error_kind])?;
+                self.span_id, correlation, self.started_at_ms, elapsed, phase.as_str(), error_kind, self.command_id.map(|id| id.to_string())])?;
         delivery::prune(&tx)?;
         tx.commit()?;
         Ok(())
@@ -417,6 +433,7 @@ pub(crate) mod tests {
             .unwrap();
         for column in [
             "span_id",
+            "command_id",
             "started_at_ms",
             "elapsed_ms",
             "phase",
@@ -458,6 +475,63 @@ pub(crate) mod tests {
         assert_eq!(row.3, "response_body");
         assert_eq!(row.4, "decode");
         assert_eq!(parent, format!("00-{}-{}-01", row.5, row.6));
+    }
+
+    /// Multiple attempts share only an explicit local command UUID; wire stays unchanged.
+    #[test]
+    fn command_link_is_local_and_attempt_traces_remain_independent() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let home = tempfile::tempdir_in(root).unwrap();
+        let cfg = config(home.path());
+        let conn = db(&cfg).unwrap();
+        let command_id = uuid::Uuid::new_v4();
+        for _ in 0..2 {
+            RequestSpan::with_command(&cfg, "messages.list", Some(command_id))
+                .insert(&conn, 200, 0, None, Phase::Complete, None, 1)
+                .unwrap();
+        }
+        RequestSpan::new(&cfg, "messages.list")
+            .insert(&conn, 200, 0, None, Phase::Complete, None, 1)
+            .unwrap();
+        let counts: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*),COUNT(DISTINCT trace_id),COUNT(DISTINCT span_id) FROM events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (3, 3, 3));
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE command_id=?1",
+                [command_id.to_string()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE command_id IS NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        let event = Event {
+            operation: "messages.list".into(),
+            status: 200,
+            duration_ms: 1,
+            bytes_bucket: 0,
+            trace_id: "0123456789abcdef0123456789abcdef".into(),
+            span_id: None,
+            correlation_id: None,
+        };
+        let wire = serde_json::to_string(&event).unwrap();
+        assert!(!wire.contains("command_id"));
+        assert!(!wire.contains(&command_id.to_string()));
     }
 
     /// Persistence latency cannot inflate the elapsed time captured at completion.
