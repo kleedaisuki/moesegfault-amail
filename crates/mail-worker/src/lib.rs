@@ -1,5 +1,6 @@
 //! amail mail service. / amail 邮件服务。
 
+mod accepted;
 mod address_diag;
 mod archive;
 mod auth;
@@ -225,7 +226,7 @@ async fn garbage_collect(env: &Env) -> Result<()> {
     }
     let database = env.d1("MAIL_DB")?;
     let rows = database
-        .prepare("SELECT id,r2_key FROM messages WHERE deleted_at IS NOT NULL LIMIT 20")
+        .prepare("SELECT id,r2_key FROM messages WHERE deleted_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.state='accepted') LIMIT 20")
         .all()
         .await?
         .results::<Deleted>()?;
@@ -538,14 +539,19 @@ async fn repair_address(
     Ok(RepairTurn::Attempted)
 }
 
+/// Recover only provider-positive sends from their exact immutable ZIP; HTTP
+/// and Cron share one journal-fenced projection and atomic publication path.
 async fn reconcile_outbound(env: &Env) -> Result<()> {
     #[derive(Deserialize)]
     struct Pending {
         owner_iss: String,
         owner_sub: String,
+        idem_key: String,
+        payload_hash: String,
         message_id: String,
         provider_id: String,
         created_at: i64,
+        deleted_bytes: Option<i64>,
     }
     let database = env.d1("MAIL_DB")?;
     database
@@ -555,41 +561,75 @@ async fn reconcile_outbound(env: &Env) -> Result<()> {
         .bind(&[bind_num(now() - 10 * 60_000)])?
         .run()
         .await?;
-    let rows = database.prepare("SELECT owner_iss,owner_sub,message_id,provider_id,created_at FROM send_requests WHERE state='accepted' AND message_id IS NOT NULL AND provider_id IS NOT NULL LIMIT 20")
+    let rows = database.prepare("SELECT s.owner_iss,s.owner_sub,s.idem_key,s.payload_hash,s.message_id,s.provider_id,s.created_at,
+        (SELECT m.storage_bytes FROM messages m WHERE m.id=s.message_id
+         AND m.owner_iss=s.owner_iss AND m.owner_sub=s.owner_sub
+         AND m.direction='outbound' AND m.deleted_at IS NOT NULL
+         AND m.r2_key='messages/'||s.message_id||'.zip'
+         AND COALESCE(json_extract(m.metadata_json,'$.message_id'),'')=s.provider_id) AS deleted_bytes
+        FROM send_requests s WHERE s.state='accepted' AND s.message_id IS NOT NULL AND s.provider_id IS NOT NULL LIMIT 20")
         .all().await?.results::<Pending>()?;
     for row in rows {
+        if let Some(bytes) = row.deleted_bytes.filter(|bytes| *bytes >= 0) {
+            accepted::finish_deleted(
+                &database,
+                &accepted::Projection {
+                    id: &row.message_id,
+                    issuer: &row.owner_iss,
+                    subject: &row.owner_sub,
+                    idem: &row.idem_key,
+                    hash: &row.payload_hash,
+                    provider: &row.provider_id,
+                    created_at: row.created_at,
+                    bytes: bytes as usize,
+                },
+            )
+            .await?;
+            continue;
+        }
         let key = format!("messages/{}.zip", row.message_id);
         let Some(object) = env.bucket("MAIL_BODIES")?.get(&key).execute().await? else {
             continue;
         };
+        // R2's native metadata bounds allocation before reading retained bytes.
+        // Preserve every service-valid ZIP; a larger stored object is not one.
+        if object.size() > archive::MAX_ZIP as u64 {
+            continue;
+        }
         let Some(body) = object.body() else {
             continue;
         };
         let bytes = body.bytes().await?;
+        if format!("{:x}", Sha256::digest(&bytes)) != row.payload_hash {
+            continue;
+        }
         let Ok(draft) = parse_draft(&bytes) else {
             continue;
         };
+        if validate_draft(&draft).is_err() {
+            continue;
+        }
         let m = &draft.manifest;
         let envelope = outbound_envelope_json(&draft)?;
         if row.created_at >= now() - 90 * 86_400_000 {
-            database.prepare("UPDATE send_requests SET sender=COALESCE(sender,?1),envelope_json=COALESCE(envelope_json,?2) WHERE message_id=?3 AND provider_id=?4")
-                .bind(&[bind_str(&m.from),bind_str(&envelope),bind_str(&row.message_id),bind_str(&row.provider_id)])?.run().await?;
+            database.prepare("UPDATE send_requests SET sender=COALESCE(sender,?1),envelope_json=COALESCE(envelope_json,?2) WHERE message_id=?3 AND provider_id=?4 AND owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND payload_hash=?8 AND state='accepted'")
+                .bind(&[bind_str(&m.from),bind_str(&envelope),bind_str(&row.message_id),bind_str(&row.provider_id),bind_str(&row.owner_iss),bind_str(&row.owner_sub),bind_str(&row.idem_key),bind_str(&row.payload_hash)])?.run().await?;
         }
-        let metadata = outbound_metadata(&draft, &row.provider_id).to_string();
-        let recipients = serde_json::to_string(&m.to)?;
-        let first_text = store_text(&database, &row.message_id, &draft.text)
-            .await
-            .map_err(|_| worker::Error::RustError("reconcile_text_failed".into()))?;
-        database.prepare("INSERT OR IGNORE INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,storage_bytes) VALUES(?1,?2,?3,?4,'outbound',?5,?6,?7,?8,?9,?10,1,?11,1,?12,?13,?14,?15)")
-            .bind(&[bind_str(&row.message_id),bind_str(&m.from),bind_str(&row.owner_iss),bind_str(&row.owner_sub),bind_str(&m.from),bind_str(&recipients),bind_str(&m.subject),bind_str(&first_text),bind_str(&metadata),bind_num(row.created_at),bind_num(draft.html.is_some() as i64),bind_num(draft.assets.len() as i64),bind_str(&key),bind_num(bytes.len() as i64),bind_num(bytes.len() as i64)])?.run().await?;
-        mark_storage_indexed(&database, &row.message_id).await?;
-        database
-            .prepare(
-                "UPDATE send_requests SET state='sent' WHERE message_id=?1 AND state='accepted'",
-            )
-            .bind(&[bind_str(&row.message_id)])?
-            .run()
-            .await?;
+        accepted::publish(
+            &database,
+            &accepted::Projection {
+                id: &row.message_id,
+                issuer: &row.owner_iss,
+                subject: &row.owner_sub,
+                idem: &row.idem_key,
+                hash: &row.payload_hash,
+                provider: &row.provider_id,
+                created_at: row.created_at,
+                bytes: bytes.len(),
+            },
+            &draft,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -718,7 +758,7 @@ async fn claim_embedding<'a>(
              WHERE message_id=?3 AND state='pending'
                AND next_attempt_at<=?4 AND lease_until<=?4
                AND EXISTS (SELECT 1 FROM messages
-                           WHERE id=?3 AND deleted_at IS NULL AND embedding_json IS NULL)",
+                           WHERE id=?3 AND deleted_at IS NULL AND embedding_json IS NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted'))",
         )
         .bind(&[
             bind_num(claimed_at + EMBEDDING_LEASE_MS),
@@ -755,6 +795,7 @@ async fn read_leased_embedding(
             "SELECT m.subject,m.body_text,w.attempts
              FROM messages m JOIN embedding_work w ON w.message_id=m.id
              WHERE m.id=?1 AND m.deleted_at IS NULL AND m.embedding_json IS NULL
+               AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=m.id AND s.owner_iss=m.owner_iss AND s.owner_sub=m.owner_sub AND s.state='accepted')
                AND w.lease_token=?2 AND w.lease_until>?3",
         )
         .bind(&[
@@ -887,6 +928,8 @@ const EMBEDDING_DUE_SQL: &str = "SELECT message_id FROM (
        LEFT JOIN embedding_owner_schedule o
          ON o.owner_iss=w.owner_iss AND o.owner_sub=w.owner_sub
        WHERE w.state='pending' AND w.next_attempt_at<=?1 AND w.lease_until<=?1
+         AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=w.message_id
+                         AND s.owner_iss=w.owner_iss AND s.owner_sub=w.owner_sub AND s.state='accepted')
      ) WHERE owner_rank<=4
      ORDER BY owner_rank,last_served_at,next_attempt_at,received_at,message_id LIMIT 20";
 
@@ -1755,7 +1798,7 @@ fn summary(row: &MessageRow, score: Option<f64>) -> serde_json::Value {
 }
 
 async fn one_message(env: &Env, user: &Principal, id: &str) -> AppResult<MessageRow> {
-    db(env)?.prepare("SELECT id,address,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,embedding_json FROM messages WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND deleted_at IS NULL")
+    db(env)?.prepare("SELECT id,address,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,embedding_json FROM messages WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted')")
         .bind(&[bind_str(id),bind_str(&user.iss),bind_str(&user.sub)])?.first::<MessageRow>(None).await?.ok_or_else(AppError::not_found)
 }
 
@@ -1824,10 +1867,17 @@ async fn mark_message(
     get_message(env, user, id, request_id).await
 }
 
+/// Tombstone an owned delivery immediately, including a known legacy accepted
+/// projection hidden from fresh reads; recovery must preserve this deletion.
 async fn delete_message(env: &Env, user: &Principal, id: &str) -> AppResult<Response> {
-    one_message(env, user, id).await?;
-    db(env)?.prepare("UPDATE messages SET deleted_at=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND deleted_at IS NULL")
-        .bind(&[bind_num(now()),bind_str(id),bind_str(&user.iss),bind_str(&user.sub)])?.run().await?;
+    // RETURNING identifies the matched delivery, not trigger-sensitive aggregate
+    // change counts. The same atomic predicate handles hidden legacy projections,
+    // foreign IDs and repeated deletion without a separate existence race.
+    let deleted = db(env)?.prepare("UPDATE messages SET deleted_at=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND deleted_at IS NULL RETURNING id")
+        .bind(&[bind_num(now()),bind_str(id),bind_str(&user.iss),bind_str(&user.sub)])?.first::<serde_json::Value>(None).await?;
+    if deleted.is_none() {
+        return Err(AppError::not_found());
+    }
     Ok(Response::empty()?.with_status(204))
 }
 
@@ -2015,7 +2065,7 @@ fn search_projection(input: &SearchRequest) -> String {
     } else {
         "NULL AS embedding_json"
     };
-    format!("SELECT id,address,direction,{sender},{recipients},{subject},{body},{metadata},received_at,is_read,has_html,has_text,attachment_count,'' AS r2_key,size_bytes,{vector} FROM messages WHERE owner_iss=?1 AND owner_sub=?2 AND deleted_at IS NULL")
+    format!("SELECT id,address,direction,{sender},{recipients},{subject},{body},{metadata},received_at,is_read,has_html,has_text,attachment_count,'' AS r2_key,size_bytes,{vector} FROM messages WHERE owner_iss=?1 AND owner_sub=?2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted')")
 }
 
 /// Large title/metadata values use smaller pages; ordinary summaries can scan 64 IDs at once. / 大型主题或元数据使用小页，普通摘要每次可扫描 64 个 ID。
@@ -2029,7 +2079,7 @@ fn search_page_size(input: &SearchRequest) -> usize {
 
 /// Rehydrate compact summaries without loading unbounded subject headers. / 重建紧凑摘要时避免载入无界的主题头字段。
 fn search_summary_projection() -> &'static str {
-    "SELECT id,address,direction,sender,recipients_json,substr(subject,1,2048) AS subject,CASE WHEN length(subject)>2048 THEN 1 ELSE 0 END AS subject_truncated,'' AS body_text,'{}' AS metadata_json,received_at,is_read,has_html,has_text,attachment_count,'' AS r2_key,size_bytes,NULL AS embedding_json FROM messages WHERE owner_iss=?1 AND owner_sub=?2 AND deleted_at IS NULL"
+    "SELECT id,address,direction,sender,recipients_json,substr(subject,1,2048) AS subject,CASE WHEN length(subject)>2048 THEN 1 ELSE 0 END AS subject_truncated,'' AS body_text,'{}' AS metadata_json,received_at,is_read,has_html,has_text,attachment_count,'' AS r2_key,size_bytes,NULL AS embedding_json FROM messages WHERE owner_iss=?1 AND owner_sub=?2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted')"
 }
 
 /// Make the indexed structural predicates explicit; never use SQLite LIKE as an exact text oracle. / 显式构造可索引的结构谓词，不将 SQLite LIKE 当作精确文本判定。
@@ -2362,10 +2412,11 @@ async fn send_message(
         state: String,
         quota_reserved: i64,
         rejection_code: Option<String>,
+        created_at: i64,
     }
-    let existing = database.prepare("SELECT payload_hash,message_id,state,quota_reserved,rejection_code FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3")
+    let existing = database.prepare("SELECT payload_hash,message_id,state,quota_reserved,rejection_code,created_at FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3")
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.first::<SendRow>(None).await?;
-    let (id, quota_reserved, inserted_new) = if let Some(row) = existing {
+    let (id, quota_reserved, inserted_new, created_at) = if let Some(row) = existing {
         if row.payload_hash != payload_hash {
             return Err(AppError::conflict("idempotency_payload_mismatch"));
         }
@@ -2388,14 +2439,16 @@ async fn send_message(
                 .ok_or_else(|| AppError::conflict("send_outcome_unknown"))?,
             row.quota_reserved != 0,
             false,
+            row.created_at,
         )
     } else {
         // A held account must not manufacture unbounded idempotency rows.
         // 被停用账户不得通过生成幂等键无限填充 D1。
         check_send_policy(env, &database, user, &draft, &idem).await?;
         let id = uuid::Uuid::new_v4().to_string();
+        let created_at = now();
         let admitted = database.prepare("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,state,created_at) VALUES(?1,?2,?3,?4,?5,'preparing',?6)")
-            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem),bind_str(&payload_hash),bind_str(&id),bind_num(now())])?.run().await;
+            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem),bind_str(&payload_hash),bind_str(&id),bind_num(created_at)])?.run().await;
         if admitted.is_err() {
             // The SQL trigger may have raced an operator hold; preserve the
             // public hold code instead of misreporting that race as a replay.
@@ -2403,7 +2456,7 @@ async fn send_message(
             check_send_policy(env, &database, user, &draft, &idem).await?;
             return Err(AppError::conflict("send_in_progress"));
         }
-        (id, false, true)
+        (id, false, true, created_at)
     };
     if !quota_reserved {
         reserve_outbound_budget(&database, user, &draft, &idem, inserted_new).await?;
@@ -2470,26 +2523,25 @@ async fn send_message(
     };
     database.prepare("UPDATE send_requests SET state='accepted',provider_id=?1,sender=?2,envelope_json=?3,request_id=?4 WHERE owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND state='submitting'")
         .bind(&[bind_str(&provider_id),bind_str(&draft.manifest.from),bind_str(&envelope_json),bind_str(request_id),bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
-    let metadata = outbound_metadata(&draft, &provider_id);
-    let recipients = serde_json::to_string(&draft.manifest.to)
-        .map_err(|_| AppError::bad("invalid_mail_fields"))?;
-    let first_text = store_text(&database, &id, &draft.text).await?;
-    let inserted = database.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,storage_bytes,embedding_json,embedding_model,embedding_dimensions) VALUES(?1,?2,?3,?4,'outbound',?5,?6,?7,?8,?9,?10,1,?11,1,?12,?13,?14,?15,?16,?17,?18)")
-        .bind(&[bind_str(&id),bind_str(&draft.manifest.from),bind_str(&user.iss),bind_str(&user.sub),bind_str(&draft.manifest.from),bind_str(&recipients),bind_str(&draft.manifest.subject),bind_str(&first_text),bind_str(&metadata.to_string()),bind_num(now()),bind_num(draft.html.is_some() as i64),bind_num(draft.assets.len() as i64),bind_str(&r2_key),bind_num(bytes.len() as i64),bind_num(bytes.len() as i64),JsValue::NULL,JsValue::NULL,JsValue::NULL])?.run().await;
-    if inserted.is_err() {
-        return Err(AppError {
-            status: 503,
-            code: "send_index_pending",
-        });
-    }
-    if mark_storage_indexed(&database, &id).await.is_err() {
-        trace.warning(
-            request_id,
-            trace::DiagnosticCode::StorageLedgerStateDeferred,
-        );
-    }
-    database.prepare("UPDATE send_requests SET state='sent' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3")
-        .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
+    accepted::publish(
+        &database,
+        &accepted::Projection {
+            id: &id,
+            issuer: &user.iss,
+            subject: &user.sub,
+            idem: &idem,
+            hash: &payload_hash,
+            provider: &provider_id,
+            created_at,
+            bytes: bytes.len(),
+        },
+        &draft,
+    )
+    .await
+    .map_err(|_| AppError {
+        status: 503,
+        code: "send_index_pending",
+    })?;
     Ok(Response::from_json(
         &serde_json::json!({"id":id,"state":"accepted","request_id":request_id}),
     )?
