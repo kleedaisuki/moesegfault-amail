@@ -1,0 +1,97 @@
+# Runtime observability foundation
+
+Status: implementation plan, not native-trace or production privacy acceptance.
+Owner priority is infrastructure first; no mailbox campaign or Mail redeploy is
+authorized by this document. The overall ledger is infrastructure-foundation.md.
+
+## Known coverage versus desired coverage
+
+Existing code propagates W3C CLI request IDs to authenticated API handling and
+emits typed application events through a private Queue to Cloudflare Logs.
+That is useful causal correlation, **not** a native Cloudflare trace waterfall
+and not proof of observed deployed coverage. Retain compatibility and useful
+causality while addressing these concrete debts:
+
+1. CLI events lack an absolute event timestamp. Source events queued to the sink
+   likewise cannot distinguish operation time from delivery time. Add optional
+   source timestamps and exact operational timing; preserve legacy rows/records
+   as unknown time rather than inventing a timestamp.
+2. CLI response-body read errors exit before the operation journal records the
+   failure. Token acquisition/refresh and local-only operations are also outside
+   the present API-request correlation scope. Derive a coverage matrix from
+   actual command and dependency boundaries, then test each success/failure path.
+3. Send idempotency state shares telemetry.rs and its SQLite initialization.
+   Separate diagnostic ownership from durable command-state APIs without
+   silently changing old send keys or the existing credential/store layout.
+4. Duration/status bucketing unnecessarily hides operational detail. Preserve
+   legacy wire fields but add exact timing/status and useful dependency context.
+   Body, search, credential, personal identity and private forwarding data remain
+   excluded. Infrastructure IDs and static source call sites are not secrets.
+5. Account for diagnostic loss/unknown submission and background work, not just
+   successful telemetry delivery. Best-effort reporting must not change mail
+   behavior or bypass existing durable send/ownership semantics.
+6. Control-plane scripts need the same public source/run/stage/request context
+   and explicit safe error causes. Do not build a vocabulary of hundreds of
+   guessed provider failure codes or hide harmless schema differences.
+
+## Native Cloudflare spans: validate the platform mechanism
+
+Cloudflare's 2026-09-25 update adds getActiveSpan(), startSpan(), recordException()
+and setAttributes(). The active-span accessor can return an invocation root and
+manual spans can record operational data. These APIs create a plausible path to
+native spans through the official Rust/Wasm bridge; do not assume an older Rust
+crate exposes every new runtime API or bypass the SDK recovery wrapper.
+
+The current native test runtime is Miniflare 4.20260730.0. It predates that update,
+so its old tests alone cannot establish these new APIs' actual behavior. A
+separately reviewed runtime pin or a synthetic deployed infrastructure canary is
+required. No business-handler rewrite or new JavaScript mail implementation is
+needed to evaluate a small platform binding.
+
+Two facts must remain separate:
+
+* Earlier retained-log evidence found an original request-path marker outside
+  the allowlisted application event. The existing Queue isolation addresses a
+  real enrichment problem; simply enabling all request-facing logging again is
+  not field-level privacy.
+* The new active-span API permits attributes to be set. Documentation does not
+  yet prove that overwriting a root URL field also removes every enriched copy,
+  survives runtime finalization, or covers automatic child/exception records.
+  Test this directly instead of inferring either universal impossibility or safety.
+
+Next discriminating test: one isolated Rust infrastructure canary with no Mail
+DB/R2/Queue, user account, send capability or runtime secret. Supply synthetic
+path/query/header/body markers and a known traceparent; annotate only public
+attributes, exercise a successful request plus a fixed synthetic failure, and
+inspect the complete **canary-only** retained record/trace window. Record actual
+native parentage, attributes, error context, runtime/version/source and marker
+locations. The test must not expose actual mail or change Mail settings. If root
+sanitization does not cover enriched fields, retain the safe event boundary and
+use native tracing only on surfaces whose automatic attributes are appropriate.
+
+Do not treat extra harmless platform keys as a privacy failure. Validate our own
+event schema strictly, classify protected fields by origin/meaning, and inspect
+the whole canary for sensitive markers independently of wrapper shape. The
+acceptance target is observable causality with protected fields excluded, not
+the absence of all metadata or a perfectly frozen provider schema.
+
+## Compatibility and rollout
+
+Add nullable/optional event fields and in-place SQLite migrations. Historical
+clients, queued events, read/search/send contracts and saved send keys continue
+to work. Updated sink/schema readers precede enriched producers; do not dual-log
+unsafe raw requests as a migration comparison. Source tests and synthetic
+infrastructure acceptance precede any separately authorized application rollout.
+Keep project Secret management and the existing send hold unchanged.
+
+## Primary evidence
+
+* https://developers.cloudflare.com/changelog/post/2026-09-25-custom-span-apis/
+* https://developers.cloudflare.com/workers/observability/traces/custom-spans/
+* https://developers.cloudflare.com/workers/observability/traces/spans-and-attributes/
+  — fetch/Email/R2/D1 attributes have different privacy origins; inspect each
+  relevant surface rather than declaring all operational metadata private.
+* https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/
+  — native trace and log views are distinct; preserve source/version/time scope.
+* docs/mail-trace-privacy-decision.md — historical path-enrichment evidence and
+  the current safe-event isolation boundary, not a universal future API verdict.

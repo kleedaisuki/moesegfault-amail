@@ -51,12 +51,12 @@ control-plane call merely because the mail application has spans.
 
 | Work package | Exit condition | State |
 | --- | --- | --- |
-| CI dependency graph and caches | Build once; all native files assigned; parallel suites; stable fail-closed aggregate; dependency caches without credentials/workspace binaries; observed hosted durations and cache outcomes | Implementing |
-| Artifact and compiler provenance | Source/run/compiler/bundler/file hashes verified before consumption; wrong-source, modified/missing/extra file refused; promotion consumes tested artifacts rather than rebuilding silently | Implementing for source checks; deploy/release wiring pending |
+| CI dependency graph and caches | Build once; all native files assigned; parallel suites; stable fail-closed aggregate; dependency caches without credentials/workspace binaries; observed hosted durations and cache outcomes | Hosted source accepted; trusted dependency-cache seeding/warm observation remains |
+| Artifact and compiler provenance | Source/run/compiler/bundler/file hashes verified before consumption; wrong-source, modified/missing/extra file refused; promotion consumes tested artifacts rather than rebuilding silently | Source checks accepted; deploy/release wiring pending |
 | CI and deployment diagnostics | Machine-readable timing/outcome summaries; source/run/stage/request correlation; useful safe provider failures; no repeated opaque probes | Pending |
-| Runtime observability | Field-level schemas; CLI/API/maintenance/lifecycle coverage and diagnostics for loss; Cloudflare configuration and a synthetic correlation/privacy canary accepted | Pending |
+| Runtime observability | Field-level schemas; CLI/API/maintenance/lifecycle coverage and diagnostics for loss; Cloudflare configuration and a synthetic correlation/privacy canary accepted | [Coverage repair and native-span validation plan](runtime-observability-foundation.md) |
 | Deployment lifecycle | Explicit paused/active state; consistent source/toolchain/artifact; writer lock, readback, rollback and bounded recovery; project Secrets remain unchanged | Pending |
-| Maintenance knowledge and cleanup | Current runbook and maintainer skill; legacy research probes isolated from normal product paths; canonical status ledger; no dangling test/active workflow | Pending |
+| Maintenance knowledge and cleanup | Current runbook and maintainer skill; legacy research probes isolated from normal product paths; canonical status ledger; no dangling test/active workflow | Maintainer skill added; legacy lane cleanup pending |
 
 Completion means all rows have executable evidence, not just a design review.
 Runtime and cross-platform tests run in GitHub Actions only. Local work is source,
@@ -114,3 +114,28 @@ the credential-free producer and exact generated directories, not extensions
 (a .js/.json could contain a secret too). Preserve regular-file/symlink checks,
 size bounds, source/run binding and full file-set/hash verification. A regression
 allows a generated map while excluding config outside the selected trees.
+
+## Accepted hosted build-once and native fan-out
+
+Corrected PR 42 source b5a05835fc9276dc755e95df75138e91ad1f175a passed
+run 36841123150, attempt 1. Checkout c2773645363605a2e089f260d8492088c1a79dbf
+was the PR merge commit; its tree matched the reviewed head. One build packaged
+30 generated files, and all eight native runners independently verified that
+same source/run/file set before testing. Counts were 102 core, 7 entry, 6 liveness,
+9 accepted, 7 routing, 6 embedding, 13 diagnostics and 1 historical budget:
+**151 passed, zero failed/cancelled/skipped/todo**. All three CLI platforms,
+infrastructure, Astro and workflow syntax also passed.
+
+Observed times: build job 09:11:53–09:16:55 UTC (5m02s); native fan-out including
+runner setup and artifact verification 09:16:58–09:20:02 (3m04s); stable Worker
+aggregate succeeded at 09:20:08. Whole workflow ran 09:11:40–09:20:09 (8m29s).
+The previous serial native phase was about 6m29s; these are uncontrolled observed
+runs, not a whole-CI latency guarantee. New dependency-cache outputs reported
+non_exact_or_miss; public bundler reported exact_hit. Do not infer cold versus
+partial restoration from the former. Suite execution times are retained in
+native-suite-* JSON artifacts and job summaries, separate from build artifacts.
+
+Merged main 677fc1fdc92daca9c23f361ec99fb264b6f26882 has the accepted tree.
+Its full run 36843081448 also completed successfully. No provider inspection,
+mailbox mutation, deployment, sending grant or release accompanied these checks.
+The remaining foundation work is still required before resuming business debug.
