@@ -1,7 +1,8 @@
 # CI source scope and observed waiting latency
 
-Status: bounded source-selection improvement under hosted validation. This is
-not deployment, release or native Cloudflare runtime acceptance.
+Status: real hosted scoped path accepted; selector source still requires its
+full PR checks. This is not deployment, release or native Cloudflare runtime
+acceptance.
 
 ## Workload and decision
 
@@ -96,6 +97,32 @@ package/lockfile and mixed-consumer changes. Existing malformed/truncated/
 unreadable Git diff/event and non-PR fallback tests remain required. A source-only
 stacked probe may vary only a canary workflow comment to exercise the real hosted
 PR event; it supplies no main/release acceptance and is closed without merge.
+
+## Actual scoped-path probe
+
+Measurement-only [PR 61](https://github.com/kleedaisuki/moesegfault-amail/pull/61)
+used base selector source `0778bc90ad15248ab9f25d02fb5a1d34e5d8f0ec` and head
+`524cf36cb2d3e96d2a06a392467838ed8ada97d4`. Its entire PR diff was one comment
+in `native-tracing-canary.yml`; no code, runtime/provider behavior or compiler
+input changed. Actual hosted CI
+[36878536461](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36878536461)
+passed in **33 s** (14:43:05–14:43:38 UTC), including a 5 s scope job and
+25 s mandatory infrastructure job. Independent syntax
+[36878536119](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36878536119)
+passed in 13 s (14:43:05–14:43:18). CLI, producer, all native suites and Astro
+were actually skipped; provider/deploy jobs were also skipped. Hosted
+infrastructure executed the real encrypted recovery and synthetic Python/
+source/admission/privacy contracts, not an empty replacement check.
+
+The probe was closed without merge after collecting run/job metadata. Its branch
+is retained for reproducibility. It is not trusted-main source CI, full native
+acceptance or deployment/release artifact admission. Compared with the historical
+322 s workflow-shaped orchestration baseline, this confirms removal of the
+unrelated 112 s producer + 180 s core critical path. The 289 s wall-time
+difference is an observed workload-specific contrast, **not** an equivalent
+paired benchmark or performance promise. A single sample cannot estimate tail
+latency or variance. Selector negative/mixed guards and final full source checks
+remain the correctness evidence; speed alone cannot justify skipping tests.
 
 ## External rationale
 
