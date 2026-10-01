@@ -1,6 +1,6 @@
 # Native Cloudflare tracing canary
 
-Status: source implementation under hosted validation, not deployed/native trace
+Status: Rust source accepted by hosted validation, not deployed/native trace
 acceptance. The owner prioritizes infrastructure/debt before mailbox debugging.
 
 ## Concrete experiment
@@ -63,3 +63,34 @@ application event boundary and use native tracing on suitable platform surfaces.
 * https://wasm-bindgen.github.io/wasm-bindgen/reference/attributes/on-js-imports/module.html
   and js_namespace — bind native module functions without a hand-written JS mail
   implementation or guessed exported Span constructor.
+
+## Checked-source result and isolated lifecycle lane
+
+PR 49 source 8bf3f5097de0edafec8b9171c797e34f1a3023a0, actual merge checkout
+383052f832e2d7a9e02279c42f040f0ec0bae314, passed CI 36861601016 and syntax
+36861600039. All 156 native tests, three CLI platforms, Astro, Rust/Wasm/unit and
+infrastructure checks passed. Artifact has 35 files across seven product trees.
+Merged main 7b04df8425cf277c339042c06bea1faf42e43e39 retains the tested tree.
+No provider operation occurred. Unsupported-getter behavior on old workerd is
+explicit evidence for doing the actual current-runtime experiment, not a waiver.
+
+The isolated experiment workflow admits only a fully successful exact-main source
+run and its fixed artifact ID, verifies every original compiled byte, and removes
+the custom Rust build from temporary Wrangler configs. It deploys only absent
+source-owned probe/caller scripts, tags their public run ownership, checks serving
+versions, endpoint isolation and capture settings, invokes once without provider
+credentials, collects the complete probe-scoped window, and removes receipt-owned
+scripts with readback. Failed/unknown writes are not automatically resubmitted.
+Public state receipt survives failure so a retained/replaced resource can be
+inspected rather than guessed absent. No business deployment or send admission
+is granted by this lane. Additional exact-main source/artifact admission is
+stronger than diagnostic fixture replay, which intentionally admits failed whole
+runs with a successful unchanged producer.
+
+Collection preserves native span/parent/trace IDs and per-invocation marker paths,
+not arbitrary raw provider data. Baseline must contain the path marker, four safe
+source receipts map the four request cohorts, and four real custom children must
+have observed native parents. Redacted marker leakage is an experimental outcome
+rather than something to suppress or waive. This result cannot by itself prove
+all Mail/Email/D1/R2 surfaces safe; those have separate content/metadata origins.
+Actual controlled deployment/collection/cleanup is still pending.
