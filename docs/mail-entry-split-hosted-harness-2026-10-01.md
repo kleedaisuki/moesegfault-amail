@@ -108,3 +108,21 @@ Static Node parsing and whitespace checks are the only local verification;
 actual lifetime/cancellation behavior still requires the integrated hosted
 workerd build. The original reviewer limitation on asynchronous Rust panic
 recovery is unchanged.
+
+## Root integration after batching and Queue deadline
+
+Integrated onto main 901fa73 (PR33), not the older pre-batching fixture baseline.
+The existing accepted-stage observer now composes both real product entry adapters
+rather than inheriting the mixed generated SDK; its test-only HTTP controls remain
+outside upload inputs. The 379-statement native counter and 66-chunk/nine-stage-
+transaction oracle are preserved. The thirteen final diagnostic cases, including
+never-settling and committed/late acknowledgement, remain selected unchanged.
+`test:entry-split` is registered as a separate hosted Worker CI step. Mail deploy
+bundlers are aligned to the already-tested worker-build 0.8.5; no deployment target
+is invoked by these source checks. No local runtime or toolchain install occurred.
+
+The previous independent review rejected the original waitUntil case because it
+registered the already-returned Rust completion. The amended case uses independent
+Node-owned service barriers, a registered positive and identical omitted-registration
+negative control. Actual workerd execution must distinguish them; source inspection
+alone is not acceptance. Hosted results remain pending before provider operations.

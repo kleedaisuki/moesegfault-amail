@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:entry-split": "node --test mail-entry-split.test.mjs",
     "test:accepted-stage": "node --test accepted-stage-batch.test.mjs",
     "test:embedding-deadline": "node --test embedding-cron-deadline.test.mjs",
     "test:routing-deadline": "node --test routing-deadline.test.mjs",
