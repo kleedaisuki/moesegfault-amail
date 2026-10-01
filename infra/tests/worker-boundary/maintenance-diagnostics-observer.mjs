@@ -3,12 +3,13 @@ import BuiltWorker from "../../../crates/mail-worker/build/worker/shim.mjs";
 
 const nativeStatements = new WeakMap();
 let policy = {}, stats, offset = 0;
+const heldAcknowledgements = [];
 /** Invocation tape contains dependency categories only, never SQL/binds/body. */
 function reset() {
   offset = 0;
   stats = { tape: [], phases: [], statements: 0, lookups: 0, send: 0, batches: 0,
     forwarded: 0, settled: 0, constructor: null, codes: [], lengths: [], charge: 0,
-    envelopeBytes: 0, valid: true };
+    envelopeBytes: 0, valid: true, held: 0, returned: false };
 }
 reset();
 
@@ -116,23 +117,42 @@ function queue(native) {
     if (key === "send") return (...args) => { stats.send++; return target.send(...args); };
     if (key !== "sendBatch") return target[key];
     return (messages, options) => {
-      stats.tape.push("queue");
-      stats.batches++;
-      stats.constructor = target.constructor.name;
+      const invocation = stats;
+      invocation.tape.push("queue");
+      invocation.batches++;
+      invocation.constructor = target.constructor.name;
       const rows = Array.from(messages);
       for (const row of rows) {
-        stats.valid &&= row.contentType === "json" && (row.delaySeconds === undefined || row.delaySeconds === null);
+        invocation.valid &&= row.contentType === "json" && (row.delaySeconds === undefined || row.delaySeconds === null);
         inspect(row.body);
       }
-      stats.charge = 2 + stats.lengths.reduce((sum, length) => sum + length, 0)
+      invocation.charge = 2 + invocation.lengths.reduce((sum, length) => sum + length, 0)
         + Math.max(rows.length - 1, 0) + 4096 + 512 * rows.length;
-      stats.envelopeBytes = new TextEncoder().encode(JSON.stringify(rows)).byteLength;
+      invocation.envelopeBytes = new TextEncoder().encode(JSON.stringify(rows)).byteLength;
       if (policy.queueMode === "throw") throw new Error("SYNTHETIC_PRIVATE_QUEUE_FAILURE");
       if (policy.queueMode === "reject") return Promise.reject(new Error("SYNTHETIC_PRIVATE_QUEUE_FAILURE"));
       const forward = () => {
-        stats.forwarded++;
-        return target.sendBatch(rows, options).then(value => { stats.settled++; return value; });
+        invocation.forwarded++;
+        return target.sendBatch(rows, options).then(value => { invocation.settled++; return value; });
       };
+      if (policy.queueMode === "never") {
+        invocation.held++;
+        return new Promise(() => {});
+      }
+      if (policy.queueMode === "committed-held") {
+        invocation.held++;
+        const committed = forward();
+        // Handle the native result immediately without releasing its synthetic
+        // acknowledgement. This models a write committed before timeout.
+        const outcome = committed.then(value => ({ value }), () => ({ rejected: true }));
+        return new Promise((resolve, reject) => {
+          heldAcknowledgements.push(async () => {
+            const result = await outcome;
+            if (result.rejected) reject(new Error("SYNTHETIC_PRIVATE_QUEUE_FAILURE"));
+            else resolve(result.value);
+          });
+        });
+      }
       if (policy.queueDelayMs) return new Promise(resolve => setTimeout(resolve, policy.queueDelayMs)).then(forward);
       return forward();
     };
@@ -148,6 +168,7 @@ export default class MaintenanceDiagnosticsObserver extends BuiltWorker {
       if (key !== "TRACE_EVENTS") return target[key];
       stats.tape.push("lookup");
       stats.lookups++;
+      if (policy.lookupJumpMs) offset += policy.lookupJumpMs;
       return policy.queueMode === "wrong" ? {} : nativeQueue;
     } }));
   }
@@ -155,13 +176,23 @@ export default class MaintenanceDiagnosticsObserver extends BuiltWorker {
     reset();
     const original = Date.now;
     Date.now = () => original() + offset;
-    try { return await super.scheduled(event); }
+    const invocation = stats;
+    try {
+      const result = await super.scheduled(event);
+      invocation.returned = true;
+      return result;
+    }
     finally { Date.now = original; }
   }
   async fetch(request) {
     if (request.url === "https://synthetic.invalid/diagnostics-policy") {
       policy = await request.json();
       return Response.json({ configured: true });
+    }
+    if (request.url === "https://synthetic.invalid/diagnostics-release") {
+      const release = heldAcknowledgements.shift();
+      if (release) await release();
+      return Response.json({ released: Boolean(release) });
     }
     if (request.url === "https://synthetic.invalid/diagnostics-stats") return Response.json(stats);
     throw new Error("no production HTTP surface in diagnostics fixture");

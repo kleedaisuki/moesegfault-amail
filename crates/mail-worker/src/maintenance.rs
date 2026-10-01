@@ -183,6 +183,22 @@ impl MaintenanceTurn {
         }
     }
 
+    /// Capture one ten-second diagnostic tail after all business phases return.
+    ///
+    /// This is a local waiting allowance, not new business admission or a Queue
+    /// cancellation promise. Admitted durable work may already exceed CUTOFF_MS.
+    pub(crate) fn diagnostic_deadline(&self) -> ExternalDeadline<'_> {
+        self.diagnostic_deadline_at(js_sys::Date::now())
+    }
+
+    /// Keep the same invocation clock and immutable cutoff through serialization.
+    fn diagnostic_deadline_at(&self, now_ms: f64) -> ExternalDeadline<'_> {
+        ExternalDeadline {
+            turn: self,
+            cutoff_ms: self.observe(now_ms) + 10_000.0,
+        }
+    }
+
     /// Reserve first-unit entitlement before setup SQL or address inventory.
     ///
     /// Entry admits the compound setup-plus-first-unit operation, not unlimited
@@ -293,7 +309,7 @@ impl<'a> PhaseTurn<'a> {
 /// Copies retain the same origin and cutoff; they never restart an allowance.
 #[derive(Clone, Copy)]
 pub(crate) struct ExternalDeadline<'a> {
-    /// The invocation outlives every serial routing exchange.
+    /// The invocation outlives every serial external/local waiting operation.
     turn: &'a MaintenanceTurn,
     /// Absolute elapsed milliseconds since handler entry.
     cutoff_ms: f64,
@@ -452,6 +468,21 @@ mod tests {
             entered_ms,
             elapsed_ms: Cell::new(0.0),
         }
+    }
+
+    /// Business overrun does not reopen admission or restart the final tail.
+    #[test]
+    fn diagnostic_tail_is_absolute_and_distinct_from_business_admission() {
+        let turn = new_turn(0.0);
+        let deadline = turn.diagnostic_deadline_at(200_000.0);
+        assert!(turn.enter_at(MaintenancePhase::Abuse, 200_000.0).is_err());
+        assert_eq!(deadline.remaining_at(200_000.0).unwrap().as_secs(), 10);
+        assert_eq!(deadline.remaining_at(203_000.0).unwrap().as_secs(), 7);
+        assert_eq!(deadline.remaining_at(201_000.0).unwrap().as_secs(), 7);
+        assert!(deadline.remaining_at(210_000.0).is_err());
+        assert!(deadline.remaining_at(200_000.0).is_err());
+        assert!(deadline.remaining_at(f64::NAN).is_err());
+        assert!(turn.diagnostic_deadline_at(0.0).remaining_at(0.0).is_err());
     }
 
     #[test]

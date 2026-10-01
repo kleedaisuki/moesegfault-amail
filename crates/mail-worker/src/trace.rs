@@ -672,18 +672,34 @@ fn queue_batches(mut events: Vec<QueuedEvent>) -> Vec<Vec<QueuedEvent>> {
 
 /// Consume Cron's fixed records at exit, without splitting, retry or console fallback.
 ///
-/// Queue has no cancellation contract. This one final await can exceed the soft
-/// scheduling target, but cannot delay admission of another business phase.
-pub(crate) async fn flush_maintenance(env: &worker::Env, codes: Vec<DiagnosticCode>) {
+/// Wait only until the immutable final-tail deadline. Dropping our waiter does
+/// not cancel the native write: timeout is delivery-unknown, never safe to retry.
+/// No waitUntil task, background continuation or timer rearming is introduced.
+pub(crate) async fn flush_maintenance(
+    env: &worker::Env,
+    codes: Vec<DiagnosticCode>,
+    deadline: crate::maintenance::ExternalDeadline<'_>,
+) {
     let events = codes.into_iter().map(diagnostic_record).collect::<Vec<_>>();
     if events.is_empty() || maintenance_charge(&events).is_none() {
+        return;
+    }
+    if deadline.remaining().is_err() {
         return;
     }
     let Ok(queue) = env.queue("TRACE_EVENTS") else {
         return;
     };
     let batch = worker::BatchMessageBuilder::new().messages(events).build();
-    let _ = queue.send_batch(batch).await;
+    let Ok(duration) = deadline.remaining() else {
+        return;
+    };
+    let pending = Box::pin(queue.send_batch(batch));
+    let timer = Box::pin(worker::Delay::from(duration));
+    match futures_util::future::select(pending, timer).await {
+        futures_util::future::Either::Left((_, timer)) => drop(timer),
+        futures_util::future::Either::Right((_, pending)) => drop(pending),
+    };
 }
 
 /// Validate the entire buffer and actual UTF-8 body bytes before binding access.

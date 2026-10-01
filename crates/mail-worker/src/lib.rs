@@ -176,7 +176,8 @@ pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         let result = maintain_phase(&env, &budget, &turn, phase, &mut diagnostics).await;
         diagnostics.finish(phase, &result);
     }
-    trace::flush_maintenance(&env, diagnostics.into_codes()).await;
+    let deadline = turn.diagnostic_deadline();
+    trace::flush_maintenance(&env, diagnostics.into_codes(), deadline).await;
 }
 
 /// The only scheduled dispatch obtains a phase handle; nested helpers cannot

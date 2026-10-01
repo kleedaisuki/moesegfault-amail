@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { performance } from "node:perf_hooks";
 import { Log, LogLevel, Miniflare } from "miniflare";
 import { applyMigrations } from "./migration-fixture.mjs";
 import { accepted, indexedText, sender, issuer } from "./outbound-recovery-fixture.mjs";
@@ -23,6 +24,16 @@ const secret = "SYNTHETIC_PRIVATE_DIAGNOSTIC_CONTENT";
 class PrivateLog extends Log {
   constructor(records) { super(LogLevel.DEBUG); this.records = records; }
   logWithLevel(_level, message) { this.records.push(String(message)); }
+}
+
+/** Host watchdog makes the pre-fix infinite-wait discriminator fail cleanly. */
+async function beforeHostLimit(pending) {
+  let timer;
+  try {
+    return await Promise.race([pending, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("synthetic scheduled local-wait bound exceeded")), 20_000);
+    })]);
+  } finally { clearTimeout(timer); }
 }
 
 /** Independent local storage with strict synthetic GET/provider-error exchanges. */
@@ -71,12 +82,14 @@ async function fixture(run, { queueBinding = true, deep = false } = {}) {
       }
       return resultStats;
     };
-    await run({ db, bucket, tick, stats, rules, embeddingCalls: () => embeddingCalls });
+    const release = async () => (await mf.dispatchFetch("https://synthetic.invalid/diagnostics-release")).json();
+    await run({ db, bucket, tick, stats, release, rules, embeddingCalls: () => embeddingCalls });
   } finally { await mf.dispose(); }
 }
 
 /** Positive control is mandatory: zero sends alone could be a failed Queue cast. */
 function oneBatch(stats, { forwarded = 1 } = {}) {
+  assert.equal(stats.returned, true, "scheduled returns before this final readback");
   assert.equal(stats.constructor, "WorkerQueue", "real native constructor survives the proxy");
   assert.equal(stats.lookups, 1);
   assert.equal(stats.send, 0);
@@ -179,4 +192,52 @@ test("back-to-back rotated invocations do not retain diagnostics or condition pr
   assert.equal(healthy.batches, 0);
   assert.deepEqual(healthy.codes, []);
   assert.deepEqual(healthy.phases, [...phases.slice(1), phases[0]]);
+}));
+
+/** No native abort is claimed: only the final returned promise is never settled. */
+test("never-settling native Queue acknowledgement cannot keep scheduled pending", { timeout: 25_000 }, async () => fixture(async ({ db, bucket, tick }) => {
+  await accepted(db, bucket, "diagnostics-never", "synthetic durable body");
+  await db.prepare("INSERT INTO provider_events(event_id,provider_id,local_message_id,owner_iss,owner_sub,recipient,kind,occurred_at,received_at) VALUES('diagnostics-never-old','synthetic-provider','synthetic-message','https://synthetic.invalid','synthetic-owner','synthetic@example.invalid','delivered',0,0)").run();
+  const started = performance.now();
+  const stats = await beforeHostLimit(tick({ failPhases: ["storage"], queueMode: "never" }));
+  const elapsed = performance.now() - started;
+  oneBatch(stats, { forwarded: 0 });
+  assert.ok(elapsed >= 9_500 && elapsed < 20_000, "actual ten-second local wait, with hosted scheduling tolerance");
+  assert.equal(stats.held, 1);
+  assert.deepEqual(stats.phases, phases);
+  assert.equal(await indexedText(db, "diagnostics-never"), "synthetic durable body");
+  assert.equal((await db.prepare("SELECT state FROM send_requests WHERE message_id='diagnostics-never'").first()).state, "sent");
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM provider_events WHERE event_id='diagnostics-never-old'").first()).n, 0);
+}));
+
+/** A write may commit despite timeout; its late result must not replay a batch. */
+test("committed write with held acknowledgement times out without retry or next-turn contamination", { timeout: 25_000 }, async () => fixture(async ({ tick, stats, release }) => {
+  const started = performance.now();
+  const first = await beforeHostLimit(tick({ failPhases: ["storage"], queueMode: "committed-held" }));
+  oneBatch(first);
+  assert.ok(performance.now() - started >= 9_500, "real withheld acknowledgement reaches local deadline");
+  assert.equal(first.held, 1);
+  assert.deepEqual(first.codes, ["storage_ledger_reconciliation_failed"]);
+  const healthy = await tick({}, slot + 300_000);
+  assert.equal(healthy.returned, true);
+  assert.equal(healthy.batches, 0);
+  assert.deepEqual(healthy.codes, []);
+  assert.equal((await release()).released, true);
+  const afterLateAck = await stats();
+  assert.equal(afterLateAck.batches, 0);
+  assert.deepEqual(afterLateAck.codes, []);
+  const following = await tick({ failPhases: ["abuse"] }, slot + 600_000);
+  oneBatch(following);
+  assert.deepEqual(following.codes, ["abuse_data_cleanup_failed"]);
+}));
+
+/** A binding lookup consuming the tail cannot grant a new ten-second allowance. */
+test("expired immutable diagnostic tail never submits or rearms after Queue lookup", async () => fixture(async ({ tick }) => {
+  const stats = await tick({ failPhases: ["storage"], lookupJumpMs: 11_000 });
+  assert.equal(stats.returned, true);
+  assert.equal(stats.lookups, 1);
+  assert.equal(stats.batches, 0);
+  assert.equal(stats.forwarded, 0);
+  assert.equal(stats.send, 0);
+  assert.deepEqual(stats.codes, []);
 }));
