@@ -15,8 +15,12 @@ deployment, mail, secret or account authorization.
 * **CI/build:** `.github/workflows/ci.yml`, `infra/ci/worker_artifact.py` and
   `infra/ci/native_suite.py`. The compiler is pinned in `rust-toolchain.toml`.
   Build once, verify same-run artifacts, then inspect all native matrix results
-  plus the stable `Rust Worker (Wasm)` gate. Native artifacts alone do not qualify
-  a release. An exact cache hit, partial/miss and unreported state are different;
+  plus the stable `Rust Worker (Wasm)` gate.
+  The isolated native-tracing experiment may reuse a fully checked original-main
+  build only after mandatory hosted current infrastructure checks and its narrow unchanged-
+  compiler-input proof; its receipt keeps both identities. See
+  `docs/native-cloudflare-tracing-canary.md`. This is not release admission.
+  Native artifacts alone do not qualify a release. An exact cache hit, partial/miss and unreported state are different;
   use `ci_cache_lookup` and suite receipts rather than green-step inference.
   For a test-only native fixture repair, use `docs/native-fixture-replay.md`
   for the hosted diagnostic lane: unchanged compilation inputs and
