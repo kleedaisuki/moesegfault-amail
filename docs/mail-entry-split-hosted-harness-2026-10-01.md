@@ -126,3 +126,23 @@ registered the already-returned Rust completion. The amended case uses independe
 Node-owned service barriers, a registered positive and identical omitted-registration
 negative control. Actual workerd execution must distinguish them; source inspection
 alone is not acceptance. Hosted results remain pending before provider operations.
+
+### First hosted discriminator result and corrections
+
+Run 36824254322 passed three of six split cases. The actual native missing-fetch
+error is `Handler does not export a fetch() function.`; the narrow error matcher
+now accepts that exact missing-handler shape (and its scheduled counterpart).
+The unregistered negative's service request may correctly be canceled before it
+arrives, so the independent positive barrier must arrive while the negative must
+finish, not vice versa. Both still prove registration changes event lifetime;
+negative non-completion or positive early completion remains a failure.
+Miniflare's custom Log did not capture the generated SDK's console.log reset marker
+although CI showed the actual reset. Observe only that exact pinned marker inside
+the synthetic isolate and expose its numeric count through a fixture-only route.
+This leaves generated SDK bytes/recovery unchanged and stores no arbitrary logs.
+The failed run is not source/runtime acceptance. Corrected hosted checks must pass.
+
+Primary pinned SDK source verified during root investigation:
+https://github.com/cloudflare/workers-rs/blob/v0.8.5/worker-build/src/js/shim.js .
+The native background/negative lifetime semantics, not a permissive timeout, decide
+whether the remaining case passes.

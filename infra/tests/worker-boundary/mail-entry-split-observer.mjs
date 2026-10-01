@@ -7,7 +7,17 @@ import * as ApiModule from "../../../crates/mail-worker/entry/api.mjs";
 import * as MaintenanceModule from "../../../crates/mail-worker/entry/maintenance.mjs";
 import BuiltMail from "../../../crates/mail-worker/build/worker/shim.mjs";
 
-let trap, armed = false, traps = 0;
+let trap, armed = false, traps = 0, resets = 0;
+// Miniflare's logger does not receive SDK console.log. Observe only the exact
+// pinned SDK reset marker in this synthetic isolate, never arbitrary log data.
+const originalLog = console.log.bind(console);
+console.log = (...args) => {
+  if (args.length === 1 && args[0] === "Reinitializing Wasm application") {
+    resets++;
+    return;
+  }
+  originalLog(...args);
+};
 let lifecycle = null, backgroundArmed = false;
 /** Supply a native Wasm unreachable trap from the generated local fixture module. */
 export function setTrap(value) { trap = value; }
@@ -34,6 +44,7 @@ export default class MailEntrySplitObserver extends WorkerEntrypoint {
       return new Response(null, { status: 204 });
     }
     if (request.url === "https://synthetic.invalid/lifecycle") return Response.json(lifecycle);
+    if (request.url === "https://synthetic.invalid/reset-count") return Response.json({ resets });
     if (request.url === "https://synthetic.invalid/surfaces") {
       return Response.json({ api: surface(ApiModule), maintenance: surface(MaintenanceModule), traps });
     }

@@ -122,7 +122,7 @@ async function noFetch(binding) {
     const response = await binding.fetch("https://synthetic.invalid/never-public");
     assert.equal(response.status, 500, "maintenance must not return a business HTTP response");
   } catch (error) {
-    assert.match(String(error), /does not implement.*fetch|no.*fetch.*handler|Handler does not exist/i);
+    assert.match(String(error), /does not implement.*fetch|no.*fetch.*handler|Handler does not exist|Handler does not export a fetch\(\) function/i);
   }
 }
 
@@ -141,7 +141,7 @@ test("actual split entries expose only their own application event surface", asy
     const disabled = await (await mf.getWorker("api")).scheduled({ cron, scheduledTime: new Date(slot) });
     assert.notEqual(disabled.outcome, "ok", "API must not accept scheduled events");
   } catch (error) {
-    assert.match(String(error), /does not implement.*scheduled|no.*scheduled.*handler|Handler does not exist/i);
+    assert.match(String(error), /does not implement.*scheduled|no.*scheduled.*handler|Handler does not exist|Handler does not export a scheduled\(\) function/i);
   }
 }));
 
@@ -180,7 +180,9 @@ test("native SDK context waitUntil owns detached background lifetime with negati
   positive.catch(() => {});
   negative.catch(() => {});
   try {
-    await bounded(Promise.all(Object.values(gates).map(gate => gate.arrived.promise)), "background arrival");
+    // Missing registration may cancel the negative before its service request
+    // arrives. The positive must arrive and remain independently held either way.
+    await bounded(gates.registered.arrived.promise, "registered background arrival");
     const omitted = await bounded(negative, "unregistered completion");
     assert.equal(omitted.outcome, "ok", "unregistered promise cannot extend event lifetime");
     const negativeStats = await (await unregistered.fetch("https://synthetic.invalid/lifecycle")).json();
@@ -203,7 +205,7 @@ test("native SDK context waitUntil owns detached background lifetime with negati
 }));
 
 /** Actual SDK Proxy records a native critical trap and resets on the next event. */
-test("real generated SDK reset boundary survives a critical Wasm trap", async () => fixture(async ({ mf, db, records }) => {
+test("real generated SDK reset boundary survives a critical Wasm trap", async () => fixture(async ({ mf, db }) => {
   const observer = await mf.getWorker("observer");
   assert.equal((await observer.scheduled({ cron, scheduledTime: new Date(slot) })).outcome, "ok");
   await observer.fetch("https://synthetic.invalid/arm-trap");
@@ -214,7 +216,7 @@ test("real generated SDK reset boundary survives a critical Wasm trap", async ()
   const recovered = await observer.scheduled({ cron, scheduledTime: new Date(slot + 300_000) });
   assert.equal(recovered.outcome, "ok", "restored handler executes actual Rust after SDK reset");
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM provider_events").first()).n, 0);
-  assert.equal(records.filter(record => record.includes("Reinitializing Wasm application")).length, 1,
+  assert.equal((await (await observer.fetch("https://synthetic.invalid/reset-count")).json()).resets, 1,
     "assert the actual generated reset path, not just a successful later call");
 }));
 
