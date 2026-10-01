@@ -1,7 +1,8 @@
 # amail Goal progress snapshot
 
 Date: 2026-10-01. Source baseline: main
-`6f63e1f559bc2d0a5c9d27c40294349fcf77dde1`.
+`bfb02765c622bced2ad2b8a10f6717cce79c6199`, accepted by
+[full exact-main CI36888295197](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36888295197).
 This is a product-wide checklist, not release permission. The
 [infrastructure foundation](infrastructure-foundation.md) is the current work
 priority. All required production and publication outcomes remain in scope.
