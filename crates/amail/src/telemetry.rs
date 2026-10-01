@@ -150,12 +150,22 @@ impl<'a> RequestSpan<'a> {
         phase: Phase,
         error_kind: Option<&'static str>,
     ) {
+        // Freeze at the observed attempt boundary, before SQLite opens or waits.
+        let elapsed = self.start.elapsed().as_millis().min(i64::MAX as u128) as i64;
         if std::env::var("AMAIL_TELEMETRY").ok().as_deref() == Some("off") {
             return;
         }
         let result = (|| -> Result<()> {
             let conn = db(self.cfg)?;
-            self.insert(&conn, status, bytes, correlation, phase, error_kind)?;
+            self.insert(
+                &conn,
+                status,
+                bytes,
+                correlation,
+                phase,
+                error_kind,
+                elapsed,
+            )?;
             maybe_spawn_flush(&conn)
         })();
         if let Err(error) = result {
@@ -172,8 +182,8 @@ impl<'a> RequestSpan<'a> {
         correlation: Option<&str>,
         phase: Phase,
         error_kind: Option<&str>,
+        elapsed: i64,
     ) -> Result<()> {
-        let elapsed = self.start.elapsed().as_millis().min(i64::MAX as u128) as i64;
         // Message/archive sizes remain bucketed because they describe user data.
         let bucket = if bytes == 0 {
             0
@@ -382,8 +392,17 @@ pub(crate) mod tests {
         let mut span = RequestSpan::new(&cfg, "messages.list");
         span.start -= Duration::from_secs(121);
         let parent = span.traceparent();
-        span.insert(&conn, 200, 0, None, Phase::ResponseBody, Some("decode"))
-            .unwrap();
+        let elapsed = span.start.elapsed().as_millis() as i64;
+        span.insert(
+            &conn,
+            200,
+            0,
+            None,
+            Phase::ResponseBody,
+            Some("decode"),
+            elapsed,
+        )
+        .unwrap();
         let row: (i64, i64, i64, String, String, String, String) = conn.query_row(
             "SELECT started_at_ms,elapsed_ms,duration_ms,phase,error_kind,trace_id,span_id FROM events",
             [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))
@@ -394,6 +413,28 @@ pub(crate) mod tests {
         assert_eq!(row.3, "response_body");
         assert_eq!(row.4, "decode");
         assert_eq!(parent, format!("00-{}-{}-01", row.5, row.6));
+    }
+
+    /// Persistence latency cannot inflate the elapsed time captured at completion.
+    #[test]
+    fn journal_uses_frozen_attempt_duration_not_persistence_time() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir_in(root).unwrap();
+        let cfg = config(temp.path());
+        let conn = db(&cfg).unwrap();
+        let mut span = RequestSpan::new(&cfg, "messages.list");
+        // Model time spent opening/waiting for diagnostics after a 7ms exchange.
+        // No scheduler sleep or timing tolerance is required for this invariant.
+        span.start -= Duration::from_secs(20);
+        span.insert(&conn, 200, 0, None, Phase::Complete, None, 7)
+            .unwrap();
+        let recorded: (i64, i64) = conn
+            .query_row("SELECT elapsed_ms,duration_ms FROM events", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(recorded, (7, 7));
     }
 
     /// Older upload rows omit span_id instead of inventing a parent.

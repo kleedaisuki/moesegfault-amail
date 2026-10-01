@@ -2955,6 +2955,26 @@ struct TelemetryEvent {
     trace_id: String,
     span_id: Option<String>,
     correlation_id: Option<String>,
+    /// Additive reader-only metadata; old CLI upload bodies omit all four fields.
+    started_at_ms: Option<u64>,
+    /// Monotonic attempt duration without the legacy upload clamp.
+    elapsed_ms: Option<u64>,
+    /// Observed credential, transport, body or complete-exchange boundary.
+    phase: Option<amail_trace_schema::ClientPhase>,
+    /// Closed library cause, not caller-supplied exception text.
+    error_kind: Option<amail_trace_schema::ClientErrorKind>,
+}
+
+impl TelemetryEvent {
+    /// Reuse the same boundary invariants as the isolated Queue reader.
+    fn attempt(&self) -> amail_trace_schema::ClientAttempt {
+        amail_trace_schema::ClientAttempt {
+            started_at_ms: self.started_at_ms,
+            elapsed_ms: self.elapsed_ms,
+            phase: self.phase,
+            error_kind: self.error_kind,
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2983,6 +3003,7 @@ async fn telemetry(req: &mut Request, request_id: &str, trace: &Trace) -> AppRes
                 })
                 || e.duration_ms > 3_600_000
                 || e.bytes_bucket > (1 << 31)
+                || !e.attempt().valid(e.status)
         })
     {
         return Err(AppError::bad("invalid_telemetry"));
@@ -3000,6 +3021,7 @@ async fn telemetry(req: &mut Request, request_id: &str, trace: &Trace) -> AppRes
                 event.status,
                 event.duration_ms,
                 event.bytes_bucket,
+                event.attempt(),
             );
         }
     }
@@ -3319,6 +3341,41 @@ mod tests {
         current["events"][0]["span_id"] = "0123456789abcdef".into();
         let new: TelemetryBatch = serde_json::from_value(current).unwrap();
         assert_eq!(new.events[0].span_id.as_deref(), Some("0123456789abcdef"));
+    }
+
+    /// Reader-only enrichment accepts exact boundary metadata, never arbitrary text.
+    #[test]
+    fn telemetry_reader_preserves_exact_clocks_and_rejects_partial_or_poisoned_metadata() {
+        let legacy = serde_json::json!({"operation":"messages.list","status":200,
+            "duration_ms":120_000,"bytes_bucket":0,
+            "trace_id":"0123456789abcdef0123456789abcdef","correlation_id":null});
+        let old: TelemetryEvent = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(old.attempt().valid(old.status));
+        assert!(!old.attempt().enriched());
+        let mut enriched = legacy.clone();
+        enriched["started_at_ms"] = serde_json::json!(1_790_000_000_123u64);
+        enriched["elapsed_ms"] = serde_json::json!(121_007);
+        enriched["phase"] = serde_json::json!("response_body");
+        enriched["error_kind"] = serde_json::json!("decode");
+        let new: TelemetryEvent = serde_json::from_value(enriched.clone()).unwrap();
+        assert!(new.attempt().valid(new.status));
+        assert_eq!(new.attempt().started_at_ms, Some(1_790_000_000_123));
+        assert_eq!(new.attempt().elapsed_ms, Some(121_007));
+        assert!(new.attempt().failed());
+        for field in [
+            "started_at_ms",
+            "elapsed_ms",
+            "phase",
+            "error_kind",
+            "private_field",
+        ] {
+            let mut poisoned = enriched.clone();
+            poisoned[field] = serde_json::json!("SYNTHETIC_PRIVATE_MARKER");
+            assert!(serde_json::from_value::<TelemetryEvent>(poisoned).is_err());
+        }
+        enriched.as_object_mut().unwrap().remove("elapsed_ms");
+        let partial: TelemetryEvent = serde_json::from_value(enriched).unwrap();
+        assert!(!partial.attempt().valid(partial.status));
     }
 
     /// Even an authenticated malicious URL can only become a fixed operation label.

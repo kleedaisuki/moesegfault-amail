@@ -1,6 +1,7 @@
 //! Allowlisted application trace events; no request-derived text enters retained logs.
 
 use amail_trace_schema::Event as QueuedEvent;
+use amail_trace_schema::{ClientAttempt, ClientErrorKind, ClientPhase};
 pub(crate) use amail_trace_schema::{DiagnosticCode, Operation, Phase};
 use amail_trace_schema::{ErrorCode, Outcome, Service};
 use serde::Serialize;
@@ -102,6 +103,18 @@ struct ClientEvent<'a> {
     http_status_class: u16,
     duration_ms_bucket: u64,
     response_bytes_bucket: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    occurred_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_phase: Option<ClientPhase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_error_kind: Option<ClientErrorKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_code: Option<ErrorCode>,
 }
 
 impl Trace {
@@ -324,7 +337,7 @@ pub(crate) fn valid_hex_id(id: &str, length: usize) -> bool {
         && id.bytes().any(|byte| byte != b'0')
 }
 
-/// Emit a legacy-compatible CLI upload event without retaining caller text.
+/// Preserve legacy CLI events while enriching only validated reader metadata.
 pub(crate) fn client_event(
     trace: &Trace,
     operation: Operation,
@@ -334,7 +347,11 @@ pub(crate) fn client_event(
     status: u16,
     duration_ms: u64,
     response_bytes_bucket: u64,
+    attempt: ClientAttempt,
 ) {
+    if !attempt.valid(status) {
+        return;
+    }
     let event = ClientEvent {
         schema_version: 1,
         event_id: uuid::Uuid::new_v4().to_string(),
@@ -344,14 +361,24 @@ pub(crate) fn client_event(
         trace_id,
         span_id,
         request_id: request_id.filter(|value| amail_trace_schema::canonical_uuid(value)),
-        outcome: match status {
-            100..=399 => Outcome::Success,
-            400..=499 => Outcome::ClientError,
-            _ => Outcome::ServerError,
+        outcome: if attempt.failed() {
+            Outcome::PhaseFailure
+        } else {
+            match status {
+                100..=399 => Outcome::Success,
+                400..=499 => Outcome::ClientError,
+                _ => Outcome::ServerError,
+            }
         },
         http_status_class: status / 100,
         duration_ms_bucket: bucket(duration_ms.min(3_600_000)),
         response_bytes_bucket: bucket(response_bytes_bucket),
+        occurred_at_ms: attempt.started_at_ms,
+        duration_ms: attempt.elapsed_ms,
+        http_status: attempt.enriched().then_some(status),
+        client_phase: attempt.phase,
+        client_error_kind: attempt.error_kind,
+        error_code: attempt.failed().then_some(ErrorCode::DependencyFailure),
     };
     trace.record(&event, false);
 }
@@ -372,6 +399,61 @@ fn bucket(value: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 2xx body failure stays a failure; complete HTTP errors stay complete exchanges.
+    #[test]
+    fn enriched_client_reader_maps_exact_measurements_and_boundary_outcomes() {
+        for (phase, error_kind, status, outcome) in [
+            (
+                ClientPhase::Auth,
+                Some(ClientErrorKind::CredentialUnavailable),
+                0,
+                Outcome::PhaseFailure,
+            ),
+            (
+                ClientPhase::Transport,
+                Some(ClientErrorKind::Connect),
+                0,
+                Outcome::PhaseFailure,
+            ),
+            (
+                ClientPhase::ResponseBody,
+                Some(ClientErrorKind::Decode),
+                200,
+                Outcome::PhaseFailure,
+            ),
+            (ClientPhase::Complete, None, 503, Outcome::ServerError),
+            (ClientPhase::Complete, None, 201, Outcome::Success),
+        ] {
+            let trace = Trace::new();
+            client_event(
+                &trace,
+                Operation::MessagesList,
+                "0123456789abcdef0123456789abcdef",
+                Some("0123456789abcdef"),
+                Some("00000000-0000-4000-8000-000000000001"),
+                status,
+                120_000,
+                0,
+                ClientAttempt {
+                    started_at_ms: Some(1_790_000_000_123),
+                    elapsed_ms: Some(121_007),
+                    phase: Some(phase),
+                    error_kind,
+                },
+            );
+            let events = trace.take_events();
+            assert_eq!(events.len(), 1);
+            let event = &events[0];
+            assert!(event.valid());
+            assert_eq!(event.occurred_at_ms, Some(1_790_000_000_123));
+            assert_eq!(event.duration_ms, Some(121_007));
+            assert_eq!(event.http_status, Some(status));
+            assert_eq!(event.client_phase, Some(phase));
+            assert_eq!(event.client_error_kind, error_kind);
+            assert_eq!(event.outcome, outcome);
+        }
+    }
 
     /// Validate real serialized bodies, including the exact thirteen-record case.
     #[test]
@@ -568,6 +650,7 @@ mod tests {
                 0,
                 0,
                 0,
+                ClientAttempt::default(),
             );
         }
         trace.exit("00000000-0000-4000-8000-000000000001", 202, 0);
@@ -605,6 +688,7 @@ mod tests {
                 200,
                 1,
                 1,
+                ClientAttempt::default(),
             );
         }
         trace.exit("00000000-0000-4000-8000-000000000001", 200, 1);
@@ -764,5 +848,7 @@ fn diagnostic_record(code: DiagnosticCode) -> QueuedEvent {
         occurred_at_ms: None,
         duration_ms: None,
         http_status: None,
+        client_phase: None,
+        client_error_kind: None,
     }
 }
