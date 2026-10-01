@@ -329,6 +329,8 @@ class Checkpoint:
     """Observed dead-letter Queue ID, distinct from the events Queue."""
     replace_sink: bool
     """Only the legacy sink prefix requires replacement."""
+    worker_epochs: dict[str, Epoch] | None = None
+    """Per-role binary sources when the latest attempt only changed settings."""
 
 
 def _sink_checkpoint(raw: bytes, sha: str, run_id: str) -> Checkpoint:
@@ -354,6 +356,7 @@ def _sink_checkpoint(raw: bytes, sha: str, run_id: str) -> Checkpoint:
         ("ownership", "migrate", "queues", "sink", "sink_readback"): (0, 5, {"sink": 7}, True, "FreshError"),
         ("ownership", "retained_sink", "sink_replacement", "sink_readback"): (11, 3, {"sink": 5}, False, "FreshError"),
         ("ownership", "retained_sink", "maintenance", "api", "receipt"): (11, 3, {"sink": 3, "maintenance": 5, "api": 7}, False, "ValueError"),
+        ("ownership", "retained_workers", "maintenance_capture_off"): (11, 3, {}, False, "ValueError"),
     }
     phases = tuple(row.get("phase") for row in rows[::2])
     if any(not isinstance(phase, str) for phase in phases) or phases not in prefixes:
@@ -378,6 +381,27 @@ def _sink_checkpoint(raw: bytes, sha: str, run_id: str) -> Checkpoint:
     Scope(creation_epoch, scope["database"], scope["database_created_at"], scope["bucket_created_at"])
     queue, dlq = rows[queue_index].get("queue"), rows[queue_index].get("dlq")
     pins = {role: rows[index].get("version") for role, index in role_indices.items()}
+    worker_epochs = None
+    if "retained_workers" in phases:
+        workers = rows[queue_index].get("workers")
+        roles = {"sink": "amail-trace-sink", "maintenance": "amail-mail-maintenance", "api": "amail-mail"}
+        if not isinstance(workers, dict) or set(workers) != set(roles.values()):
+            raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+        worker_epochs = {}
+        for role, script in roles.items():
+            worker = workers[script]
+            if (not isinstance(worker, dict) or set(worker) != {"source_epoch", "version"}
+                    or not isinstance(worker["source_epoch"], dict) or set(worker["source_epoch"]) != fields):
+                raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+            source_epoch = Epoch(**worker["source_epoch"])
+            if source_epoch.run_id in {run_id, creation_run}:
+                raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+            worker_epochs[role], pins[role] = source_epoch, worker["version"]
+        expected[queue_index].update(workers=workers)
+        worker_id = rows[-2].get("worker_id")
+        if not isinstance(worker_id, str) or re.fullmatch(r"[0-9a-f]{32}", worker_id) is None:
+            raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+        expected[-2].update(worker_id=worker_id, version=pins["maintenance"])
     if (any(not isinstance(item, str) or re.fullmatch(r"[0-9a-f]{32}", item) is None
             for item in (queue, dlq)) or queue == dlq
             or any(not isinstance(version, str) or UUID.fullmatch(version) is None for version in pins.values())
@@ -388,8 +412,8 @@ def _sink_checkpoint(raw: bytes, sha: str, run_id: str) -> Checkpoint:
     for role, index in role_indices.items():
         expected[index].update(version=pins[role])
     expected[-1].update(state="failed", error_type=error_type)
-    sink_epoch = epoch
-    if not replace_needed:
+    sink_epoch = worker_epochs["sink"] if worker_epochs is not None else epoch
+    if not replace_needed and worker_epochs is None:
         retained = rows[queue_index]
         source_value, previous = retained.get("source_epoch"), retained.get("version")
         if (not isinstance(source_value, dict) or set(source_value) != fields
@@ -407,7 +431,7 @@ def _sink_checkpoint(raw: bytes, sha: str, run_id: str) -> Checkpoint:
             sink_epoch = source_epoch
     if rows != expected:
         raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
-    return Checkpoint(creation_run, epoch, sink_epoch, pins, queue, dlq, replace_needed)
+    return Checkpoint(creation_run, epoch, sink_epoch, pins, queue, dlq, replace_needed, worker_epochs)
 
 
 def load_sink_checkpoint(run_id: str, folder: Path) -> Checkpoint | None:

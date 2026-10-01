@@ -114,7 +114,7 @@ class EffectiveApiTests(unittest.TestCase):
         self.assertFalse(gate.effective_api_settings({}, gate.SCRIPT["staging"], {}, {}))
 
     def test_independent_capture_fields_are_required(self):
-        """Issues and every capture switch need literal false, never absent/null/coerced."""
+        """Present capture switches need literal false, never null or coerced."""
         for section in (None, "logs", "traces", "issues"):
             for bad in (None, True, 0, "false", []):
                 worker = self.worker()
@@ -126,7 +126,38 @@ class EffectiveApiTests(unittest.TestCase):
                 self.assertFalse(gate.effective_api_settings(worker, gate.SCRIPT["staging"]))
         worker = self.worker()
         del worker["observability"]["issues"]
-        self.assertFalse(gate.effective_api_settings(worker, gate.SCRIPT["staging"]))
+        self.assertTrue(gate.effective_api_settings(worker, gate.SCRIPT["staging"]))
+
+    def test_actual_maintenance_wire_defaults_only_absent_issues_to_off(self):
+        """Run 36932270866 inactive preferences do not enable disabled capture."""
+        script = "amail-mail-maintenance"
+        worker = {"id": "synthetic-maintenance-id", "name": script,
+                  "logpush": False, "tail_consumers": [], "observability": {
+                      "enabled": False, "head_sampling_rate": 1,
+                      "redact_query_string": False,
+                      "logs": {"enabled": False, "head_sampling_rate": 1,
+                               "invocation_logs": True, "persist": True, "destinations": []},
+                      "traces": {"enabled": False, "head_sampling_rate": 1,
+                                 "persist": True, "destinations": []}}}
+        original = copy.deepcopy(worker)
+        self.assertTrue(gate.capture_disabled(worker["observability"]))
+        self.assertTrue(gate.effective_api_settings(worker, script, {}, {"observability": None}))
+        explicit = copy.deepcopy(worker)
+        explicit["observability"]["issues"] = {"enabled": False}
+        self.assertTrue(gate.effective_api_settings(explicit, script))
+        self.assertEqual(worker, original, "read normalization must not mutate wire observations")
+        self.assertFalse(gate.safe_observability(worker["observability"]),
+                         "source intent still requires explicit reviewed settings")
+        for bad in (None, {}, {"enabled": True}, {"enabled": "false"}):
+            with self.subTest(issues=bad):
+                changed = copy.deepcopy(worker)
+                changed["observability"]["issues"] = bad
+                self.assertFalse(gate.effective_api_settings(changed, script))
+        for field in ("enabled", "logs", "traces"):
+            with self.subTest(missing=field):
+                changed = copy.deepcopy(worker)
+                del changed["observability"][field]
+                self.assertFalse(gate.effective_api_settings(changed, script))
 
     def test_identity_exports_and_malformed_preferences_fail(self):
         """Current resource identity, exports and optional shapes are never inferred."""

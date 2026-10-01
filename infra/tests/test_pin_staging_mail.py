@@ -137,12 +137,12 @@ class PinTests(unittest.TestCase):
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "privacy_unverified")
 
     @patch.object(pin, "fetch")
-    def test_current_resource_issues_required(self, fetch) -> None:
-        """Legacy intent cannot mask missing independent Issues capture evidence."""
+    def test_current_resource_default_issues_off_matches(self, fetch) -> None:
+        """Current opt-in Issues defaults still require unchanged serving and capabilities."""
         version = {"id": VERSION, "resources": {"bindings": bindings(), "script": {"handlers": ["fetch"], "named_handlers": []}}}
         del self.worker.return_value["observability"]["issues"]
-        fetch.side_effect = [deployment(), version, {}, {"observability": None}]
-        self.assertEqual(pin.run("a" * 32, "private", VERSION), "privacy_unverified")
+        fetch.side_effect = [deployment(), version, {}, {"observability": None}, {"schedules": []}, deployment()]
+        self.assertEqual(pin.run("a" * 32, "private", VERSION), "match")
 
 
 if __name__ == "__main__":

@@ -164,6 +164,8 @@ def apply(account: str, token: str, expected: str, phases: dict) -> str:
 
     No poll, rollback, code upload, Mail traffic, or acceptance from PATCH alone
     is available. Ambiguous writes require investigation, never a rerun.
+    Effective capture flags are authoritative; the provider may normalize
+    inactive observability preferences without matching the PATCH body verbatim.
     """
     if expected != VERSION:
         raise ValueError("serving_pin")
@@ -193,10 +195,6 @@ def apply(account: str, token: str, expected: str, phases: dict) -> str:
     phases["readback"] = "checking"
     current = worker_readback(account, token)
     if not effective_api_settings(current, SCRIPT) or current.get("id") != prior["id"]:
-        raise ValueError("readback")
-    # Capture policy may be normalized by the provider but cannot drop preserved
-    # optional preferences or redaction settings from the submitted object.
-    if current.get("observability") != body["observability"]:
         raise ValueError("readback")
     phases["readback"] = "explicit_off"
     phases["unchanged_state"] = "checking"

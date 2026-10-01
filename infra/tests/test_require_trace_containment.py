@@ -104,9 +104,11 @@ class ContainmentTests(unittest.TestCase):
     def test_effective_capture_off_with_unsupported_legacy_passes(self):
         """Accept only positive current-resource proof bracketed by exact traffic pins."""
         replies = [{}, {}, {"observability": None, "tail_consumers": None}, {}]
+        worker = self.worker()
+        del worker["observability"]["issues"]
         with patch.object(MODULE, "immutable_evidence") as evidence, patch.object(
                 MODULE, "fetch", side_effect=replies) as fetch, patch.object(
-                MODULE, "worker_readback", return_value=self.worker()) as resource, patch.object(
+                MODULE, "worker_readback", return_value=worker) as resource, patch.object(
                 MODULE, "serving_deployment", side_effect=[("d", VERSION), ("d", VERSION)]):
             MODULE.verify(RUN, VERSION, "a", "t")
             evidence.assert_called_once_with(RUN, VERSION, kind="deploy-v1")
@@ -119,7 +121,11 @@ class ContainmentTests(unittest.TestCase):
         """Issues ambiguity, previews, other Workers and export channels fail closed."""
         variants = []
         for section in ("logs", "traces", "issues"):
-            worker = self.worker(); del worker["observability"][section]
+            worker = self.worker()
+            if section == "issues":
+                worker["observability"][section] = None
+            else:
+                del worker["observability"][section]
             variants.append(worker)
             worker = self.worker(); worker["observability"][section]["enabled"] = True
             variants.append(worker)
@@ -267,15 +273,12 @@ class ContainmentTests(unittest.TestCase):
             self.assertEqual(fetch.call_args_list[1].args[2], f"versions/{version}")
 
     def test_settings_historical_bindings_do_not_grant_privacy(self):
-        """The literal old bindings still require independent explicit Issues-off."""
+        """Literal old bindings cannot excuse active or malformed current capture."""
         from historical_containment_fixture import historical_version
         version = MODULE.SETTINGS_VERSION
-        for issues in ("missing", None, True):
+        for issues in (None, True):
             worker = self.worker()
-            if issues == "missing":
-                del worker["observability"]["issues"]
-            else:
-                worker["observability"]["issues"] = {"enabled": issues}
+            worker["observability"]["issues"] = {"enabled": issues}
             with self.subTest(issues=issues), patch.object(MODULE, "immutable_evidence"), patch.object(
                     MODULE, "fetch", side_effect=[{}, historical_version(), {}, {}]), patch.object(
                     MODULE, "worker_readback", return_value=worker), patch.object(

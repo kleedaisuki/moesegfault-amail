@@ -40,7 +40,10 @@ def capture_off(provider, script: str, version: str, *, expected_bindings: dict,
     The protected caller supplies the exact source-derived immutable binding and
     observability contracts, plus a private fsynced journal callback. Roles and
     platform handlers are fixed; there is no arbitrary script/settings writer.
-    All other capture/export switches must already be positively off. Historical
+    All other capture/export switches must already be positively off. Provider
+    capture semantics, not inactive preference serialization, determine readback.
+    An already effective-off resource is only read; no settings PATCH is sent.
+    Historical
     staging correction remains a separate unchanged admission/transaction.
 
     Usage: ``capture_off(provider, API, owned_version,
@@ -81,23 +84,28 @@ def capture_off(provider, script: str, version: str, *, expected_bindings: dict,
     checked_version()
     current_path = f"{base}/workers/workers/{script}"
     prior = provider.get(current_path)
-    try:
-        body = projection(prior, script=script, reviewed=reviewed)
-    except ValueError as error:
-        raise ValueError("fresh_capture_projection_unverified") from error
+    if not capture.safe_observability(reviewed):
+        raise ValueError("fresh_capture_projection_unverified")
+    mode = "unchanged" if capture.effective_api_settings(prior, script) else "applied"
+    if mode == "applied":
+        try:
+            body = projection(prior, script=script, reviewed=reviewed)
+        except ValueError as error:
+            raise ValueError("fresh_capture_projection_unverified") from error
     snapshot = unaffected(prior)
     if serving(provider, base, pins) != before:
         raise ValueError("fresh_capture_serving_changed")
-    mode = "unchanged" if capture.effective_api_settings(prior, script) else "applied"
     if mode == "applied":
         record("intent", version=version, worker_id=prior["id"])
         response = patch_worker(account, token, prior["id"], body)
         if response.get("id") != prior["id"] or response.get("name") != script:
             raise ValueError("fresh_capture_patch_unverified")
     current = provider.get(current_path)
-    wanted_policy = body["observability"] if mode == "applied" else prior["observability"]
+    # The API omits default-disabled Issues and normalizes inactive preferences.
+    # Its effective capture switches/exports are authoritative, not structural
+    # equality with the source declaration or the submitted observability object.
     if (not capture.effective_api_settings(current, script) or current.get("id") != prior["id"]
-            or current.get("observability") != wanted_policy or unaffected(current) != snapshot):
+            or unaffected(current) != snapshot):
         raise ValueError("fresh_capture_readback_unverified")
     checked_version()
     if serving(provider, base, pins) != before:

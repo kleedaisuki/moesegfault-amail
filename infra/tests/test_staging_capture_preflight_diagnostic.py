@@ -53,7 +53,7 @@ class DiagnosticTests(unittest.TestCase):
         writer.assert_not_called()
         return result, fetch, resource
 
-    def test_reported_bins_pass_normalized_preflight_only(self):
+    def test_reported_bins_pass_effective_default_off_preflight(self):
         """Missing Issues/null old representation cannot alone explain helper failure."""
         original = worker()
         (status, values), fetch, resource = self.fixture(current=original)
@@ -64,7 +64,7 @@ class DiagnosticTests(unittest.TestCase):
              subject.DEPLOYMENTS])
         resource.assert_called_once_with("a" * 32, "PRIVATE_TOKEN")
         self.assertNotIn("issues", original["observability"])
-        self.assertFalse(subject.effective_api_settings(original, subject.SCRIPT))
+        self.assertTrue(subject.effective_api_settings(original, subject.SCRIPT))
 
     def test_source_and_input_stop_before_provider_reads(self):
         """No unreviewed version/source can be used for discovery."""
