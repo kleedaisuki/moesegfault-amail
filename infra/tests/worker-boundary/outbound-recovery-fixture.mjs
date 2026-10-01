@@ -57,12 +57,12 @@ function draftZip(body) {
 }
 
 /** Fresh production schema plus strict local-only egress and real Rust scheduled(). */
-export async function fixture(run) {
+export async function fixture(run, { observeR2 = false } = {}) {
   let unexpected = 0;
   const mf = new Miniflare({ cf: false, workers: [{
     name: "amail-recovery-synthetic", modules: true,
-    scriptPath: path.join(worker, "build/worker/shim.mjs"),
-    modulesRoot: path.join(worker, "build"), modulesRules: workerModuleRules,
+    scriptPath: observeR2 ? path.join(root, "infra/tests/worker-boundary/r2-archive-observer.mjs") : path.join(worker, "build/worker/shim.mjs"),
+    modulesRoot: observeR2 ? root : path.join(worker, "build"), modulesRules: workerModuleRules,
     compatibilityDate: "2026-08-06",
     bindings: { CF_ZONE_ID: "synthetic-zone", CF_EMAIL_ROUTING_TOKEN: "synthetic-token",
       MAIL_DOMAIN: "mail-staging.moesegfault.dev", EMAIL_INGRESS_WORKER_NAME: "synthetic-ingress" },
@@ -83,7 +83,11 @@ export async function fixture(run) {
     // Keep this test about persistence, not third-party embedding processing.
     await db.prepare("UPDATE embedding_dependency SET blocked_until=?1 WHERE id=1").bind(Date.now() + 86_400_000).run();
     const tick = async () => { await (await mf.getWorker()).scheduled(); assert.equal(unexpected, 0); };
-    await run({ db, bucket, tick });
+    const r2Stats = async () => {
+      assert.ok(observeR2, "native R2 stats exist only in the isolated observer fixture");
+      return (await mf.dispatchFetch("https://synthetic.invalid/r2-stats")).json();
+    };
+    await run({ db, bucket, tick, r2Stats });
   } finally { await mf.dispose(); }
 }
 

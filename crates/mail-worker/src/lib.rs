@@ -3,6 +3,7 @@
 mod accepted;
 mod address_diag;
 mod archive;
+mod archive_read;
 mod auth;
 mod database;
 mod platform;
@@ -687,15 +688,9 @@ async fn repair_accepted(env: &Env, database: &Database, row: &AcceptedDue) -> R
     let Some(object) = env.bucket("MAIL_BODIES")?.get(&key).execute().await? else {
         return Ok(());
     };
-    // R2's native metadata bounds allocation before reading retained bytes.
-    // Preserve every service-valid ZIP; a larger stored object is not one.
-    if object.size() > archive::MAX_ZIP as u64 {
-        return Ok(());
-    }
-    let Some(body) = object.body() else {
+    let Some(bytes) = archive_read::read(&object).await? else {
         return Ok(());
     };
-    let bytes = body.bytes().await?;
     if format!("{:x}", Sha256::digest(&bytes)) != row.payload_hash {
         return Ok(());
     }

@@ -104,3 +104,36 @@ the durable due slot to model its expiry rather than assume immediate retry or
 sleep on wall time. Eventual recovery assumes recurring scheduled service and
 eventually successful admitted D1/R2 operations; a permanent database failure is
 not repaired by retry ordering. This slice has no new local/runtime test claim.
+
+## Third atomic slice: incremental native R2 archive cap
+
+`archive_read::read` preserves the 5-MiB compressed service ZIP limit and existing
+archive hash/parse validation. It uses the object returned by the original GET,
+not an extra HEAD/read/retry. Oversized object metadata cancels the returned native
+body stream without requesting a chunk. Admitted metadata is not trusted as the
+only allocation bound: a native reader inspects each Uint8Array length **before**
+copying it into Wasm, stops at the first single/cumulative over-limit chunk,
+awaits read-stream cancellation and releases the reader lock. EOF must also match
+the object size. Missing/oversized/inconsistent retained content remains accepted
+and retains its ZIP/reservation; read transport faults return one fixed safe code.
+
+The helper does not call `arrayBuffer()` or workers-rs `ByteStream` (which copies
+the chunk into Rust before its caller can inspect length). Application retained
+byte length is <=5MiB; Vec allocator capacity, native stream buffers and concurrent
+Wasm invocations still mean this is **not a 128-MB RSS guarantee**. Canceling an
+object's read stream does not claim cancellation of a binding write. Read/cancel
+latency has no new deadline guarantee in this slice.
+
+A test-only WorkerEntrypoint subclass imports the production built shim unchanged
+and wraps only explicit synthetic R2 object names. It forges oversized metadata,
+one oversized native chunk, and cumulative chunks crossing the cap, with a
+zero-high-water-mark producer. Hosted contracts require zero/one/two producer
+reads respectively, exactly one cancellation, zero whole-body arrayBuffer calls,
+retained accepted state/ZIP, and progress of a following healthy accepted item.
+The fresh local-only D1 fixture remains globally held and rejects all unexpected
+egress; this is no production hook, flag, service or route. No local runtime test
+or hosted result is claimed here.
+
+Additional primary references:
+[R2 Worker API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/),
+[workers-rs R2 object body](https://github.com/cloudflare/workers-rs/blob/v0.8.3/worker/src/r2/mod.rs).
