@@ -1,6 +1,10 @@
 //! Native OIDC login, protected credentials, and refresh / 原生 OIDC 登录、安全凭据与刷新。
 
-use crate::{config::Runtime, local_store};
+use crate::{
+    command_journal::{self, Phase, Span},
+    config::Runtime,
+    local_store,
+};
 use anyhow::{bail, ensure, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chacha20poly1305::{
@@ -66,15 +70,33 @@ struct IdClaims {
     token_use: String,
 }
 
+/// Observe the complete JSON dependency without logging URLs, payloads or tokens.
+/// The status captured at headers survives a later JSON/body read error.
+fn identity_json<T: serde::de::DeserializeOwned>(
+    cfg: &Runtime,
+    phase: Phase,
+    request: reqwest::blocking::RequestBuilder,
+) -> std::result::Result<T, reqwest::Error> {
+    let span = Span::start(phase);
+    let mut status = None;
+    let result = request.send().and_then(|response| {
+        status = Some(response.status().as_u16());
+        response.error_for_status()?.json()
+    });
+    span.finish(
+        cfg,
+        result.is_ok(),
+        status,
+        result.as_ref().err().map(command_journal::dependency_code),
+    );
+    result
+}
+
 /// Fetch discovery and reject issuer drift or non-PKCE providers.
 /// 获取发现文档并拒绝签发者漂移或不支持 PKCE 的提供者。
 fn discover(cfg: &Runtime, http: &Client) -> Result<Discovery> {
     let uri = format!("{}/.well-known/openid-configuration", cfg.issuer);
-    let d: Discovery = http
-        .get(uri)
-        .send()?
-        .error_for_status()?
-        .json()
+    let d: Discovery = identity_json(cfg, Phase::Discovery, http.get(uri))
         .context("Identity discovery must return JSON, not a login page")?;
     ensure!(d.issuer == cfg.issuer, "Identity issuer mismatch");
     ensure!(
@@ -124,7 +146,7 @@ fn validate_id(
         "unexpected ID token algorithm"
     );
     let kid = header.kid.context("ID token missing kid")?;
-    let jwks: Value = http.get(&d.jwks_uri).send()?.error_for_status()?.json()?;
+    let jwks: Value = identity_json(cfg, Phase::Jwks, http.get(&d.jwks_uri))?;
     let keys = jwks["keys"].as_array().context("JWKS missing keys")?;
     let item = keys
         .iter()
@@ -458,18 +480,17 @@ pub fn login(cfg: &Runtime, no_browser: bool) -> Result<String> {
         }
     };
     let result = (|| -> Result<String> {
-        let reply: TokenReply = http
-            .post(&d.token_endpoint)
-            .form(&[
+        let reply: TokenReply = identity_json(
+            cfg,
+            Phase::TokenExchange,
+            http.post(&d.token_endpoint).form(&[
                 ("grant_type", "authorization_code"),
                 ("client_id", cfg.client_id.as_str()),
                 ("code", code.as_str()),
                 ("redirect_uri", redirect_uri.as_str()),
                 ("code_verifier", verifier.as_str()),
-            ])
-            .send()?
-            .error_for_status()?
-            .json()?;
+            ]),
+        )?;
         ensure!(
             reply.token_type.eq_ignore_ascii_case("Bearer"),
             "unexpected token type"
@@ -517,6 +538,14 @@ fn callback_page(stream: &mut std::net::TcpStream, success: bool) -> Result<()> 
 /// Refresh under an OS file lock plus durable crash marker to avoid replay.
 /// 使用操作系统文件锁和持久崩溃标记刷新，避免重放。
 pub fn access_token(cfg: &Runtime) -> Result<String> {
+    let span = Span::start(Phase::AccessToken);
+    let result = acquire_access_token(cfg);
+    span.finish(cfg, result.is_ok(), None, None);
+    result
+}
+
+/// Preserve serialized refresh and durable crash-marker semantics unchanged.
+fn acquire_access_token(cfg: &Runtime) -> Result<String> {
     cfg.require_oauth()?;
     let _lock = token_lock(cfg)?;
     let conn = local_store::open(cfg, Duration::from_secs(30))?;
@@ -555,16 +584,15 @@ pub fn access_token(cfg: &Runtime) -> Result<String> {
         "UPDATE refresh_state SET in_progress=1 WHERE session_key=?1",
         [&key],
     )?;
-    let reply = http
-        .post(&d.token_endpoint)
-        .form(&[
+    let reply = identity_json::<TokenReply>(
+        cfg,
+        Phase::TokenRefresh,
+        http.post(&d.token_endpoint).form(&[
             ("grant_type", "refresh_token"),
             ("client_id", cfg.client_id.as_str()),
             ("refresh_token", refresh),
-        ])
-        .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.json::<TokenReply>());
+        ]),
+    );
     let reply = match reply {
         Ok(reply) => reply,
         Err(err) => {
@@ -611,7 +639,8 @@ pub fn logout(cfg: &Runtime) -> Result<()> {
             if let Ok(http) = Client::builder().timeout(Duration::from_secs(8)).build() {
                 if let Ok(d) = discover(cfg, &http) {
                     if let Some(endpoint) = d.revocation_endpoint {
-                        let _ = http
+                        let span = Span::start(Phase::Revocation);
+                        let result = http
                             .post(endpoint)
                             .form(&[
                                 ("token", refresh.as_str()),
@@ -619,12 +648,94 @@ pub fn logout(cfg: &Runtime) -> Result<()> {
                                 ("client_id", cfg.client_id.as_str()),
                             ])
                             .send();
+                        span.finish(
+                            cfg,
+                            result
+                                .as_ref()
+                                .is_ok_and(|response| response.status().is_success()),
+                            result
+                                .as_ref()
+                                .ok()
+                                .map(|response| response.status().as_u16()),
+                            result
+                                .as_ref()
+                                .err()
+                                .map(command_journal::dependency_code)
+                                .or_else(|| {
+                                    result
+                                        .as_ref()
+                                        .ok()
+                                        .filter(|response| !response.status().is_success())
+                                        .map(|_| "http_status")
+                                }),
+                        );
                     }
                 }
             }
         }
     }
     clear(cfg)
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use super::*;
+
+    /// Feed one synthetic HTTP response to the real dependency helper on hosted CI.
+    fn exchange(response: &'static str) -> (tempfile::TempDir, Runtime, Result<Value>) {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let home = tempfile::tempdir_in(root).unwrap();
+        let cfg = Runtime {
+            home: home.path().into(),
+            api_base: "https://mail.example.test".into(),
+            issuer: "https://identity.example.test".into(),
+            client_id: String::new(),
+            redirect_uri: String::new(),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let _ = socket.read(&mut request);
+            socket.write_all(response.as_bytes()).unwrap();
+        });
+        let http = Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let result =
+            command_journal::run(&cfg, Some(command_journal::CommandKind::AuthLogin), || {
+                Ok(identity_json::<Value>(
+                    &cfg,
+                    Phase::TokenExchange,
+                    http.get(format!("http://{address}/synthetic-private-url")),
+                )?)
+            });
+        server.join().unwrap();
+        (home, cfg, result)
+    }
+
+    /// Success, HTTP failure, malformed and truncated bodies preserve exact headers.
+    #[test]
+    fn dependency_results_preserve_received_status_and_exclude_provider_text() {
+        for (response, success, status, expected_code) in [
+            ("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}", true, 200, None),
+            ("HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", false, 503, Some("http_status")),
+            ("HTTP/1.1 200 OK\r\nContent-Length: 23\r\nConnection: close\r\n\r\nsynthetic-private-error", false, 200, Some("decode")),
+            ("HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{", false, 200, Some("decode")),
+        ] {
+            let (_home, cfg, result) = exchange(response);
+            assert_eq!(result.is_ok(), success);
+            let conn = local_store::open(&cfg, Duration::from_millis(250)).unwrap();
+            let actual = conn.query_row("SELECT outcome,http_status,dependency_code FROM command_spans WHERE phase='token_exchange'", [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, u16>(1)?, r.get::<_, Option<String>>(2)?))).unwrap();
+            assert_eq!(actual, (if success {"success"} else {"failure"}.into(), status, expected_code.map(str::to_owned)));
+            let bytes = std::fs::read(cfg.home.join("telemetry.sqlite3")).unwrap();
+            assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-private"));
+        }
+    }
 }
 
 #[cfg(test)]
