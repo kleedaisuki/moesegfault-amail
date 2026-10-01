@@ -6,6 +6,14 @@ Date: 2026-10-01. Status: source-only; no dispatch, provider operations or live 
 
 The registered `.github/workflows/staging-ten-address-acceptance.yml` retains
 `accept` as its default, and legacy `accept`/`recover` transport selection.
+`prepare-escrow-only` selects only `prepare-escrow`, uploads the exact encrypted
+artifact and independently reads its immutable receipt, then stops without
+campaign/arm/add/delete. It requires `PREPARE_STAGING_TEN_ADDRESS_ESCROW_ONLY`
+and the exact supervised actor. Successful source preparation/readback/outcomes,
+not file existence, produce the preparation-only rehearsal label. A later
+separate `recover-escrow` may finalize the completed sealed original with a null
+D1 artifact link; uploading does not implicitly attach/arm the D1 parent.
+
 `supervised-escrow` selects `prepare-escrow`, uploads the one encrypted
 `manifest.bin`, then selects `campaign-escrow`. `recover-escrow` selects only
 `recover-escrow`; it requires a distinct original run and an empty artifact ID.
@@ -17,6 +25,7 @@ issues a per-chunk purge, or claims quota success from a cleanup receipt.
 | accept | RUN_STAGING_TEN_ADDRESSES | prior_run, artifact_id, supervised_by empty |
 | recover | RECOVER_STAGING_TEN_ADDRESSES | exact prior_run and artifact_id; supervised_by empty |
 | supervised-escrow | RUN_SUPERVISED_STAGING_TEN_ADDRESSES | supervised_by equals actual GitHub actor; prior_run and artifact_id empty |
+| prepare-escrow-only | PREPARE_STAGING_TEN_ADDRESS_ESCROW_ONLY | supervised_by equals actual GitHub actor; prior_run and artifact_id empty |
 | recover-escrow | RECOVER_STAGING_TEN_ADDRESS_ESCROW | supervised_by equals actual GitHub actor; distinct prior_run; artifact_id empty |
 
 New confirmations are translated only to the existing coordinator phase
@@ -25,7 +34,7 @@ relaxed. Eight dispatch inputs stay below GitHub's 25-input limit.
 
 ## Mandatory external operator decision, not a machine attestation
 
-**Do not dispatch either escrow mode until the following admission is recorded
+**Do not dispatch any escrow mode until the following admission is recorded
 and reviewed for this specific experiment.** The protected staging Environment
 and actor match establish capability control and attribution, not continuous
 supervision. Neither a boolean, an Environment approval nor a successful source
@@ -66,7 +75,7 @@ and a nonempty immutable ID are mandatory before campaign. Upload is
 non-overwriting, exact-path ciphertext-only with 30-day retention. Before
 campaign the workflow GETs that exact artifact once, checks upload digest
 against provider metadata, original run/name/SHA and expiry, with a 30-second
-read timeout and fixed error labels. The coordinator separately downloads and
+read timeout and fixed error labels. For campaign only, the coordinator separately downloads and
 authenticates the exact bytes, verifies sealed D1 contents, attaches the ID,
 repeats admission and obtains its own conditional arm ACK before the first add.
 No provider response, signed URL, credential, account identifier or mail body
@@ -87,7 +96,7 @@ Only local YAML loading, Python AST parsing, PowerShell AST parsing and
 `git diff --check` are permitted/performed for this source slice. Project tests
 and builds are not run locally. Hosted workflow contract tests cover new actor
 and mode guards, upload-before-campaign ordering, mandatory prepare/upload
-success, exact receipt digest/run/SHA readback, explicit retained recovery,
+success, exact receipt digest/run/SHA readback, explicit retained recovery, preparation-only stopping without mutation,
 legacy default and lack of automatic retry/fallback. Hosted existing composition
 and real-cipher checks remain required; no hosted result or live success is
 claimed by this document. Source wiring does not enable public Mail sending,
