@@ -45,14 +45,22 @@ The separately developed embedding transport has a 30-second header/body abort b
 
 **Compatible integration:** retain the foreground default; add an internal duration/deadline-aware transport entry point. Cron passes the minimum of 10 seconds and remaining phase/global admission time. Check time before acquiring an embedding claim or starting transfer. No time left is a budget/deadline deferral, not a provider attempt; a submitted exchange that actually times out remains transient under existing retry policy. The 10-second threshold still requires latency/backlog evidence: it can otherwise turn a usable but consistently slower provider into a permanent nonprogress condition. Manual redirects, incremental response cap and native abort semantics remain required in both modes.
 
-## Validated parts of the design
+## Pre-merge accounting correction and reallocation
+
+The first revision of this review incorrectly endorsed `170+360+90+2+65+65+5+5+8 = 800`; its actual sum is **770**. This arithmetic mistake was caught before PR #21 merge and is explicitly corrected rather than silently preserving the old endorsement. Independently re-summing the phase allocations gives the revised choice `170+380+90+2+65+65+5+5+18 = 800`. It preserves the established address/semantic/GC reservations, increases outbound to 380 for its new cleanup plus failure-resolution headroom, and makes the remaining 18 control tokens explicit. Each grant meets its listed healthy-path ceiling; phase borrowing is still prohibited.
+
+The in-progress accepted integrity implementation additionally submits one fenced stale-index chunk cleanup DELETE per item. Its normal maximum is therefore `2+5*(1 claim+1 cleanup+1 envelope+66 chunks+3 finalization) = 362`; the combined normal-path model is `160+362+83+1+61+61+3+3 = 734`. The previous 357/729 model was valid only before this new cleanup, not for the integrity implementation. This follow-up inspected the current `accepted.rs` candidate statically and makes no execution claim.
+
+That candidate also has a failure-only conditional lease-release UPDATE and a journal resolution read for failed claims/all-no-op finalization. These are **additional executed statements**, so 734 must not be advertised as an unconditional all-outcome ceiling. Debit and admit each through the common wrapper, including compensation; if a permit cannot be obtained, retain the journal/lease for later recovery. The revised outbound grant's 18-token normal-path headroom does not authorize unbounded retries. The shared runtime 800 ceiling remains the hard source guarantee to test, independently of normal-path arithmetic.
+
+## Reviewed parts of the corrected design
 
 | Property | Independent result |
 | --- | --- |
-| Phase reservations | `170+360+90+2+65+65+5+5+8 = 800`; correct. No borrowing keeps deletion/indexing opportunity independent of address/outbound load. |
-| Source loose ceilings | `160+357+83+1+61+61+3+3 = 729`; correct, compared with pre-claim 724. |
+| Phase reservations | Corrected allocation `170+380+90+2+65+65+5+5+18 = 800`. No borrowing keeps deletion/indexing opportunity independent of address/outbound load. The earlier allocation was 770, not 800. |
+| Source loose normal-path ceilings | `160+362+83+1+61+61+3+3 = 734`, including five claims and five stale-index cleanup submissions. Failure/no-op resolution and retries require separate debits. |
 | Maximum service text chunks | At most 4,000,000 compiled text bytes; each nonlast UTF-8 slice is at least 59,997 bytes, hence at most 67 parts / 66 extra INSERTs. Empty text still uses one first part. |
-| Outbound phase | Two setup statements plus five times `(one claim + one possible envelope UPDATE + 66 chunk INSERTs + three finalization statements) = 357`; correct. Reserve worst case before claim/I/O. |
+| Outbound phase | Two setup statements plus five times `(one claim + one stale-index cleanup + one possible envelope UPDATE + 66 chunk INSERTs + three finalization statements) = 362`. Reserve 72 per healthy maximum-valid item before claim/I/O; additionally admit actual resolution/release work. |
 | D1 submission accounting | Counting each submitted prepared statement, including N batch members, no-ops, errors and retries, is a conservative application contract. prepare/bind are not executions. No claim that batching erases platform query limits. |
 | R2 / diagnostic model | Five GETs plus forty DELETEs per two GC phases gives 85; one final diagnostic batch plus 800 SQL tokens gives 886 modeled internal operations. Exact billing/subrequest internals remain distinct. |
 | Terminal publication | A three-statement D1 batch can atomically publish message/ledger/sent; order, same-claim predicates, same-owner message proof and conditional result handling are mandatory. |
