@@ -6,7 +6,7 @@ from copy import deepcopy
 import io
 import json
 from urllib.error import HTTPError
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 from email.message import Message
 from types import SimpleNamespace
 import sys
@@ -52,6 +52,52 @@ class NativeTracingExperimentTests(unittest.TestCase):
                          {"observability": "dict", "enabled": False, "logs.enabled": "missing", "traces.enabled": "missing"})
         self.assertEqual(experiment.capture_readback({"observability": {"enabled": "private-text", "logs": None}}),
                          {"observability": "dict", "enabled": "str", "logs.enabled": "parent_NoneType", "traces.enabled": "missing"})
+
+    def test_route_config_uses_identical_module_and_private_pair(self):
+        """Route configuration changes ingress, never compiled Rust/service topology."""
+        for name in experiment.NAMES:
+            before = experiment.config(name, NONCE)
+            after = experiment.config(name, NONCE, route=True)
+            self.assertEqual(after, {**before, "workers_dev": False})
+
+    def test_route_deploy_checks_all_prerequisites_then_first_dns_write(self):
+        """Denied bounded DNS creation cannot deploy scripts or create a route."""
+        events = []
+        provider = Mock(account="a" * 32)
+        preflight = {"accepted": True}
+        def refuse(*args):
+            events.append("dns")
+            raise ValueError("synthetic_dns_denied")
+        build = MagicMock()
+        build.read_text.return_value = "{}"
+        with patch.object(experiment, "Provider", return_value=provider), \
+             patch.object(experiment.ingress, "preflight", side_effect=lambda _: events.append("preflight") or preflight), \
+             patch.object(experiment.ingress, "create_dns", side_effect=refuse), \
+             patch.object(experiment.ingress, "create_route") as route, \
+             patch.object(experiment, "write_receipt", side_effect=lambda _: events.append("persist")), \
+             patch.object(experiment.subprocess, "run") as process, \
+             patch.object(experiment, "ROOT", build), \
+             patch.dict(experiment.os.environ, {"GITHUB_SHA": "b" * 40, "GITHUB_RUN_ID": "123"}):
+            # Path composition is intercepted only for checked artifact identity.
+            build.__truediv__ = Mock(return_value=build)
+            with self.assertRaisesRegex(ValueError, "synthetic_dns_denied"):
+                experiment.deploy(route=True)
+        self.assertEqual(events, ["preflight", "persist", "persist", "dns"])
+        process.assert_not_called()
+        route.assert_not_called()
+
+    def test_route_cleanup_refusal_prevents_any_script_deletion(self):
+        """An unresolved ingress cannot leave a live route pointing at no Worker."""
+        receipt = Mock()
+        receipt.exists.return_value = True
+        receipt.read_text.return_value = json.dumps({"transport": "owned_zone_route_v1", "probe_id": NONCE})
+        provider = Mock()
+        with patch.object(experiment, "RECEIPT", receipt), \
+             patch.object(experiment, "Provider", return_value=provider), \
+             patch.object(experiment.ingress, "cleanup_ingress", side_effect=ValueError("synthetic_ownership_conflict")):
+            with self.assertRaisesRegex(ValueError, "synthetic_ownership_conflict"):
+                experiment.cleanup()
+        provider.request.assert_not_called()
 
     def test_cleanup_ownership_requires_exact_run_and_role(self):
         settings={"bindings":[{"type":"plain_text","name":"PROBE_ID","text":NONCE},

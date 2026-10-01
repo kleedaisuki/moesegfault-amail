@@ -52,6 +52,7 @@ NON_BUILD_FILES = {
     ".github/workflows/native-tracing-canary.yml",
     "infra/ci/validated_worker_build.py", "infra/tests/test_validated_worker_build.py",
     "infra/deploy/native_tracing_experiment.py", "infra/tests/test_native_tracing_experiment.py",
+    "infra/deploy/native_route_lifecycle.py", "infra/tests/test_native_route_lifecycle_contract.py",
 }
 
 

@@ -1,6 +1,7 @@
 """Deploy/observe/remove one synthetic native-tracing pair from checked artifact bytes.
 
-No Mail, account, routing, storage, SMTP or send-policy capability is present.
+No Mail, account, storage, SMTP or send-policy capability is present. The separately
+admitted route transport owns only one reserved infrastructure DNS record/route.
 All provider writes are single-attempt, source-owned and receipt-bound.
 """
 
@@ -18,6 +19,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 
 from control_plane_trace import response_facts, span
+import native_route_lifecycle as ingress
 
 ROOT = Path(__file__).resolve().parents[2]
 FOLDER = ROOT / ".temp/native-tracing"
@@ -47,7 +49,7 @@ class Provider:
             raise ValueError("canary_provider_context_missing")
         self.opener = build_opener(NoRedirect)
 
-    def request(self, method: str, suffix: str, data=None, *, token=None):
+    def request(self, method: str, suffix: str, data=None, *, token=None, envelope=False):
         """No automatic retry, query/SQL/body log or guessed absence on read failure."""
         family = suffix.rsplit("/", 1)[-1]
         endpoint = "workers.canary." + family if family in ("settings", "deployments", "subdomain", "query") else "workers.canary.script"
@@ -64,7 +66,7 @@ class Provider:
                 value = json.loads(raw)
                 if not isinstance(value, dict) or value.get("success") is not True:
                     raise ValueError("canary_provider_unsuccessful")
-                return value["result"]
+                return value if envelope else value["result"]
             except HTTPError as error:
                 response_facts(facts, error.code, error.headers)
                 try:
@@ -90,7 +92,7 @@ def write_receipt(value: dict) -> None:
     RECEIPT.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
 
 
-def config(name: str, probe_id: str) -> dict:
+def config(name: str, probe_id: str, *, route: bool = False) -> dict:
     """Remove the custom Rust build command; Wrangler packages tested bytes only."""
     if name not in NAMES or not re.fullmatch(r"[0-9a-f]{32}", probe_id):
         raise ValueError("invalid_canary_config_coordinate")
@@ -102,6 +104,10 @@ def config(name: str, probe_id: str) -> dict:
     result["vars"] = {"CANARY_ROLE": role, "PROBE_ID": probe_id}
     if role == "caller":
         result["services"] = source["env"]["caller"]["services"]
+    if route:
+        # The alternate ingress is explicit in this runtime config, not a new
+        # Rust build input or accidental second public endpoint.
+        result["workers_dev"] = False
     return result
 
 
@@ -162,24 +168,34 @@ def capture_accepted(settings: dict, name: str) -> bool:
                for key in ("logs", "traces"))
 
 
-def deploy() -> None:
+def deploy(*, route: bool = False) -> None:
     """Create only absent scripts; an ambiguous process result is never retried."""
     provider = Provider()
-    for name in NAMES:
-        try:
-            provider.request("GET", provider.script(name))
-        except HTTPError as error:
-            if error.code != 404:
-                raise
-        else:
-            raise ValueError(f"canary_script_already_exists: {name}")
+    preflight = ingress.preflight(provider) if route else None
+    if not route:
+        for name in NAMES:
+            try:
+                provider.request("GET", provider.script(name))
+            except HTTPError as error:
+                if error.code != 404:
+                    raise
+            else:
+                raise ValueError(f"canary_script_already_exists: {name}")
     receipt = {"schema": "native-tracing-experiment/v1", "source_sha": os.environ["GITHUB_SHA"],
                "run_id": os.environ["GITHUB_RUN_ID"], "probe_id": uuid.uuid4().hex, "versions": {},
                "build_identity": json.loads((ROOT / ".temp/ci/validated-worker-build.json").read_text())}
     write_receipt(receipt)
+    if route:
+        receipt["transport"] = "owned_zone_route_v1"
+        receipt["ingress"] = {"schema": "native-route-ingress/v1", "zone_id": ingress.ZONE_ID,
+                              "hostname": ingress.HOST, "preflight": preflight}
+        write_receipt(receipt)
+        # This bounded first mutation establishes actual DNS permission; GETs
+        # never substitute for a successful nonce-owned write/readback.
+        ingress.create_dns(provider, receipt, write_receipt)
     for name in NAMES:
         path = FOLDER / f"{name}.json"
-        path.write_text(json.dumps(config(name, receipt["probe_id"])), encoding="utf-8")
+        path.write_text(json.dumps(config(name, receipt["probe_id"], route=route)), encoding="utf-8")
         with span("workers.deploy", "submit", component="native_tracing", script_name=name) as facts:
             result = subprocess.run(["wrangler", "deploy", "--config", str(path)], cwd=ROOT,
                                     capture_output=True, text=True, timeout=180, check=False)
@@ -204,8 +220,13 @@ def deploy() -> None:
         if len(active) != 1 or active[0].get("version_id") != receipt["versions"][name] or active[0].get("percentage") != 100:
             raise ValueError("canary_serving_version_readback_failed")
         domain = provider.request("GET", provider.script(name, "subdomain"))
-        if domain.get("enabled") is not (name == CALLER) or domain.get("previews_enabled") is not False:
+        if domain.get("enabled") is not (name == CALLER and not route) or domain.get("previews_enabled") is not False:
             raise ValueError("canary_endpoint_isolation_readback_failed")
+    if route:
+        ingress.create_route(provider, receipt, write_receipt)
+        receipt["url"] = f"https://{ingress.HOST}"
+        write_receipt(receipt)
+        return
     subdomain = provider.request("GET", f"/accounts/{provider.account}/workers/subdomain")["subdomain"]
     if not re.fullmatch(r"[a-z0-9-]{1,63}", subdomain):
         raise ValueError("canary_account_subdomain_invalid")
@@ -274,9 +295,17 @@ def diagnose_endpoint(*, client_signature: bool = False) -> None:
     print(json.dumps({"event": "absent_canary_endpoint_diagnostic", **facts}, sort_keys=True))
 
 
-def trigger() -> None:
+def trigger(*, route: bool = False) -> None:
     """Single trigger with persisted failure boundary; never retry an uncertain invocation."""
     receipt = json.loads(RECEIPT.read_text())
+    if route:
+        if receipt.get("transport") != "owned_zone_route_v1" or receipt.get("url") != f"https://{ingress.HOST}":
+            raise ValueError("canary_route_transport_receipt_required")
+        # Revalidate ingress plus nonce/role/serving versions immediately before
+        # the one anonymous POST. Provider credentials never enter that request.
+        ingress.assert_ingress(Provider(), receipt)
+    elif receipt.get("transport") == "owned_zone_route_v1":
+        raise ValueError("canary_route_transport_confirmation_required")
     receipt["from"] = int(time.time() * 1000) - 2000
     receipt["client_profile"] = CLIENT_PROFILE
     write_receipt(receipt)
@@ -402,10 +431,16 @@ def summarize(records: list[dict], nonce: str) -> dict:
                 cases[key] = {"request_id": request_id, "records": 0, "spans": [],
                               "marker_locations": {name: set() for name in ("path", "query", "header", "body")}}
     spans, markers = [], {name: set() for name in ("path", "query", "header", "body")}
+    unassigned_markers = {name: set() for name in markers}
+    shapes = {}
     for record in records:
         metadata = record.get("$metadata", {})
         request_id = metadata.get("requestId") or record.get("$workers", {}).get("requestId")
         case = cases.get(request_cases.get(request_id))
+        # The first real provider view must be inspectable without preserving
+        # arbitrary text/attribute values or guessing another span wrapper.
+        shape = tuple((key, type(record[key]).__name__) for key in ("$metadata", "$workers", "source") if key in record)
+        shapes[shape] = shapes.get(shape, 0) + 1
         if case is not None:
             case["records"] += 1
         if metadata.get("spanId"):
@@ -420,10 +455,16 @@ def summarize(records: list[dict], nonce: str) -> dict:
                     markers[name].add(location)
                     if case is not None:
                         case["marker_locations"][name].add(location)
+                    else:
+                        unassigned_markers[name].add(location)
     for case in cases.values():
         case["marker_locations"] = {key: sorted(value) for key, value in case["marker_locations"].items()}
     return {"record_count": len(records), "spans": spans, "cases": cases,
-            "marker_locations": {key: sorted(value) for key, value in markers.items()}}
+            "marker_locations": {key: sorted(value) for key, value in markers.items()},
+            "unassigned_marker_locations": {key: sorted(value) for key, value in unassigned_markers.items()},
+            "record_shapes": [{"fields": dict(shape), "count": count} for shape, count in sorted(shapes.items())],
+            "retained_context": "unverified", "retained_exception": "unverified",
+            "retained_replacement_attributes": "unverified"}
 
 
 def collect() -> None:
@@ -452,7 +493,15 @@ def collect() -> None:
         if any(row.get("$metadata", {}).get("service") == CALLER for row in rows):
             raise ValueError("disabled_caller_retained_record")
         summary = summarize(rows, receipt["probe_id"])
-        if len(summary["spans"]) >= 8 and len(summary["cases"]) == 4 and summary["marker_locations"]["path"]:
+        receipt["summary"] = summary
+        write_receipt(receipt)
+        try:
+            verify_case_parentage(summary)
+            parentage_ready = True
+        except ValueError:
+            parentage_ready = False
+        if parentage_ready and all(case["marker_locations"]["path"]
+                                  for key, case in summary["cases"].items() if key.startswith("baseline.")):
             break
         if time.monotonic() >= deadline:
             raise ValueError("native_span_or_baseline_control_missing")
@@ -463,7 +512,8 @@ def collect() -> None:
             raise ValueError("baseline_marker_control_missing")
     summary["root_replacement_eliminates_retained_markers"] = all(
         not values for key, case in summary["cases"].items() if key.startswith("redacted.")
-        for values in case["marker_locations"].values())
+        for values in case["marker_locations"].values()) and not any(summary["unassigned_marker_locations"].values())
+    summary["native_parentage_verified"] = True
     receipt["summary"] = summary
     write_receipt(receipt)
     print(json.dumps({"event": "native_tracing_experiment_observed", **summary}, sort_keys=True))
@@ -475,6 +525,10 @@ def cleanup() -> None:
         return
     provider = Provider()
     receipt = json.loads(RECEIPT.read_text())
+    if receipt.get("transport") == "owned_zone_route_v1":
+        # A live/uncertain route or DNS ownership conflict must stop script
+        # removal; never leave the route pointing at a deleted caller.
+        ingress.cleanup_ingress(provider, receipt, write_receipt)
     for name in reversed(NAMES):
         try:
             settings = provider.request("GET", provider.script(name))
@@ -499,11 +553,15 @@ def cleanup() -> None:
 def main() -> None:
     """Explicit hosted first-attempt experiment only, no mailbox or generic provider tool."""
     operations = {"deploy": deploy, "trigger": trigger, "collect": collect, "cleanup": cleanup,
+                  "deploy-route": lambda: deploy(route=True),
+                  "trigger-route": lambda: trigger(route=True),
+                  "collect-route": collect, "cleanup-route": cleanup,
                   "diagnose": diagnose_endpoint,
                   "diagnose-client-signature": lambda: diagnose_endpoint(client_signature=True)}
     operation = sys.argv[1] if len(sys.argv) == 2 else ""
     expected = {"diagnose": "DIAGNOSE_NATIVE_TRACING_ENDPOINT",
-                "diagnose-client-signature": "DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE"}.get(operation, "RUN_NATIVE_TRACING_CANARY")
+                "diagnose-client-signature": "DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE"}.get(
+                    operation, "RUN_NATIVE_TRACING_ROUTE_CANARY" if operation.endswith("-route") else "RUN_NATIVE_TRACING_CANARY")
     if (operation not in operations or os.getenv("GITHUB_ACTIONS") != "true" or os.getenv("GITHUB_REF") != "refs/heads/main"
             or os.getenv("GITHUB_RUN_ATTEMPT") != "1" or os.getenv("CANARY_CONFIRM") != expected):
         raise SystemExit("Explicit hosted main first-attempt canary context required.")
