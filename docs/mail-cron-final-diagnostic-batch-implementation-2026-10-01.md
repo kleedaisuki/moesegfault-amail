@@ -1,6 +1,11 @@
 # Cron final diagnostic batch: implementation and acceptance
 
-Date: 2026-10-01. Status: source candidate, not deployed or release approved.
+Date: 2026-10-01. Status: historical PR #31 implementation, not deployed or release approved.
+
+This note records PR #31's original unbounded final await. The follow-up
+[Queue local-wait slice](mail-cron-final-queue-local-wait-2026-10-01.md) describes
+its narrow replacement candidate; its source/hosted gates remain separate. No
+native Queue cancellation or unconditional whole-Cron completion is inferred.
 
 ## Baseline and ownership
 
