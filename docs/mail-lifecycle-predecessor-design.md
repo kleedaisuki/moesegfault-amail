@@ -48,6 +48,15 @@ Hosted tests exercise real parser/guard functions with inert original-run
 metadata and fixed-provider-shaped graphs. They establish source behavior, not
 an actually emitted predecessor, deployed pause, drain or rollback.
 
+First scoped hosted run 36879863684 at source `153abea` executed 1085
+infrastructure tests in 9.231 seconds. New lifecycle contracts passed; one
+pre-existing quota artifact tamper fixture failed because replacing a random
+authenticated blob's last byte with constant `x` can leave the blob unchanged
+(one of 256 possible byte values). The source-only correction XORs the byte
+with 1 and asserts actual inequality, preserving the durability refusal contract
+without changing cryptography, runtime or mail operations. This is a deterministic
+fixture repair, not rerunning or weakening a failed safety check.
+
 ## Concrete completion path: fresh first, cooperative established graphs next
 
 1. **First production/fresh isolated scope:** implement a protected bootstrap
