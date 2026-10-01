@@ -1,5 +1,10 @@
 /* 中文：站点视觉系统兼顾高信息密度与阅读舒适性；英文：The visual system balances dense information with comfortable reading. */
 :root {
+	/* Share header geometry with the viewport's fragment-scroll exclusion area. */
+	--site-header-height: calc(76px + 1px);
+	--site-header-line-height: 1.7;
+	--site-header-cta-font-size: 13px;
+	--site-header-cta-padding-block: 10px;
 	font-family: var(--moe-font-family-sans);
 	color: var(--moe-text);
 	background: var(--moe-background);
@@ -12,6 +17,8 @@
 }
 html {
 	scroll-behavior: smooth;
+	/* Apply at the outer scrollport, including headings in overflow:auto prose. */
+	scroll-padding-top: calc(var(--site-header-height) + 24px);
 }
 body {
 	margin: 0;
@@ -50,6 +57,7 @@ button:focus-visible {
 	outline-offset: 4px;
 }
 .site-header {
+	line-height: var(--site-header-line-height);
 	position: sticky;
 	top: 0;
 	z-index: 10;
@@ -58,7 +66,7 @@ button:focus-visible {
 	border-bottom: 1px solid var(--moe-border);
 }
 .header-inner {
-	min-height: 76px;
+	min-height: calc(var(--site-header-height) - 1px);
 	display: flex;
 	align-items: center;
 	gap: 30px;
@@ -120,8 +128,8 @@ button:focus-visible {
 .header-cta {
 	border: 1px solid var(--moe-accent-strong);
 	border-radius: 100px;
-	padding: 10px 17px;
-	font-size: 13px;
+	padding: var(--site-header-cta-padding-block) 17px;
+	font-size: var(--site-header-cta-font-size);
 	color: var(--moe-accent-strong);
 }
 .header-cta:hover,
@@ -240,7 +248,7 @@ button:focus-visible {
 }
 .toc {
 	position: sticky;
-	top: 108px;
+	top: calc(var(--site-header-height) + 31px);
 	align-self: start;
 	max-height: calc(100vh - 130px);
 	overflow: auto;
@@ -294,7 +302,6 @@ button:focus-visible {
 	font-family: var(--moe-font-family-display);
 	color: var(--moe-heading);
 	letter-spacing: -0.035em;
-	scroll-margin-top: 105px;
 }
 .prose h2 {
 	font-size: 31px;
@@ -381,6 +388,13 @@ button:focus-visible {
 	color: var(--moe-accent-strong);
 }
 @media (max-width: 850px) {
+	:root {
+		/* Two rows: outer padding, CTA (or brand), row gap, nav, bottom border. */
+		--site-header-height: calc(
+			30px + max(31px, var(--site-header-cta-font-size) * var(--site-header-line-height) + 2 * var(--site-header-cta-padding-block) + 2px)
+			+ 14px + 14px * var(--site-header-line-height) + 16px + 1px
+		);
+	}
 	.header-inner {
 		flex-wrap: wrap;
 		min-height: auto;
@@ -422,6 +436,10 @@ button:focus-visible {
 	}
 }
 @media (max-width: 580px) {
+	:root {
+		--site-header-cta-font-size: 12px;
+		--site-header-cta-padding-block: 9px;
+	}
 	.wrap {
 		width: min(100% - 32px, 1180px);
 	}
@@ -429,8 +447,7 @@ button:focus-visible {
 		font-size: 25px;
 	}
 	.header-cta {
-		font-size: 12px;
-		padding: 9px 12px;
+		padding-inline: 12px;
 	}
 	.footer-inner {
 		grid-template-columns: 1fr;

@@ -47,7 +47,6 @@
 	line-height: 1.15;
 	color: var(--moe-heading);
 	margin: 17px 0 4px;
-	scroll-margin-top: 110px;
 }
 .release-summary {
 	font-size: 18px;

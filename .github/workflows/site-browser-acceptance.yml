@@ -1,0 +1,96 @@
+# Independent browser evidence: no provider credentials, deployment, or Mail tests.
+name: Site browser acceptance
+
+on:
+  pull_request:
+    paths: ['site/**', '.github/workflows/site-browser-acceptance.yml', 'docs/site-browser-acceptance.md']
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Preview this source, or read the existing production candidate
+        type: choice
+        default: source-preview
+        options: [source-preview, live-candidate]
+      candidate_revision:
+        description: Full deployed source SHA (required for live-candidate, not workflow SHA)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-browser-${{ github.ref }}-${{ inputs.target || 'source-preview' }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    name: Four-width candidate browser acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        if: inputs.target != 'live-candidate'
+        with:
+          version: 12.4.1
+      - name: Validate live evidence identity before browser installation
+        if: inputs.target == 'live-candidate'
+        env:
+          CANDIDATE_REVISION: ${{ inputs.candidate_revision }}
+        run: |
+          [[ "$CANDIDATE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+      - name: Build source preview only on the hosted runner
+        if: inputs.target != 'live-candidate'
+        working-directory: site
+        env:
+          AMAIL_RELEASE_STATE: candidate
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          pnpm check:release-state candidate
+      - name: Install isolated pinned browser harness on the hosted runner
+        run: |
+          npm install --prefix .temp/site-browser-tools --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.51.1
+          .temp/site-browser-tools/node_modules/.bin/playwright install --with-deps chromium
+          # Chinese text must render as glyphs, not tofu, on the Linux runner.
+          sudo apt-get install --yes --no-install-recommends fonts-noto-cjk
+      - name: Run read-only browser checks and capture review screenshots
+        env:
+          TARGET: ${{ inputs.target || 'source-preview' }}
+          CANDIDATE_REVISION: ${{ inputs.candidate_revision }}
+          EVIDENCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SITE_BROWSER_MODULE="$PWD/.temp/site-browser-tools/node_modules/playwright/index.mjs"
+          export SITE_BROWSER_OUTPUT="$PWD/.temp/site-browser-evidence"
+          if [ "$TARGET" = live-candidate ]; then
+            export SITE_BROWSER_BASE=https://amail.moesegfault.dev
+          else
+            python3 -m http.server 4321 --bind 127.0.0.1 --directory site/dist > .temp/site-browser-server.log 2>&1 &
+            server_pid=$!
+            trap 'kill "$server_pid"' EXIT
+            export SITE_BROWSER_BASE=http://127.0.0.1:4321
+            for attempt in {1..20}; do
+              if curl --fail --silent "$SITE_BROWSER_BASE/" > /dev/null; then break; fi
+              sleep 0.5
+            done
+            curl --fail --silent "$SITE_BROWSER_BASE/" > /dev/null
+          fi
+          node site/scripts/browser-acceptance.mjs
+      - name: Preserve evidence even when an assertion fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-browser-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .temp/site-browser-evidence/
+            .temp/site-browser-server.log
+          if-no-files-found: warn
+          retention-days: 14
