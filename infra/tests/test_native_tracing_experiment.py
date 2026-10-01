@@ -1,6 +1,14 @@
 """Hosted synthetic canary lifecycle/collection tests; never contact a provider."""
 
 from pathlib import Path
+from contextlib import redirect_stdout
+from copy import deepcopy
+import io
+import json
+from urllib.error import HTTPError
+from unittest.mock import Mock, patch
+from email.message import Message
+from types import SimpleNamespace
 import sys
 import unittest
 
@@ -64,6 +72,68 @@ class NativeTracingExperimentTests(unittest.TestCase):
         self.assertEqual(summary["cases"]["redacted.success"]["marker_locations"]["path"],["$workers.event.request.url"])
         self.assertNotIn("amail_native_path_",str(summary))
         with self.assertRaises(ValueError):experiment.summarize([{"$metadata":{"service":"foreign-worker"}}],NONCE)
+
+    def test_trigger_failure_facts_do_not_retain_challenge_tokens_or_prose(self):
+        headers = Message()
+        for key, value in (("Content-Type", "text/html; charset=utf-8"), ("CF-Ray", "public-ray-IAD"),
+                           ("CF-Mitigated", "challenge"), ("Server", "cloudflare"),
+                           ("Set-Cookie", "SYNTHETIC_PRIVATE_COOKIE"), ("Location", "https://private.invalid/token")):
+            headers[key] = value
+        result = experiment.trigger_facts(SimpleNamespace(code=403, headers=headers), b"SYNTHETIC_CHALLENGE_TOKEN")
+        self.assertEqual(result["http_status"], 403)
+        self.assertEqual(result["cf_ray"], "public-ray-IAD")
+        self.assertTrue(result["cloudflare_challenge"])
+        self.assertEqual(result["media_type"], "text/html")
+        self.assertNotIn("SYNTHETIC", str(result))
+        self.assertNotIn("private.invalid", str(result))
+        self.assertEqual(experiment.trigger_facts(SimpleNamespace(code=403, headers=headers), b"Forbidden")["body_class"], "bare_forbidden")
+
+    def _trigger_case(self, kind):
+        """Hosted transport fixture: never open a network socket or write outside the repo."""
+        report = {"available": kind != "unsupported", "sampled": True,
+                  "stage": "complete" if kind != "unsupported" else "getter",
+                  "case": {"run": NONCE, "mode": "baseline", "kind": "success"}}
+        rows = [{"status": 200, "report": deepcopy(report)} for _ in range(4)]
+        headers = Message(); headers["Content-Type"] = "application/json"
+        body = b"not-json" if kind == "invalid_json" else json.dumps({"receipts": rows}).encode()
+        response = io.BytesIO(body)
+        response.code = response.status = 200
+        response.headers = headers
+        opener = Mock()
+        if kind == "http_error":
+            opener.open.side_effect = HTTPError("https://caller.synthetic.invalid", 403,
+                                                "SYNTHETIC_PRIVATE_ERROR_PROSE", headers, io.BytesIO(b"Forbidden"))
+        else:
+            opener.open.return_value = response
+        writes = []
+        receipt = Mock()
+        receipt.read_text.return_value = json.dumps({"url": "https://caller.synthetic.invalid", "probe_id": NONCE})
+        with patch.object(experiment, "RECEIPT", receipt), patch.object(experiment, "build_opener", return_value=opener), \
+             patch.object(experiment, "write_receipt", side_effect=lambda value: writes.append(deepcopy(value))), \
+             patch.object(experiment.time, "time", return_value=1_790_000_000), redirect_stdout(io.StringIO()):
+            if kind == "success":
+                experiment.trigger()
+            else:
+                with self.assertRaises(ValueError): experiment.trigger()
+        opener.open.assert_called_once()
+        final = writes[-1]
+        self.assertEqual(final["to"] - final["from"], 4000)
+        self.assertEqual(final["trigger"]["http_status"], 403 if kind == "http_error" else 200)
+        self.assertNotIn("SYNTHETIC_PRIVATE_ERROR_PROSE", str(final))
+        if kind in ("success", "unsupported"):
+            self.assertEqual(final["receipts"], rows)
+
+    def test_trigger_http_failure_persists_boundary_without_retry(self):
+        self._trigger_case("http_error")
+
+    def test_trigger_invalid_json_persists_boundary_without_retry(self):
+        self._trigger_case("invalid_json")
+
+    def test_trigger_unavailable_native_reports_survive_rejection(self):
+        self._trigger_case("unsupported")
+
+    def test_trigger_success_persists_reports_and_window(self):
+        self._trigger_case("success")
 
     def test_workflow_never_builds_or_injects_mail_capabilities(self):
         source=(ROOT/".github/workflows/native-tracing-canary.yml").read_text()
