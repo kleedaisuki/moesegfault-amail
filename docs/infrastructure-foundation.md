@@ -56,7 +56,7 @@ control-plane call merely because the mail application has spans.
 | CI and deployment diagnostics | Machine-readable timing/outcome summaries; source/run/stage/request correlation; useful safe provider failures; no repeated opaque probes | CI cache/native receipts and initial [control-plane integration](control-plane-observability.md) source accepted; lifecycle consumers pending |
 | Runtime observability | Field-level schemas; CLI/API/maintenance/lifecycle coverage and diagnostics for loss; Cloudflare configuration and a synthetic correlation/privacy canary accepted | [Coverage repair and native-span validation plan](runtime-observability-foundation.md) |
 | Deployment lifecycle | Explicit paused/active state; consistent source/toolchain/artifact; writer lock, readback, rollback and bounded recovery; project Secrets remain unchanged | Pending |
-| Maintenance knowledge and cleanup | Current runbook and maintainer skill; legacy research probes isolated from normal product paths; canonical status ledger; no dangling test/active workflow | [Operational lane inventory and first historical retirement](maintenance-operational-lanes.md) implemented; hosted acceptance pending; supported recovery and active native-tracing preserved |
+| Maintenance knowledge and cleanup | Current runbook and maintainer skill; legacy research probes isolated from normal product paths; canonical status ledger; no dangling test/active workflow | [Operational lane inventory and first historical retirement](maintenance-operational-lanes.md) hosted-source accepted on PR 62; supported recovery and active native-tracing preserved; remaining legacy debt explicitly inventoried |
 
 Completion means all rows have executable evidence, not just a design review.
 Runtime and cross-platform tests run in GitHub Actions only. Local work is source,
@@ -284,5 +284,11 @@ classifiers and synthetic privacy/scope tests remain. A repository-wide source
 regression prevents executable-lane resurrection and preserves supported job
 identities. No provider query, remote disable, resource deletion, deployment or
 mail action accompanies retirement. Old branch/run source is not retroactively
-disabled; do not replay retired provider operations. Hosted source acceptance
-is pending and no whole-foundation completion is claimed.
+disabled; do not replay retired provider operations. PR 62 source 461183b passed
+full hosted CI 36878849332 and syntax 36878848913; actual checkout b4fa3e6 has the
+same tree. All 1,068 infrastructure discovery tests, three CLI platforms, Astro,
+Worker build, eight native suites (156 passed, no failures/cancellations/skips/todo)
+and stable aggregate passed. Every native runner verified the same 35-file build.
+The first retirement is source accepted, not yet merged or a provider operation;
+remaining historical debt is inventoried and no whole-foundation completion is
+claimed. Exact evidence and old-ref replay boundaries are in the runbook.

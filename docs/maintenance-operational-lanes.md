@@ -1,7 +1,7 @@
 # Maintenance operational lanes and bounded historical retirement
 
-Status: source policy and first reversible cleanup; hosted acceptance is recorded
-below when available. Inventory baseline: main
+Status: first reversible cleanup accepted by hosted source validation; no provider
+operation or merge performed. Exact acceptance is recorded below. Inventory baseline: main
 `d593d1a20fa2bbf59b997e13343373614aa7fcf7` (2026-10-01).
 The [infrastructure foundation](infrastructure-foundation.md) is the authoritative
 status/priority ledger. Historical reviews describe evidence, not permission to
@@ -43,7 +43,7 @@ it does not claim that every historical job has a new technical disable switch.
 | `site-ci.yml`, `site-browser-acceptance.yml` | Candidate-site source/browser checks; manual/reusable source checks | Hosted source acceptance, not public deployment; retain |
 | `release.yml` | Version-tag publication; manual main bundle verification | Attestation/published-byte/send-release gates remain supported; do not retire or weaken |
 | `site-candidate.yml` | Manual candidate-site source/deploy graph | Calls `site-ci.yml`; candidate deployment is not production release; retain |
-| `deploy-identity-test-inbox.yml` | Manual staging Identity inbox deployment | Supported private native-login dependency, not a research probe; retain its identity and strict exact-main artifact admission from the separate deployment workstream |
+| `deploy-identity-test-inbox.yml` | Manual staging Identity inbox deployment | Supported private native-login dependency, not a research probe; baseline still rebuilds; strict exact-main artifact admission is the separate unmerged PR 58 repair, not a claim that this cleanup implements it |
 | `send-control.yml`, `attest-send-gate.yml`, `grant-send-canary.yml` | Manual policy/control/attestation and one-use grant | Operator D1/sending controls, not CI; preserve hold and explicit admission |
 | `role-forwarding.yml`, `direct-contact-adopt.yml`, `direct-contact-attest.yml` | Manual role/contact operations | Provider routing/verification and adopted-policy/coverage contracts; public release consumers depend on them; retain |
 | `direct-contact-health.yml` | Manual refresh; hourly schedule gated by `AMAIL_CONTACT_HEALTH_ACTIVE` | Provider configuration reads plus scoped D1 health state; not a read-only source check and not an unhold; preserve opt-in schedule/expiry contract |
@@ -144,3 +144,31 @@ This is evidence-led maintenance, not a novel research orchestration system.
 The active native-tracing experiment owns the actual unresolved platform
 mechanism; this cleanup isolates completed diagnostic questions without erasing
 the evidence or disturbing supported userspace.
+
+## Hosted acceptance of the executable cleanup
+
+PR 62 source `461183b4cb83b050f7de44f1b50efa33db16b1c1` passed full
+[CI run 36878849332](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36878849332)
+and independent [syntax run 36878848913](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36878848913).
+Actual CI checkout `b4fa3e693a138dae9a3b2a90371f9916f13080fb` has the same
+tree as the reviewed head (`b0686bb7a2714e7bf33792703a9b05946c90e98b`).
+The normal infrastructure discovery ran **1,068 tests**, including all three new
+retirement/preservation contracts and retained historical classifiers. Separate
+encrypted quota recovery, Identity route, role route and Mail observability
+contracts also passed. CLI Linux/Windows/macOS, Astro, Worker build/unit checks,
+all eight native suites and the stable aggregate passed. Native receipts total
+**156 passed** (107 core plus 49 others), zero failed/cancelled/skipped/todo;
+every runner independently verified the same 35 generated files before testing.
+
+Observed workflow time was 14:45:26–14:51:14 UTC on 2026-10-01 (**5m48s**).
+CLI dependency caches on all three platforms, Worker dependencies and bundler
+each reported `exact_hit`. This is one uncontrolled source-run sample, not a
+latency SLA. Synthetic tests' mock provider diagnostics are not actual provider
+operations; all live provider/deployment/acceptance jobs were skipped on the PR.
+No local tests, builds or installs ran; static AST/diff/inventory checks and
+GitHub metadata/log inspection were the only developer-machine verification.
+
+This section and the Identity baseline clarification are documentation-only
+followup to the checked executable source. They do not substitute an old source
+run for future exact-source deployment/release admission. Whole-foundation and
+runtime privacy acceptance remain incomplete.
