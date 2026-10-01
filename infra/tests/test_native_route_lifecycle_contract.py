@@ -175,6 +175,31 @@ class NativeRoutePreflightTests(unittest.TestCase):
             with self.subTest(pattern=pattern), self.assertRaises(ValueError):
                 lifecycle.preflight(provider)
 
+    def test_existing_scripts_and_custom_domain_cannot_be_adopted(self):
+        provider = FakeProvider()
+        provider.live = True
+        with self.assertRaises(ValueError):
+            lifecycle.preflight(provider)
+        provider = FakeProvider()
+        provider.domains = [{"id": "foreign-domain", "hostname": lifecycle.HOST}]
+        with self.assertRaises(ValueError):
+            lifecycle.preflight(provider)
+        self.assertTrue(all(x[0] == "GET" for x in provider.calls))
+
+    def test_unrelated_apex_route_does_not_create_spurious_conflict(self):
+        provider = FakeProvider()
+        provider.routes = [{"id": "unrelated-apex", "pattern": "moesegfault.dev/*", "script": "ordinary-service"}]
+        lifecycle.preflight(provider)
+        self.assertEqual(provider.routes[0]["script"], "ordinary-service")
+        self.assertTrue(all(x[0] == "GET" for x in provider.calls))
+
+    def test_opaque_ids_are_bounded_and_encoded_not_assumed_hashes(self):
+        for identifier in ("x", "opaque+value", "z" * 256):
+            self.assertEqual(lifecycle.opaque_id(identifier), identifier)
+        for identifier in ("", "z" * 257, "two words", "line\nfeed", None):
+            with self.subTest(identifier=identifier), self.assertRaises(ValueError):
+                lifecycle.opaque_id(identifier)
+
     def test_failed_script_read_is_not_absence(self):
         provider = FakeProvider()
         provider.overrides[("GET", provider.script(lifecycle.PROBE))] = HTTPError(
