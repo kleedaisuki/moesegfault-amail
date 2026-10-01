@@ -63,4 +63,3 @@ There are 17 decision sites (including two zero-count classifications); 13 exist
 - [D1 return object](https://developers.cloudflare.com/d1/worker-api/return-object/): remote metadata must not be assumed to be a stable direct-row identity oracle. This audit does not generalize the hosted Miniflare observation into an independently measured remote behavior.
 
 The audit is specific to current migrations and the candidate SHA. Future triggers on current no-trigger claim tables require revisiting their metadata proof. It is not full correctness, concurrency, budget, privacy, schema-rollout, or live-deployment certification. No academic literature is needed to adjudicate this concrete SQLite/API contract defect; primary implementation semantics and executed boundary evidence are the relevant authority.
-
