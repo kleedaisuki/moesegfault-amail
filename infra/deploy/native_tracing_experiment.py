@@ -227,7 +227,43 @@ def trigger_facts(response, raw: bytes) -> dict:
         result["cf_ray"] = ray
     result["cloudflare_server"] = headers.get("server", "").lower() == "cloudflare"
     result["cloudflare_challenge"] = headers.get("cf-mitigated", "").lower() == "challenge"
+    code = re.fullmatch(rb"error code:\s*([0-9]{4})\s*", raw, re.IGNORECASE)
+    if code:
+        result["body_class"] = "cloudflare_error_code"
+        result["provider_error_code"] = int(code[1])
     return result
+
+
+def diagnose_endpoint() -> None:
+    """Read an absent caller hostname without deploying or invoking a Worker.
+
+    Both fixed scripts must be absent before the anonymous GET. The writer lock
+    remains held, and the public request never receives provider credentials.
+    This distinguishes a platform endpoint refusal without recreating a pair.
+    """
+    provider = Provider()
+    for name in NAMES:
+        try:
+            provider.request("GET", provider.script(name))
+        except HTTPError as error:
+            if error.code != 404:
+                raise
+        else:
+            raise ValueError("endpoint_diagnostic_requires_absent_scripts")
+    subdomain = provider.request("GET", f"/accounts/{provider.account}/workers/subdomain")["subdomain"]
+    if not re.fullmatch(r"[a-z0-9-]{1,63}", subdomain):
+        raise ValueError("canary_account_subdomain_invalid")
+    url = f"https://{CALLER}.{subdomain}.workers.dev"
+    request = Request(url, method="GET")
+    try:
+        response = build_opener(NoRedirect).open(request, timeout=30)
+    except HTTPError as error:
+        response = error
+    with response:
+        facts = trigger_facts(response, response.read(65537))
+    write_receipt({"schema": "native-endpoint-diagnostic/v1", "source_sha": os.environ["GITHUB_SHA"],
+                   "run_id": os.environ["GITHUB_RUN_ID"], "scripts_absent": True, "url": url, "response": facts})
+    print(json.dumps({"event": "absent_canary_endpoint_diagnostic", **facts}, sort_keys=True))
 
 
 def trigger() -> None:
@@ -428,10 +464,14 @@ def cleanup() -> None:
 
 def main() -> None:
     """Explicit hosted first-attempt experiment only, no mailbox or generic provider tool."""
-    if (os.getenv("GITHUB_ACTIONS") != "true" or os.getenv("GITHUB_REF") != "refs/heads/main"
-            or os.getenv("GITHUB_RUN_ATTEMPT") != "1" or os.getenv("CANARY_CONFIRM") != "RUN_NATIVE_TRACING_CANARY"):
+    operations = {"deploy": deploy, "trigger": trigger, "collect": collect, "cleanup": cleanup,
+                  "diagnose": diagnose_endpoint}
+    operation = sys.argv[1] if len(sys.argv) == 2 else ""
+    expected = "DIAGNOSE_NATIVE_TRACING_ENDPOINT" if operation == "diagnose" else "RUN_NATIVE_TRACING_CANARY"
+    if (operation not in operations or os.getenv("GITHUB_ACTIONS") != "true" or os.getenv("GITHUB_REF") != "refs/heads/main"
+            or os.getenv("GITHUB_RUN_ATTEMPT") != "1" or os.getenv("CANARY_CONFIRM") != expected):
         raise SystemExit("Explicit hosted main first-attempt canary context required.")
-    {"deploy": deploy, "trigger": trigger, "collect": collect, "cleanup": cleanup}[sys.argv[1]]()
+    operations[operation]()
 
 
 if __name__ == "__main__":
