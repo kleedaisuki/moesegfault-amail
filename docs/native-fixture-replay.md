@@ -1,6 +1,6 @@
 # Native fixture replay
 
-Status: source under hosted validation; a diagnostic run is not source/release
+Status: full hosted source and actual diagnostic replay accepted; a replay is not source/release
 acceptance. Use this lane when one Miniflare/workerd fixture changes but Rust,
 SDK/build scripts, compiler/lockfiles and generated-product inputs do not.
 
@@ -30,5 +30,16 @@ This lane directly addresses fixture iteration latency: prior native Queue
 investigations rebuilt unchanged Rust and executed 102 unrelated core tests to
 learn about one three-test fixture. Observe the real replay duration/cache output
 before claiming a speedup. Source-only tests check changed-input refusal, owned
-file selection and read-only workflow contracts. Actual hosted replay acceptance
-is still required; never run native tests on the developer machine.
+file selection and read-only workflow contracts. Require an actual hosted replay for each fixture investigation; never run native
+tests on the developer machine.
+
+## Hosted acceptance
+
+PR 47 head 2ae5124d3002b2dd47cddb725c61bb1f2ce026a9 passed full CI
+36854745753 and syntax 36854745703 (154 native passes). Actual manual replay
+36855666878 on main 7242ad0d914978c97e8b0e87a0a52aafd5661b11 selected source
+run 36853948436/artifact 11156458767; original build source
+7770b4cb0acac48b9145d24813414d53de063eea and all 30 files/compiler/run/attempt
+were verified before executing trace-sink.test.mjs. Three tests passed with zero
+failure/cancelled/skipped/todo. Observed replay duration was 24s, runner job 19s
+including setup; do not generalize one sample into a guaranteed latency.

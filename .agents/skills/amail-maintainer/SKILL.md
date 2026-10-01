@@ -18,12 +18,16 @@ deployment, mail, secret or account authorization.
   plus the stable `Rust Worker (Wasm)` gate. Native artifacts alone do not qualify
   a release. An exact cache hit, partial/miss and unreported state are different;
   use `ci_cache_lookup` and suite receipts rather than green-step inference.
+  For a test-only native fixture repair, use `docs/native-fixture-replay.md`
+  for the hosted diagnostic lane: unchanged compilation inputs and
+  original artifact provenance are required. Diagnostic replay is not full CI,
+  deployment or release evidence.
 * **Runtime tracing/privacy:** `docs/runtime-observability-foundation.md` and
   `crates/trace-schema`. Separate implemented correlation from actual observed
   native tracing. Retain timestamps, status, source/version and request/trace IDs;
   exclude mail content, personal metadata, credentials and private destinations.
   Do not hide all infrastructure metadata or dump arbitrary provider bodies.
-* **Deploy/recovery:** `docs/backend-operations.md` and the exact workflow/helper
+* **Deploy/recovery:** `docs/control-plane-observability.md`, `docs/backend-operations.md` and the exact workflow/helper
   for the requested component. Keep project-managed Secrets as requested. Use
   source/run/version evidence and the shared writer lock; do not retry an
   ambiguous write, rebuild a supposedly identical artifact silently, or turn a
