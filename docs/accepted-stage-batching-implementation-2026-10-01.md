@@ -85,10 +85,15 @@ is a production benchmark. The existing whole-Cron native counter still asserts
 
 Only static `rustfmt`, `node --check`, and scoped Git whitespace checks are run
 locally. No build, project tests, package installation, provider access, deploy,
-policy release or Cron resume is performed. At initial implementation commit,
-the new suite is intentionally **not yet registered** in package/CI files owned
-by concurrent PR29; registration and exact hosted evidence follow independent
-source/test review and coordinated integration.
+policy release or Cron resume is performed. Initial source/test candidate
+`2c67564bf6cdddca3c63261c0dd082d0e7b90cb6` received independent source GO in
+[its review](review-accepted-stage-batching-2026-10-01.md). After PR29 and PR31
+merged, the implementation was rebased onto
+`8ca1815307ae515aa5cacc6a25bb161779bb7be7`; `test:accepted-stage` and its
+non-deploying native Worker CI step now register the nine new cases separately
+from the default suite. Existing Routing, embedding, liveness and final diagnostic
+focused suites remain registered. Exact integrated source/test review and hosted
+evidence are still pending; registration is not a claim of successful execution.
 
 Native D1 batch has ordered transactional semantics and the documented 30-second
 duration applies to the entire batch, not each member. Successful completion
