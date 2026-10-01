@@ -159,3 +159,12 @@ Cloudflare's retained-log enrichment/native-span privacy canary remains separate
 Primary native Queue testing mechanism:
 https://developers.cloudflare.com/workers/testing/miniflare/migrations/from-v2/
 (service binding queue() replaces removed dispatchQueue()).
+
+First reader source check 36850591693 passed Rust/Wasm/unit/build, all three CLI
+platforms and seven existing native suites. Core passed its existing 102 tests
+but all three new Queue dispatches failed before the sink with a native integer
+conversion error. The direct service-binding fixture omitted delivery attempts;
+provide an explicit first-attempt integer rather than relying on an obsolete
+example's optional default. This is a fixture boundary failure, not evidence that
+the sink/schema ran. No partial pass or deployment is accepted; hosted rerun is
+required with the complete native message descriptor.

@@ -29,7 +29,7 @@ async function consume(bodies) {
     outboundService() { throw new Error("trace sink must not contact any external service"); } });
   try {
     const messages = bodies.map((body, index) => ({ id: `synthetic-${index}`,
-      timestamp: new Date(1_790_000_000_999), body }));
+      timestamp: new Date(1_790_000_000_999), attempts: 1, body }));
     const result = await (await mf.getWorker()).queue("synthetic-trace", messages);
     assert.equal(result.outcome, "ok");
     assert.equal(result.retryAll, false);
