@@ -130,12 +130,30 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
+  changes:
+    name: Select conservative PR source check scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      cli: ${{ steps.scope.outputs.cli }}
+      worker: ${{ steps.scope.outputs.worker }}
+      site: ${{ steps.scope.outputs.site }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Derive complete committed paths without secrets
+        id: scope
+        run: python infra/ci/pr_scope.py >> "$GITHUB_OUTPUT"
+
   cli:
     name: CLI (${{ matrix.os }})
     # Manual diagnostic jobs run independently; do not duplicate the full test matrix.
+    needs: changes
     if: >-
       github.event_name == 'push' ||
-      (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
+      (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0' && needs.changes.outputs.cli == 'true') ||
       (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance')))
     strategy:
       fail-fast: false
@@ -1529,9 +1547,10 @@ jobs:
 
   worker:
     name: Rust Worker (Wasm)
+    needs: changes
     if: >-
       github.event_name == 'push' ||
-      (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
+      (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0' && needs.changes.outputs.worker == 'true') ||
       (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance')))
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -1661,9 +1680,10 @@ jobs:
 
   site:
     name: Astro release site
+    needs: changes
     if: >-
       github.event_name == 'push' ||
-      (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0') ||
+      (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0' && needs.changes.outputs.site == 'true') ||
       (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance')))
     runs-on: ubuntu-latest
     timeout-minutes: 20
