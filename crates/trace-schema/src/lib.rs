@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 mod role;
 pub use role::{RoleCode, RoleEvent, RoleKind};
+mod client;
+pub use client::{ClientAttempt, ClientErrorKind, ClientPhase};
 
 /// Closed union of reviewed producers; existing Mail events retain their wire shape.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -186,6 +188,12 @@ pub struct Event {
     /// Exact observed HTTP status; zero is reserved for CLI attempts with no headers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_status: Option<u16>,
+    /// Optional enriched CLI boundary; absent for legacy clients and all API events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_phase: Option<ClientPhase>,
+    /// Closed client failure cause, never arbitrary exception text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_error_kind: Option<ClientErrorKind>,
     /// Power-of-two elapsed bucket bounded to one hour rounded upward.
     pub duration_ms_bucket: u64,
     /// Measured request byte bucket, never content or a path.
@@ -231,6 +239,8 @@ impl Event {
                 .is_some_and(|id| !canonical_uuid(id))
             || self.occurred_at_ms.is_some_and(|n| n > MAX_SAFE_INTEGER)
             || self.duration_ms.is_some_and(|n| n > MAX_SAFE_INTEGER)
+            || (self.service != Service::MailCli
+                && (self.client_phase.is_some() || self.client_error_kind.is_some()))
             || self.http_status.is_some_and(|n| {
                 (!(100..=599).contains(&n) && !(n == 0 && self.service == Service::MailCli))
                     || self.http_status_class != Some(n / 100)
@@ -264,6 +274,25 @@ impl Event {
     }
 
     fn valid_client(&self) -> bool {
+        let attempt = ClientAttempt {
+            started_at_ms: self.occurred_at_ms,
+            elapsed_ms: self.duration_ms,
+            phase: self.client_phase,
+            error_kind: self.client_error_kind,
+        };
+        // Previously accepted exact measurements without phase remain valid reader records.
+        let enriched_boundary = self.client_phase.is_some() || self.client_error_kind.is_some();
+        let valid_outcome = if enriched_boundary {
+            self.http_status.is_some_and(|status| attempt.valid(status))
+                && if attempt.failed() {
+                    self.outcome == Outcome::PhaseFailure
+                        && self.error_code == Some(ErrorCode::DependencyFailure)
+                } else {
+                    self.error_code.is_none() && self.valid_status_outcome(true)
+                }
+        } else {
+            self.error_code.is_none() && self.valid_status_outcome(true)
+        };
         matches!(
             self.operation,
             Operation::AddressesList
@@ -278,12 +307,11 @@ impl Event {
                 | Operation::MessagesMark
                 | Operation::MessagesDelete
         ) && self.parent_span_id.is_none()
-            && self.error_code.is_none()
+            && valid_outcome
             && self.request_bytes_bucket.is_none()
             && self.response_bytes_bucket.is_some()
             && self.diagnostic_code.is_none()
             && self.no_provider()
-            && self.valid_status_outcome(true)
     }
 
     fn valid_diagnostic(&self) -> bool {

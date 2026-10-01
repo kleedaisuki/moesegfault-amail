@@ -204,6 +204,106 @@ cec8ac2451516e6be6228673176a4048f248976b has the accepted tree. Reader rollout,
 producer clocks/remote client failure semantics and the deployed native platform
 canary are still pending; do not confuse this acceptance with their completion.
 
+## Remote CLI attempt reader (initial hosted source accepted)
+
+The next bounded patch upgrades readers, not the current CLI upload producer.
+The legacy upload serializer is unchanged: new CLI binaries still work against
+old `deny_unknown_fields` Mail servers. No environment opt-in, manual operator
+ceremony, capability probe or business deployment is introduced. Deploy the
+Queue reader before the Mail reader and verify both before separately admitting
+an enriched producer. Future capability negotiation can use ordinary API response
+metadata; its policy/protocol is not implemented or claimed by this patch.
+
+The Mail upload reader accepts nullable `started_at_ms`, `elapsed_ms`, `phase`
+and `error_kind`. Entirely absent metadata remains legacy. An enriched record
+requires exact elapsed time and a closed boundary/cause pair; an unavailable UTC
+clock stays absent. Milliseconds must be nonnegative JavaScript-safe integers.
+Unknown fields and arbitrary error/phase strings remain rejected. The same
+`ClientAttempt` validation is used at the upload and Queue boundaries.
+
+| Boundary | Observed HTTP status | Safe cause | Queue outcome |
+| --- | --- | --- | --- |
+| `auth` | 0 (no headers) | `credential_unavailable` | `phase_failure` |
+| `transport` | 0 (no headers) | timeout/connect/body/decode/request/other | `phase_failure` |
+| `response_body` | Received 100–599 | timeout/connect/body/decode/request/other | `phase_failure`, even with 200 headers |
+| `complete` | Received 100–599 | None | Existing HTTP-status-derived outcome |
+| Legacy, no boundary metadata | Existing status semantics | Unknown | Unchanged legacy outcome |
+
+Queue reconstruction maps UTC start to `occurred_at_ms`, monotonic elapsed to
+`duration_ms`, and preserves exact `http_status`, `client_phase` and
+`client_error_kind`. Attempt failures use the existing `dependency_failure`
+classification; a complete HTTP 503 is a complete exchange, not a transport
+failure. Previously accepted exact-only Queue records remain compatible.
+Identifiers still refer to the original client attempt, never upload or Queue
+invocation identities. Size measurements remain bucketed. No paths, bodies,
+search input, identity subjects, tokens or exception messages are admitted.
+
+The local duration snapshot is now taken immediately at the observed attempt
+boundary, **before** opening/waiting for SQLite. The earlier code accidentally
+included journal initialization/lock latency in elapsed time. The legacy numeric
+clamp remains 120,000ms; the exact column remains unclamped. A deterministic
+regression gives persistence a later clock but asserts the frozen 7ms snapshot.
+UTC start includes credential work; duration is one attempt, not a whole command,
+JSON interpretation or diagnostic upload.
+
+Hosted verification adds shared boundary/type/precision regressions, actual Mail
+reader decoding/reconstruction, legacy wire invariance and native Queue dispatch
+for auth, transport, 2xx-body-failure, successful completion and complete HTTP
+error. The existing three native sink tests are extended rather than introducing
+a second test runtime or guessed sleeps. Poison metadata and contradictory
+outcomes are acknowledged without logging or replay. PR 52's separately tested
+search-poll allowlist repair remains separate and must be retained on integration.
+
+### Explicit remaining coverage and loss boundary
+
+This patch does not claim complete command/auth/background coverage. Auth login,
+refresh dependency spans, pack/unpack/filesystem/JSON interpretation and detached
+upload loss are future bounded work. In particular, current upload non-2xx is
+silently treated as a completed flush; network/auth errors reach a detached
+process whose stderr is discarded. Pending rows remain durable, but no useful
+last-attempt outcome is shown to the user. Merely returning an error from that
+process would not repair visibility. A subsequent focused fix should store one
+safe bounded last-upload outcome (time/status/closed cause/pending count), expose
+it through the next normal diagnostic boundary, and preserve successful mail
+outcomes, machine stdout, opt-out and pending rows. No generic loss-event framework
+or new retained raw-request logging is needed.
+
+Industry grounding:
+https://opentelemetry.io/docs/specs/semconv/http/http-spans/ distinguishes received
+status from body/network failures and allows explicit client duration scope;
+https://opentelemetry.io/docs/collector/internal-telemetry/ separates failed
+enqueue/send from successful export. We borrow those distinctions, not a new
+collector or speculative automated diagnosis system. Native span/privacy
+research remains the separate infrastructure canary acceptance lane above.
+
+Academic context: Pivot Tracing's causal monitoring work
+(https://www.usenix.org/conference/atc16/technical-sessions/presentation/mace)
+illustrates why identifying dependency boundaries matters beyond joining IDs.
+The recent UniSage preprint (https://arxiv.org/abs/2509.26336) investigates
+analysis-aware telemetry sampling; it is not production acceptance or a reason
+to add a sampler here. First make failures/timing and diagnostic loss observable,
+then evaluate sampling against retained failure coverage rather than volume alone.
+
+Initial PR 54 head `4b12fbdb3363f835226c49d86b76f590c5e43757` passed full CI
+`36873422808` and syntax `36873422784`. Actual PR merge checkout/build source was
+`e2d6b5f71e7197e5572a0a249578a05e83b8071e`. Each CLI platform passed 34 unit
+and 2 actual process tests. Schema passed 12 unit tests; Mail Worker passed 74
+main tests plus its existing integration targets. All eight native suites and
+the stable Wasm aggregate succeeded. The 35-file same-run artifact
+`11168665871` remained source/run/attempt-bound and was verified independently
+before native consumption. CLI dependency, Worker dependency and bundler cache
+receipts explicitly reported `exact_hit`.
+
+Observed whole workflow time was 14:03:57–14:09:14 UTC (5m17s), build job
+14:04:12–14:06:02 (1m50s), native core including setup 14:06:05–14:09:06
+(3m01s). These are samples, not a performance SLA. No Astro job was required for
+this scoped source change; no skipped business/deploy lane is counted as tested.
+Independent review found no demonstrated blocker and requested two additional
+native cases: a historical exact-only Mail CLI record and rejection of otherwise
+valid closed client metadata on a Mail API record. Those fixture-only additions
+are pending final-head hosted checks; they do not change compilation inputs.
+No reader deployment, enriched upload rollout, Mail mutation or native deployed
+privacy acceptance is implied by the successful source run.
 ## Concrete legacy poll telemetry gap
 
 Source inspection at dcc4eed6b2dd27120940d79484ae7d9ddc0cb051 found that CLI
