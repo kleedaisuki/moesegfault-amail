@@ -40,7 +40,7 @@ fn run_with(
                 conn,
                 &[],
                 Outcome::Failed,
-                "auth",
+                "journal",
                 Some("journal_read"),
                 None,
                 None,
@@ -52,6 +52,7 @@ fn run_with(
     if ids.is_empty() {
         return attempt.finish(conn, &[], Outcome::Empty, "complete", None, None, None);
     }
+    attempt.phase(conn, "auth", None, None)?;
     let token = match token() {
         Ok(token) => token,
         Err(_) => {
@@ -283,6 +284,7 @@ mod tests {
                 "accepted",
                 None,
             ),
+            (202, "{\"accepted\":1}".into(), Some(0), "accepted", None),
             (503, marker.into(), Some(0), "failed", None),
             (202, "cut".into(), Some(100), "unknown", Some("body")),
             (
@@ -306,6 +308,7 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             cfg.api_base = format!("http://{}", listener.local_addr().unwrap());
             let store_path = cfg.home.join("telemetry.sqlite3");
+            let poisoned_header = body == "{\"accepted\":1}";
             let peer = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 let sent = request(&mut stream);
@@ -318,6 +321,7 @@ mod tests {
                         [],
                     )
                     .unwrap();
+                let correlation = if poisoned_header { marker } else { correlation };
                 let response = match declared {
                     Some(n) => format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nX-Amail-Request-Id: {correlation}\r\nConnection: close\r\n\r\n{body}", if n == 0 { body.len() } else { n }),
                     None => format!("HTTP/1.1 {status} Test\r\nTransfer-Encoding: chunked\r\nX-Amail-Request-Id: {correlation}\r\nConnection: close\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n", body.len()),
@@ -347,7 +351,14 @@ mod tests {
             assert_eq!(row.0, expected);
             assert_eq!(row.2.as_deref(), kind);
             assert_eq!(row.3, Some(status));
-            assert_eq!(row.4.as_deref(), Some(correlation));
+            assert_eq!(
+                row.4.as_deref(),
+                if poisoned_header {
+                    None
+                } else {
+                    Some(correlation)
+                }
+            );
             assert!(row.5 > 0 && row.6 >= 0);
             let uploaded: i64 = conn
                 .query_row("SELECT uploaded FROM events", [], |r| r.get(0))
@@ -413,6 +424,21 @@ mod tests {
     #[test]
     fn upload_auth_builder_and_empty_boundaries_do_not_create_recursive_events() {
         let (_home, cfg, conn) = fixture();
+        conn.execute("UPDATE events SET status=-1", []).unwrap();
+        run_with(
+            &cfg,
+            &conn,
+            None,
+            || panic!("journal read failure must precede credentials"),
+            Client::builder().build(),
+        )
+        .unwrap();
+        let row = receipt(&conn);
+        assert_eq!(
+            (row.0.as_str(), row.1.as_str(), row.2.as_deref()),
+            ("failed", "journal", Some("journal_read"))
+        );
+        conn.execute("UPDATE events SET status=200", []).unwrap();
         run_with(
             &cfg,
             &conn,

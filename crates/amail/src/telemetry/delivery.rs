@@ -152,13 +152,13 @@ pub(super) fn begin(
         .unwrap_or_else(uuid::Uuid::new_v4)
         .to_string();
     let changed = if scheduled_id.is_some() {
-        tx.execute("UPDATE journal_upload SET started_at_ms=?2,outcome='running',phase='auth',batch_count=?3
+        tx.execute("UPDATE journal_upload SET started_at_ms=?2,outcome='running',phase='journal',batch_count=?3
             WHERE id=1 AND attempt_id=?1 AND outcome='scheduled'", params![id, utc_ms(), count as i64])?
     } else {
         tx.execute("INSERT INTO journal_upload(id,attempt_id,started_at_ms,outcome,phase,batch_count)
-            VALUES(1,?1,?2,'running','auth',?3) ON CONFLICT(id) DO UPDATE SET
+            VALUES(1,?1,?2,'running','journal',?3) ON CONFLICT(id) DO UPDATE SET
             attempt_id=excluded.attempt_id,scheduled_at_ms=NULL,started_at_ms=excluded.started_at_ms,
-            finished_at_ms=NULL,elapsed_ms=NULL,outcome='running',phase='auth',error_kind=NULL,
+            finished_at_ms=NULL,elapsed_ms=NULL,outcome='running',phase='journal',error_kind=NULL,
             http_status=NULL,correlation_id=NULL,batch_count=excluded.batch_count,os_error_code=NULL", params![id, utc_ms(), count as i64])?
     };
     tx.commit()?;
@@ -295,6 +295,7 @@ struct Receipt {
 fn phase_label(value: &str) -> &'static str {
     match value {
         "spawn" => "spawn",
+        "journal" => "journal",
         "auth" => "auth",
         "transport" => "transport",
         "response_headers" => "response_headers",

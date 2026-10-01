@@ -4,6 +4,21 @@ Status: bounded source implementation; hosted acceptance evidence pending. This 
 is stacked on PR 54's accepted reader source, not an enriched producer rollout.
 No provider access, Mail deployment, user account creation or sending is involved.
 
+Initial source `f38ebe116a0b493935c53cb1a98006343565bde2` in stacked PR 64 passed
+hosted CI `36880337510` and syntax `36880337195`. Linux/Windows/macOS each passed
+42 unit and 4 actual CLI-process tests, zero failed/ignored/filtered; every CLI
+dependency-cache receipt explicitly reported `exact_hit`. Scoped CI correctly
+tested changed CLI/infrastructure inputs without rebuilding unchanged Workers.
+Observed workflow time was 14:56:32–14:58:09 UTC (1m37s). Linux/macOS/Windows
+jobs including setup were 30s/44s/81s; these are samples, not an SLA.
+
+Final source refinements make the initial pending-journal selection boundary
+explicit before entering credential auth, test malformed legacy row handling
+before credentials, and extend the HTTP fixture with an invalid private response
+request-ID header. They do not add probes or alter legacy upload JSON. Final-head
+hosted checks supersede this initial source acceptance and remain separately
+identified by the PR check URLs; initial success is not a claim about later edits.
+
 ## Observed failure boundaries
 
 The original detached uploader discards stderr, acquires credentials before
