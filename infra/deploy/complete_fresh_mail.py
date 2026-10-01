@@ -32,6 +32,7 @@ from pin_staging_mail import mail_resources, serving_deployment, _bindings_match
 from check_mail_maintenance import CADENCE, entry_surface_match, schedules_match
 from check_production_role_graph import forward_snapshot
 import check_observability as capture
+import check_mail_maintenance as maintenance
 import worker_artifact
 
 CONFIRM = "RUN_FRESH_PRODUCTION_ONLINE"
@@ -62,6 +63,8 @@ ERROR_REASONS = {
     "fresh_version_unverified", "fresh_capabilities_unverified", "fresh_capture_or_surface_unverified",
     "fresh_coordinates_unreviewed", "fresh_schedule_unreviewed", "fresh_r2_empty_unverified",
     "fresh_graph_changed", "process_exit", "version_count", "output_limit",
+    "fresh_capture_coordinates_unreviewed", "fresh_capture_capabilities_unverified",
+    "fresh_capture_serving_changed", "fresh_capture_patch_unverified", "fresh_capture_readback_unverified",
 }
 
 
@@ -188,29 +191,62 @@ def adapter_pins(provider, versions: dict) -> dict:
     return result
 
 
+def adapter_contract(component: str, scope: Scope) -> tuple[dict, dict]:
+    """Share source-owned capabilities between capture correction and final observation."""
+    if component not in ADAPTERS:
+        raise ValueError("fresh_online_adapter_unreviewed")
+    with (ROOT / CONFIGS[component]).open("rb") as file:
+        config = tomllib.load(file)
+    expected = {name: ("plain_text", value) for name, value in config.get("vars", {}).items()}
+    if component == "mail_ingress":
+        if config.get("services") != [{"binding": "MAIL_API", "service": "amail-mail"}]:
+            raise ValueError("fresh_online_ingress_service_unverified")
+        expected.update({"INGRESS_SECRET": ("secret_text", None), "MAIL_API": ("service", "amail-mail")})
+    else:
+        expected["MAIL_DB"] = ("d1", scope.database)
+    return config, expected
+
+
+def verify_adapter_version(provider, component: str, version: str, expected: dict) -> None:
+    """Reject changed handlers, capabilities or ingress delegation before any PATCH."""
+    immutable = capture.readback(provider.account, provider.token, ADAPTERS[component], f"versions/{version}")
+    if (not _bindings_match(immutable, version, expected)
+            or not entry_surface_match(immutable, version, "email" if component == "mail_ingress" else "queue")):
+        raise ValueError("fresh_online_adapter_capabilities_unverified")
+    if component == "mail_ingress":
+        bindings = immutable["resources"]["bindings"]
+        bindings = bindings["result"] if isinstance(bindings, dict) else bindings
+        service = next(binding for binding in bindings if binding["name"] == "MAIL_API")
+        if service.get("service") != "amail-mail" or service.get("environment") not in (None, "production"):
+            raise ValueError("fresh_online_ingress_service_unverified")
+
+
+def correct_adapter_capture(provider, scope: Scope, component: str, version: str, record) -> str:
+    """Correct only independent capture metadata on an exact newly installed adapter."""
+    config, expected = adapter_contract(component, scope)
+    verify_adapter_version(provider, component, version, expected)
+    return readback.capture_off(provider, ADAPTERS[component], version,
+                                expected_bindings=expected, reviewed=config["observability"], record=record)
+
+
+def correct_maintenance_capture(provider, scope: Scope, queue: str, version: str, record) -> str:
+    """Apply the same narrow correction to activated maintenance without redeployment."""
+    with (ROOT / CONFIGS["maintenance"]).open("rb") as file:
+        config = tomllib.load(file)
+    expected = maintenance.expected_bindings("production", queue, active=True)
+    expected.update({"MAIL_DB": ("d1", scope.database), "MAIL_BODIES": ("r2_bucket", scope.bucket)})
+    return readback.capture_off(provider, "amail-mail-maintenance", version,
+                                expected_bindings=expected, reviewed=config["observability"], record=record)
+
+
 def verify_adapters(provider, scope: Scope, versions: dict) -> dict:
     """Bracket immutable adapter capabilities and effective independent capture-off."""
     before = adapter_pins(provider, versions)
     for component, version in versions.items():
         script = ADAPTERS[component]
         read = lambda suffix: capture.readback(provider.account, provider.token, script, suffix)
-        with (ROOT / CONFIGS[component]).open("rb") as file:
-            config = tomllib.load(file)
-        expected = {name: ("plain_text", value) for name, value in config.get("vars", {}).items()}
-        if component == "mail_ingress":
-            expected.update({"INGRESS_SECRET": ("secret_text", None), "MAIL_API": ("service", None)})
-        else:
-            expected["MAIL_DB"] = ("d1", scope.database)
-        immutable = read(f"versions/{version}")
-        if (not _bindings_match(immutable, version, expected)
-                or not entry_surface_match(immutable, version, "email" if component == "mail_ingress" else "queue")):
-            raise ValueError("fresh_online_adapter_capabilities_unverified")
-        if component == "mail_ingress":
-            bindings = immutable["resources"]["bindings"]
-            bindings = bindings["result"] if isinstance(bindings, dict) else bindings
-            service = next(binding for binding in bindings if binding["name"] == "MAIL_API")
-            if service.get("service") != "amail-mail" or service.get("environment") not in (None, "production"):
-                raise ValueError("fresh_online_ingress_service_unverified")
+        _, expected = adapter_contract(component, scope)
+        verify_adapter_version(provider, component, version, expected)
         settings, legacy = read("settings"), read("script-settings")
         worker = capture.worker_readback(provider.account, provider.token, script)
         subdomain = read("subdomain")
@@ -270,7 +306,7 @@ class Online:
 
     def record(self, state: str, **facts) -> None:
         """Persist closed aggregate fields, never error text, provider bodies or secrets."""
-        if state not in {"intent", "observed", "failed"} or set(facts) - {"version", "error_type"}:
+        if state not in {"intent", "observed", "failed"} or set(facts) - {"version", "worker_id", "error_type"}:
             raise ValueError("fresh_online_record_unreviewed")
         value = {"schema": "mail-fresh-online-controller/v1", "phase": self.phase,
                  "state": state, **facts}
@@ -321,9 +357,14 @@ class Online:
             self.step("email_queues", lambda: email_events("queues"))
             versions = {component: self.step(component, lambda component=component: deploy_adapter(component))
                         for component in ADAPTERS}
+            for component, version in versions.items():
+                self.step(component + "_capture_off", lambda component=component, version=version:
+                          correct_adapter_capture(provider, scope, component, version, self.record))
             self.step("email_subscription", lambda: email_events("subscription"))
             pins["amail-mail-maintenance"] = self.step("maintenance", lambda: bootstrap.submit_once(
                 "maintenance", ROOT / CONFIGS["maintenance"], scope))
+            self.step("maintenance_capture_off", lambda: correct_maintenance_capture(
+                provider, scope, queue, pins["amail-mail-maintenance"], self.record))
             adapters_before = self.step("adapter_readback", lambda: verify_adapters(provider, scope, versions))
             graph = self.step("active_readback", lambda: readback.verify(
                 scope, pins, queue, dlq, provider, maintenance_crons=CADENCE, source_active=True))
