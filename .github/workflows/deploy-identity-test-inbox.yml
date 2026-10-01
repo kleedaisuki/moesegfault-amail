@@ -4,9 +4,15 @@ name: Deploy staging Identity test inbox
 
 on:
   workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful full CI run for this exact current main SHA; omitted selects an exact-main run, never an ancestor
+        type: string
+        required: false
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: staging-native-mail-acceptance
@@ -14,7 +20,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: Build and deploy private Rust Email Worker
+    name: Deploy checked private Rust Email Worker
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -25,6 +31,7 @@ jobs:
       CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
       PYTHONDONTWRITEBYTECODE: '1'
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check deployment credentials
         shell: bash
@@ -36,25 +43,33 @@ jobs:
             fi
           done
       - uses: actions/checkout@v4
-      - name: Set up Rust Wasm target
-        run: |
-          rustup update stable
-          rustup target add wasm32-unknown-unknown
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Require full checked artifact for this exact main source
+        id: source
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: python infra/ci/inbox_worker_artifact.py prepare --source-run-id "$SOURCE_RUN_ID"
+      - name: Download only the admitted original producer artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ steps.source.outputs.artifact_id }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: .temp/ci/worker-built
+          merge-multiple: true
+      - name: Verify original source run compiler and complete generated file hashes
+        run: python infra/ci/inbox_worker_artifact.py restore
       - name: Test exact-route ownership and conflict safeguards
         run: python -m unittest discover -s workers/identity-test-inbox -p 'test_*.py' -v
-      - name: Test Rust Email handler on native target
-        run: cargo test -p amail-identity-test-inbox --locked --all-targets
-      - name: Check Rust Email handler on Wasm target
-        run: cargo check -p amail-identity-test-inbox --locked --target wasm32-unknown-unknown
       - name: Install reviewed deployment tools
         run: |
-          cargo install worker-build --version 0.8.5 --locked
           npm install --global wrangler@4.142.0
       - name: Refuse deployment while any test alias is routed
         shell: bash
@@ -66,9 +81,6 @@ jobs:
           fi
       - name: Check private staging binding and live R2 public surfaces
         run: python workers/identity-test-inbox/check_config.py --live
-      - name: Bundle Rust Email Worker
-        working-directory: workers/identity-test-inbox
-        run: worker-build --release
       - name: Deploy staging-only private Email Worker
         working-directory: workers/identity-test-inbox
         run: wrangler deploy
