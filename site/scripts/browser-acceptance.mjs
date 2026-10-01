@@ -196,6 +196,15 @@ try {
         await page.goto(`${base}${route}`);
       });
       if (route !== '/') await check(result, 'TOC activation and heading visibility', () => toc(page, stem, result));
+      if (route === '/manual/') await check(result, 'privacy introduction renders semantic emphasis', async () => {
+        // The pre-use warning must render as emphasis, not raw Markdown syntax.
+        const label = '使用前的隐私提示：';
+        const count = await page.locator('.manual-prose strong').evaluateAll((elements, text) =>
+          elements.filter((el) => el.textContent.trim() === text).length, label);
+        assert.equal(count, 1, 'privacy introduction must have exactly one strong label');
+        assert.ok(!(await page.locator('.manual-prose').innerText()).includes(`**${label}**`),
+          'privacy introduction must not expose literal Markdown markers');
+      });
       if (route === '/manual/') await check(result, 'manual table readability and reachability', () => tables(page, stem));
       await check(result, 'review screenshots', async () => {
         await page.goto(`${base}${route}`);
