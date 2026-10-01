@@ -34,6 +34,8 @@ def validate(value: object) -> dict:
     resumed = isinstance(value, dict) and value.get("schema") == RESUMED_SCHEMA
     if resumed:
         fields.add("creation_epoch")
+        if "retained_sink" in value:
+            fields.add("retained_sink")
     if (not isinstance(value, dict) or set(value) != fields or value["schema"] not in (SCHEMA, RESUMED_SCHEMA)
             or value["realm"] != "production" or value["state"] != "paused"
             or type(value["run_attempt"]) is not int or value["run_attempt"] != 1
@@ -59,6 +61,16 @@ def validate(value: object) -> dict:
     if stores["database_name"] != scope.database_name or stores["bucket"] != scope.bucket:
         raise ValueError("fresh_receipt_scope_mismatch")
     graph = checked_graph(value["graph"], "production")
+    if "retained_sink" in value:
+        retained = value["retained_sink"]
+        if (not isinstance(retained, dict) or set(retained) != {"source_epoch", "version"}
+                or not isinstance(retained["source_epoch"], dict)
+                or set(retained["source_epoch"]) != set(source)
+                or retained["version"] != graph["pins"]["amail-trace-sink"]["version"]):
+            raise ValueError("fresh_receipt_retained_sink_unreviewed")
+        sink_epoch = Epoch(**retained["source_epoch"])
+        if sink_epoch.run_id in {source["run_id"], epoch.run_id}:
+            raise ValueError("fresh_receipt_retained_sink_unreviewed")
     if graph["api_crons"] != [] or graph["maintenance_crons"] != []:
         raise ValueError("fresh_receipt_schedule_unreviewed")
     resources = value["resources"]
@@ -91,7 +103,7 @@ class Receipt:
 
 
 def persist(scope: Scope, graph: dict, queue: str, dlq: str, path: Path,
-            *, deployment_epoch: Epoch | None = None) -> dict:
+            *, deployment_epoch: Epoch | None = None, retained_sink: dict | None = None) -> dict:
     """Persist once only after exact readback, inside the repository's .temp tree.
 
     Example: ``persist(scope, verify(scope, pins, queue, dlq, provider), queue,
@@ -104,6 +116,10 @@ def persist(scope: Scope, graph: dict, queue: str, dlq: str, path: Path,
         raise ValueError("fresh_receipt_source_unreviewed")
     source = deployment_epoch or scope.epoch
     creation = {"creation_epoch": asdict(scope.epoch)} if deployment_epoch is not None else {}
+    if retained_sink is not None:
+        if deployment_epoch is None:
+            raise ValueError("fresh_receipt_retained_sink_unreviewed")
+        creation["retained_sink"] = retained_sink
     value = validate({"schema": RESUMED_SCHEMA if creation else SCHEMA, "realm": "production", "state": "paused",
                       "source_epoch": asdict(source), "run_attempt": 1, **creation,
                       "scope": {"database": scope.database, "database_name": scope.database_name,
