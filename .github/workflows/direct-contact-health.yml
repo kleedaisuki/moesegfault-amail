@@ -27,7 +27,9 @@ jobs:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.AMAIL_CONTACT_HEALTH_ACTIVE == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # No approval-dependent environment: expiry remains fail-closed if runs stop.
+    # Use the existing realm Secrets; current production has no approval/wait rule.
+    # Future protection changes or missed runs cannot renew the bounded health TTL.
+    environment: ${{ inputs.target || 'production' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

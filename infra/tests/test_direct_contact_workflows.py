@@ -93,7 +93,7 @@ class DirectContactWorkflowTests(unittest.TestCase):
         self.assertNotIn("INPUT_CONTACT_CONTRACT_ID:", legacy)
 
     def test_hourly_refresh_is_production_only_or_explicit_manual_realm(self):
-        """No environment approval, fallback grant, upload or hidden write lane."""
+        """Existing realm Secrets do not add a fallback grant or hidden write lane."""
         text = source("direct-contact-health.yml")
         block = job_block(text, "refresh")
         self.assertIn("cron: '17 * * * *'", text)
@@ -106,7 +106,7 @@ class DirectContactWorkflowTests(unittest.TestCase):
                        "CF_EMAIL_ROUTING_TOKEN", "ROLE_FORWARD_DESTINATION"):
             self.assertIn(f"{secret}: ${{{{ secrets.{secret} }}}}", block)
         self.assertIn("run: python infra/operator/direct_contact_health.py", block)
-        self.assertNotRegex(block, re.compile(r"^    environment:", re.M))
+        self.assertIn("environment: ${{ inputs.target || 'production' }}", block)
         for forbidden in ("continue-on-error:", "|| true", "always()", "upload-artifact",
                           "attest_gate.py", "send_control.py", "ensure_role_forwarding.py",
                           "direct_contact_policy.py", "GITHUB_STEP_SUMMARY", "wrangler"):
