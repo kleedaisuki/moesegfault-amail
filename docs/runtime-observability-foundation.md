@@ -168,3 +168,18 @@ provide an explicit first-attempt integer rather than relying on an obsolete
 example's optional default. This is a fixture boundary failure, not evidence that
 the sink/schema ran. No partial pass or deployment is accepted; hosted rerun is
 required with the complete native message descriptor.
+
+Second source check 36851779508 reached the actual Rust Queue handler after the
+attempt descriptor correction (synthetic legacy/enriched output was visible).
+The fixture then failed on outdated result-field names: the native response has
+retryBatch.retry and retryMessages, not the archived example's retryAll and
+explicitRetries. The current workerd API declaration and the pinned Miniflare
+4.20260730.0 source confirm that shape. Also capture native console stdout/stderr
+with the pinned runtime's handleRuntimeStdio hook; Log.logWithLevel alone captures
+Miniflare operational logs, not all Worker console output. Drain both native pipes
+after disposal before asserting absence, instead of a guessed delay/global console
+patch. This avoids a false-positive poison check or an empty positive-control log.
+
+Primary inspected source (the exact pinned SDK/runtime, not an archived example):
+https://github.com/cloudflare/workers-sdk/blob/miniflare%404.20260730.0/packages/miniflare/src/runtime/index.ts
+and workerd QueueResponse in https://github.com/cloudflare/workerd/blob/main/src/workerd/api/queue.h.
