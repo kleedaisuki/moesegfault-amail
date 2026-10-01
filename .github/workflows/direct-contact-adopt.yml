@@ -14,24 +14,24 @@ on:
         required: true
         type: string
       destination_id:
-        description: Provider destination record ID only, never a mailbox address
-        required: true
+        description: Optional provider ID; supply all five pins or leave all empty for private GET discovery
+        required: false
         type: string
       apex_abuse_rule_id:
         description: Exact existing apex abuse routing rule ID
-        required: true
+        required: false
         type: string
       apex_postmaster_rule_id:
         description: Exact existing apex postmaster routing rule ID
-        required: true
+        required: false
         type: string
       mail_abuse_rule_id:
         description: Exact existing mail subdomain abuse routing rule ID
-        required: true
+        required: false
         type: string
       mail_postmaster_rule_id:
         description: Exact existing mail subdomain postmaster routing rule ID
-        required: true
+        required: false
         type: string
       case_ref:
         description: Opaque adoption review reference, no private text
@@ -63,6 +63,8 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
           INPUT_TARGET: ${{ inputs.target }}
           INPUT_EXPECTED_CONTACT_CONTRACT_ID: ${{ inputs.expected_contact_contract_id }}
           INPUT_DESTINATION_ID: ${{ inputs.destination_id }}
