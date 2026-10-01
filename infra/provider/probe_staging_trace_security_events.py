@@ -3,6 +3,9 @@
 This one-shot diagnostic cannot attribute an event to the canary without a Ray
 ID. It never prints provider data, request identifiers, network locations, or
 free-form rule descriptions. The single query is zone, host, and time scoped.
+
+The completed workflow lane is retired; retain this module for synthetic safety
+tests and historical evidence, not as a current provider-read runbook.
 """
 
 from __future__ import annotations

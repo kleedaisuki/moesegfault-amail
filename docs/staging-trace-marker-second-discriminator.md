@@ -4,6 +4,11 @@ Status: **historical read completed; request-context carriers located; privacy
 acceptance remains unverified**. This document records the fixed hosted result,
 not raw telemetry. The read created no traffic or configuration change.
 
+Maintenance update (2026-10-01): the completed fixed-window dispatch target and
+job are retired from current `ci.yml`. The classifier and synthetic tests remain;
+the execution-gate section below describes historical source, not a current
+invocation. See [current operational lanes](maintenance-operational-lanes.md).
+
 ## Motivation and immutable scope
 
 Historical read-only run `36713163067`, workflow source SHA `17abe25`, returned
@@ -77,7 +82,7 @@ and the [superseding privacy decision](mail-trace-privacy-decision.md).
 
 ## Execution gates and historical next-decision table
 
-The manual `ci.yml` target `staging-trace-marker-discriminator` requires exact
+The retired `ci.yml` target `staging-trace-marker-discriminator` required exact
 `READ_STAGING_TRACE_MARKER_DISCRIMINATOR` confirmation and the project branch.
 It uses staging Environment, read-only repository permission, five-minute
 timeout, non-cancelling dedicated concurrency, and final-step-only repository

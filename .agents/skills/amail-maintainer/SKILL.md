@@ -10,6 +10,14 @@ outstanding work. Filenames identify the relevant runbook; historical reviews
 are evidence, not the active operational policy. This skill grants no additional
 deployment, mail, secret or account authorization.
 
+Use `docs/maintenance-operational-lanes.md` for the complete workflow/job
+inventory, current source/deploy/recovery lanes and retired incident probes.
+The completed September 30 marker-location, marker-discriminator and Security
+Events reads have no current executable dispatch lane. Retained classifiers and
+old run instructions are historical evidence, not permission to replay provider
+reads from old source. Preserve recovery tools and supported acceptance gates;
+do not retire the standalone Identity inbox or active native-tracing experiment.
+
 ## Pick the relevant lane
 
 * **CI/build:** `.github/workflows/ci.yml`, `infra/ci/worker_artifact.py` and

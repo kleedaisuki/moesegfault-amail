@@ -2,6 +2,9 @@
 
 This read-only follow-up creates no traffic and cannot attest privacy. Unknown
 keys and provider values are compared privately, never exported or interpolated.
+
+The completed workflow lane is retired; retain this module for synthetic safety
+tests and historical evidence, not as a current provider-read runbook.
 """
 
 from __future__ import annotations
