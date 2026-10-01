@@ -1,6 +1,6 @@
 # Accepted outbound projection integrity
 
-Date: 2026-10-01. Implementation base: Mail `origin/main` `ea54512f8ce798e097bc7645e5ee2f690030748c` (PR #18). Source-only correctness repair; no local project test/build, provider request, deployment, live subscription inspection or public-send change was performed. Validation below is an acceptance plan, not a claimed result.
+Date: 2026-10-01. Implementation base: Mail `origin/main` `ea54512f8ce798e097bc7645e5ee2f690030748c` (PR #18). Source-only correctness repair; no local project test/build, provider request, deployment, live subscription inspection or public-send change was performed. Exact hosted source results are recorded below; deployment admission remains separate.
 
 ## Problem and contract
 
@@ -44,14 +44,18 @@ This is an executable ordering contract for the deployment owner, **not a deploy
 | Record an aggregate-only journal baseline | Count accepted/provider-positive journals and surviving owned tombstones; retain counts/state distributions and exact source/version, not owner keys, mail IDs, ZIPs or raw SQL results in public artifacts |
 | Apply migration 0010 before any new code | Hosted staging D1 migration succeeds; verify the two lease columns, lookup index and semantic-work requeue trigger exist |
 | Stop assigning work to old revisions | All effective HTTP/service routing and active Worker deployment percentages serve fenced revisions only; no old Cron trigger can start another old invocation |
-| Record `T_stop`, the latest verified instant old HTTP/service/Cron work could start | Record UTC timestamp and provider deployment/trigger readback; source configuration alone is insufficient |
-| Drain old unfenced work | Independently observe all old-version invocations finished, **or** wait at least the platform's full 15-minute maximum wall window after `T_stop` before any correctness acceptance dependent on fencing; retain timestamped evidence and separately account for deployment propagation uncertainty |
+| Establish HTTP/service admission stop | Verify old revisions cannot receive new HTTP/service work; record timestamped effective routing/deployment evidence, not source configuration alone |
+| Drain old unfenced HTTP/service work | Independently verify completion or provider-confirmed termination of every old invocation that could still mutate these stores. No generic elapsed-time wait substitutes for this proof; a 100% new-version traffic pin cannot terminate old connected requests |
+| Establish Cron admission stop | Disable old Cron starts and verify effective trigger state. Account explicitly for the documented up-to-15-minute propagation window; identify `T_last_cron`, the latest possible old Cron start, after propagation/readback uncertainty |
+| Drain old unfenced Cron/Queue work | Observe every old invocation completed/terminated, or apply the corresponding documented 15-minute invocation window only after independently establishing its latest possible start and stopping retries/new admission. For Cron this means after `T_last_cron`, not merely 15 minutes after a source/config change |
 | Recheck the effective deployment and journal aggregates after drain | No old version serves traffic or newly starts Cron; compare the accepted journal/status counts to the baseline and investigate unexpected divergence before resuming acceptance |
 | Run narrowly scoped staged integrity acceptance on exact deployed revision | The post-accepted HTTP/Cron/delete/GC case and supported legacy-tombstone recovery pass, then existing Cron can resume under the fenced-only revision contract |
 
+[Workers limits](https://developers.cloudflare.com/workers/platform/limits/) explicitly distinguish HTTP requests, which have no hard wall-duration limit while the client remains connected, from the 15-minute Cron/Queue window. [Cron trigger configuration](https://developers.cloudflare.com/workers/configuration/cron-triggers/) documents changes taking up to 15 minutes to propagate. Therefore a single 15-minute timer after disabling a trigger/configuration neither establishes the latest old Cron start nor drains old HTTP/service invocations.
+
 If effective routing, trigger state, old invocation termination or timestamp provenance cannot be verified, keep the cutover admission false. Waiting while an old trigger is still able to start more work is **not** draining. Applying a migration is not proof that old source stopped serving. This checklist does not authorize a provider mutation, public send, production cutover or release by itself.
 
-The platform clock supplies durable expiry. Forward clock movement can defer a running holder; backward movement can prolong recovery. The 20-minute value is a finite configured retry window under a progressing platform clock, not a formal wall-time guarantee under arbitrary clock changes. A new holder's UUID, rather than timestamp uniqueness, fences old work.
+The platform clock supplies durable expiry. Forward clock movement can defer a running holder; backward movement can prolong recovery. The 20-minute value is a finite configured retry window under a progressing platform clock, not a formal wall-time guarantee under arbitrary clock changes and not an HTTP invocation lifetime cap. Token fencing, not assumed old-HTTP termination at 15 or 20 minutes, protects a new lease holder from still-running fenced source. A new holder's UUID, rather than timestamp uniqueness, fences old work.
 
 This change deliberately does **not** add accepted-item fairness, LIMIT 5, a shared D1 budget, phase rotation, timeouts, deadline slices or a durable chunk cursor. A later phase deadline must prove that one maximum valid archive finishes within its admitted turn, or introduce continuation; repeatedly replaying a short prefix is not progress. Current twenty-row accepted recovery can still exceed Paid's documented D1 allowance. No deployment admission or Free-safety claim follows from this integrity repair.
 
@@ -89,15 +93,15 @@ Use the real built Rust/Wasm entry, isolated native D1/R2, synthetic ZIPs and co
 | Legacy vector and old leased embedding work | Vector metadata invalidated, work freshly queued; an old embedding lease cannot commit after repair |
 | Older extra chunks / shorter new body | Stale suffix removed under lease; exact current compiled body and original mutable read/delete flags |
 
-Only static Rust formatting/parsing and `git diff --check` were run locally. No runtime result is asserted here.
+Only static Rust formatting/parsing and `git diff --check` were run locally. Runtime evidence comes exclusively from the exact hosted run recorded below, not local execution or a deployed-provider test.
 
 ### Integrated hosted test selection
 
 The selected final validator files/reviews come from `570554ce395f1b7aac740c5828b2a7f330511dc0`; provider-free EmailService adapter research comes from `a723eb7`. They are integrated as scoped file snapshots, not a merge of the validator's older branch. Main's existing address, embedding HTTP and SQL-comment suites remain in the default package script.
 
-The default hosted workerd suite adds **11 standalone accepted-integrity cases** in `outbound-recovery.test.mjs` and **3 deterministic HTTP/Cron cases** in `accepted-http-cron-race.test.mjs`. `outbound-recovery-budget.test.mjs` remains explicitly outside that default: twenty maximum valid archives are a known resource-bound counterexample awaiting the separate budget/fairness repair, not a skipped integrity assertion or a passing budget claim.
+The default hosted workerd suite adds **11 standalone accepted-integrity cases** in `outbound-recovery.test.mjs` and **5 deterministic HTTP/Cron and public-deletion cases** in `accepted-http-cron-race.test.mjs`. `outbound-recovery-budget.test.mjs` remains explicitly outside that default: twenty maximum valid archives are a known resource-bound counterexample awaiting the separate budget/fairness repair, not a skipped integrity assertion or a passing budget claim.
 
-The corrected archive-present tombstone fixture observes zero new body-chunk staging, exact journal terminalization and real GC. It does **not** claim its removed, unreachable trigger exercised cached-R2 mid-projection GC. The HTTP expired-lease fixture resumes the stale HTTP holder after the new owner has already terminalized/deleted/collected; it proves that no resurrection occurs then, not separate runtime proof of stale-token isolation while a new owner is still publishing in accepted state. Token predicates also have independent source review. No expanded hosted result is asserted before the exact integration commit runs in Actions.
+The corrected archive-present tombstone fixture observes zero new body-chunk staging, exact journal terminalization and real GC. It does **not** claim its removed, unreachable trigger exercised cached-R2 mid-projection GC. The HTTP expired-lease fixture resumes the stale HTTP holder after the new owner has already terminalized/deleted/collected; it proves that no resurrection occurs then, not separate runtime proof of stale-token isolation while a new owner is still publishing in accepted state. Token predicates also have independent source review. Hosted evidence is limited to the exact revision and selected cases recorded below.
 
 Reproduce only on the hosted runner after its real Rust/Wasm build and shim preparation:
 
@@ -114,4 +118,15 @@ Local checks of the integration were `node --check` for the six new JavaScript m
 
 The DELETE implementation's exact-one `meta.changes` check was incorrect. The pinned Miniflare implementation derives that metadata from SQLite aggregate `total_changes()`; deleting a pending embedding work row and its owner schedule makes more than one database change although exactly one message was tombstoned. The official [D1 result contract](https://developers.cloudflare.com/d1/worker-api/return-object/) does not promise a direct-message-only count under triggers. The fix uses a single owner-scoped, still-live `UPDATE ... RETURNING id` and the returned row's presence. [SQLite RETURNING](https://www.sqlite.org/lang_returning.html) distinguishes directly modified rows from additional trigger changes. This preserves one submitted statement, first successful owner deletion `204`, foreign/already-deleted `404`, and deletion of a known hidden accepted legacy projection; it introduces neither a precheck race nor unconditional success.
 
-The HTTP/Cron harness now checks exact owner/live-row preconditions, persisted deletion even when status is unexpected, foreign identity `404` without modification, first owner `204`, and repeated `404` without retombstoning. Two additional cases cover no pending embedding work and a known legacy projection hidden by accepted state. The ordinary cases explicitly require pending work so the cleanup triggers are actually exercised. These added cases await hosted rerun; only static syntax/format/diff checks were performed locally.
+The HTTP/Cron harness now checks exact owner/live-row preconditions, persisted deletion even when status is unexpected, foreign identity `404` without modification, first owner `204`, and repeated `404` without retombstoning. Two additional cases cover no pending embedding work and a known legacy projection hidden by accepted state. The ordinary cases explicitly require pending work so the cleanup triggers are actually exercised. These cases passed in the exact hosted rerun below; only static syntax/format/diff checks were performed locally.
+
+### Corrective hosted evidence
+
+Exact source revision `e75207531664d94adadb02d34ad7144d052d3992`:
+
+- [Source run 36805785881](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36805785881) completed successfully: all six source jobs passed (CLI Linux, Windows and macOS; Astro site; Rust/Wasm Worker; infrastructure tests).
+- Its real built Rust/Wasm workerd step reported **89 tests, 89 passed, 0 failed**, including the eleven accepted-recovery cases and five HTTP/Cron/public-deletion cases. The original `send_held` fixture setup and false owner-DELETE `404` failures were not weakened or ignored.
+- [Workflow/syntax run 36805785689](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36805785689) passed on the same immutable revision.
+- Provider/deployment/unhold jobs were skipped. No real send, deployed D1 enforcement, actual-account CPU/RSS, quiescent cutover, privacy approval or public release is established by these synthetic hosted passes.
+
+The subsequent lease-comment/runbook correction separates HTTP lifetime from Cron/Queue bounds and integrates the [cutover admission contract](accepted-projection-cutover-contract-2026-10-01.md). It changes no lease duration, source predicate, migration SQL operation or test semantics; its exact final commit still needs the normal source checks before merge. Merging this source repair is not deployment approval.

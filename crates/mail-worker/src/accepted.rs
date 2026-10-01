@@ -27,7 +27,8 @@ pub(crate) struct Projection<'a> {
     pub bytes: usize,
 }
 
-/// Outlive the platform's 15-minute invocation; a dead isolate recovers by expiry.
+/// A finite retry window after a dead isolate; it does not bound HTTP lifetime.
+/// Token checks fence an older writer after reclaim, even if it is still alive.
 /// Durable leases use the platform clock, not a caller-supplied timestamp.
 const LEASE_MS: i64 = 20 * 60_000;
 
