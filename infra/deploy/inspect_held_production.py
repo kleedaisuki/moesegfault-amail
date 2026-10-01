@@ -33,6 +33,8 @@ POLICY = "SELECT state FROM send_policy WHERE scope='global' AND owner_iss='*' A
 GATES = ("SELECT feedback_verified,abuse_contact_verified,delivery_canary_verified,preview_reviewed,"
          "CASE WHEN canary_expires_at>unixepoch() THEN 1 ELSE 0 END AS live_grant "
          "FROM send_release_gates WHERE id=1")
+INITIAL_SCHEMA = ("SELECT type,name FROM sqlite_master "
+                  "WHERE name NOT IN ('sqlite_sequence','_cf_KV') ORDER BY type,name")
 
 
 class Stage(str, Enum):
@@ -85,6 +87,7 @@ def failure_reason(error: Exception) -> str:
         "production_domain_already_attached", "production_domain_hostname_unverified", "production_r2_inventory_unverified",
         "production_r2_inventory_incomplete", "production_d1_read_unverified",
         "bootstrap_schema_prefix_unverified", "schema_objects_unverified", "schema_object_drift",
+        "bootstrap_unrecorded_schema", "bootstrap_schema_inventory_unverified",
         "schema_columns_unverified", "schema_indexes_unverified", "schema_index_columns_unverified",
         "schema_migration_provenance_unverified", "bootstrap_hold_unverified",
         "bootstrap_grant_or_release_gate_unverified", "bootstrap_retained_state_requires_reconciliation",
@@ -352,14 +355,53 @@ def r2_count(client, bucket: str) -> int:
     raise ValueError("production_r2_inventory_incomplete")
 
 
-def collect(provider: Provider, zone: str, object_count: int, *, progress: Progress | None = None) -> dict:
-    """Return private first-bootstrap facts without applying a historical safety label."""
+def uninitialized_schema(provider: Provider) -> bool:
+    """Recognize a truly empty cold database from successful metadata, never HTTP failure.
+
+    D1 databases need not have Wrangler's migration table before their first
+    migration. Any application object without that table is unknown retained
+    schema, not an empty store. Existing recorded schemas still undergo the
+    original exact-prefix verifier; this does not authorize migration of old D1.
+    """
+    with span("production.schema", "initial_inventory") as facts:
+        objects = exact_rows(provider.query(INITIAL_SCHEMA), "name", 1000)
+        if any(set(row) != {"type", "name"} or row["type"] not in
+               {"table", "index", "view", "trigger"} for row in objects):
+            raise ValueError("bootstrap_schema_inventory_unverified")
+        if not objects:
+            facts.reason = "uninitialized_database"
+            return True
+        if {"type": "table", "name": "d1_migrations"} not in objects:
+            facts.reason = "bootstrap_unrecorded_schema"
+            facts.schema_field = "d1_migrations"
+            facts.schema_expected = "table_or_empty_database"
+            facts.schema_actual_type = "missing_with_application_objects"
+            raise ValueError("bootstrap_unrecorded_schema")
+        return False
+
+
+def collect(provider: Provider, zone: str, object_count: int, *, progress: Progress | None = None,
+            allow_uninitialized: bool = False) -> dict:
+    """Return current facts; only fresh bootstrap may inspect uninitialized old D1.
+
+    An uninitialized store has no policy or grant, rather than a fictitious held
+    row. Positive schema absence plus empty whole-bucket R2 and absent callers
+    are necessary; history/old-work and external activation remain unverified.
+    """
     progress = progress or Progress()
     progress.stage = Stage.SCRIPTS
     scripts = script_inventory(provider)
     progress.stage = Stage.ROUTES
     routes = unattached_route(provider, zone, progress=progress)
     progress.stage = Stage.SCHEMA
+    if allow_uninitialized and uninitialized_schema(provider):
+        if type(object_count) is not int or object_count != 0:
+            raise ValueError("bootstrap_retained_state_requires_reconciliation")
+        return {"scripts": scripts, "routes": routes, "policy": [], "gates": [],
+                "journals": [{"n": 0}], "reservations": [{"n": 0}],
+                "addresses": [{"n": 0}], "messages": [{"n": 0}], "objects": object_count,
+                "database": provider.resources.database, "bucket": provider.resources.bucket,
+                "source_sha": provider.resources.source_sha, "schema_prefix": 0}
     schema_prefix = verify_recorded_schema(provider.query)
     progress.stage = Stage.HOLD
     policy, gates = provider.query(POLICY), provider.query(GATES)

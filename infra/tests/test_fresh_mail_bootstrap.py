@@ -2,9 +2,12 @@
 
 from dataclasses import asdict, replace
 from contextlib import ExitStack
+from contextlib import redirect_stdout
 import hashlib
+import io
 import json
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -63,6 +66,68 @@ class FreshBootstrapCoordinatesTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 Scope(epoch(), "00000000-0000-0000-0000-000000000002",
                       value, "2026-10-01T00:00:00Z")
+
+
+class FreshBootstrapColdStoreTests(unittest.TestCase):
+    """Regress the actual first old-scope query failure without provider access."""
+
+    def test_missing_migration_table_requires_positive_empty_metadata_and_empty_r2(self):
+        """Cold old D1 is retained; unknown schema, objects or failed reads never pass."""
+        with sqlite3.connect(":memory:") as database, ExitStack() as stack:
+            database.row_factory = sqlite3.Row
+            with self.assertRaises(sqlite3.OperationalError):
+                database.execute("SELECT name FROM d1_migrations ORDER BY id")
+            provider = Mock(account="a" * 32, token="synthetic-private-token")
+            reader = Mock(resources=controller.old.configured_resources("a" * 40))
+            queries = []
+
+            def read(sql):
+                """Use SQLite's genuine missing-table semantics, not an always-empty fake."""
+                queries.append(sql)
+                return [dict(row) for row in database.execute(sql).fetchall()]
+
+            reader.query.side_effect = read
+            s3 = Mock()
+            empty = {"Name": ORIGINAL_BUCKET, "IsTruncated": False, "KeyCount": 0, "Contents": []}
+            s3.list_objects_v2.return_value = empty
+            stack.enter_context(patch.dict(controller.os.environ, {"GITHUB_SHA": "a" * 40}))
+            stack.enter_context(patch.object(controller.old, "Provider", return_value=reader))
+            scripts = stack.enter_context(patch.object(controller.old, "script_inventory", return_value={}))
+            routes = stack.enter_context(patch.object(controller.old, "unattached_route", return_value={}))
+            stack.enter_context(patch.object(controller, "forward_snapshot", return_value={}))
+            output = io.StringIO()
+            stack.enter_context(redirect_stdout(output))
+
+            result = controller.inspect_old_scope(provider, s3)
+            self.assertEqual(result["original_stores"], "RETAINED")
+            self.assertEqual(result["external_activation"], "NOT_GRANTED")
+            self.assertEqual(queries, [controller.old.INITIAL_SCHEMA] * 2)
+            self.assertEqual(scripts.call_count, 2)
+            self.assertEqual(routes.call_count, 2)
+
+            database.execute("CREATE TABLE private_unknown_schema(value TEXT)")
+            with self.assertRaisesRegex(ValueError, "^bootstrap_unrecorded_schema$"):
+                controller.inspect_old_scope(provider, s3)
+            self.assertNotIn("private_unknown_schema", output.getvalue())
+            database.execute("DROP TABLE private_unknown_schema")
+
+            database.execute("CREATE TABLE d1_migrations(id INTEGER PRIMARY KEY,name TEXT)")
+            database.execute("INSERT INTO d1_migrations(name) VALUES('0001_init.sql')")
+            with self.assertRaisesRegex(ValueError, "^bootstrap_schema_prefix_unverified$"):
+                controller.inspect_old_scope(provider, s3)
+            database.execute("DROP TABLE d1_migrations")
+
+            s3.list_objects_v2.return_value = {**empty, "KeyCount": 1,
+                                              "Contents": [{"Key": "private-object", "Size": 1}]}
+            with self.assertRaisesRegex(ValueError, "^bootstrap_retained_state_requires_reconciliation$"):
+                controller.inspect_old_scope(provider, s3)
+            s3.list_objects_v2.return_value = empty
+            reader.query.side_effect = ValueError("production_provider_http_other")
+            with self.assertRaisesRegex(ValueError, "^production_provider_http_other$"):
+                controller.inspect_old_scope(provider, s3)
+            s3.get_object.assert_not_called()
+            s3.delete_object.assert_not_called()
+            provider.post.assert_not_called()
 
 
 class FreshBootstrapControllerTests(unittest.TestCase):
