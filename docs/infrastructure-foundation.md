@@ -6,12 +6,13 @@ the owner explicitly prioritized infrastructure and debt repayment before furthe
 mail debugging. Preserve the current send hold and do not resume production
 inspection, mailbox campaigns or release promotion until this foundation passes.
 
-## Current integrated state (2026-10-01)
+## Current integrated state (2026-10-02, Asia/Singapore)
 
 This section supersedes dated implementation-status statements below. Product
 scope and remaining release requirements are in the [Goal progress snapshot](goal-progress-snapshot.md).
-Source baseline is main `bfb02765c622bced2ad2b8a10f6717cce79c6199`;
-[exact-main CI 36888295197](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36888295197)
+Last fully checked baseline before the Route transport is main
+`5a2396a7c5d3527b9988c55984abb4a84159d327`;
+[exact-main CI 36890517434](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36890517434)
 passed all three CLI platforms, Astro, infrastructure, Worker producer, eight
 native suites and the stable aggregate. Historical receipts remain useful but
 do not imply current deployment.
@@ -25,18 +26,38 @@ do not imply current deployment.
 * PRs 55 and 58 are merged: ordinary deploy jobs consume verified same-run module
   artifacts, and the standalone Identity inbox admits an original exact-main
   artifact. Their actual Mail/inbox deployment paths have not been executed by
-  this foundation. Wrangler packaging still occurs; final packaged graph/bytes
-  and runtime entry behavior are being tested in a credential-free hosted probe.
+  this foundation. PR 69 additionally merged the credential-free packaging mode
+  into the existing native-fixture workflow. Actual run36889796913 verified the
+  original 35 files, seven admission contracts, eleven Wrangler dry-run packages
+  and sixteen emitted-only runtime assertions. Wasm hashes stayed identical;
+  bundled JavaScript differs from generated JavaScript. This does not prove
+  actual upload byte identity or all business/scheduled-only semantics.
 * PRs 59, 60 and 65 are merged: fixed diagnostic client identity, exact scoped
   diagnostic checks and per-case native-parentage admission. These do not prove
   that native spans have been retained by Cloudflare.
-* PR 62 is merged: three fixed historical incident-read lanes are retired while
-  source fixtures and receipts remain. The Queue permission workflow's automatic
-  push trigger is the next bounded maintenance cleanup.
-* PR 63 is merged: partial predecessor/receipt/readback contracts. There is not
-  yet an executable production receipt producer or an accepted activation,
-  drain or rollback. Fresh held production bootstrap is being implemented; old
-  stores remain untouched, and empty inventory is not historical ownership proof.
+* PRs 62 and 72 are merged: three fixed historical incident-read lanes are retired,
+  and the Queue permission workflow no longer makes unsolicited provider reads
+  on source pushes. Manual compatibility, fixtures and receipts remain.
+* PR 73 merged the documented opaque Custom Domain ID correction. It preserves
+  exact IDs and only normalizes hostname comparisons; a failed read still cannot
+  establish resource absence. Its hosted tests are synthetic, not a new current
+  production inventory.
+* PRs 63 and 75 are merged: predecessor/readback contracts now have an executable
+  first-held fresh bootstrap controller and protected readonly recovery lane.
+  PR 75 exact head59c8b990 passed hosted source checks and independent review.
+  No actual bootstrap, paused graph receipt, activation, drain or rollback has
+  been executed. Old stores remain untouched; empty inventory is not historical
+  ownership proof. PR 79 now also admits cancelled creators with valid retained
+  immutable evidence for readonly observation; missing evidence remains explicitly
+  unavailable. It grants no replay, adoption or activation.
+
+PR 76 enriched producer negotiation is still in review. Hosted native tests
+exposed a real representation boundary: workers-rs Request::json delegates to a
+struct deserializer that skips unknown keys, so deny_unknown_fields did not
+enforce the new closed wire shape. The new-only raw JSON parser and bounded
+stream reader are being tested; legacy endpoint behavior remains unchanged.
+PR 78 develops explicit local command-to-request UUID linkage separately.
+Neither pending change is accepted, deployed or proof of remote sink delivery.
 
 Actual isolated canary [36884872446](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36884872446)
 restored artifact `11172022967` from the exact-main run and passed deployment,
@@ -48,7 +69,25 @@ safe receipt. This is negative invocation evidence, not native-tracing/privacy
 acceptance. Do not repeat the unchanged workers.dev experiment. The selected
 next source design uses an absent-only, nonce-owned Worker Route and proxied DNS
 record with existing Universal SSL, without borrowing public service hostnames
-or creating an Advanced Certificate. It requires review before provider writes.
+or creating an Advanced Certificate. PR 74 source and hosted checks are accepted
+and merged at `731c437786e5a521ab40c97838b11ccd002172b7`.
+
+The one new Route-mode run
+[36896672169](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36896672169)
+stopped in preflight: zone GET200 followed by existing Universal SSL settings
+GET403/provider9109, CF-Ray `a43d0cd0f97267c5-DFW`, at 17:05:08 UTC on October1.
+No DNS, Worker or Route write was reached; trigger/collection were skipped.
+The cleanup step succeeded as a **no-op**, not fresh absence verification.
+Artifact count was zero because preflight preceded receipt creation. PR 77
+repairs that source gap and is merged at c874231: attempted/refused receipts
+precede prereads, preserve typed failure facts and distinguish no-write cleanup
+from fresh absence verification. Actual execution of the repaired path remains
+pending. PR 80 makes receipt replacement atomic and syncs the file plus POSIX
+parent directory before allowing further side effects; old complete receipts
+survive pre-replacement failures. This does not provide universal runner-loss
+or Windows power-loss recovery. The existing deployment Token needs the zone's
+SSL and Certificates Read capability; no additional Token/Secret or SSL Write is
+required. Do not rerun unchanged or mislabel this as a native API runtime failure.
 
 Five independent workstreams run in parallel: deployment/bootstrap, runtime
 telemetry, native tracing, CI packaging/latency, and maintenance. Their leaders
