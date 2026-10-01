@@ -18,7 +18,7 @@ from pin_staging_mail import ACCOUNT, UUID, _bindings_match, mail_resources, ser
 
 REALMS = ("production", "staging")
 SECRETS = ("CF_EMAIL_ROUTING_TOKEN", "OPENROUTER_API_KEY")
-VARS = ("CF_ZONE_ID", "EMAIL_INGRESS_WORKER_NAME", "OPENROUTER_EMBEDDING_MODEL")
+VARS = ("MAIL_DOMAIN", "CF_ZONE_ID", "EMAIL_INGRESS_WORKER_NAME", "OPENROUTER_EMBEDDING_MODEL")
 CADENCE = ("*/5 * * * *",)
 STATES = ("legacy-pinned", "prepared", "old-draining", "paused", "active", "new-draining", "legacy-recovery")
 

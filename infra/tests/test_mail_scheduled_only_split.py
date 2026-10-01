@@ -43,7 +43,8 @@ class ScheduledOnlySourceTests(unittest.TestCase):
             expected = maintenance.expected_bindings(realm, QUEUE)
             self.assertEqual({name for name, (kind, _) in expected.items() if kind == "secret_text"}, set(maintenance.SECRETS))
             self.assertEqual(expected["VERSION_METADATA"], ("version_metadata", None))
-            for name in ("EMAIL", "OFFICIAL_EMAIL", "INGRESS_SECRET", "IDENTITY_ISSUER", "MAIL_DOMAIN", "ROLE_MONITOR"):
+            self.assertEqual(expected["MAIL_DOMAIN"], ("plain_text", maintenance.api_config(realm)["vars"]["MAIL_DOMAIN"]))
+            for name in ("EMAIL", "OFFICIAL_EMAIL", "INGRESS_SECRET", "IDENTITY_ISSUER", "ROLE_MONITOR"):
                 self.assertNotIn(name, expected)
             with self.assertRaises(ValueError):
                 maintenance.maintenance_config(realm, active=True)

@@ -51,7 +51,7 @@ async function assertPending(promise) {
 /** Fresh local stores and closed egress; no provider or deployed Worker is used. */
 async function fixture(run) {
   const records = [];
-  let unexpected = 0;
+  let unexpected = 0, retiredRule = null, retiredDeletes = 0;
   const gates = Object.fromEntries(["registered", "unregistered"].map(mode =>
     [mode, { arrived: deferred(), release: deferred(), calls: 0 }]));
   const control = async request => {
@@ -80,14 +80,22 @@ export default Observer;
     modules: true, modulesRoot: root, modulesRules: workerModuleRules,
     // Harness-supported date; the production config's date is not changed.
     compatibilityDate: "2026-08-06",
-    bindings: { CF_ZONE_ID: "synthetic-zone", CF_EMAIL_ROUTING_TOKEN: "synthetic-token",
+    bindings: { MAIL_DOMAIN: "mail-staging.moesegfault.dev", CF_ZONE_ID: "synthetic-zone", CF_EMAIL_ROUTING_TOKEN: "synthetic-token",
       EMAIL_INGRESS_WORKER_NAME: "synthetic-ingress", OPENROUTER_EMBEDDING_MODEL: "synthetic-model",
       OPENROUTER_API_KEY: "synthetic-key" },
     d1Databases: { MAIL_DB: "entry-split-shared-db" },
     r2Buckets: { MAIL_BODIES: "entry-split-shared-r2" },
     outboundService(request) {
       if (request.method === "GET" && request.url === "https://api.cloudflare.com/client/v4/zones/synthetic-zone/email/routing/rules?per_page=50&page=1") {
-        return Response.json({ success: true, result: [], result_info: { total_pages: 1 } });
+        return Response.json({ success: true, result: retiredRule ? [retiredRule] : [], result_info: { total_pages: 1 } });
+      }
+      if (retiredRule && request.url === `https://api.cloudflare.com/client/v4/zones/synthetic-zone/email/routing/rules/${retiredRule.id}`) {
+        if (request.method === "GET") return Response.json({ success: true, result: retiredRule });
+        if (request.method === "DELETE") {
+          retiredDeletes++;
+          retiredRule = null;
+          return Response.json({ success: true, result: null });
+        }
       }
       unexpected++;
       throw new Error("unmatched split fixture egress");
@@ -107,7 +115,12 @@ export default Observer;
     ] });
     const { MAIL_DB: db } = await mf.getBindings("maintenance");
     await applyMigrations(db, path.join(worker, "migrations"));
-    await run({ mf, db, records, gates });
+    const retired = {
+      arm(rule) { retiredRule = rule; },
+      get deletes() { return retiredDeletes; },
+      get present() { return retiredRule !== null; },
+    };
+    await run({ mf, db, records, gates, retired });
     assert.equal(unexpected, 0, "only local fixture Routing GET is allowed");
   } finally {
     for (const gate of Object.values(gates)) gate.release.resolve();
@@ -154,6 +167,23 @@ test("maintenance completes real Rust work repeatedly without foreground capabil
     assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM provider_events").first()).n, 0,
       "returned completion includes the late abuse retention phase");
   }
+}));
+
+/** Successful scheduled outcome alone can hide a caught phase capability error. */
+test("least-privilege maintenance discovers and prunes retired domain routes", async () => fixture(async ({ mf, db, retired }) => {
+  const address = "retired-synthetic@mail-staging.moesegfault.dev";
+  const rule = { id: "synthetic-retired-rule", source: "api", enabled: true, name: `amail ${address}`,
+    actions: [{ type: "worker", value: ["synthetic-ingress"] }],
+    matchers: [{ type: "literal", field: "to", value: address }] };
+  await db.prepare("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at,needs_reconcile) VALUES(?1,'retired-synthetic','https://synthetic.invalid','synthetic-owner',0,'retired',0,0)").bind(address).run();
+  retired.arm(rule);
+  assert.equal((await (await mf.getWorker("maintenance")).scheduled({ cron, scheduledTime: new Date(slot) })).outcome, "ok");
+  assert.equal(retired.deletes, 1, "discovery plus useful repair needs the domain capability");
+  assert.equal(retired.present, false);
+  const row = await db.prepare("SELECT state,needs_reconcile,cf_rule_id FROM addresses WHERE address=?1").bind(address).first();
+  assert.equal(row.state, "retired");
+  assert.equal(row.needs_reconcile, 0);
+  assert.equal(row.cf_rule_id, null);
 }));
 
 /** Native controller/Env/context identity survives both adapter and SDK layers. */

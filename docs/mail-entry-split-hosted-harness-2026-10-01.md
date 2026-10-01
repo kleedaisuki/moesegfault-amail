@@ -146,3 +146,16 @@ Primary pinned SDK source verified during root investigation:
 https://github.com/cloudflare/workers-rs/blob/v0.8.5/worker-build/src/js/shim.js .
 The native background/negative lifetime semantics, not a permissive timeout, decide
 whether the remaining case passes.
+
+### Genuine capability defect found before deployment
+
+Root dependency review found discover_retired_routes reads MAIL_DOMAIN even for
+an empty Routing inventory. The partial least-privilege config incorrectly treated
+this domain selector as a foreground-only capability. A scheduled invocation can
+still return outcome=ok while that business phase is recorded failed, so repeated
+empty cleanup success did not prove address repair. Add the same-realm MAIL_DOMAIN
+plain variable to both maintenance configurations/exact binding contracts, retain
+all OIDC/ingress/send exclusions, and add a native retired-route discovery + actual
+GET/DELETE + D1 reconciliation case with no foreground authentication capabilities.
+This discriminates useful phase work, not merely swallowed invocation success.
+No provider Worker was deployed with the faulty capability set.
