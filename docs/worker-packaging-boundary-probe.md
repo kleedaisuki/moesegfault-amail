@@ -1,6 +1,7 @@
 # Worker packaging boundary probe
 
-Status: credential-free source probe awaiting hosted observation. This does not
+Status: initial hosted observation succeeded; consolidated workflow awaiting its
+own hosted observation. This does not
 change ordinary deployment, native source acceptance, provider state or release
 admission. No local build/runtime/install is part of the investigation.
 
@@ -12,11 +13,16 @@ Wrangler still performs a final JavaScript bundle. Does that packaging preserve
 Wasm bytes and the composed Mail HTTP/private Queue semantics, and which exact
 boundary remains untested? A source artifact hash cannot answer this question.
 
-The independent PR diagnostic chooses **one successful full-main source run at
-the exact PR base SHA**, validates the original required job/artifact inventory,
+The packaging mode of the existing native-fixture diagnostic selects **one
+explicit successful full-main source run** using its existing `build_run_id`,
+validates the original required job/artifact inventory,
 downloads its fixed artifact ID and runs the unchanged strict original-context
-restore. Current checkout differences may contain only the diagnostic's four
-owned files and public Markdown. Rust, adapters, configs, runtime/lockfiles,
+restore. Successful main `push` and `workflow_dispatch` runs are both accepted;
+there is no push-only discovery query, newest-run fallback or uniqueness
+assumption across multiple successful runs. The original source must be an
+ancestor of the current checkout. Current checkout differences may contain only
+the existing native-fixture workflow, this probe's helper/fixture/contracts,
+the replay workflow contract test and public Markdown. Rust, adapters, configs, runtime/lockfiles,
 ordinary admission/build policy and unknown inputs require a new source build.
 Original build and current diagnostic identities remain distinct.
 
@@ -60,7 +66,7 @@ pretend to repeat those assertions using that observer.
 
 ## Acceptance limits and reproducibility
 
-The workflow is an independent diagnostic, not a dependency of the stable Worker
+The packaging job is an independent diagnostic, not a dependency of the stable Worker
 gate or a deploy/release consumer. The selector/workflow/source change still
 receives normal source CI. The package result cannot admit a failed full source
 run, replace exact-current-main artifact requirements, extend the canary's
@@ -75,14 +81,25 @@ those distinctions when interpreting a successful run. No `--no-bundle` flag or
 new module discovery policy is added to production: configuration defaults and
 relative imports must be measured before considering that separate change.
 
-On a source PR containing only the owned probe files/docs, GitHub automatically
-executes the diagnostic. The base must already have one complete successful
-full-main source artifact; a docs-only base without such evidence must first get
-normal manual checks, not silently borrow a cached or nearest ancestor artifact.
+Dispatch `native-fixture.yml` with `fixture=packaging` and the original full-main
+CI `build_run_id`. Its packaging job and ordinary one-file replay job are
+mutually exclusive. Existing ordinary replay commands and admission remain
+unchanged; they do not install Wrangler. There is no additional workflow, input,
+secret, environment or provider permission. A source without complete successful
+full-main evidence must first get normal manual checks, not silently borrow a
+cached or nearest ancestor artifact. The original run is selected explicitly;
+unchanged compiler inputs are proved against that run's exact SHA.
 The public artifact `worker-packaging-probe-<run>` contains source coordinates,
 package receipts, esbuild metadata, package output bytes and native TAP evidence.
 Use one run watch and record step/job versus whole-run times. No latency SLA or
 packaging speedup is claimed without equivalent repeated measurements.
+
+Initial hosted run `36886683271` on source
+`b301847cded5231c9da17dd875a7db9d727180bb` succeeded with 11 ordinary dry-run
+packages and all 16 packaged-runtime assertions. That historical standalone
+workflow has been replaced by the explicit mode above. Its successful runtime
+result is evidence for those bytes and narrow semantics, not proof that the
+revised orchestration has executed or that any provider upload occurred.
 
 ## Primary references
 

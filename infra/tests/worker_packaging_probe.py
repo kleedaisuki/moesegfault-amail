@@ -1,6 +1,6 @@
 """Inspect pinned Wrangler output without deploying or qualifying a release.
 
-Reuse only a successful full CI artifact at the exact PR base SHA, then prove
+Reuse only an explicitly selected successful full main CI artifact, then prove
 that the checkout differs solely in this diagnostic's public source/docs. The
 original manifest context is retained; no ordinary admission rule is extended.
 """
@@ -24,8 +24,9 @@ import worker_artifact as artifact
 
 FOLDER = ROOT / ".temp/ci/packaging-probe"
 STATE = FOLDER / "source.json"
-DIAGNOSTIC = {".github/workflows/worker-packaging-probe.yml", "infra/tests/worker_packaging_probe.py",
-              "infra/tests/worker-packaging-probe.mjs", "infra/tests/test_worker_packaging_probe.py"}
+DIAGNOSTIC = {".github/workflows/native-fixture.yml", "infra/tests/worker_packaging_probe.py",
+              "infra/tests/worker-packaging-probe.mjs", "infra/tests/test_worker_packaging_probe.py",
+              "infra/tests/test_native_fixture.py"}
 PRODUCTS = {"mail_api": "crates/mail-worker", "trace_sink": "workers/trace-sink",
             "mail_ingress": "workers/mail-ingress", "mail_events": "workers/mail-events",
             "identity_inbox": "workers/identity-test-inbox", "role_monitor": "workers/role-monitor"}
@@ -37,24 +38,23 @@ def changed_inputs(paths: list[str]) -> list[str]:
             or path.startswith(("docs/", ".agents/skills/")) and path.endswith(".md"))]
 
 
-def prepare(sha: str) -> None:
-    """Choose immutable bytes from exact-base full main CI, never merely a green producer."""
-    if not re.fullmatch(r"[a-f0-9]{40}", sha):
-        raise ValueError("exact_pr_base_sha_required")
+def prepare(run_id: str) -> None:
+    """Bind the selected full main push/manual run to its immutable artifact and source."""
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", run_id):
+        raise ValueError("original_source_run_id_required")
+    run = api(f"runs/{run_id}")
+    sha = run.get("head_sha", "")
+    if not re.fullmatch(r"[a-f0-9]{40}", sha) or str(run.get("id")) != run_id:
+        raise ValueError("original_source_run_coordinate_required")
+    value = identity(run, api(f"runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100"),
+                     api(f"runs/{run_id}/artifacts?per_page=100"), sha)
+    subprocess.run(["git", "merge-base", "--is-ancestor", sha, "HEAD"], cwd=ROOT,
+                   capture_output=True, check=True, timeout=30)
     diff = subprocess.run(["git", "diff", "--name-only", "-z", sha, "HEAD", "--"],
                           cwd=ROOT, capture_output=True, check=True, timeout=30).stdout
     if (len(diff) > 8 * 1024 * 1024 or diff and not diff.endswith(b"\0")
             or changed_inputs(diff.decode("utf-8").split("\0")[:-1])):
         raise ValueError("diagnostic_changed_compilation_or_unknown_input")
-    runs = api(f"workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha={sha}&per_page=100")
-    if runs.get("total_count") != len(runs.get("workflow_runs", [])):
-        raise ValueError("complete_original_run_inventory_required")
-    matches = [run for run in runs["workflow_runs"] if run.get("head_sha") == sha]
-    if len(matches) != 1:
-        raise ValueError("unique_successful_exact_base_run_required")
-    run = matches[0]
-    value = identity(run, api(f"runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100"),
-                     api(f"runs/{run['id']}/artifacts?per_page=100"), sha)
     value["probe_sha"] = os.environ["GITHUB_SHA"]
     FOLDER.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(value), encoding="utf-8")
@@ -147,9 +147,9 @@ def main() -> None:
         raise SystemExit("Packaging probes belong on GitHub-hosted runners.")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("prepare", "restore", "package"))
-    parser.add_argument("--base-sha", default="")
+    parser.add_argument("--build-run-id", default="")
     args = parser.parse_args()
-    prepare(args.base_sha) if args.operation == "prepare" else restore() if args.operation == "restore" else package()
+    prepare(args.build_run_id) if args.operation == "prepare" else restore() if args.operation == "restore" else package()
 
 
 if __name__ == "__main__":

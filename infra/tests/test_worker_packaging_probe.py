@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/tests"))
 import worker_packaging_probe as probe
+from validated_worker_build import REQUIRED
 
 
 class PackagingProbeTests(unittest.TestCase):
@@ -60,13 +61,57 @@ class PackagingProbeTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         probe.packaged(output, digest)
 
-    def test_incomplete_or_unavailable_exact_source_inventory_is_refused(self):
-        """Missing original full-main evidence cannot be replaced by newest/cached bytes."""
-        for listing in ({"total_count": 1, "workflow_runs": []}, {"total_count": 0, "workflow_runs": []}):
-            with patch.object(probe.subprocess, "run", return_value=Mock(stdout=b"docs/packaging.md\0")), \
-                    patch.object(probe, "api", return_value=listing):
+    def test_explicit_full_main_push_and_manual_runs_are_accepted(self):
+        """One exact run is selected, without a push-only or ambiguous listing query."""
+        sha = "a" * 40
+        jobs = {"total_count": len(REQUIRED),
+                "jobs": [{"name": name, "conclusion": "success"}
+                         for name in REQUIRED]}
+        artifacts = {"total_count": 1, "artifacts": [{"name": f"worker-native-modules-{sha}",
+                                                     "expired": False, "id": 456}]}
+        folder = ROOT / ".temp"
+        folder.mkdir(exist_ok=True)
+        for event in ("push", "workflow_dispatch"):
+            with self.subTest(event=event), tempfile.TemporaryDirectory(dir=folder) as temporary:
+                output = Path(temporary)
+                run = {"id": 123, "head_sha": sha, "run_attempt": 1, "head_branch": "main",
+                       "path": ".github/workflows/ci.yml", "event": event,
+                       "status": "completed", "conclusion": "success"}
+                with patch.object(probe, "api", side_effect=[run, jobs, artifacts]) as api, \
+                        patch.object(probe.subprocess, "run", return_value=Mock(stdout=b"docs/packaging.md\0")), \
+                        patch.object(probe, "FOLDER", output), patch.object(probe, "STATE", output / "state.json"), \
+                        patch.dict(os.environ, {"GITHUB_SHA": "b" * 40, "GITHUB_OUTPUT": str(output / "outputs")}):
+                    probe.prepare("123")
+                    self.assertEqual(api.call_args_list[0].args, ("runs/123",))
+                    self.assertEqual(api.call_count, 3)
+                    state = json.loads((output / "state.json").read_text())
+                    self.assertEqual(state["source_sha"], sha)
+                    self.assertEqual(state["run_id"], "123")
+                    self.assertEqual(state["artifact_id"], 456)
+
+    def test_original_full_source_identity_and_compile_inputs_remain_strict(self):
+        """Wrong coordinate, partial check inventory and unknown inputs cannot borrow bytes."""
+        for run in ({"id": 124, "head_sha": "a" * 40}, {"id": 123, "head_sha": "bad"}):
+            with patch.object(probe, "api", return_value=run):
+                with self.assertRaisesRegex(ValueError, "original_source_run_coordinate_required"):
+                    probe.prepare("123")
+        with patch.object(probe, "api", side_effect=[
+                {"id": 123, "head_sha": "a" * 40, "run_attempt": 1}, {}, {}]):
+            with self.assertRaisesRegex(ValueError, "successful_exact_main_source_run_required"):
+                probe.prepare("123")
+        for inventory in ({"total_count": 1, "jobs": []}, {"total_count": 0, "jobs": []}):
+            run = {"id": 123, "head_sha": "a" * 40, "run_attempt": 1, "head_branch": "main",
+                   "path": ".github/workflows/ci.yml", "event": "workflow_dispatch",
+                   "status": "completed", "conclusion": "success"}
+            with patch.object(probe, "api", side_effect=[run, inventory, {}]):
                 with self.assertRaises(ValueError):
-                    probe.prepare("a" * 40)
+                    probe.prepare("123")
+        with patch.object(probe, "api", side_effect=[
+                {"id": 123, "head_sha": "a" * 40, "run_attempt": 1}, {}, {}]), \
+                patch.object(probe, "identity", return_value={}), \
+                patch.object(probe.subprocess, "run", return_value=Mock(stdout=b"Cargo.lock\0")):
+            with self.assertRaisesRegex(ValueError, "diagnostic_changed_compilation_or_unknown_input"):
+                probe.prepare("123")
 
     def test_provider_capability_is_rejected_before_any_command(self):
         """The packager must never receive Cloudflare capabilities even accidentally."""
@@ -78,10 +123,15 @@ class PackagingProbeTests(unittest.TestCase):
 
     def test_workflow_keeps_original_context_and_has_no_write_capability(self):
         """Independent diagnostic results cannot replace full CI or ordinary artifact gates."""
-        source = (ROOT / ".github/workflows/worker-packaging-probe.yml").read_text(encoding="utf-8")
+        source = (ROOT / ".github/workflows/native-fixture.yml").read_text(encoding="utf-8")
+        self.assertFalse((ROOT / ".github/workflows/worker-packaging-probe.yml").exists())
         for forbidden in ("secrets.", "environment:", "contents: write", "actions: write", "worker-build --", "rustup", "--no-bundle"):
             self.assertNotIn(forbidden, source)
-        self.assertIn("github.event.pull_request.base.sha", source)
+        self.assertIn("if: inputs.fixture == 'packaging'", source)
+        self.assertIn("if: inputs.fixture != 'packaging'", source)
+        self.assertIn('prepare --build-run-id "$BUILD_RUN_ID"', source)
+        self.assertIn('native_fixture.py prepare --build-run-id "$BUILD_RUN_ID" --fixture "$FIXTURE"', source)
+        self.assertNotIn("github.event.pull_request", source)
         self.assertIn("persist-credentials: false", source)
         self.assertIn("artifact-ids: ${{ steps.build.outputs.artifact_id }}", source)
         self.assertLess(source.index("worker_packaging_probe.py restore"), source.index("worker_packaging_probe.py package"))
