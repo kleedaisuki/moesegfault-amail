@@ -1,0 +1,82 @@
+# Inspect current held production facts without deploying or mutating any resource.
+name: Held production bootstrap inspection
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/held-production-inspection.yml'
+      - 'infra/deploy/inspect_held_production.py'
+      - 'infra/deploy/mail_schema_contract.py'
+      - 'infra/deploy/production_bootstrap_contract.py'
+      - 'infra/tests/test_mail_schema_contract.py'
+      - 'infra/tests/test_production_bootstrap_contract.py'
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: INSPECT_HELD_PRODUCTION_BOOTSTRAP; facts only, never deployment or admission
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: amail-production-graph-writer
+  cancel-in-progress: false
+
+jobs:
+  contracts:
+    name: Held production synthetic inspection contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run source-derived schema and metadata-only inspection contracts
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python -m unittest discover -s infra/tests -p 'test_mail_schema_contract.py' -v
+          python -m unittest discover -s infra/tests -p 'test_production_bootstrap_contract.py' -v
+
+  inspection:
+    name: Inspect held production current capability and storage facts
+    needs: contracts
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+      github.run_attempt == 1 && inputs.confirm == 'INSPECT_HELD_PRODUCTION_BOOTSTRAP'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned platform S3 client without production credentials
+        run: python -m pip install --only-binary=:all: -r infra/deploy/production_inspection_requirements.txt
+      - name: Inspect twice and persist only source-bound aggregate evidence
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          AMAIL_PRODUCTION_PREFLIGHT_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_PRODUCTION_GRAPH_FREEZE: FREEZE_PRODUCTION_GRAPH_WRITERS
+          AMAIL_PRODUCTION_ENVIRONMENT: production
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CLOUDFLARE_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_ACCESS_KEY_ID }}
+          CLOUDFLARE_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_SECRET_ACCESS_KEY }}
+        run: python infra/deploy/inspect_held_production.py
+      - name: Preserve closed inspection evidence, never raw provider data
+        uses: actions/upload-artifact@v4
+        with:
+          name: held-production-inspection
+          path: .temp/held-production-inspection.json
+          if-no-files-found: error
+          retention-days: 30

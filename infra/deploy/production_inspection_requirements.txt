@@ -1,0 +1,3 @@
+# Hosted-only Cloudflare documented S3 client; no workstation installation.
+boto3==1.43.106
+botocore==1.43.106
