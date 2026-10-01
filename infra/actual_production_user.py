@@ -106,15 +106,20 @@ def register(actor: str, material: tuple[str, str, str]) -> None:
                 "production_contact_verification_failed")
         marker(f"actor_{actor.lower()}_production_contact_verified")
     finally:
-        if browser:
-            browser.close()
         if identity.route(address=contact) == "enabled":
             identity.route("--remove", contact)
         require(identity.route(address=contact) == "absent", "verification_route_cleanup_required")
+        browser_failed = False
+        if browser:
+            try:
+                browser.close()
+            except Exception:
+                browser_failed = True
         # Only a provenance-checked fresh object may be deleted; never baseline mail.
         for key in fresh:
             inbox.request("DELETE", f"/accounts/{account}/r2/buckets/{inbox.BUCKET}/objects/{key}", token)
         require(not (inbox.object_inventory(account, token) - baseline), "verification_object_cleanup_required")
+        require(not browser_failed, "registration_browser_teardown_failed")
 
 
 def cli(environment: dict[str, str], *args: str, allow_failure: bool = False) -> list[dict]:
