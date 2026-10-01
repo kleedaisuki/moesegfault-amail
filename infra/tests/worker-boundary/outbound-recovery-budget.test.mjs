@@ -1,4 +1,4 @@
-/** Known budget reproduction: keep outside the default integrity suite. */
+/** Historical budget reproduction, now assigned to the hosted resource-contract suite. */
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fixture, accepted } from "./outbound-recovery-fixture.mjs";
