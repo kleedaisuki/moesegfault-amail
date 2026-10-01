@@ -268,6 +268,12 @@ it through the next normal diagnostic boundary, and preserve successful mail
 outcomes, machine stdout, opt-out and pending rows. No generic loss-event framework
 or new retained raw-request logging is needed.
 
+The next independent source slice implements this bounded local delivery/retention
+repair in [cli-diagnostic-delivery.md](cli-diagnostic-delivery.md). Its source and
+hosted acceptance are tracked separately; it does not amend the accepted reader
+PR or activate enriched uploads. Login/refresh dependency and local-only command
+span coverage remain subsequent work.
+
 Industry grounding:
 https://opentelemetry.io/docs/specs/semconv/http/http-spans/ distinguishes received
 status from body/network failures and allows explicit client duration scope;

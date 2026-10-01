@@ -2,12 +2,13 @@
 
 use anyhow::Result;
 use rand::RngCore;
-use reqwest::blocking::Client;
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::Serialize;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::{config::Runtime, local_store};
+mod delivery;
+mod upload;
 
 /// Legacy upload shape: never append fields rejected by older deployed servers.
 /// Mail content and personal identity are excluded, not operational identifiers.
@@ -38,6 +39,7 @@ fn db(cfg: &Runtime) -> Result<Connection> {
     );",
     )?;
     ensure_event_columns(&mut conn)?;
+    delivery::schema(&conn)?;
     Ok(conn)
 }
 
@@ -77,7 +79,11 @@ pub fn init(cfg: &Runtime) -> Result<()> {
     if std::env::var("AMAIL_TELEMETRY").ok().as_deref() == Some("off") {
         return Ok(());
     }
-    db(cfg).map(|_| ())
+    let conn = db(cfg)?;
+    let tx = delivery::transaction(&conn)?;
+    delivery::prune(&tx)?;
+    tx.commit()?;
+    delivery::report(&conn)
 }
 
 /// Failure boundaries contain static labels only, never error messages or URLs.
@@ -190,10 +196,13 @@ impl<'a> RequestSpan<'a> {
         } else {
             1u64 << (usize::BITS - (bytes - 1).leading_zeros()).min(30)
         };
-        conn.execute("INSERT INTO events(operation,status,duration_ms,bytes_bucket,trace_id,span_id,correlation_id,
+        let tx = delivery::transaction(conn)?;
+        tx.execute("INSERT INTO events(operation,status,duration_ms,bytes_bucket,trace_id,span_id,correlation_id,
             started_at_ms,elapsed_ms,phase,error_kind) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![self.operation, status, elapsed.min(120_000), bucket, self.trace_id,
                 self.span_id, correlation, self.started_at_ms, elapsed, phase.as_str(), error_kind])?;
+        delivery::prune(&tx)?;
+        tx.commit()?;
         Ok(())
     }
 }
@@ -220,18 +229,31 @@ fn maybe_spawn_flush(conn: &Connection) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs() as i64;
-    let updated = conn.execute(
+    let tx = delivery::transaction(conn)?;
+    let updated = tx.execute(
         "INSERT INTO journal_state(key,value) VALUES('last_flush',?1)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value < excluded.value-30",
         [now],
     )?;
     if updated == 0 {
+        tx.commit()?;
         return Ok(());
     }
-    let exe = std::env::current_exe()?;
+    let attempt_id = uuid::Uuid::new_v4().to_string();
+    delivery::scheduled(&tx, &attempt_id)?;
+    tx.commit()?;
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            delivery::spawn_failed(conn, &attempt_id, "spawn_executable", error.raw_os_error())?;
+            return Err(error.into());
+        }
+    };
     let mut command = std::process::Command::new(exe);
     command
         .arg("_telemetry-flush")
+        .arg("--attempt-id")
+        .arg(&attempt_id)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -240,61 +262,59 @@ fn maybe_spawn_flush(conn: &Connection) -> Result<()> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000); // CREATE_NO_WINDOW / 不创建窗口
     }
-    command.spawn()?;
+    spawn_detached(conn, &attempt_id, &mut command)
+}
+
+/// Preserve an actual spawn failure despite null child stderr; never retain executable paths.
+fn spawn_detached(
+    conn: &Connection,
+    attempt_id: &str,
+    command: &mut std::process::Command,
+) -> Result<()> {
+    if let Err(error) = command.spawn() {
+        delivery::spawn_failed(conn, attempt_id, "spawn_io", error.raw_os_error())?;
+        return Err(error.into());
+    }
     Ok(())
 }
 
 /// Upload a bounded pending batch in a separate short-lived process.
 /// 在独立短生命周期进程中上传有界的待处理批次。
-pub fn flush_pending(cfg: &Runtime) -> Result<()> {
+pub fn flush_pending(cfg: &Runtime, attempt_id: Option<&uuid::Uuid>) -> Result<()> {
     if std::env::var("AMAIL_TELEMETRY").ok().as_deref() == Some("off") {
         return Ok(());
     }
-    let conn = db(cfg)?;
-    let token = crate::auth::access_token(cfg)?;
-    flush(cfg, &token, &conn)
-}
-
-fn flush(cfg: &Runtime, token: &str, conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT id,operation,status,duration_ms,bytes_bucket,trace_id,span_id,correlation_id FROM events WHERE uploaded=0 ORDER BY id LIMIT 20")?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            Event {
-                operation: row.get(1)?,
-                status: row.get(2)?,
-                duration_ms: row.get(3)?,
-                bytes_bucket: row.get(4)?,
-                trace_id: row.get(5)?,
-                span_id: row.get(6)?,
-                correlation_id: row.get(7)?,
-            },
-        ))
-    })?;
-    let items: Vec<_> = rows.collect::<std::result::Result<_, _>>()?;
-    if items.is_empty() {
-        return Ok(());
-    }
-    let ids: Vec<i64> = items.iter().map(|(id, _)| *id).collect();
-    let events: Vec<_> = items.into_iter().map(|(_, event)| event).collect();
-    let http = Client::builder().timeout(Duration::from_secs(5)).build()?;
-    let response = http
-        .post(format!("{}/v1/telemetry", cfg.api_base))
-        .bearer_auth(token)
-        .json(&serde_json::json!({"events": events}))
-        .send()?;
-    if response.status().is_success() {
-        for id in ids {
-            conn.execute("UPDATE events SET uploaded=1 WHERE id=?1", [id])?;
-        }
-        conn.execute("DELETE FROM events WHERE uploaded=1 AND id < (SELECT COALESCE(MAX(id),0)-200 FROM events)", [])?;
-    }
-    Ok(())
+    upload::run(cfg, attempt_id)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// The real spawn error path stores a safe OS code and does not fabricate child duration.
+    #[test]
+    fn failed_detached_spawn_has_durable_status_without_executable_path() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let home = tempfile::tempdir_in(root).unwrap();
+        let cfg = config(home.path());
+        let conn = db(&cfg).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        delivery::scheduled(&conn, &id).unwrap();
+        let mut command =
+            std::process::Command::new(home.path().join("SYNTHETIC_PRIVATE_EXECUTABLE"));
+        assert!(spawn_detached(&conn, &id, &mut command).is_err());
+        let row: (String, String, Option<i32>, Option<i64>, Option<i64>) = conn.query_row(
+            "SELECT outcome,error_kind,os_error_code,started_at_ms,elapsed_ms FROM journal_upload", [],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
+        assert_eq!((row.0.as_str(), row.1.as_str()), ("failed", "spawn_io"));
+        assert!(row.2.is_some());
+        assert_eq!((row.3, row.4), (None, None));
+        let image = std::fs::read(cfg.home.join("telemetry.sqlite3")).unwrap();
+        assert!(!image
+            .windows(b"SYNTHETIC_PRIVATE_EXECUTABLE".len())
+            .any(|bytes| bytes == b"SYNTHETIC_PRIVATE_EXECUTABLE"));
+    }
 
     /// Synthetic configuration never opens the real user credential store.
     pub(crate) fn config(home: &std::path::Path) -> Runtime {

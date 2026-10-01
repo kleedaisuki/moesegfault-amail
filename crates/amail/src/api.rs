@@ -178,7 +178,7 @@ fn header_uuid(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 /// Prefer the Mail Worker's request ID; a malformed primary cannot be rescued by fallback.
-fn response_correlation(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn response_correlation(headers: &HeaderMap) -> Option<String> {
     if headers.contains_key("x-amail-request-id") {
         header_uuid(headers, "x-amail-request-id")
     } else {
@@ -245,7 +245,7 @@ fn address_problem_code(problem: &Value) -> &'static str {
 }
 
 /// Keep transport failure output fixed even when reqwest carries a sensitive URL.
-fn transport_kind(error: &reqwest::Error) -> &'static str {
+pub(crate) fn transport_kind(error: &reqwest::Error) -> &'static str {
     if error.is_timeout() {
         "timeout"
     } else if error.is_connect() {

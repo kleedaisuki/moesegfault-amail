@@ -122,7 +122,11 @@ enum Command {
     Config,
     /// Detached internal telemetry worker / 独立遥测上传进程。
     #[command(name = "_telemetry-flush", hide = true)]
-    TelemetryFlush,
+    TelemetryFlush {
+        /// Carry only the generated diagnostic scheduling identity to the child.
+        #[arg(long, hide = true)]
+        attempt_id: Option<uuid::Uuid>,
+    },
 }
 
 /// Native OIDC session commands / 原生 OIDC 会话命令。
@@ -568,8 +572,10 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     let cfg = config::Runtime::load()?;
     // Diagnostics are best effort; command state initializes in its owning API.
-    if let Err(error) = telemetry::init(&cfg) {
-        telemetry::report_loss("initialize", &error);
+    if !matches!(&cli.command, Command::TelemetryFlush { .. }) {
+        if let Err(error) = telemetry::init(&cfg) {
+            telemetry::report_loss("initialize", &error);
+        }
     }
     match cli.command {
         Command::Config => emit(
@@ -577,8 +583,8 @@ fn run() -> Result<()> {
             "redirect_uri":cfg.redirect_uri,"home":cfg.home,"telemetry_enabled":std::env::var("AMAIL_TELEMETRY").ok().as_deref()!=Some("off")}),
             cli.human,
         )?,
-        Command::TelemetryFlush => {
-            telemetry::flush_pending(&cfg)?;
+        Command::TelemetryFlush { attempt_id } => {
+            telemetry::flush_pending(&cfg, attempt_id.as_ref())?;
         }
         Command::Auth { command } => match command {
             AuthCommand::Login { no_browser } => {
