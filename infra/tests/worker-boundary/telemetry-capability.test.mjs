@@ -34,9 +34,9 @@ function token(audience = client) {
   return `${input}.${sign("RSA-SHA256", Buffer.from(input), privateKey).toString("base64url")}`;
 }
 
-/** Historic wire shape remains a useful positive control, with no fabricated source clocks. */
+/** CLI wire operations use dots; retained Queue enums use underscores. No fabricated clocks. */
 function legacy() {
-  return { operation: "messages_list", status: 200, duration_ms: 8,
+  return { operation: "messages.list", status: 200, duration_ms: 8,
     bytes_bucket: 64, trace_id: traceId, span_id: spanId };
 }
 
