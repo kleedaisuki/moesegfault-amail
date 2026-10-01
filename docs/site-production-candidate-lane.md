@@ -9,6 +9,56 @@ workflow, Queue/D1/R2 operation, or send policy. It ports the reviewed static si
 and candidate helpers from `e35b743`/`496f758`, replacing the absent Mail CI
 with dedicated site-only source evidence. See [bootstrap scope](site-standalone-bootstrap.md).
 
+## Current fixed candidate update and live browser outcome (2026-10-01)
+
+**Current recorded deployment: `47d391615e671722c7f01bb7cf8963987f6150f9`.
+Candidate availability and bounded hosted browser acceptance passed; v0.1.0
+publication remains closed and Mail sending remains held.** The de2f150 source,
+deployment and DNS observations below are historical, not the current revision
+or fresh DNS evidence. This documentation is based on main `4370d2d` and records
+the earlier fixed deployment; it does not claim that newer main is deployed.
+
+[PR #24](https://github.com/kleedaisuki/moesegfault-amail/pull/24), head
+`9eccc7e83adcdf25fbc585e4cae496d0a1b556f5`, merged at 2026-10-01 03:34:05 UTC
+as the exact source above. Read-only GitHub metadata, selected sanitized log
+lines and the downloaded browser report were checked during this curation.
+All six runs below are attempt 1, main, and the exact `47d3916` source.
+
+| Fixed evidence | Outcome and scope |
+| --- | --- |
+| [Mail/source CI 36811105489](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36811105489) | Push, completed success; `ci.yml`. **Not valid candidate deployment source evidence.** |
+| [Candidate site CI 36811105233](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36811105233) | Push, completed success; `site-ci.yml`, required `Astro candidate site source checks` job passed. This is the correct fixed-source deployment input. |
+| [Main source-preview browser 36811172838](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36811172838) | Manual dispatch, completed success; hosted source preview only, not deployed acceptance. |
+| [Rejected deployment 36811629173](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36811629173) | Failed the read-only exact-source gate with Mail CI input `36811105489`; provider deployment and live-smoke steps skipped. Gate correctly preserved workflow identity; see [incident and prevention](site-candidate-preflight-incident-36811629173.md). |
+| [Corrected deployment 36812171794](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36812171794) | Manual dispatch, completed success at 03:48:59 UTC, input `36811105233`. Same-run source/isolation checks, both publication preflights, site-only deployment and live smoke all passed. |
+| [Live-candidate browser 36812450154](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36812450154) | Manual dispatch, completed success at 03:52:57 UTC; report source and deployed revision both exact `47d3916`, 12 cases, 78/78 named checks, 0 failures. See [browser evidence and limits](site-browser-acceptance.md#current-fixed-hosted-live-candidate-pass-2026-10-01). |
+
+The corrected deploy identifies `amail-release-site` Worker version
+`6707f3ec-f28b-45be-8d85-a16811fd81ea`. At 03:48:57 UTC its live smoke reported
+`candidate_site=smoke pages=3 toc=2 state=candidate`: exact three-route HTTP/HTML,
+route-local candidate/service copy, no premature version downloads, both TOCs,
+production noindex/nofollow and exact revision headers passed. This establishes
+the workflow's bounded public HTTPS contract, not provider-wide health or a
+fresh authoritative DNS/topology inventory. No raw provider responses or secret
+values are persisted here.
+
+At 04:00 UTC, read-only GitHub tag-ref and release-by-tag lookups both returned
+404 for v0.1.0, consistent with the deployment gates' `tag=absent` and
+`published_release=not_visible` observations. This is public/read-token-visible
+state, not proof that internal untagged drafts do not exist. Mail sending held
+is the unchanged release-ledger/root-reported boundary, not a newly queried
+provider send-policy attestation.
+
+Root owned both deployment attempts and the live-browser dispatch. This
+curation performed no dispatch, push, deploy, provider mutation, local project
+test/build/browser execution, SMTP, tag/Release creation or send-policy change.
+No independent human review of the new 66 screenshots or real screen-reader
+pass is claimed. The earlier visual review applies to its own source-preview
+artifact only. Released-archive installs, Identity/Mail delivery and release
+attestations remain outside this site's acceptance. A later deployment still
+needs fresh exact-main **site-ci.yml** evidence and separate root authorization;
+this fixed result is never transferable to a newer SHA.
+
 ## Decision and invariants
 
 | Boundary | Contract |
