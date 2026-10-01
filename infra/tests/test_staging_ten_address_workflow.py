@@ -56,7 +56,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_same_manifest_recovery_and_generation_survive_cancellation(self):
         """Recovery is explicit and never automatically resends ambiguous deletes."""
-        recovery = self.job[self.job.index("id: recovery"):]
+        recovery = self.job[self.job.index("id: recovery\n"):]
         self.assertIn("if: inputs.mode == 'recover' || inputs.mode == 'recover-escrow'", recovery)
         self.assertIn("{ 'recover-escrow' } else { 'recover' }", recovery)
         self.assertIn("'--prior-run', $env:PUBLIC_PRIOR_RUN", recovery)
@@ -101,7 +101,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("{ 'prepare-escrow' } else { 'prepare' }", self.job)
         self.assertIn("{ 'campaign-escrow' } else { 'campaign' }", self.job)
         self.assertIn("{ 'recover-escrow' } else { 'recover' }", self.job)
-        recovery = self.job[self.job.index("id: recovery"):]
+        recovery = self.job[self.job.index("id: recovery\n"):]
         self.assertIn("if ($env:PUBLIC_QUOTA_MODE -ceq 'recover') { $arguments += @('--artifact-id', $env:PUBLIC_ARTIFACT_ID) }", recovery)
         self.assertNotIn("continue-on-error", self.source)
         self.assertNotIn("workflow_run:", self.source)
@@ -113,7 +113,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_campaign_requires_successful_prepare_upload_and_digest(self):
         """An upload ID alone cannot authorize arm after failed preparation."""
-        campaign = self.job[self.job.index("id: artifact_readback"):self.job.index("id: recovery")]
+        campaign = self.job[self.job.index("id: artifact_readback"):self.job.index("id: recovery\n")]
         self.assertIn("steps.prepare.outcome == 'success'", campaign)
         self.assertIn("steps.recovery_artifact.outcome == 'success'", campaign)
         self.assertIn("ORIGINAL_ARTIFACT_DIGEST: ${{ steps.recovery_artifact.outputs.artifact-digest }}", campaign)
@@ -130,10 +130,10 @@ class WorkflowTests(unittest.TestCase):
         """Sealed preparation and immutable readback are not mutation authority."""
         self.assertIn("PREPARE_STAGING_TEN_ADDRESS_ESCROW_ONLY", self.job)
         self.assertIn("$env:PUBLIC_QUOTA_MODE -ceq 'prepare-escrow-only') { 'prepare-escrow' }", self.job)
-        campaign = self.job[self.job.index("id: campaign"):self.job.index("id: recovery")]
+        campaign = self.job[self.job.index("id: campaign"):self.job.index("id: recovery\n")]
         condition = campaign.split("        env:", 1)[0]
         self.assertNotIn("prepare-escrow-only", condition)
-        recovery = self.job[self.job.index("id: recovery"):self.job.index("Reject skipped campaign authority")]
+        recovery = self.job[self.job.index("id: recovery\n"):self.job.index("Reject skipped campaign authority")]
         self.assertNotIn("prepare-escrow-only", recovery.split("        env:", 1)[0])
         skipped = self.job.split("Reject skipped campaign authority", 1)[1].split("Require complete prepare-only", 1)[0]
         self.assertNotIn("prepare-escrow-only", skipped)
