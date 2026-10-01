@@ -328,7 +328,7 @@ function managedRule(id, recipient = address, overrides = {}) {
  * Routes can materialize independently of a creator continuation; every DELETE
  * asserts that an immediately preceding scoped GET validated the same provider ID.
  */
-async function withProvider({ rules = [], listPage, getRule, beforeDelete, createRule, deleteReply } = {}, body) {
+async function withProvider({ rules = [], listPage, getRule, beforeDelete, createRule, deleteReply, embeddingReply } = {}, body) {
   const store = new Map(rules.map((rule) => [rule.id, structuredClone(rule)]));
   const calls = [];
   let unexpected = 0;
@@ -344,6 +344,8 @@ async function withProvider({ rules = [], listPage, getRule, beforeDelete, creat
       return json({ issuer, jwks_uri: `${issuer}/jwks` });
     if (request.method === "GET" && request.url === `${issuer}/jwks`)
       return json({ keys: [{ ...jwk, kid: "synthetic", alg: "RS256", use: "sig" }] });
+    if (request.method === "POST" && request.url === "https://openrouter.ai/api/v1/embeddings" && embeddingReply)
+      return await embeddingReply(request, json);
     if (url.origin === provider && url.pathname === rulePath && request.method === "POST" && createRule)
       return await createRule(request, store, json);
     if (url.origin === provider && url.pathname === rulePath && request.method === "GET") {
@@ -391,6 +393,10 @@ async function withProvider({ rules = [], listPage, getRule, beforeDelete, creat
         CF_ZONE_ID: "synthetic-zone", CF_EMAIL_ROUTING_TOKEN: "synthetic-token",
         MAIL_DOMAIN: "mail-staging.moesegfault.dev",
         EMAIL_INGRESS_WORKER_NAME: "synthetic-ingress", ADDRESS_DIAGNOSTICS: "v1",
+        ...(embeddingReply ? {
+          OPENROUTER_API_KEY: "synthetic-embedding-key",
+          OPENROUTER_EMBEDDING_MODEL: "qwen/qwen3-embedding-8b",
+        } : {}),
       },
       d1Databases: ["MAIL_DB"], outboundService,
     }],
@@ -428,6 +434,49 @@ async function withProvider({ rules = [], listPage, getRule, beforeDelete, creat
     await waitForPhase(mf.dispose(), "synthetic provider disposal", 10000);
   }
 }
+
+/**
+ * Count all external exchanges in a combined address/embedding Cron fixture.
+ * This is a semantic and egress-count check, not a remote D1/CPU/memory limit
+ * emulator: the binding, R2/Queue paths and Cloudflare account tier are separate.
+ */
+test("full routing allowance plus twenty embeddings still reaches later maintenance", { timeout: 60000 }, async () => {
+  const addresses = Array.from({ length: 200 }, (_, index) =>
+    `budget-${String(index).padStart(3, "0")}@mail-staging.moesegfault.dev`);
+  const rules = [
+    ...addresses.map((recipient, index) => managedRule(`budget-rule-${index}`, recipient)),
+    ...Array.from({ length: 300 }, (_, index) => managedRule(`foreign-budget-${index}`,
+      `synthetic-${index}@other-${Math.floor(index / 150)}.example.invalid`)),
+  ];
+  let embeddingCalls = 0;
+  await withProvider({ rules, embeddingReply: async (request, json) => {
+    const input = await request.json();
+    assert.equal(input.dimensions, 256);
+    assert.equal(input.input_type, "search_document");
+    assert.ok(input.input.startsWith("Synthetic budget document"));
+    embeddingCalls++;
+    return json({ data: [{ embedding: [1, ...Array(255).fill(0)] }] });
+  } }, async ({ db, insert, tick, calls, store }) => {
+    for (const recipient of addresses) await insert(recipient);
+    for (let owner = 0; owner < 5; owner++) {
+      for (let item = 0; item < 4; item++) {
+        const id = `budget-message-${owner}-${item}`;
+        await db.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES(?1,?2,?3,?4,'inbound','synthetic@example.invalid','[]','Synthetic budget document','synthetic only','{}',0,0,1,0,?5,1)")
+          .bind(id, addresses[owner], issuer, `owner-budget-${String(owner).padStart(3, "0")}`, `synthetic/${id}.zip`).run();
+      }
+    }
+    await db.prepare("INSERT INTO search_jobs(id,owner_iss,owner_sub,request_json,state_json,state,created_at,expires_at) VALUES('budget-expired-job',?1,'synthetic-owner','{}','{}','running',0,?2)")
+      .bind(issuer, Date.now() - 1000).run();
+    const routing = await tick();
+    assert.equal(routing.length, 20, "ten inventory pages plus five scoped GET/DELETE pairs");
+    assert.equal(embeddingCalls, 20, "all five owners receive their four admitted documents");
+    assert.equal(calls.length, 40, "the whole scheduled fixture makes forty nonredirecting external exchanges");
+    assert.equal(store.size, 495, "the bounded address phase leaves durable remaining rules");
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM messages WHERE embedding_json IS NOT NULL").first()).n, 20);
+    assert.equal((await db.prepare("SELECT state FROM search_jobs WHERE id='budget-expired-job'").first()).state, "expired",
+      "later search maintenance executes after both full egress workloads");
+  });
+});
 
 test("zero due rows still discover a late route for a clean permanent retired lifetime", async () => {
   await withProvider({}, async ({ insert, row, tick, store }) => {
