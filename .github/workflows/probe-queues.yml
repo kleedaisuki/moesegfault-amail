@@ -1,11 +1,8 @@
-# Read-only credential capability probe; never provisions Queues or subscriptions.
+# Manual read-only credential capability probe; source pushes never query the provider.
 # 只读凭据能力探针；绝不创建队列或订阅。
 name: Probe Cloudflare Queues permission
 
 on:
-  push:
-    branches: [codex/amail-v0.1.0]
-    paths: [.github/workflows/probe-queues.yml]
   workflow_dispatch:
 
 permissions:
