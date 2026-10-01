@@ -20,7 +20,7 @@ pub(crate) async fn read(object: &Object) -> Result<Option<Vec<u8>>> {
     let Some(body) = object.body() else {
         return Ok(None);
     };
-    let stream = match body.response_body()? {
+    let stream = match body.response_body().map_err(|_| failed())? {
         ResponseBody::Stream(stream) => JsValue::from(stream),
         _ => return Ok(None),
     };

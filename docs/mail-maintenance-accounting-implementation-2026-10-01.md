@@ -138,6 +138,10 @@ Additional primary references:
 [R2 Worker API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/),
 [workers-rs R2 object body](https://github.com/cloudflare/workers-rs/blob/v0.8.3/worker/src/r2/mod.rs).
 
+The independent R2 source review's nonblocking acquisition-error note is resolved:
+workers-rs response-body acquisition is also mapped to the fixed
+`accepted_archive_read_failed` code, not propagated as arbitrary SDK text.
+
 ## Fourth atomic slice: independent actual D1 submission observation
 
 A separately scoped test-only subclass wraps native local D1, preserving real
