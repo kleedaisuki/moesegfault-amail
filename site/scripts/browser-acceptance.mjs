@@ -25,8 +25,12 @@ async function check(result, name, fn) {
 /** Require actual visible focus, not only an element's presence in the DOM. */
 async function focusedOutline(page) {
   return page.evaluate(() => {
-    const style = getComputedStyle(document.activeElement);
-    return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2;
+    const el = document.activeElement;
+    const style = getComputedStyle(el);
+    return { tag: el.tagName, id: el.id, className: el.className,
+      focusVisible: el.matches(':focus-visible'), outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth, outlineColor: style.outlineColor,
+      passes: style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2 };
   });
 }
 
@@ -51,9 +55,11 @@ async function unclipped(locator) {
 }
 
 /** Exercise every generated TOC link and reject targets hidden behind the sticky header. */
-async function toc(page) {
+async function toc(page, stem, result) {
   const links = page.locator('.toc a');
   assert.ok(await links.count() > 0, 'TOC must not be empty');
+  result.tocGeometry = [];
+  const failures = [];
   for (let index = 0; index < await links.count(); index++) {
     const link = links.nth(index);
     const href = await link.getAttribute('href');
@@ -64,13 +70,26 @@ async function toc(page) {
     await link.click();
     assert.equal(decodeURIComponent(new URL(page.url()).hash.slice(1)), id);
     const position = await page.evaluate((value) => {
-      const target = document.getElementById(value).getBoundingClientRect();
+      const heading = document.getElementById(value);
+      const target = heading.getBoundingClientRect();
       const header = document.querySelector('.site-header').getBoundingClientRect();
-      return { top: target.top, bottom: target.bottom, header: header.bottom, height: innerHeight };
+      const ancestors = [];
+      for (let parent = heading.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent);
+        if (!['auto', 'scroll', 'hidden'].includes(style.overflowY)) continue;
+        ancestors.push({ tag: parent.tagName, className: parent.className,
+          overflowY: style.overflowY, scrollTop: parent.scrollTop,
+          clientHeight: parent.clientHeight, scrollHeight: parent.scrollHeight });
+      }
+      return { id: value, top: target.top, bottom: target.bottom, header: header.bottom,
+        height: innerHeight, margin: getComputedStyle(heading).scrollMarginTop, ancestors };
     }, id);
-    assert.ok(position.top >= position.header - 1 && position.top < position.height,
-      `${id}: heading obscured or outside viewport: ${JSON.stringify(position)}`);
+    result.tocGeometry.push(position);
+    if (position.top >= position.header - 1 && position.top < position.height) continue;
+    await page.screenshot({ path: `${output}/${stem}-toc-${index}-failure.png` });
+    failures.push(`${id}: heading obscured or outside viewport: ${JSON.stringify(position)}`);
   }
+  assert.equal(failures.length, 0, failures.join('\n'));
 }
 
 /** Preserve table evidence and verify content can be reached in its horizontal scroller. */
@@ -141,16 +160,20 @@ try {
         await page.goto(`${base}${route}`);
         await page.keyboard.press('Tab');
         assert.equal(await page.locator('.skip-link').evaluate((el) => el === document.activeElement), true);
-        assert.ok(await focusedOutline(page));
+        result.skipFocus = await focusedOutline(page);
+        assert.ok(result.skipFocus.passes, `skip focus: ${JSON.stringify(result.skipFocus)}`);
         const box = await page.locator('.skip-link').boundingBox();
         assert.ok(box.y >= 0 && box.x >= 0 && box.x + box.width <= width);
         await page.screenshot({ path: `${output}/${stem}-skip-focus.png` });
         await page.keyboard.press('Enter');
         assert.equal(new URL(page.url()).hash, '#main');
         await page.keyboard.press('Tab');
+        result.mainContinuationFocus = await focusedOutline(page);
+        await page.screenshot({ path: `${output}/${stem}-main-continuation-focus.png` });
         assert.ok(await page.locator('main').evaluate((el) => el.contains(document.activeElement)),
           'keyboard continuation must bypass header navigation');
-        assert.ok(await focusedOutline(page));
+        assert.ok(result.mainContinuationFocus.passes,
+          `main continuation focus: ${JSON.stringify(result.mainContinuationFocus)}`);
       });
       await check(result, 'unclipped CTAs and local installation/privacy destinations', async () => {
         const ctas = page.locator('.header-cta, .button, .release-link');
@@ -166,7 +189,7 @@ try {
         }
         await page.goto(`${base}${route}`);
       });
-      if (route !== '/') await check(result, 'TOC activation and heading visibility', () => toc(page));
+      if (route !== '/') await check(result, 'TOC activation and heading visibility', () => toc(page, stem, result));
       if (route === '/manual/') await check(result, 'manual table readability and reachability', () => tables(page, stem));
       await check(result, 'review screenshots', async () => {
         await page.goto(`${base}${route}`);

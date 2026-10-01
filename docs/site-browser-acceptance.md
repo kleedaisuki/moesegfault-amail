@@ -123,3 +123,59 @@ The first hosted run must establish harness/browser setup correctness; a
 dependency/network/runner failure is not automatically a site defect. Hosted
 workflow lint, successful execution, independent code review and manual
 screenshot/screen-reader review are pending, not silently assumed.
+
+## First actual hosted run: failures preserved
+
+PR [#24](https://github.com/kleedaisuki/moesegfault-amail/pull/24), head
+`3250ae9511e23cee69cb838cd00dfc91b8c128b0`, triggered browser run
+[36808670970, attempt 1](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36808670970).
+The actual checked-out PR merge source recorded in the report is
+`d996547c92f1e2ecffcad986fb5e6c12466054da`, not the PR head. Browser checks ran
+2026-10-01 03:03:28–03:03:51 UTC. Hosted candidate build/state checks, pinned
+browser install, CJK fonts and browser launch succeeded; behavioral checks
+**failed**. Artifact `site-browser-36808670970-1`, ID `11139275320`, contains
+the original screenshots/report and preview server log.
+
+| Width | Manual first heading top / header bottom | Changelog heading top / header bottom |
+| --- | --- | --- |
+| 320 | 0.703 / 125.188 | 110.203 / 125.188 |
+| 390 | 0.344 / 125.188 | 110.203 / 125.188 |
+| 768 | 0.547 / 128.891 | 110.672 / 128.891 |
+| 1440 | 0.844 / 77.000 | Passed; original harness did not retain passing geometry |
+
+The manual first target is `先认识-amail`; changelog target is `v0.1.0`.
+These measured headings begin behind the sticky header. Original TOC checking
+stopped at the first failure in each route/width; later manual targets are not
+verified by that run. The assertion remains unchanged. Added diagnostics now
+record computed heading margins and scrolling ancestors, capture each failed
+TOC target, and continue through all entries before failing the named check.
+
+All 12 skip/focus checks failed specifically at the **second** focus-outline
+assertion, after Enter and Tab into main. This stage identification is supported
+by all 12 saved `*-skip-focus.png` images: those captures occur after the first
+outline assertion. Direct inspection of `320-manual-skip-focus.png` shows the
+visible skip link and clear outline. The original error expression did not
+distinguish stages or include the active element/style. This is not evidence
+that the skip link itself lacked a focus ring. The next diagnostic reports tag,
+class, `:focus-visible`, computed outline style/width/color at both stages and
+saves `*-main-continuation-focus.png` before asserting. It does **not** weaken
+the existing minimum-outline or keyboard-continuation contract. Whether the
+second-stage failure is a product issue or an over-specific outline assumption
+requires that actual browser evidence, not guesswork from CSS alone.
+
+Route/candidate identity, page overflow and CTA/destination checks passed in
+all 12 cases; table font-size/right-edge checks passed at all four widths.
+Screenshot capture passed, but this is not a complete human visual review.
+Independent hosted runs also succeeded:
+[syntax 36808670944](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36808670944),
+[candidate source CI 36808670923](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36808670923),
+and [main CI 36808671216](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36808671216).
+No deployment/provider jobs ran; these successes do not cancel the browser
+failure or establish live-source/screen-reader acceptance.
+
+Artifacts were retrieved solely with `gh run download 36808670970 --dir
+.temp/hosted-browser-run-36808670970` inside the isolated worktree. Screenshot
+viewing is inspection of hosted output, not local browser execution. No
+production source was changed by the validator. A separately owned source fix
+and diagnostic-only harness amendment require independent review before the
+next hosted run; no blind rerun or failure waiver is justified.
