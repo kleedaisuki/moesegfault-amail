@@ -1,10 +1,10 @@
 # Accepted outbound projection source review
 
-Reviewed original source `289d1bf067211d16ecced5f38c3fc1caec5453f3` against parent `ea54512`, then corrective source `0fa2a9fa1d5c9c43640ed840279761367400925d`. Date: 2026-10-01. Independent static review only: no local build/test, provider operation, deployment, or source modification. Hosted acceptance tests were not yet integrated at review time.
+Reviewed original source `289d1bf067211d16ecced5f38c3fc1caec5453f3` against parent `ea54512`, then corrective source `0fa2a9fa1d5c9c43640ed840279761367400925d`, and rebased followup source `f4bba05` on current main `f10af796`. Date: 2026-10-01. Independent static review only: no local build/test, provider operation, deployment, or source modification. Hosted acceptance tests were not yet integrated at review time.
 
 ## Verdict
 
-**GO for exact nondeploying hosted CI on corrected source `0fa2a9f`; no unresolved substantive source defect found within this review scope.** Original `289d1bf` was NO-GO for complete integrity acceptance because of the derived-index defect below. That finding is now resolved in source, pending hosted regression evidence. This is not deployment admission or a claim that unexecuted tests passed.
+**GO for exact nondeploying hosted CI on corrected followup source `f4bba05`; no unresolved substantive source defect found within this review scope.** Original `289d1bf` was NO-GO for complete integrity acceptance because of the derived-index defect below. That finding is now resolved in source, pending hosted regression evidence. This is not deployment admission or a claim that unexecuted tests passed.
 
 ## Resolved P1: Repaired body retained a vector for the old body
 
@@ -30,7 +30,15 @@ Current code requires exactly-one changes only for journal claim, chunk writes, 
 
 ### Identical-chunk retry metadata acceptance
 
-`stage` breaks its loop when a successful chunk upsert does not report exactly one change. [SQLite UPDATE semantics](https://www.sqlite.org/lang_update.html) affect matched rows; [SQLite changes API](https://www.sqlite.org/c3ref/changes.html) counts direct UPDATE effects and excludes trigger side effects. The [SQLite project forum clarification](https://sqlite.org/forum/info/7f9cfd47e9b15549) explicitly says an equal-value update still increments the change count. There is thus no demonstrated SQLite equal-value defect, but the D1 return-object contract does not explicitly promise this detail. The hosted fault-on-chunk-three followed by exact-byte retry must verify that already-staged identical chunks do not prematurely stop repair. Continuing after every successful statement and leaving completeness to the final fenced ready predicate would remove this metadata-progress dependency; it is an optional robustness simplification absent contrary hosted evidence, not an invented blocker.
+Earlier `stage` broke its loop when a successful chunk upsert did not report exactly one change. [SQLite UPDATE semantics](https://www.sqlite.org/lang_update.html) affect matched rows; [SQLite changes API](https://www.sqlite.org/c3ref/changes.html) counts direct UPDATE effects and excludes trigger side effects. The [SQLite project forum clarification](https://sqlite.org/forum/info/7f9cfd47e9b15549) explicitly says an equal-value update still increments the change count. There was thus no demonstrated SQLite equal-value defect, but the D1 return-object contract does not explicitly promise this detail. Followup `f4bba05` removes this unnecessary progress dependency: stage continues after every successful bounded upsert, and final fenced readiness alone decides publication. This is coherent even after a lost lease or intervening tombstone: subsequent statements become no-ops and cannot publish without authority. Hosted fault-on-chunk-three followed by exact-byte retry remains required evidence.
+
+### Surviving legacy tombstone without retained ZIP
+
+Old GC could remove R2 ZIP bytes and then fail before deleting the tombstone. Followup `f4bba05` recognizes only an owned outbound tombstone whose message ID, provider metadata and canonical R2 key agree with the accepted journal. Its stored byte count feeds the same exact reservation ownership guard. It claims the shared token lease, then uses a two-statement ledger/sent batch whose SQL rechecks journal identity, token, reservation and surviving deletion. No body/chunk INSERT is involved. Only the final changed journal or the exact already-sent proof authorizes success; archive absence alone does not.
+
+This terminalization is correct whether the deleted archive still exists or was already removed: deletion intent means no reconstruction is needed. Existing accepted-aware GC keeps the tombstone until terminalization; normal GC subsequently releases chunks, bytes and reservation. The inspected legacy GC deletes R2 before the message and reservation, supporting this specific surviving-tombstone state. Missing reservations or foreign/live message collisions fail closed; an already physically removed tombstone is not manufactured from a missing archive.
+
+Required hosted additions: surviving owned tombstone with no ZIP terminalizes without provider/body/embedding call; foreign-owner, mismatched provider/key/bytes, absent reservation and live-message/no-ZIP cases do not; two-statement terminalization rollback preserves accepted state; actual subsequent GC removes only the owned deleted delivery. No such runtime result was asserted by this review.
 
 ## Assessed and not raised as defects
 
