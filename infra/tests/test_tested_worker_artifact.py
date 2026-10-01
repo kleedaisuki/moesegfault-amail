@@ -29,6 +29,10 @@ class TestedWorkerArtifactTests(unittest.TestCase):
             (directory / "index.js").write_text("export default {};")
             (directory / "worker/shim.mjs").write_text("export default {};")
             (directory / "module.wasm").write_bytes(b"inert-public-fixture")
+        for name in verifier.artifact.ENTRY_FILES:
+            entry = self.root / name
+            entry.parent.mkdir(parents=True, exist_ok=True)
+            entry.write_text("export default class Entry {};")
         for patcher in (patch.object(verifier.artifact, "ROOT", self.root),
                         patch.object(verifier.artifact, "FOLDER", self.folder),
                         patch.dict(verifier.artifact.os.environ, {"GITHUB_ACTIONS": "true",
@@ -40,7 +44,7 @@ class TestedWorkerArtifactTests(unittest.TestCase):
 
     def test_exact_same_run_original_and_installed_modules_pass(self):
         """The byte check grants no runtime or business admission by itself."""
-        for component in ("mail_api", "trace_sink"):
+        for component in ("mail_api", "trace_sink", "mail_ingress", "mail_events"):
             verifier.require_artifact(component)
 
     def test_rebuilt_modified_missing_and_extra_installed_bytes_refuse(self):
@@ -68,6 +72,13 @@ class TestedWorkerArtifactTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 verifier.require_artifact("trace_sink")
         path.write_text(json.dumps(original))
+
+    def test_changed_entry_boundary_refuses_even_with_intact_generated_modules(self):
+        """A deploy may not introduce new handlers through post-test source edits."""
+        path = self.root / verifier.artifact.ENTRY_FILES[-1]
+        path.write_text("export * from '../build/worker/shim.mjs';")
+        with self.assertRaisesRegex(ValueError, "artifact_file_integrity_mismatch"):
+            verifier.require_artifact("mail_events")
 
     def test_original_extra_bytes_and_unknown_component_refuse(self):
         """A receipt selects only reviewed generated trees and explicit components."""

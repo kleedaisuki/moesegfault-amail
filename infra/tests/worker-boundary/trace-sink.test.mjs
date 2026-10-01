@@ -1,12 +1,42 @@
 /** Hosted native Queue entrypoint tests for the actual compiled Rust trace sink. */
 import assert from "node:assert/strict";
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Log, LogLevel, Miniflare } from "miniflare";
 import { workerModuleRules } from "./worker-module-rules.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+
+test("event boundaries export only their composed platform handler", async () => {
+  for (const [name, handler] of [["trace-sink", "queue"], ["mail-ingress", "email"], ["mail-events", "queue"]]) {
+    const entry = `entry/${handler}.mjs`;
+    const source = await readFile(path.join(root, "workers", name, entry), "utf8");
+    const config = await readFile(path.join(root, "workers", name, "wrangler.toml"), "utf8");
+    assert.equal((source.match(/\bexport\b/g) ?? []).length, 1);
+    assert.match(source, /export default class \w+ extends WorkerEntrypoint/);
+    assert.match(source, new RegExp(`return new \\w+\\(this.ctx, this.env\\)\\.${handler}\\(`));
+    assert.match(config, new RegExp(`^main = "${entry.replaceAll(".", "\\.")}"$`, "m"));
+    assert.doesNotMatch(source, /\b(fetch|scheduled)\s*\(/);
+  }
+});
+
+test("native lifecycle queue wrapper preserves malformed-event retry semantics", async () => {
+  const mf = new Miniflare({ cf: false, modules: true, modulesRoot: root,
+    scriptPath: path.join(root, "workers/mail-events/entry/queue.mjs"),
+    modulesRules: workerModuleRules, compatibilityDate: "2026-07-30",
+    outboundService() { throw new Error("malformed lifecycle event must not contact external services"); } });
+  try {
+    const result = await (await mf.getWorker()).queue("synthetic-lifecycle", [
+      { id: "synthetic-invalid", timestamp: new Date(1_790_000_000_999), attempts: 1, body: {} },
+    ]);
+    assert.equal(result.outcome, "ok");
+    assert.deepEqual(result.explicitAcks, []);
+    assert.equal(result.retryMessages.length, 1);
+    assert.equal(result.retryMessages[0].msgId, "synthetic-invalid");
+  } finally { await mf.dispose(); }
+});
 /** Capture all native console output, including any accidental poison serialization. */
 class CapturedLog extends Log {
   constructor(records) { super(LogLevel.DEBUG); this.records = records; }

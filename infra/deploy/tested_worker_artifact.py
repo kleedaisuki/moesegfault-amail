@@ -17,8 +17,9 @@ from control_plane_trace import span
 def require_artifact(component: str) -> None:
     """Match original and installed trees to this checkout/run/compiler manifest.
 
-    All seven trees are verified, not merely the selected entrypoint. Restoring
-    on a fresh hosted runner and rechecking before submit prevents silent
+    All seven trees and fixed tracked entry wrappers are verified, not merely
+    the selected entrypoint. A post-test wrapper edit cannot add RPC exports.
+    Restoring on a fresh hosted runner and rechecking before submit prevents silent
     post-test rebuilds or partially mixed generated output from reaching deploy.
     """
     if component not in ("mail_api", "trace_sink", "mail_ingress", "mail_events", "identity_test_inbox"):
