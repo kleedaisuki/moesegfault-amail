@@ -28,6 +28,10 @@ do not retire the standalone Identity inbox or active native-tracing experiment.
   build only after mandatory hosted current infrastructure checks and its narrow unchanged-
   compiler-input proof; its receipt keeps both identities. See
   `docs/native-cloudflare-tracing-canary.md`. This is not release admission.
+  Its reviewed alternate Route transport uses only the fixed reserved infrastructure
+  hostname and nonce-owned DNS/Route; read `docs/native-route-dns-lifecycle.md`
+  before its distinct confirmation. Do not repeat historical workers.dev failures,
+  borrow a product host or treat read permission as successful write admission.
   Native artifacts alone do not qualify a release. An exact cache hit, partial/miss and unreported state are different;
   use `ci_cache_lookup` and suite receipts rather than green-step inference.
   For a test-only native fixture repair, use `docs/native-fixture-replay.md`

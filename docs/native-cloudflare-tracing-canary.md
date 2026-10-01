@@ -363,3 +363,42 @@ guessing the provider wrapper. The separate [machine-client interoperability des
 keeps five CLI client contracts intact and does not recast the user's resolved
 production/staging environment mismatch as an authentication bug. These are
 source-only designs, not deployed acceptance or permission for business debug.
+
+## Reserved owned-zone Route transport (source implementation)
+
+The selected alternate is an exact Worker Route on
+`amail-native-trace-canary.moesegfault.dev`, with a positively new proxied AAAA
+record (`100::`) and an existing active Universal SSL certificate. It does not
+attach a Custom Domain, provision a certificate or borrow a product hostname.
+See [the bounded DNS/Route lifecycle](native-route-dns-lifecycle.md).
+
+The same workflow retains its identity and historical two-script mode. The
+alternate requires the explicit `RUN_NATIVE_TRACING_ROUTE_CANARY` confirmation;
+the corresponding source operations are `deploy-route`, `trigger-route`,
+`collect-route` and `cleanup-route`. It still admits a successful original-main
+artifact and current hosted infrastructure checks before any provider capability.
+Only reviewed transport helper/test changes extend the existing orchestration
+allowlist; changed Rust/Wasm/compiler inputs still require a new full main build.
+
+Read-only preflight proves expected active/full zone/account, enabled and active
+covering Universal SSL, complete DNS/domain/route non-overlap and script absence.
+Reads do not prove write permission. The first mutation is one bounded nonce-owned
+DNS create/readback; denial or ambiguity stops without another create or new token.
+Then deploy the private pair from the admitted bytes, verify serving/capture
+ownership, create/read back the exact caller Route and revalidate all ingress and
+pair ownership immediately before the one anonymous HTTPS POST. Generated config
+disables workers.dev and preview endpoints for both scripts. The private probe
+continues to be reached only through the existing service binding.
+
+The shared receipt persists ingress coordinates/phases before mutation. Always-
+cleanup verifies/removes Route, DNS, caller, then probe; unresolved route/DNS
+ownership prevents lower-level removal. A successful source check is not an
+actual DNS/Route permission, TLS invocation or native-trace receipt.
+
+Collection now persists bounded summary/schema diagnostics before an acceptance
+failure and waits for the per-case parent/child predicate, rather than eight global
+spans. Unassigned marker locations cannot silently yield a clean privacy verdict.
+Async context, fixed-exception and replacement-attribute retention remain explicitly
+unverified until actual isolated provider records establish a typed representation.
+No Mail account, storage, sending, WAF or existing service resource is changed by
+this source implementation. Actual root-owned dispatch/review remains pending.
