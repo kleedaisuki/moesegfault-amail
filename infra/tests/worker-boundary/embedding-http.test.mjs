@@ -163,6 +163,8 @@ test("embedding body stall is bounded by the same deadline and canceled", { time
   })), () => source.close());
   unavailable(result);
   assert.ok(Date.now() - started < 39_000, "body reads must not outlive the transport deadline");
+  assert.ok(result.native.reads >= 2 && result.native.bytes > 0,
+    "deadline occurred after a body prefix and while awaiting its next read");
   assert.equal(result.native.abortcalls, 1, "deadline abort targets the provider transport");
   assert.equal(result.native.abortedsignals, 1, "exact native fetch signal is aborted");
 });
