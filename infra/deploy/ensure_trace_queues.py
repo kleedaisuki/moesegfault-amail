@@ -21,6 +21,37 @@ LIMIT = 262144
 TOPOLOGIES = ("api-only", "api-role", "api-scheduled")
 
 
+def normalize_worker_consumers(payload: dict) -> dict:
+    """Canonicalize observed Queue worker identities without weakening ownership.
+
+    The live Queue API returns worker consumer ``script`` while its documented
+    shape uses ``script_name``. Preserve legacy responses and reject conflicting
+    explicit names; downstream exact script/count/settings predicates stay intact.
+    Only these infrastructure fields are examined, never message data.
+    """
+    result = payload.get("result")
+    rows = result if isinstance(result, list) else [result]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        consumers = row.get("consumers", [])
+        if row.get("type") == "worker":
+            consumers = [row]
+        if not isinstance(consumers, list):
+            continue
+        for consumer in consumers:
+            if not isinstance(consumer, dict) or consumer.get("type") != "worker":
+                continue
+            script = consumer.get("script")
+            if script is None:
+                continue
+            if (not isinstance(script, str) or not script
+                    or consumer.get("script_name") not in (None, script)):
+                raise ValueError("consumer_identity_conflict")
+            consumer["script_name"] = script
+    return payload
+
+
 def request(account: str, token: str, path: str, body: dict | None = None, *, method: str | None = None):
     """Read a bounded API envelope; never include provider error text in failures."""
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -34,7 +65,7 @@ def request(account: str, token: str, path: str, body: dict | None = None, *, me
         raise ValueError("provider_unavailable") from error
     if len(raw) > LIMIT or not isinstance(payload, dict) or payload.get("success") is not True:
         raise ValueError("provider_unavailable")
-    return payload
+    return normalize_worker_consumers(payload)
 
 
 def inventory(account: str, token: str) -> list[dict]:

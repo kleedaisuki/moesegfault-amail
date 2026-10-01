@@ -338,6 +338,19 @@ class FreshTransportTests(unittest.TestCase):
             self.provider.envelope("GET", self.path)
         self.assertNotIn("private", self.output.getvalue())
 
+    def test_owned_queue_worker_script_alias_is_normalized_at_provider_boundary(self):
+        """Reproduce the real Queue detail: script_name absent, script names the sink."""
+        consumer = {"type": "worker", "script": "amail-trace-sink", "dead_letter_queue": "amail-trace-dlq",
+                    "settings": {"batch_size": 10, "max_wait_time_ms": 1000, "max_retries": 3,
+                                 "retry_delay": 30, "max_concurrency": 2}}
+        detail = {"consumers": [consumer], "queue_id": "e7a80fba65b0471aa4a267527d83d2d3"}
+        self.response(json.dumps({"success": True, "result": detail}).encode())
+        result = self.provider.get(f"accounts/{self.provider.account}/queues/{detail['queue_id']}")
+        self.assertEqual(result["consumers"][0], {**consumer, "script_name": "amail-trace-sink"})
+        self.response(json.dumps(envelope({"consumers": [{**consumer, "script_name": "foreign"}]})).encode())
+        with self.assertRaisesRegex(fresh.FreshError, "fresh_provider_schema_invalid"):
+            self.provider.get(f"accounts/{self.provider.account}/queues/{detail['queue_id']}")
+
     def test_off_authority_methods_and_arbitrary_creates_refused(self):
         """No generic resource-name, account, delete, redirect or SQL mutation exists."""
         for method, path, body in (("GET", "https://evil.test/", None),

@@ -19,6 +19,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from control_plane_trace import response_facts, span
 from fresh_bootstrap_contract import Epoch, Scope, ORIGINAL_BUCKET, ORIGINAL_DATABASE, STAGING_DATABASE, utc_timestamp
 from pin_staging_mail import UUID
+from ensure_trace_queues import normalize_worker_consumers
 
 ROOT = Path(__file__).resolve().parents[2]
 API = "https://api.cloudflare.com/client/v4"
@@ -198,6 +199,8 @@ class FreshProvider:
                         facts.schema_field = field
                         facts.schema_actual_type = type(value.get(field)).__name__ if field in value else "missing"
                     raise FreshError("fresh_provider_envelope_unverified")
+                if family in ("queues.inventory", "queues.readback"):
+                    return normalize_worker_consumers(value)
                 return value
             except HTTPError as error:
                 response_facts(facts, error.code, error.headers)

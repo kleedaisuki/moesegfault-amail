@@ -2,9 +2,10 @@
 
 import importlib.util
 import hashlib
+import json
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SPEC = importlib.util.spec_from_file_location("trace_queues", Path(__file__).parents[1] / "deploy/ensure_trace_queues.py")
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -19,6 +20,32 @@ def queue(name):
 
 class TraceQueueTests(unittest.TestCase):
     """Protect no-purge provisioning, strict ownership and bounded inventory."""
+
+    def test_live_script_alias_preserves_exact_worker_ownership(self):
+        """The actual API's script field must survive the normal operator boundary."""
+        consumer = {"type": "worker", "script": "amail-trace-sink",
+                    "dead_letter_queue": "amail-trace-dlq",
+                    "settings": {"batch_size": 10, "max_wait_time_ms": 1000,
+                                 "max_retries": 3, "retry_delay": 30, "max_concurrency": 2}}
+        for fields in ({"script": "amail-trace-sink"}, {"script_name": "amail-trace-sink"},
+                       {"script": "amail-trace-sink", "script_name": "amail-trace-sink"}):
+            row = {key: value for key, value in consumer.items() if key != "script"}
+            row.update(fields)
+            detail = {**queue("amail-trace-events"), "consumers": [row], "producers": [],
+                      "consumers_total_count": 1, "producers_total_count": 0}
+            response = Mock()
+            response.__enter__ = Mock(return_value=response)
+            response.__exit__ = Mock(return_value=False)
+            response.read.return_value = json.dumps({"success": True, "result": detail}).encode()
+            with patch.object(MODULE, "urlopen", return_value=response):
+                actual = MODULE.request("account", "dummy", "queues/" + detail["queue_id"])["result"]
+            MODULE.validate_detail(actual, "amail-trace-events", detail["queue_id"], "", "queues")
+        for fields in ({"script": "amail-trace-sink", "script_name": "foreign"}, {"script": 123}):
+            with self.assertRaisesRegex(ValueError, "consumer_identity_conflict"):
+                MODULE.normalize_worker_consumers({"result": {"consumers": [{**consumer, **fields}]}})
+        foreign = MODULE.normalize_worker_consumers({"result": {**detail, "consumers": [{**consumer, "script": "foreign"}]}})["result"]
+        with self.assertRaisesRegex(ValueError, "consumer_drift"):
+            MODULE.validate_detail(foreign, "amail-trace-events", detail["queue_id"], "", "queues")
 
     def test_retention_and_paused_drift(self):
         """Existing queue drift fails rather than silently updating settings."""
