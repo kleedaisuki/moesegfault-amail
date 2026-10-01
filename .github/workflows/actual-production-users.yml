@@ -76,3 +76,14 @@ jobs:
           CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/actual_production_user.py
+      # Exact actual send receipts contain opaque IDs and observations only.
+      # Never upload auth homes, browser profiles, drafts, raw mail or ZIPs.
+      - name: Preserve opaque actual-user operation receipts
+        if: always() && inputs.phase == 'journey'
+        uses: actions/upload-artifact@v4
+        with:
+          name: actual-owned-user-receipt-${{ github.run_id }}
+          path: .temp/actual-production-users/receipt.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
