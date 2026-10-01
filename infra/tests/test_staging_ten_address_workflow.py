@@ -56,12 +56,12 @@ class WorkflowTests(unittest.TestCase):
 
     def test_same_manifest_recovery_and_generation_survive_cancellation(self):
         """Recovery is explicit and never automatically resends ambiguous deletes."""
-        recovery = self.job[self.job.index("id: recovery"):]
-        self.assertIn("if: inputs.mode == 'recover'", recovery)
-        self.assertIn("'recover', '--source-run'", recovery)
+        recovery = self.job[self.job.index("id: recovery\n"):]
+        self.assertIn("if: inputs.mode == 'recover' || inputs.mode == 'recover-escrow'", recovery)
+        self.assertIn("{ 'recover-escrow' } else { 'recover' }", recovery)
         self.assertIn("'--prior-run', $env:PUBLIC_PRIOR_RUN", recovery)
         self.assertIn("'--artifact-id', $env:PUBLIC_ARTIFACT_ID", recovery)
-        self.assertIn("if: always() && inputs.mode == 'accept'", self.job)
+        self.assertIn("if: always() && (inputs.mode == 'accept' || inputs.mode == 'supervised-escrow' || inputs.mode == 'prepare-escrow-only')", self.job)
         self.assertIn("ten_address_immutable_recovery_artifact_retained", self.job)
         self.assertEqual(self.job.count("AMAIL_TEN_ADDRESS_KEY_GENERATION: ten-address-v1"), 3)
         self.assertEqual(self.job.count("secrets.AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1"), 3)
@@ -87,6 +87,75 @@ class WorkflowTests(unittest.TestCase):
         """Only pass --queue-id when it has a validated nonempty value."""
         self.assertEqual(self.job.count("if ($env:PUBLIC_QUEUE_ID) { $arguments += @('--queue-id', $env:PUBLIC_QUEUE_ID) }"), 3)
         self.assertEqual(self.job.count("python infra/tests/staging_ten_address_acceptance.py @arguments"), 3)
+
+    def test_supervised_escrow_is_explicit_actor_bound_not_automatic_fallback(self):
+        """Machine admission binds the operator, not their continuous supervision."""
+        self.assertIn("options: [accept, recover, supervised-escrow, prepare-escrow-only, recover-escrow]", self.source)
+        self.assertIn("default: accept", self.source)
+        self.assertIn("RUN_SUPERVISED_STAGING_TEN_ADDRESSES", self.job)
+        self.assertIn("RECOVER_STAGING_TEN_ADDRESS_ESCROW", self.job)
+        actor = self.job.index("Bind explicit supervised escrow decision")
+        self.assertLess(actor, self.job.index("secrets."))
+        self.assertIn("$env:PUBLIC_SUPERVISED_BY -cne $env:GITHUB_ACTOR", self.job)
+        self.assertIn("$env:PUBLIC_PRIOR_RUN -ceq $env:GITHUB_RUN_ID", self.job)
+        self.assertIn("{ 'prepare-escrow' } else { 'prepare' }", self.job)
+        self.assertIn("{ 'campaign-escrow' } else { 'campaign' }", self.job)
+        self.assertIn("{ 'recover-escrow' } else { 'recover' }", self.job)
+        recovery = self.job[self.job.index("id: recovery\n"):]
+        self.assertIn("if ($env:PUBLIC_QUOTA_MODE -ceq 'recover') { $arguments += @('--artifact-id', $env:PUBLIC_ARTIFACT_ID) }", recovery)
+        self.assertNotIn("continue-on-error", self.source)
+        self.assertNotIn("workflow_run:", self.source)
+        self.assertNotIn("quota_escrow_supervision_unverified", self.source)
+        self.assertNotIn("secrets.SUPERV", self.source)
+        self.assertNotIn("vars.", self.source)
+        inputs = self.source.split("    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertLessEqual(len(re.findall(r"(?m)^      [a-z_]+:$", inputs)), 25)
+
+    def test_campaign_requires_successful_prepare_upload_and_digest(self):
+        """An upload ID alone cannot authorize arm after failed preparation."""
+        campaign = self.job[self.job.index("id: artifact_readback"):self.job.index("id: recovery\n")]
+        self.assertIn("steps.prepare.outcome == 'success'", campaign)
+        self.assertIn("steps.recovery_artifact.outcome == 'success'", campaign)
+        self.assertIn("ORIGINAL_ARTIFACT_DIGEST: ${{ steps.recovery_artifact.outputs.artifact-digest }}", campaign)
+        self.assertIn("quota_artifact_digest_unverified", campaign)
+        self.assertIn('$artifact.digest -cne "sha256:$expectedDigest"', campaign)
+        self.assertIn("$artifact.workflow_run.head_sha -cne $env:GITHUB_SHA", campaign)
+        self.assertIn("([string]$artifact.workflow_run.id) -cne $env:GITHUB_RUN_ID", campaign)
+        self.assertIn("quota_artifact_receipt_mismatch", campaign)
+        self.assertIn("-TimeoutSec 30", campaign)
+        self.assertLess(campaign.index("quota_artifact_digest_unverified"), campaign.index("python infra/tests/staging_ten_address_acceptance.py"))
+        self.assertIn("steps.artifact_readback.outcome == 'success'", campaign)
+
+    def test_prepare_only_rehearsal_never_enters_campaign_or_recovery(self):
+        """Sealed preparation and immutable readback are not mutation authority."""
+        self.assertIn("PREPARE_STAGING_TEN_ADDRESS_ESCROW_ONLY", self.job)
+        self.assertIn("$env:PUBLIC_QUOTA_MODE -ceq 'prepare-escrow-only') { 'prepare-escrow' }", self.job)
+        campaign = self.job[self.job.index("id: campaign"):self.job.index("id: recovery\n")]
+        condition = campaign.split("        env:", 1)[0]
+        self.assertNotIn("prepare-escrow-only", condition)
+        recovery = self.job[self.job.index("id: recovery\n"):self.job.index("Reject skipped campaign authority")]
+        self.assertNotIn("prepare-escrow-only", recovery.split("        env:", 1)[0])
+        skipped = self.job.split("Reject skipped campaign authority", 1)[1].split("Require complete prepare-only", 1)[0]
+        self.assertNotIn("prepare-escrow-only", skipped)
+        stopped = self.job.split("Require complete prepare-only", 1)[1].split("Record recovery availability", 1)[0]
+        for key in ("PREPARE_OUTCOME", "UPLOAD_OUTCOME", "READBACK_OUTCOME"):
+            self.assertIn(f"$env:{key} -cne 'success'", stopped)
+        for key in ("CAMPAIGN_OUTCOME", "RECOVERY_OUTCOME"):
+            self.assertIn(f"$env:{key} -cne 'skipped'", stopped)
+        self.assertNotIn("Test-Path", stopped)
+        self.assertIn("ten_address_escrow_prepare_only_rehearsal_verified", stopped)
+
+    def test_public_zone_coordinate_matches_existing_hosted_workflows(self):
+        """A zone identifier is a fixed coordinate, not an absent private capability."""
+        zone = "6edff81c6ed02f412e70868076411a5e"
+        self.assertEqual(self.job.count(f"CLOUDFLARE_ZONE_ID: {zone}"), 3)
+        self.assertNotIn("secrets.CLOUDFLARE_ZONE_ID", self.source)
+        for workflow in ("ci.yml", "staging-worker-r2-capability.yml"):
+            source = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8-sig")
+            values = re.findall(r"(?m)^\s+CLOUDFLARE_ZONE_ID: ([a-f0-9]{32})$", source)
+            self.assertTrue(values)
+            self.assertEqual(set(values), {zone})
+        self.assertEqual(self.job.count("secrets.AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1"), 3)
 
     def test_key_creation_is_source_only_non_overwriting_private_stdin(self):
         """One project-scoped versioned key is generated only by an explicit administrator."""

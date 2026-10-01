@@ -398,3 +398,37 @@ still uninformative, **stop rather than walking more pages, trying another token
 changing the proof rules or creating a replacement resource**. The remaining
 route is a resource-bound Dashboard/provider clarification already identified
 above. No unchanged rerun of 36793625509 is justified by this analysis.
+
+### Alternative: eliminate inventory using conditional creation?
+
+Design-only follow-up, 2026-10-01: **NO-GO on the currently documented contract**.
+Public primary-source inspection, not a provider probe:
+
+- [Create Worker](https://developers.cloudflare.com/api/resources/workers/subresources/beta/subresources/workers/methods/create/)
+  is a collection POST with a requested `name`. The documented body does not
+  accept a client-chosen immutable Worker ID; the response supplies that ID.
+  Thus an unpredictable run-specific string could be a *name*, not a chosen ID.
+  The method does not document `If-None-Match`, a conditional-create option,
+  atomic duplicate-name rejection or whether a duplicate request can affect an
+  existing resource. Its title and separate update operation suggest creation,
+  but do not establish the required no-overwrite behavior on a name collision.
+- [Get Worker](https://developers.cloudflare.com/api/resources/workers/subresources/beta/subresources/workers/methods/get/)
+  accepts an ID or name. Its published method contract does not specify a
+  resource-absence 404/code that distinguishes missing identity from other
+  failure causes. An arbitrary 404 therefore cannot replace the absence proof.
+- The [new API announcement](https://developers.cloudflare.com/changelog/post/2025-09-03-new-workers-api/)
+  explains separate creation/version lifecycle and stable identity, but supplies
+  neither the missing collision contract nor a conditional-create guarantee.
+
+Random names reduce accidental collision probability; they do not establish
+atomic no-overwrite semantics, authorize adoption, or resolve an ambiguous
+response. Also, `If-None-Match: *` on a collection POST cannot be assumed to
+condition the body-selected name: endpoint support and resource scope must be
+explicit. No conditional header, new name or exact-GET exception should be added
+on speculation. This is not a finding that Cloudflare *does* overwrite; it is a
+finding that the reviewed documentation does not support relying on non-overwrite.
+
+Stop this alternative unless Cloudflare supplies a documented atomic
+create-if-absent/duplicate-rejection contract, or an exact absence contract usable
+under the existing writer freeze. Such evidence would justify a simpler separately
+reviewed design; another live name/404/POST experiment cannot substitute for it.
