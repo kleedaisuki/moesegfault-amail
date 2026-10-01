@@ -16,8 +16,10 @@ passed. Historical receipts remain useful but do not imply current deployment.
 
 * PRs 52, 54 and 64 are merged: search-poll reader compatibility, enriched
   source-clock/error readers, and durable bounded CLI upload/loss accounting.
-  The CLI still produces legacy remote events; capability negotiation and
-  local/auth command coverage are separate ongoing source work.
+  PR 68 also merged local/auth command coverage (50 unit, five new command-process
+  and four existing resilience tests per hosted CLI platform). The CLI still
+  produces legacy remote events; capability negotiation and local-to-API causal
+  connection remain separate ongoing source work.
 * PRs 55 and 58 are merged: ordinary deploy jobs consume verified same-run module
   artifacts, and the standalone Identity inbox admits an original exact-main
   artifact. Their actual Mail/inbox deployment paths have not been executed by
