@@ -316,7 +316,7 @@ class CaptureOffTests(unittest.TestCase):
             current = self.provider.data[f"{self.provider.base}/workers/workers/{script}"]
             current.update({"tags": ["PRIVATE_TAG"], "subdomain": {"enabled": False, "previews_enabled": False},
                             "references": {"PRIVATE": []}, "updated_on": "before"})
-            del current["observability"]["issues"]
+            current["observability"]["issues"] = {"enabled": True}
 
     def execute(self, script=readback.API, *, patch_action=None):
         """Require intent before a synthetic single PATCH, then perform separate GETs."""
@@ -366,8 +366,34 @@ class CaptureOffTests(unittest.TestCase):
         writer.assert_not_called()
         self.assertEqual(self.records, [])
 
+    def test_live_default_off_and_normalized_inactive_preferences_need_no_patch(self):
+        """Actual post-PATCH wire defaults are off, not a demand for another identical write."""
+        policy = {"enabled": False, "head_sampling_rate": 1, "redact_query_string": False,
+                  "logs": {"enabled": False, "head_sampling_rate": 1, "invocation_logs": True,
+                           "persist": True, "destinations": []},
+                  "traces": {"enabled": False, "head_sampling_rate": 1, "persist": True, "destinations": []}}
+        for script in (readback.API, readback.MAINTENANCE):
+            path = f"{self.provider.base}/workers/workers/{script}"
+            self.provider.data[path]["observability"] = deepcopy(policy)
+            with patch.object(readback, "projection") as project:
+                result, writer = self.execute(script)
+            self.assertEqual(result, "unchanged")
+            project.assert_not_called()
+            writer.assert_not_called()
+            self.assertEqual(self.records, [])
+        path = f"{self.provider.base}/workers/workers/{readback.API}"
+        self.provider.data[path]["observability"]["issues"] = {"enabled": True}
+        def normalize(body):
+            """Model the real successful PATCH followed by default-normalized independent GET."""
+            self.provider.data[path]["observability"] = deepcopy(policy)
+            return {"id": "fixture", "name": readback.API}
+        result, writer = self.execute(patch_action=normalize)
+        self.assertEqual(result, "applied")
+        writer.assert_called_once()
+        self.assertEqual([row["state"] for row in self.records], ["intent", "observed"])
+
     def test_active_other_capture_or_wrong_bindings_refuses_before_write(self):
-        """Missing Issues alone is correctable; active Logs/Traces or drift is not."""
+        """Only explicit Issues capture may be corrected; other capture or drift refuses."""
         path = f"{self.provider.base}/workers/workers/{readback.API}"
         original = deepcopy(self.provider.data[path])
         for section in (None, "logs", "traces"):
@@ -393,7 +419,7 @@ class CaptureOffTests(unittest.TestCase):
         self.assertEqual([row["state"] for row in self.records], ["intent"])
 
     def test_patch_reply_or_unchanged_current_state_is_not_readback_proof(self):
-        """Identity mismatch and missing Issues after a successful response both fail."""
+        """Identity mismatch and retained active Issues after a response both fail."""
         for response in ({"id": "other", "name": readback.API}, {"id": "fixture", "name": readback.API}):
             self.records.clear()
             with self.subTest(response=response), self.assertRaises(ValueError):

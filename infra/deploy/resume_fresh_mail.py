@@ -145,9 +145,10 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
                 phase = "retained_workers"
                 record("intent")
                 held_empty(provider, f"accounts/{provider.account}", scope)
-                retained_workers = {
-                    bootstrap.SCRIPTS[role]: {"source_epoch": asdict(
-                        sink_epoch if role == "sink" else checkpoint.deployment_epoch), "version": version}
+                worker_epochs = checkpoint.worker_epochs or {
+                    "sink": sink_epoch, "maintenance": checkpoint.deployment_epoch, "api": checkpoint.deployment_epoch}
+                retained_workers = {bootstrap.SCRIPTS[role]: {
+                    "source_epoch": asdict(worker_epochs[role]), "version": version}
                     for role, version in checkpoint.pins.items()}
                 record("observed", workers=retained_workers, queue=queue, dlq=dlq)
                 for role in ("maintenance", "api"):

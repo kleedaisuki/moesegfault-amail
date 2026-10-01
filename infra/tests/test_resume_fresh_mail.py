@@ -170,7 +170,9 @@ class ResumeTests(unittest.TestCase):
                 "{}\n" + json.dumps({"scope": asdict(scope), "creation_epoch": asdict(creation)}), encoding="utf-8")
             provider, s3 = Mock(account="a" * 32), Mock()
             stack.enter_context(patch.object(resume, "load_sink_checkpoint", return_value=
-                Checkpoint("123", deployed, sink, pins, "3" * 32, "4" * 32, False)))
+                Checkpoint("123", Epoch("3" * 40, "654", 46, "4" * 64, "1.98.1"), sink,
+                           pins, "3" * 32, "4" * 32, False,
+                           {"sink": sink, "maintenance": deployed, "api": deployed})))
             stack.enter_context(patch.object(resume, "owned_scope", return_value=scope))
             inventory = stack.enter_context(patch.object(resume.bootstrap, "inspect_old_scope", return_value={"sink_present": True}))
             stack.enter_context(patch.object(resume.old, "Provider"))
