@@ -154,3 +154,30 @@ policy admits only this infrastructure experiment, never Mail sending or release
 References:
 - https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/settings/methods/get/
 - https://github.com/cloudflare/workers-sdk/blob/wrangler%404.142.0/packages/deploy-helpers/src/deploy/helpers/create-worker-upload-form.ts
+
+## Executed unchanged-build admission and public-trigger boundary
+
+Experiment 36870838693 (13:43:46–13:44:36 UTC, 50 seconds total) executed the
+new lane without waiting for another full original-main build. It passed current
+hosted infrastructure tests, ancestry/narrow-input admission, original artifact
+11164304271 hash/source/compiler/run restoration (compiled source dcc4eed6,
+full CI 36867766344), and pair deployment/version/isolation readback under current
+orchestration source e9a56069898f74be7cda15ad4cc9ca42f41487c4. Caller observability
+was specifically a missing key; probe flags were three true booleans. Both
+identities are in its public receipt. This is real reuse evidence, not a cache
+inference or general release admission.
+
+The first public POST returned HTTP 403 before any valid case receipt. This does
+not prove the Rust native API failed: caller source returns a JSON aggregate,
+not this status. Native trace collection remained skipped. No raw challenge body
+or authentication data was captured; the old trigger also omitted useful status/
+CF-Ray/content-type boundary facts. A bounded repair persists those operational
+facts, distinguishes a bare Forbidden reply and managed challenge, and always
+records the request time window even on failure. It does not retry the POST or
+attribute the refusal to a token/WAF/propagation issue without evidence.
+
+Source-owned caller version ec89d865-d235-4a09-9c51-7e962ca1438d and probe version
+6b6ef8ac-4779-46a1-a6e4-5011da759a90 were deleted; receipt cleaned_at is
+2026-10-01T13:44:32.718360+00:00 and both absence GETs were verified. No Mail data,
+identity, route or sending state changed. Native API and retention acceptance
+remain pending.

@@ -246,3 +246,26 @@ and failed-run cleanup paths, not native tracing or privacy acceptance. See
 [native canary evidence](native-cloudflare-tracing-canary.md) for exact versions,
 artifact and pending boundary repair. Mail deployment and business debug remain
 deferred.
+
+## Executed infrastructure artifact reuse and remaining acceptance
+
+PR 53 source 3e00610ec5998759835d18b937628bfe1282c759 passed full CI
+36870040420 and syntax 36870040082; merged main e9a56069898f74be7cda15ad4cc9ca42f41487c4.
+Isolated experiment 36870838693 then proved current hosted infrastructure tests,
+checked original artifact reuse (11164304271 / build run 36867766344 / compiled
+source dcc4eed6), deployment and all pair ownership/version/isolation readbacks
+without waiting for a redundant new full build. Total hosted run was 50 seconds.
+Public trigger failed HTTP403 and no native runtime acceptance is claimed.
+Failed-run owned cleanup verified both absent. Detailed evidence and missing
+trigger HTTP facts are in native-cloudflare-tracing-canary.md.
+
+Independent source audit at e9a5606 found no demonstrated blocker in the checked
+artifact/fan-out/stable aggregate/narrow reuse contracts. The compiler/bundler
+claim is checked workflow policy, not independent signed attestation. Ordinary
+Mail/sink deployment still rebuilds and remains a required lifecycle repair;
+the isolated experiment exception must not be generalized into release admission.
+CLI search-poll telemetry batch blockage has a bounded reader-first fix accepted
+on PR 52 (CI 36868331245), but is not yet integrated or deployed. Remote clock/
+failure readers, complete command/phase/loss coverage and actual native tracing
+remain outstanding. Infrastructure completion and business-debug resumption are
+not admitted by these source/lifecycle milestones.
