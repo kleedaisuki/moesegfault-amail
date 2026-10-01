@@ -61,8 +61,10 @@ do not retire the standalone Identity inbox or active native-tracing experiment.
   original protected run ID and observes immutable owned intent without replay;
   it cannot create, adopt, activate, delete stores or emit a success receipt.
   Initial admission refusal is diagnostic evidence only. Unknown submit versions
-  and failed provider reads never become absence. Cancelled creator runs and
-  expired artifacts are outside this bounded recovery admission.
+  and failed provider reads never become absence. Terminal cancelled creators are
+  admitted only with unchanged original successful source gates and validated
+  immutable evidence. Missing/truncated journals remain unavailable or rejected,
+  never inferred ownership. Expired artifacts remain outside this bounded admission.
 
 All runtime/cross-platform tests belong on GitHub Actions, not this developer
 machine. Local static syntax/diff work is fine. Keep task artifacts under root

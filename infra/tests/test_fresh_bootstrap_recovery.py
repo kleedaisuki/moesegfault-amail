@@ -15,6 +15,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/deploy"))
 import fresh_bootstrap_recovery as admission
+from fresh_mail_bootstrap import Bootstrap
 from fresh_bootstrap_contract import Epoch
 
 
@@ -86,19 +87,128 @@ class RecoveryAdmissionTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), self.controller)
         self.assertEqual(list(self.destination.iterdir()), [path])
 
-    def test_creator_success_and_timeout_are_allowed_but_skipped_cancelled_are_not(self):
-        """A skipped or cancelled producer is not admitted as a complete protected attempt."""
-        for conclusion in ("success", "timed_out"):
+    def test_terminal_creator_conclusions_allow_only_protected_observation(self):
+        """Cancelled is terminal, but skipped or unfinished origins cannot grant reads."""
+        for conclusion in ("success", "failure", "timed_out", "cancelled"):
             self.run["conclusion"] = self.jobs[-1]["conclusion"] = conclusion
             with patch.object(admission, "github", side_effect=self.github):
                 self.assertEqual(admission.origin(self.epoch.run_id)[0], self.epoch.source_sha)
-        for conclusion in ("skipped", "cancelled", None):
+        for conclusion in ("skipped", None):
             self.jobs[-1]["conclusion"] = conclusion
             with patch.object(admission, "github", side_effect=self.github), self.assertRaises(ValueError):
                 admission.origin(self.epoch.run_id)
 
+    def cancel(self):
+        """Model a manually cancelled original creator, not a rerun or new epoch."""
+        self.run["conclusion"] = self.jobs[-1]["conclusion"] = "cancelled"
+
+    def scope_intent(self):
+        """Return a closed controller prefix interrupted while creating fresh storage."""
+        rows = [{"schema": "mail-fresh-controller/v1", "epoch": asdict(self.epoch),
+                 "phase": phase, "state": state}
+                for phase, state in (("old_scope", "intent"), ("old_scope", "observed"),
+                                     ("create_scope", "intent"))]
+        return self.controller + b"\n".join(json.dumps(row).encode() for row in rows) + b"\n"
+
+    def scope_prefix(self):
+        """Bind a captured D1 response while leaving the R2 submission ambiguous."""
+        database = "00000000-0000-0000-0000-000000000002"
+        rows = [{"schema": "mail-fresh-scope-recovery/v1", "event": "ownership",
+                 "epoch": asdict(self.epoch), "database_name": self.epoch.database_name,
+                 "bucket": self.epoch.bucket_name, "may_replay_write": False},
+                {"event": "d1_submit_intent", "name": self.epoch.database_name, "attempt": 1},
+                {"event": "d1_created", "database": database, "created_at": "2026-10-01T00:00:00Z"},
+                {"event": "d1_readback_verified", "database": database},
+                {"event": "r2_submit_intent", "name": self.epoch.bucket_name, "attempt": 1}]
+        return b"\n".join(json.dumps(row).encode() for row in rows) + b"\n"
+
+    def test_cancelled_creator_observes_only_captured_identity_without_writes(self):
+        """A valid immutable interruption prefix permits one GET, not guessed ownership."""
+        self.cancel()
+        self.recovery = zipped([("controller.jsonl", self.scope_intent()),
+                                ("controller.scope.jsonl", self.scope_prefix())])
+        epoch, path = self.load()
+        database = "00000000-0000-0000-0000-000000000002"
+        reads = []
+
+        class ReadOnlyProvider:
+            """No write methods exist; unexpected or guessed reads fail the fixture."""
+
+            account = "a" * 32
+
+            def get(inner, route):
+                """Return only the original positively captured D1 identity."""
+                reads.append(route)
+                self.assertEqual(route, f"accounts/{inner.account}/d1/database/{database}")
+                return {"uuid": database, "name": epoch.database_name,
+                        "created_at": "2026-10-01T00:00:00Z"}
+
+        receipt = self.destination / "never-receipt.json"
+        result = Bootstrap(ReadOnlyProvider(), None, epoch, path, receipt).recover()
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(result["scope"]["database"], "CREATED_IDENTITY_OBSERVED")
+        self.assertEqual(result["scope"]["bucket"], "UNKNOWN")
+        self.assertEqual(result["scope"]["adoption"], "NOT_GRANTED")
+        self.assertIs(result["may_replay_write"], False)
+        self.assertEqual(result["activation"], "NOT_GRANTED")
+        self.assertEqual(result["receipt"], "NOT_GRANTED")
+        self.assertEqual(result["pins"], {})
+        self.assertFalse(receipt.exists())
+
+    def test_cancelled_creator_without_recovery_artifact_is_typed_unavailable(self):
+        """Cancellation before upload is unresolved, never a request to create again."""
+        self.cancel()
+        self.artifacts.pop(0)
+        with self.assertRaisesRegex(ValueError, "artifact_unavailable"):
+            self.load()
+        self.assertFalse(self.destination.exists())
+
+    def test_cancelled_creator_partial_admission_is_typed_unavailable(self):
+        """A captured intent alone cannot replace original positive source admission."""
+        self.cancel()
+        self.recovery = zipped([("controller.jsonl", self.controller.splitlines()[0])])
+        with self.assertRaisesRegex(ValueError, "admission_unavailable"):
+            self.load()
+        self.assertFalse(self.destination.exists())
+
+    def test_cancelled_creator_missing_scope_prefix_is_typed_unavailable(self):
+        """The controller's submit intent cannot reconstruct a missing scope journal."""
+        self.cancel()
+        self.recovery = zipped([("controller.jsonl", self.scope_intent())])
+        with self.assertRaisesRegex(ValueError, "scope_unavailable"):
+            self.load()
+        self.assertFalse(self.destination.exists())
+
+    def test_cancelled_creator_truncated_or_malformed_journals_are_rejected(self):
+        """Incomplete bytes and forged prefixes are not repaired into owned evidence."""
+        self.cancel()
+        for raw in (self.scope_prefix()[:-3], self.scope_prefix().replace(b'"attempt": 1', b'"attempt": 2'),
+                    self.scope_prefix().replace(self.epoch.run_id.encode(), b'123457')):
+            self.recovery = zipped([("controller.jsonl", self.scope_intent()),
+                                    ("controller.scope.jsonl", raw)])
+            with self.subTest(scope=raw), self.assertRaises(ValueError):
+                self.load()
+            self.assertFalse(self.destination.exists())
+        self.recovery = zipped([("controller.jsonl", self.scope_intent()[:-3])])
+        with self.assertRaisesRegex(ValueError, "json_unreviewed"):
+            self.load()
+
+    def test_cancelled_creator_requires_all_original_successful_source_gates(self):
+        """A terminal writer cannot bypass cancelled, missing or unfinished checks."""
+        self.cancel()
+        for conclusion in ("failure", "cancelled", "skipped", None):
+            self.jobs[0]["conclusion"] = conclusion
+            with self.subTest(conclusion=conclusion), self.assertRaisesRegex(ValueError, "full_source_required"):
+                self.load()
+        self.jobs[0]["conclusion"] = "success"
+        self.jobs[0]["status"] = "in_progress"
+        with self.assertRaisesRegex(ValueError, "full_source_required"):
+            self.load()
+        self.assertFalse(self.destination.exists())
+
     def test_unprotected_run_coordinates_are_rejected(self):
         """A PR, rerun, wrong workflow or mismatched repository cannot grant recovery."""
+        self.cancel()
         for key, value in (("event", "push"), ("head_branch", "topic"), ("run_attempt", 2),
                            ("run_attempt", True), ("path", ".github/workflows/native-tracing-canary.yml"),
                            ("repository", {"full_name": "other/repo"}), ("status", "in_progress")):
@@ -111,6 +221,7 @@ class RecoveryAdmissionTests(unittest.TestCase):
 
     def test_duplicate_or_mismatched_creator_job_is_rejected(self):
         """Job name is unique and must independently bind source and run."""
+        self.cancel()
         self.jobs.append(dict(self.jobs[-1]))
         with self.assertRaises(ValueError):
             self.load()
@@ -128,12 +239,14 @@ class RecoveryAdmissionTests(unittest.TestCase):
 
     def test_original_artifact_id_cannot_be_replaced(self):
         """Matching names and source strings cannot replace the original immutable ID."""
+        self.cancel()
         self.artifacts[1]["id"] += 1
         with self.assertRaisesRegex(ValueError, "artifact_id_mismatch"):
             self.load()
 
     def test_duplicate_expired_or_oversized_artifact_is_rejected(self):
         """Complete artifact listings prevent picking a convenient candidate."""
+        self.cancel()
         for key, value in (("expired", True), ("size_in_bytes", admission.LIMIT * 2 + 1), ("id", True)):
             old = self.artifacts[0][key]
             self.artifacts[0][key] = value
