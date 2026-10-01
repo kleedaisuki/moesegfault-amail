@@ -163,8 +163,22 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: Update stable Rust toolchain
-        run: rustup update stable
+        with:
+          persist-credentials: false
+      - name: Use pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Restore platform/compiler-aware CLI dependencies
+        id: cli-dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: cli-dependencies-v1
+          cache-bin: false
+          cache-workspace-crates: false
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') }}
+      - name: Record CLI dependency cache lookup
+        env:
+          CI_CACHE_HIT: ${{ steps.cli-dependencies.outputs.cache-hit }}
+        run: python infra/ci/cache_event.py cli-dependencies
       - name: Check formatting
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
@@ -212,7 +226,7 @@ jobs:
         run: python -m pip install pywin32==312 websocket-client==1.9.2
       - name: Build tested amail binary on hosted Windows
         run: |
-          rustup update stable
+          rustup show active-toolchain
           cargo test -p amail --locked --all-targets
           cargo build -p amail --locked
       - name: Execute staging native and inbound-mail acceptance
@@ -531,7 +545,7 @@ jobs:
         run: python -m pip install pywin32==312 websocket-client==1.9.2
       - name: Build tested CLI on hosted Windows
         run: |
-          rustup update stable
+          rustup show active-toolchain
           cargo test -p amail --locked --all-targets
           cargo build -p amail --locked
       - name: Register, verify and attest second principal
@@ -578,7 +592,7 @@ jobs:
         run: python -m pip install pywin32==312 websocket-client==1.9.2
       - name: Build tested native CLI on hosted Windows
         run: |
-          rustup update stable
+          rustup show active-toolchain
           cargo test -p amail --locked --all-targets
           cargo build -p amail --locked
       - name: Probe only empty owner inventory and semantic query
@@ -1080,7 +1094,7 @@ jobs:
         run: python -m pip install pywin32==312 websocket-client==1.9.2
       - name: Build native amail CLI
         run: |
-          rustup update stable
+          rustup show active-toolchain
           cargo build -p amail --locked
       - name: Verify exact fixtures and delete only their owner-scoped CLI IDs
         env:
@@ -1545,9 +1559,11 @@ jobs:
       confirm: ${{ inputs.confirm }}
     secrets: inherit
 
-  worker:
-    name: Rust Worker (Wasm)
+  worker-build:
+    name: Build and unit-check Rust Worker modules
     needs: changes
+    outputs:
+      artifact_id: ${{ steps.modules.outputs.artifact-id }}
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0' && needs.changes.outputs.worker == 'true') ||
@@ -1556,6 +1572,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -1571,29 +1589,36 @@ jobs:
         run: node miniflare-config-smoke.mjs
       - name: Set up Rust Wasm target
         run: |
-          rustup update stable
+          rustup show active-toolchain
           rustup target add wasm32-unknown-unknown
-      - name: Fingerprint Worker check toolchain and exact source inputs
-        id: worker-cache-key
-        # No fallback keys: changed inputs must never reuse compiled project outputs.
+      - name: Restore compiler-aware Rust dependency cache
+        id: worker-dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: worker-dependencies-v1
+          cache-bin: false
+          cache-workspace-crates: false
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') }}
+      - name: Record Worker dependency cache lookup
+        env:
+          CI_CACHE_HIT: ${{ steps.worker-dependencies.outputs.cache-hit }}
+        run: python infra/ci/cache_event.py worker-dependencies
+      - name: Fingerprint the pinned public bundler compiler
+        id: compiler
         shell: bash
         run: |
           compiler=$({ rustc --version --verbose; cc --version; ldd --version; } | sha256sum | cut -d ' ' -f 1)
-          echo "compiler=$compiler" >> "$GITHUB_OUTPUT"
-          python infra/ci/worker_cache_key.py >> "$GITHUB_OUTPUT"
-      - name: Restore exact Worker check build cache
-        id: worker-check-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: target
-          key: worker-check-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.worker-cache-key.outputs.compiler }}-${{ steps.worker-cache-key.outputs.source }}
+          echo "identity=$compiler" >> "$GITHUB_OUTPUT"
       - name: Restore pinned Worker check bundler
         id: worker-bundler-cache
         uses: actions/cache/restore@v4
         with:
-          # Dedicated install root contains public compiler tools only, not Cargo credentials.
           path: .cache/worker-build-check
-          key: worker-build-check-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.worker-cache-key.outputs.compiler }}-0.8.5
+          key: worker-build-check-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.identity }}-0.8.5
+      - name: Record pinned bundler cache lookup
+        env:
+          CI_CACHE_HIT: ${{ steps.worker-bundler-cache.outputs.cache-hit }}
+        run: python infra/ci/cache_event.py worker-bundler
       - name: Run privacy trace schema and sink contracts
         run: |
           cargo test -p amail-trace-schema --locked --all-targets
@@ -1632,27 +1657,6 @@ jobs:
       - name: Bundle Worker for Wrangler
         working-directory: crates/mail-worker
         run: worker-build --release
-      - name: Verify actual SDK split entry surfaces and lifecycle in workerd (non-deploying)
-        working-directory: infra/tests/worker-boundary
-        run: pnpm test:entry-split
-      - name: Run built Rust Worker address-add boundary tests in workerd
-        working-directory: infra/tests/worker-boundary
-        run: pnpm test
-      - name: Verify Cron complete-item liveness in native workerd (non-deploying)
-        working-directory: infra/tests/worker-boundary
-        run: pnpm test:maintenance-liveness
-      - name: Verify accepted projection native staging batches (non-deploying)
-        working-directory: infra/tests/worker-boundary
-        run: pnpm test:accepted-stage
-      - name: Verify Cron Routing deadlines and useful repair in native workerd (non-deploying)
-        working-directory: infra/tests/worker-boundary
-        run: pnpm test:routing-deadline
-      - name: Verify Cron embedding deadlines in native workerd (non-deploying)
-        working-directory: infra/tests/worker-boundary
-        run: pnpm test:embedding-deadline
-      - name: Verify Cron final diagnostic batch in native workerd (non-deploying)
-        working-directory: infra/tests/worker-boundary
-        run: pnpm test:maintenance-diagnostics
       - name: Bundle Rust Email ingress for Wrangler
         working-directory: workers/mail-ingress
         run: worker-build --release
@@ -1665,18 +1669,96 @@ jobs:
       - name: Bundle role monitor for Wrangler
         working-directory: workers/role-monitor
         run: worker-build --release
-      - name: Save trusted exact Worker check build cache
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') && steps.worker-cache-key.outputs.cacheable == 'true' && steps.worker-check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: target
-          key: ${{ steps.worker-check-cache.outputs.cache-primary-key }}
       - name: Save trusted pinned check bundler
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') && steps.worker-bundler-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .cache/worker-build-check
           key: ${{ steps.worker-bundler-cache.outputs.cache-primary-key }}
+      - name: Assemble same-run public generated-module artifact
+        run: python infra/ci/worker_artifact.py create
+      - name: Publish modules for native tests, not release admission
+        id: modules
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: worker-native-modules-${{ github.sha }}
+          path: .temp/ci/worker-built/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+  worker-native:
+    name: Native workerd (${{ matrix.suite }})
+    needs: worker-build
+    if: needs.worker-build.result == 'success'
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        suite: [core, entry, liveness, accepted, routing, embedding, diagnostics, budget]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: infra/tests/worker-boundary/pnpm-lock.yaml
+      - name: Install locked native runtime dependencies
+        working-directory: infra/tests/worker-boundary
+        run: pnpm install --frozen-lockfile
+      - name: Download only this run's fixed producer artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.worker-build.outputs.artifact_id }}
+          path: .temp/ci/worker-built
+          merge-multiple: true
+      - name: Verify source, run and every generated byte before native testing
+        run: python infra/ci/worker_artifact.py restore
+      - name: Execute one complete native suite without rebuilding Rust
+        env:
+          AMAIL_NATIVE_SUITE: ${{ matrix.suite }}
+        run: python infra/ci/native_suite.py "$AMAIL_NATIVE_SUITE"
+      - name: Preserve suite timing and completeness receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-suite-${{ matrix.suite }}-${{ github.sha }}
+          path: .temp/ci/native-*.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+  worker:
+    # Preserve this stable gate name for existing deployment/acceptance consumers.
+    name: Rust Worker (Wasm)
+    needs: [changes, worker-build, worker-native]
+    if: >-
+      always() && (
+        github.event_name == 'push' ||
+        (github.event_name == 'pull_request' && github.head_ref != 'codex/amail-v0.1.0' && needs.changes.outputs.worker == 'true') ||
+        (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance')))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Require build and every native matrix member to succeed
+        env:
+          BUILD_RESULT: ${{ needs.worker-build.result }}
+          NATIVE_RESULT: ${{ needs.worker-native.result }}
+        run: |
+          echo "worker_build_result=$BUILD_RESULT worker_native_result=$NATIVE_RESULT source=$GITHUB_SHA"
+          test "$BUILD_RESULT" = success
+          test "$NATIVE_RESULT" = success
 
   site:
     name: Astro release site
@@ -1692,6 +1774,8 @@ jobs:
         working-directory: site
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -1725,6 +1809,8 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -1802,7 +1888,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up Rust Wasm target
         run: |
-          rustup update stable
+          rustup show active-toolchain
           rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
@@ -1876,7 +1962,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up Rust Wasm target
         run: |
-          rustup update stable
+          rustup show active-toolchain
           rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
@@ -1917,7 +2003,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up Rust Wasm target
         run: |
-          rustup update stable
+          rustup show active-toolchain
           rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
@@ -2169,7 +2255,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up Rust Wasm target
         run: |
-          rustup update stable
+          rustup show active-toolchain
           rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
@@ -2257,7 +2343,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up Rust Wasm target
         run: |
-          rustup update stable
+          rustup show active-toolchain
           rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
@@ -2300,7 +2386,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up Rust Wasm target
         run: |
-          rustup update stable
+          rustup show active-toolchain
           rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
@@ -2353,7 +2439,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up Rust Wasm target
         run: |
-          rustup update stable
+          rustup show active-toolchain
           rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:

@@ -88,7 +88,7 @@ class PrScopeTests(unittest.TestCase):
         source=(ROOT/".github/workflows/ci.yml").read_text(encoding="utf-8")
         for name in scope.COMPONENTS:
             block=job_block(source,name)
-            self.assertIn("needs: changes",block)
+            self.assertIn("needs: [changes, worker-build, worker-native]" if name == "worker" else "needs: changes", block)
             self.assertIn("github.event_name == 'push' ||",block)
             self.assertIn("needs.changes.outputs."+name+" == 'true'",block)
             self.assertIn("inputs.target == 'checks'",block)

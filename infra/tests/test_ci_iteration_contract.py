@@ -69,28 +69,31 @@ class IterationContractTests(unittest.TestCase):
         self.assertIn("RUN_STAGING_TRACE_SINK_ROLLOUT", condition(self.blocks["staging-worker"]))
         self.assertIn("RUN_STAGING_TRACE_SINK_ROLLOUT", condition(self.blocks["staging-trace-sink"]))
 
-    def test_exact_check_caches_cannot_be_saved_by_pr_or_promotion(self) -> None:
-        """Cache writes occur only after trusted push contracts, never with secrets."""
-        worker = self.blocks["worker"]
-        self.assertNotIn("restore-keys:", worker)
-        self.assertNotIn("secrets.", worker)
-        self.assertIn('python infra/ci/worker_cache_key.py >> "$GITHUB_OUTPUT"', worker)
-        self.assertIn("rustc --version --verbose; cc --version; ldd --version;", worker)
-        self.assertIn("key: worker-check-v2-", worker)
-        self.assertIn("steps.worker-cache-key.outputs.cacheable == 'true'", worker)
-        self.assertIn('cargo install worker-build --version 0.8.5 --locked --root "$GITHUB_WORKSPACE/.cache/worker-build-check"', worker)
-        saves = re.findall(r"      - name: Save trusted .*?(?=\n      - name:|\Z)", worker, re.DOTALL)
-        self.assertEqual(len(saves), 2)
-        for save in saves:
-            self.assertIn("if: github.event_name == 'push'", save)
-            self.assertIn("github.ref == 'refs/heads/main'", save)
-            self.assertIn("github.ref == 'refs/heads/codex/amail-v0.1.0'", save)
-            self.assertIn("uses: actions/cache/save@v4", save)
-            self.assertIn("outputs.cache-primary-key", save)
-        self.assertLess(worker.index("Run built Rust Worker address-add boundary tests in workerd"), worker.index("Save trusted"))
+    def test_dependency_caches_and_public_bundler_remain_secret_free(self) -> None:
+        """Maintained caches exclude workspace binaries; only trusted pushes save."""
+        for name in ("cli", "worker-build"):
+            block = self.blocks[name]
+            self.assertNotIn("secrets.", block)
+            self.assertIn("Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6", block)
+            self.assertIn("cache-workspace-crates: false", block)
+            self.assertIn("cache-bin: false", block)
+            self.assertIn("save-if: ${{ github.event_name == 'push'", block)
+            self.assertIn("github.ref == 'refs/heads/main'", block)
+            self.assertIn("github.ref == 'refs/heads/codex/amail-v0.1.0'", block)
+        build = self.blocks["worker-build"]
+        self.assertNotIn("worker_cache_key.py", build)
+        self.assertNotIn("worker-check-v2-", build)
+        self.assertIn('cargo install worker-build --version 0.8.5 --locked --root "$GITHUB_WORKSPACE/.cache/worker-build-check"', build)
+        saves = re.findall(r"      - name: Save trusted .*?(?=\n      - name:|\Z)", build, re.DOTALL)
+        self.assertEqual(len(saves), 1)
+        self.assertIn("if: github.event_name == 'push'", saves[0])
+        self.assertNotIn("rustup update stable", self.source)
+        self.assertIn("rustup show active-toolchain", build)
+        self.assertIn("artifact_id: ${{ steps.modules.outputs.artifact-id }}", build)
         for name, block in self.blocks.items():
-            if name != "worker":
+            if re.search(r"^    environment: (staging|production)$", block, re.MULTILINE):
                 with self.subTest(job=name):
+                    self.assertNotIn("Swatinem/rust-cache@", block)
                     self.assertNotIn("actions/cache/", block)
 
 
