@@ -289,11 +289,10 @@ class Browser:
                     page["webSocketDebuggerUrl"], timeout=1, origin=origin,
                     http_no_proxy=["127.0.0.1"],
                 )
-            except websocket.WebSocketBadStatusException as error:
+            except (OSError, ValueError, KeyError, StopIteration, websocket.WebSocketException) as error:
                 status = getattr(error, "status_code", None)
-                stage = "websocket_http_" + (str(status) if status in (400, 401, 403, 404, 500) else "other")
-                time.sleep(0.15)
-            except (OSError, ValueError, KeyError, StopIteration, websocket.WebSocketException):
+                if stage == "websocket_handshake" and status is not None:
+                    stage = "websocket_http_" + (str(status) if status in (400, 401, 403, 404, 500) else "other")
                 time.sleep(0.15)
         exited = self.process.poll() is not None
         # Startup occurs on a blank owned page, before typing any credential.
