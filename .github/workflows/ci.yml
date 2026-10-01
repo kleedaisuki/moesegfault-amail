@@ -1616,6 +1616,9 @@ jobs:
       - name: Run built Rust Worker address-add boundary tests in workerd
         working-directory: infra/tests/worker-boundary
         run: pnpm test
+      - name: Verify Cron complete-item liveness in native workerd (non-deploying)
+        working-directory: infra/tests/worker-boundary
+        run: pnpm test:maintenance-liveness
       - name: Bundle Rust Email ingress for Wrangler
         working-directory: workers/mail-ingress
         run: worker-build --release

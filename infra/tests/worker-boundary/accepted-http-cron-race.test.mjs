@@ -176,6 +176,15 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
         // Model only this fixture row's durable due expiry, without sleeping,
         // changing production cadence, or stealing its projection lease.
         await db.prepare("UPDATE send_requests SET index_next_attempt_at=0 WHERE idem_key=?1").bind(idem).run();
+        // Exercise the intentional rotated order: GC runs before outbound and
+        // must retain accepted source. Outbound terminalizes the tombstone later
+        // in this turn; a following real GC turn performs physical reclamation.
+        const deletedFirstSlot = new Date(1_680_001_200_000);
+        assert.equal(Math.floor(deletedFirstSlot.getTime() / 300_000) % 8, 4);
+        await (await mf.getWorker()).scheduled({ scheduledTime: deletedFirstSlot });
+        assert.equal((await db.prepare("SELECT state FROM send_requests WHERE idem_key=?1").bind(idem).first()).state, "sent", "outbound terminalizes deletion after the earlier GC phase");
+        assert.equal((await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first()).deleted_at, tombstone.deleted_at);
+        assert.ok(await bucket.get(`messages/${journal.message_id}.zip`), "GC preceding terminalization preserves the accepted archive");
       }
       await (await mf.getWorker()).scheduled();
       assert.equal(await bucket.get(`messages/${journal.message_id}.zip`), null, "real GC removed the immutable archive");

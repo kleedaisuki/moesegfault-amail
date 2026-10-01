@@ -373,6 +373,32 @@ fn bucket(value: u64) -> u64 {
 mod tests {
     use super::*;
 
+    /// Resource deferrals preserve distinct wire codes without becoming dependency failures.
+    #[test]
+    fn maintenance_deferrals_have_exact_diagnostic_pairs() {
+        for (code, wire_code) in [
+            (
+                DiagnosticCode::MaintenanceBudgetDeferred,
+                "maintenance_budget_deferred",
+            ),
+            (
+                DiagnosticCode::MaintenanceDeadlineDeferred,
+                "maintenance_deadline_deferred",
+            ),
+        ] {
+            let event = diagnostic_record(code);
+            assert!(event.valid());
+            assert_eq!(event.error_code, Some(ErrorCode::ResourceDeferred));
+            assert!(event.parent_span_id.is_none());
+            let value = serde_json::to_value(event).unwrap();
+            assert_eq!(value["diagnostic_code"], wire_code);
+            assert_eq!(value["operation"], "maintenance");
+        }
+        let failure = diagnostic_record(DiagnosticCode::OutboundReconciliationFailed);
+        assert!(failure.valid());
+        assert_eq!(failure.error_code, Some(ErrorCode::DependencyFailure));
+    }
+
     /// Valid context retains causal identity without copying arbitrary headers.
     #[test]
     fn strict_w3c_parent() {
@@ -586,11 +612,17 @@ fn diagnostic_record(code: DiagnosticCode) -> QueuedEvent {
         parent_span_id: None,
         request_id: Some(uuid::Uuid::new_v4().to_string()),
         outcome: amail_trace_schema::Outcome::PhaseFailure,
-        error_code: Some(if code == DiagnosticCode::MaintenanceBudgetDeferred {
-            ErrorCode::ResourceDeferred
-        } else {
-            ErrorCode::DependencyFailure
-        }),
+        error_code: Some(
+            if matches!(
+                code,
+                DiagnosticCode::MaintenanceBudgetDeferred
+                    | DiagnosticCode::MaintenanceDeadlineDeferred
+            ) {
+                ErrorCode::ResourceDeferred
+            } else {
+                ErrorCode::DependencyFailure
+            },
+        ),
         http_status_class: None,
         duration_ms_bucket: 0,
         request_bytes_bucket: None,

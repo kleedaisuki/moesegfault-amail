@@ -102,7 +102,11 @@ DIAGNOSTIC_CODES = frozenset({
     "address_reconciliation_batch_full", "non_enabled_committed_routing_rule",
     "non_enabled_provisioning_routing_rule", "semantic_document_quarantined",
     "semantic_provider_cooldown", "storage_ledger_state_deferred", "maintenance_budget_deferred",
+    "maintenance_deadline_deferred",
 })
+
+# Only these standalone maintenance diagnostics represent admission deferral.
+RESOURCE_DEFERRAL_CODES = frozenset({"maintenance_budget_deferred", "maintenance_deadline_deferred"})
 
 
 CLI_OPERATIONS = frozenset({
@@ -188,9 +192,9 @@ def safe_event(event: dict) -> bool:
         return (((operation == "maintenance" and event.get("parent_span_id") is None)
                  or (operation != "maintenance" and event.get("parent_span_id") is not None))
                 and event["outcome"] == "phase_failure"
-                and ((event.get("diagnostic_code") == "maintenance_budget_deferred"
+                and ((event.get("diagnostic_code") in RESOURCE_DEFERRAL_CODES
                       and operation == "maintenance" and event.get("error_code") == "resource_deferred")
-                     or (event.get("diagnostic_code") != "maintenance_budget_deferred"
+                     or (event.get("diagnostic_code") not in RESOURCE_DEFERRAL_CODES
                          and event.get("error_code") == "dependency_failure"))
                 and event.get("diagnostic_code") is not None
                 and absent(event, "http_status_class", "request_bytes_bucket",
