@@ -6,6 +6,12 @@ on:
   pull_request:
   push:
     branches: [main, codex/amail-v0.1.0]
+    # Skip only non-build documentation; PR/manual/release checks remain independent.
+    # A skipped push supplies no exact-SHA CI result or acceptance/release artifact.
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**.md'
+      - '.agents/skills/**.md'
   workflow_dispatch:
     inputs:
       target:
