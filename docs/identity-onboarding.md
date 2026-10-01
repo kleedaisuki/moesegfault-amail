@@ -64,6 +64,33 @@ On 2026-09-28, direct HTTPS GET returned HTTP 200 `application/json` for both is
 
 Production browser login, separate-process status, and one refresh after access expiry have passed. Remaining acceptance must cover negative `state`/response `iss`/ID-token `nonce` cases, one-use authorization code, RS256 JWKS verification failure paths, `iss`/`aud`/`token_use=access` checks at the deployed mail Worker, mailbox ownership binding to `(issuer, sub)`, refresh-token rotation under concurrent use and predecessor replay, staging/production rejection, and logout/revocation behavior. Keep tokens, codes, raw identity claims, and callback query strings out of telemetry. `profile` claims are not authoritative for mailbox ownership. The current CLI requires callback `iss` to equal the pinned issuer, rejects duplicate callback parameters, uses an ephemeral loopback port, and serializes refresh under an OS file lock with a durable crash marker. Logout attempts revocation through the discovered endpoint, but its success response does not prove remote revocation because the attempt is deliberately best-effort; local credential deletion proceeds even if discovery or revocation fails. It does **not** clear the browser's Identity SSO session or perform RP-initiated logout. These are code-level observations, not substitutes for deployed rotation-edge-case and logout smoke tests.
 
+### Native completion page delivery (2026-10-01)
+
+The artifact and anonymous Login observations below are a historical snapshot from approximately
+07:35 Asia/Singapore, not current provider deployment status. At this documentation integration,
+amail main is `89ce49f0166307ea6fcd7657459dd6b2e9726257` and sibling Identity main is
+`08576c0549c3ab8d6b8b90f0fb6591b59962f5dd`. The latter contains the issuer-origin OAuth resume
+correction; it does not establish that the separately reported production password pre-authentication
+401 is resolved. That rejection remains unresolved in the coordinating incident. No Identity
+main change or provider deployment moves the CLI's embedded result page to the Login origin.
+
+The co-branded success/error page change `9cb410a` is already in amail main. It is embedded
+in the native binary, not served by `login.moesegfault.dev`; updating Identity cannot replace
+an installed native page. The five-platform release dry-run
+[36426742183](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36426742183)
+at descendant `59c9b09` includes the change, but no public amail Release exists. A newer green
+Windows smoke artifact is available from
+[36789400291](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36789400291)
+at `9499e7f`. Neither fact proves which executable the user currently launches.
+
+The shortest fix is to identify the final page origin without its query string and explicitly
+launch a reviewed CI artifact containing the page change, preserving the existing local token
+store and PKCE/redirect contract. Do not deploy Login, create a provider completion API, or
+bypass held release gates merely to update native page styling. Anonymous production/staging
+Login inspection found identical HTML-linked JS/CSS; authenticated page rendering and installed
+binary provenance remain unverified. Full investigation and provider/main separation are recorded
+in sibling Identity `docs/research/native-completion-page-rollout-2026-10-01.md`.
+
 ### Sources
 
 - Identity repository `docs/integrating-app.md` and `docs/configuration.md` (local sibling repository; deployment-owned provisioning contract).
