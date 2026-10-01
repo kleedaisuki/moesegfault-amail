@@ -75,3 +75,71 @@ Only Git source inspection, document reading, official documentation retrieval,
 were performed. No production file was edited, implementer worktree changed,
 local project tests/build/browser run, dependency installed, hosted workflow
 dispatched, remote push made, or provider/SMTP/DNS/tag/Release mutated.
+
+## Diagnostic-only follow-up: `384c75e`
+
+Exact delta reviewed: `3250ae9511e23cee69cb838cd00dfc91b8c128b0` to
+`384c75e947d45bed8411ce605ae9c9adf3d018d7` (two files, 89 additions and
+10 deletions). **GO for the diagnostic hosted rerun; no substantive finding.**
+This was reported promptly to root before the rerun decision. It does not waive
+the already-failed browser gate or approve any future CSS implementation.
+
+- Focus still requires an outline style other than none and width >= 2 px.
+  New return fields expose public element tag/id/class, focus-visible state
+  and computed outline properties; both callers assert the same passes value.
+  Keyboard continuation must still be inside main. Its new screenshot occurs
+  before those assertions to preserve failure evidence, not to replace them.
+- TOC still requires nonempty links, one exact local target, matching activated
+  fragment, and `top >= header.bottom - 1 && top < innerHeight`. Geometry
+  failures now append evidence and continue to later entries, then assert zero
+  failures. No target tolerance or viewport width changes. Structural or click
+  failures still fail the named check immediately, as before.
+- Added scrolling-ancestor diagnostics contain CSS and geometry, not mail,
+  page text, credentials, storage state, trace or request headers. Screenshot
+  paths are generated solely from the existing fixed width/route/index values.
+  The workflow, permission, upload scope and public/loopback target remain
+  byte-unchanged. Current fixtures contain no authentication or private data.
+- Inspected the already-downloaded hosted `report.json` under the implementer
+  worktree without running a browser. Its source, timestamps, four-width TOC
+  failure measurements, 12 focus failures and other named-check outcomes match
+  the added first-run ledger. All 12 original skip-focus screenshots exist;
+  their creation follows the first outline assertion, so identifying the
+  second outline failure is justified. Separate CI success/run metadata and
+  the individual screenshot visual interpretation were not re-observed here.
+
+Performed source diff inspection, existing JSON/file evidence inspection and
+`git diff --check` only. No local browser/build/test, hosted dispatch, dependency
+installation, provider operation or implementer-worktree edit occurred.
+
+## Bounded presentation settling: `681f09b`
+
+Reviewed exact commit `681f09b2fcde8d7710286cd6a19e140e2fa0c90c`:
+six harness lines and the corresponding diagnostic ledger. **GO for integration
+with independently reviewed CSS `e7b5d1a` and copy `bd10e7c`, then a hosted
+rerun.** This is approval to obtain new evidence, not a passing browser result.
+
+The helper polls the original non-none/at-least-2px computed-outline predicate
+using animation frames for at most 1000 ms, then independently recomputes the
+same returned passes field used by the unchanged assertions. Timeout is caught
+only to preserve final diagnostics; it does not set passes or waive the final
+assertion. No focus operation, injected CSS, fixed sleep or weaker threshold
+is added. This shared helper applies to both initial skip focus and main
+continuation, not just the second Tab; that matches the recorded first-stage
+320-changelog failure as well. At most 24 seconds of bounded polling is added
+across the entire matrix when all checks time out, within the existing workflow
+budget. The changes have no path conflict with CSS/copy and introduce no new
+sensitive artifact category.
+
+Inspected the existing downloaded diagnostic JSON for run `36809130233`: source
+`f050fa33db2ac48f5c6d4d05296759631b646aaa`, ordinary-link continuation focus with
+focus-visible true/solid outline/zero immediate width, first-stage 320-changelog
+zero width, manual ancestor dimensions and both heading measurements match the
+new ledger. The screenshot/style-timing explanation is a supported mechanism
+hypothesis, not proof that every future focus state succeeds; the new bounded
+wait and final assertion are the discriminating hosted observation.
+
+[Playwright waitForFunction documentation](https://playwright.dev/docs/api/class-page#page-wait-for-function)
+defines animation-frame polling and explicit timeout, matching the amendment.
+No local browser/build/test/provider action was performed. Source inspection,
+downloaded JSON inspection and diff-whitespace checking only; production and
+implementer source were not modified.
