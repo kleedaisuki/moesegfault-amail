@@ -3,6 +3,14 @@
 Date: 2026-10-01. Source-only candidate, based on accepted-projection candidate
 `25acdf1`; **not hosted-validated, deployed, Paid-verified or release-approved**.
 
+Integration base: after PR #22's exact final head `923495f` passed all seven source
+checks (including 89 built-workerd cases), these focused commits were rebased
+without conflict onto main `73874d6a5d40ac542abefb0a9b88af99bbf28573`. The reviewed
+held-canary fixture seed, owner DELETE RETURNING correction, and explicit old-
+revision drain/Cron-paused rollout documentation are preserved. Independent
+source-review artifacts retain their original immutable candidate hashes; rebase
+does not turn them or PR22's prior tests into validation of this new budget head.
+
 ## First atomic slice: accounting only
 
 The private `database::{Database,Statement}` adapter is the only MAIL_DB binding
