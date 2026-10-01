@@ -27,6 +27,7 @@ from fresh_bootstrap_readback import verify, verify_sink_reader, held_empty
 from fresh_bootstrap_receipt import persist
 from tested_worker_artifact import require_artifact
 from worker_deploy_result import submit, DeploymentFailure
+from control_plane_trace import span
 from pin_staging_mail import UUID, serving_deployment
 import worker_artifact
 from native_fixture import api
@@ -119,7 +120,8 @@ def inspect_old_scope(provider, s3) -> dict:
             or first_forward != forward_snapshot(provider.account)):
         raise ValueError("production_inventory_drift")
     return {"snapshot_sha256": old.stable_digest(snapshots[0]), "old_work_end": "UNVERIFIED",
-            "original_stores": "RETAINED", "external_activation": "NOT_GRANTED"}
+            "original_stores": "RETAINED", "external_activation": "NOT_GRANTED",
+            "sink_present": SCRIPTS["sink"] in snapshots[0]["scripts"]}
 
 
 def migrate_and_hold_new_scope(provider, s3, scope: Scope, config: Path) -> None:
@@ -128,13 +130,36 @@ def migrate_and_hold_new_scope(provider, s3, scope: Scope, config: Path) -> None
     Migration 0006 inserts held policy and zero grants. No redundant UPDATE is
     performed (its audit trigger would destroy the migration-only witness).
     An ambiguous migration result stops; recovery cannot run migrations again.
+    Official workers-sdk tag wrangler@4.142.0, packages/wrangler/src:
+    d1/migrations/apply.ts and index.ts globalFlags have no --yes; dialogs.ts
+    confirm() already accepts its default in CI/non-interactive execution.
+    CLI output is inspected only for fixed diagnostic categories, never emitted.
     """
     require_artifact("mail_api")
-    result = subprocess.run(["wrangler", "d1", "migrations", "apply", "MAIL_DB", "--remote",
-                             "--config", str(config), "--yes"], cwd=ROOT,
-                            capture_output=True, text=True, check=False, timeout=300)
-    if result.returncode or len(result.stdout) + len(result.stderr) > 1_048_576:
-        raise ValueError("fresh_migration_submit_unverified")
+    with span("d1.migrations.apply", "migrate", realm="production", component="fresh_bootstrap") as facts:
+        try:
+            result = subprocess.run(["wrangler", "d1", "migrations", "apply", "MAIL_DB", "--remote",
+                                     "--config", str(config)], cwd=ROOT,
+                                    capture_output=True, text=True, check=False, timeout=300)
+        except subprocess.TimeoutExpired:
+            facts.reason = "submit_timeout_ambiguous"
+            raise
+        except OSError:
+            facts.reason = "process_unavailable"
+            raise
+        facts.process_exit_code = result.returncode
+        if len(result.stdout) + len(result.stderr) > 1_048_576:
+            facts.reason = "output_limit"
+            raise ValueError("fresh_migration_submit_unverified")
+        if result.returncode:
+            output = result.stdout + "\n" + result.stderr
+            facts.reason = "process_exit"
+            if re.search(r"\bUnknown arguments?:", output):
+                facts.reason = "cli_unknown_argument"
+            elif re.search(r"\b(?:Not enough non-option arguments|Missing required arguments?|"
+                           r"Invalid values|Not enough arguments following):", output):
+                facts.reason = "cli_parameter_parse"
+            raise ValueError("fresh_migration_submit_unverified")
     held_empty(provider, f"accounts/{provider.account}", scope)
     if old.r2_count(s3, scope.bucket) != 0:
         raise ValueError("fresh_bucket_population_unverified")
@@ -430,7 +455,12 @@ def main() -> int:
                           aws_access_key_id=access, aws_secret_access_key=secret, region_name="auto",
                           config=Config(connect_timeout=15, read_timeout=30, retries={"max_attempts": 0}))
         folder = ROOT / ".temp/fresh-bootstrap"
-        Bootstrap(provider, s3, epoch, folder / "recovery/controller.jsonl", folder / "receipt.json").run()
+        prior_run = os.getenv("AMAIL_FRESH_BOOTSTRAP_RUN_ID", "")
+        if prior_run:
+            from resume_fresh_mail import run
+            run(provider, s3, epoch, prior_run, folder)
+        else:
+            Bootstrap(provider, s3, epoch, folder / "recovery/controller.jsonl", folder / "receipt.json").run()
         print("fresh_production_bootstrap=paused_receipt activation=NOT_GRANTED source_adoption=REQUIRED")
         return 0
     except Exception as error:

@@ -8,6 +8,7 @@ import io
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -66,6 +67,113 @@ class FreshBootstrapCoordinatesTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 Scope(epoch(), "00000000-0000-0000-0000-000000000002",
                       value, "2026-10-01T00:00:00Z")
+
+
+class FreshBootstrapMigrationTests(unittest.TestCase):
+    """Migration submit retains typed diagnostics without replay or private output."""
+
+    def setUp(self):
+        """Use synthetic owned coordinates and patch every external boundary."""
+        self.scope = Scope(epoch(), "00000000-0000-0000-0000-000000000002",
+                           "2026-10-01T00:00:00Z", "2026-10-01T00:00:01Z")
+        self.provider = Mock(account="a" * 32)
+        self.s3 = Mock()
+        self.config = ROOT / ".temp" / "synthetic-fresh-api.toml"
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.artifact = self.stack.enter_context(patch.object(controller, "require_artifact"))
+        self.process = self.stack.enter_context(patch.object(controller.subprocess, "run"))
+        self.held = self.stack.enter_context(patch.object(controller, "held_empty"))
+        self.objects = self.stack.enter_context(patch.object(controller.old, "r2_count", return_value=0))
+        self.output = io.StringIO()
+        self.stack.enter_context(redirect_stdout(self.output))
+
+    def test_supported_command_submits_once_then_preserves_held_empty_checks(self):
+        """Pinned Wrangler skips confirmation in CI; no unsupported --yes is sent."""
+        self.process.return_value = subprocess.CompletedProcess([], 0, "private-cli-output", "")
+        controller.migrate_and_hold_new_scope(self.provider, self.s3, self.scope, self.config)
+        self.artifact.assert_called_once_with("mail_api")
+        self.process.assert_called_once_with(
+            ["wrangler", "d1", "migrations", "apply", "MAIL_DB", "--remote", "--config", str(self.config)],
+            cwd=controller.ROOT, capture_output=True, text=True, check=False, timeout=300)
+        self.assertNotIn("--yes", self.process.call_args.args[0])
+        self.held.assert_called_once_with(self.provider, "accounts/" + self.provider.account, self.scope)
+        self.objects.assert_called_once_with(self.s3, self.scope.bucket)
+        self.assertNotIn("private-cli-output", self.output.getvalue())
+        end = json.loads(self.output.getvalue().splitlines()[-1])
+        self.assertEqual((end["outcome"], end["process_exit_code"]), ("success", 0))
+
+    def test_parser_failure_emits_only_fixed_category_exit_code_and_stage(self):
+        """Unknown arguments and parser diagnostics never expose argument or secret prose."""
+        cases = (("Unknown argument: secret-token", "cli_unknown_argument"),
+                 ("Unknown arguments: secret-token", "cli_unknown_argument"),
+                 ("Missing required argument: secret-token", "cli_parameter_parse"),
+                 ("Not enough non-option arguments: secret-token", "cli_parameter_parse"),
+                 ("Invalid values: secret-token", "cli_parameter_parse"),
+                 ("Not enough arguments following: secret-token", "cli_parameter_parse"),
+                 ("private-provider-body secret-token", "process_exit"))
+        for diagnostic, reason in cases:
+            with self.subTest(reason=reason, diagnostic=diagnostic):
+                self.process.reset_mock()
+                self.output.seek(0)
+                self.output.truncate()
+                self.process.return_value = subprocess.CompletedProcess(
+                    [], 1, "private-stdout secret-token", diagnostic + " private-provider-body")
+                with self.assertRaisesRegex(ValueError, "^fresh_migration_submit_unverified$"):
+                    controller.migrate_and_hold_new_scope(self.provider, self.s3, self.scope, self.config)
+                self.process.assert_called_once()
+                self.held.assert_not_called()
+                self.objects.assert_not_called()
+                captured = self.output.getvalue()
+                for private in ("secret-token", "private-stdout", "private-provider-body", diagnostic):
+                    self.assertNotIn(private, captured)
+                end = json.loads(captured.splitlines()[-1])
+                self.assertEqual(end["reason"], reason)
+                self.assertEqual(end["process_exit_code"], 1)
+                self.assertEqual(end["operation"], "d1.migrations.apply")
+                self.assertEqual(end["phase"], "migrate")
+                self.assertEqual(end["outcome"], "failure")
+                self.assertEqual(end["error_type"], "ValueError")
+
+    def test_successful_cli_does_not_replace_held_and_empty_proofs(self):
+        """A successful command still refuses failed held proof or populated storage."""
+        self.process.return_value = subprocess.CompletedProcess([], 0, "", "")
+        self.held.side_effect = ValueError("synthetic_held_unverified")
+        with self.assertRaisesRegex(ValueError, "^synthetic_held_unverified$"):
+            controller.migrate_and_hold_new_scope(self.provider, self.s3, self.scope, self.config)
+        self.objects.assert_not_called()
+        self.held.side_effect = None
+        self.objects.return_value = 1
+        with self.assertRaisesRegex(ValueError, "^fresh_bucket_population_unverified$"):
+            controller.migrate_and_hold_new_scope(self.provider, self.s3, self.scope, self.config)
+        self.assertEqual(self.process.call_count, 2, "each explicit invocation submits only once")
+
+    def test_output_limit_stops_before_classification_or_held_readback(self):
+        """Oversized output is never classified or emitted, even on a zero exit."""
+        self.process.return_value = subprocess.CompletedProcess([], 0, "x" * 1_048_577, "")
+        with self.assertRaisesRegex(ValueError, "^fresh_migration_submit_unverified$"):
+            controller.migrate_and_hold_new_scope(self.provider, self.s3, self.scope, self.config)
+        end = json.loads(self.output.getvalue().splitlines()[-1])
+        self.assertEqual((end["reason"], end["process_exit_code"]), ("output_limit", 0))
+        self.process.assert_called_once()
+        self.held.assert_not_called()
+        self.objects.assert_not_called()
+
+    def test_timeout_retains_ambiguity_without_retry_or_secret_output(self):
+        """A timed-out process is not evidence that no remote migration was applied."""
+        self.process.side_effect = subprocess.TimeoutExpired(
+            ["private-command"], 300, output="private-timeout-body", stderr="secret-token")
+        with self.assertRaises(subprocess.TimeoutExpired):
+            controller.migrate_and_hold_new_scope(self.provider, self.s3, self.scope, self.config)
+        captured = self.output.getvalue()
+        end = json.loads(captured.splitlines()[-1])
+        self.assertEqual(end["reason"], "submit_timeout_ambiguous")
+        self.assertNotIn("process_exit_code", end)
+        for private in ("private-command", "private-timeout-body", "secret-token"):
+            self.assertNotIn(private, captured)
+        self.process.assert_called_once()
+        self.held.assert_not_called()
+        self.objects.assert_not_called()
 
 
 class FreshBootstrapColdStoreTests(unittest.TestCase):

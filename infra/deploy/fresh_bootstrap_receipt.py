@@ -22,6 +22,7 @@ from pin_staging_mail import ACCOUNT
 WORKFLOW = ".github/workflows/ci.yml"
 JOB = "Fresh held production bootstrap"
 SCHEMA = "mail-lifecycle-observation/v2"
+RESUMED_SCHEMA = "mail-lifecycle-observation/v3"
 CREATION = "SUCCESSFUL_CREATE_AND_EXACT_READBACK"
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,7 +31,10 @@ def validate(value: object) -> dict:
     """Require exact fresh paused metadata; no active/drain/source-adoption grant."""
     fields = {"schema", "realm", "state", "source_epoch", "run_attempt", "scope", "creation",
               "graph", "resources", "sendHeld", "originalstores", "source_adoption", "activation", "old_work_end"}
-    if (not isinstance(value, dict) or set(value) != fields or value["schema"] != SCHEMA
+    resumed = isinstance(value, dict) and value.get("schema") == RESUMED_SCHEMA
+    if resumed:
+        fields.add("creation_epoch")
+    if (not isinstance(value, dict) or set(value) != fields or value["schema"] not in (SCHEMA, RESUMED_SCHEMA)
             or value["realm"] != "production" or value["state"] != "paused"
             or type(value["run_attempt"]) is not int or value["run_attempt"] != 1
             or value["sendHeld"] is not True or value["source_adoption"] != "REQUIRED"
@@ -43,6 +47,11 @@ def validate(value: object) -> dict:
     if not isinstance(source, dict) or set(source) != {"source_sha", "run_id", "artifact_id", "manifest_sha256", "rust", "worker_build"}:
         raise ValueError("fresh_receipt_source_unreviewed")
     epoch = Epoch(**source)
+    if resumed:
+        creation = value["creation_epoch"]
+        if not isinstance(creation, dict) or set(creation) != set(source):
+            raise ValueError("fresh_receipt_creation_epoch_unreviewed")
+        epoch = Epoch(**creation)
     stores = value["scope"]
     if not isinstance(stores, dict) or set(stores) != {"database", "database_name", "database_created_at", "bucket", "bucket_created_at"}:
         raise ValueError("fresh_receipt_scope_unreviewed")
@@ -81,7 +90,8 @@ class Receipt:
         return json.loads(self.payload, object_pairs_hook=unique_object)
 
 
-def persist(scope: Scope, graph: dict, queue: str, dlq: str, path: Path) -> dict:
+def persist(scope: Scope, graph: dict, queue: str, dlq: str, path: Path,
+            *, deployment_epoch: Epoch | None = None) -> dict:
     """Persist once only after exact readback, inside the repository's .temp tree.
 
     Example: ``persist(scope, verify(scope, pins, queue, dlq, provider), queue,
@@ -90,8 +100,12 @@ def persist(scope: Scope, graph: dict, queue: str, dlq: str, path: Path) -> dict
     """
     if not isinstance(scope, Scope) or type(graph) is not VerifiedGraph:
         raise ValueError("fresh_successful_readback_required")
-    value = validate({"schema": SCHEMA, "realm": "production", "state": "paused",
-                      "source_epoch": asdict(scope.epoch), "run_attempt": 1,
+    if deployment_epoch is not None and not isinstance(deployment_epoch, Epoch):
+        raise ValueError("fresh_receipt_source_unreviewed")
+    source = deployment_epoch or scope.epoch
+    creation = {"creation_epoch": asdict(scope.epoch)} if deployment_epoch is not None else {}
+    value = validate({"schema": RESUMED_SCHEMA if creation else SCHEMA, "realm": "production", "state": "paused",
+                      "source_epoch": asdict(source), "run_attempt": 1, **creation,
                       "scope": {"database": scope.database, "database_name": scope.database_name,
                                 "database_created_at": scope.database_created_at,
                                 "bucket": scope.bucket, "bucket_created_at": scope.bucket_created_at},
@@ -106,7 +120,7 @@ def persist(scope: Scope, graph: dict, queue: str, dlq: str, path: Path) -> dict
             or os.getenv("GITHUB_EVENT_NAME") != "workflow_dispatch"
             or os.getenv("GITHUB_JOB") != "production-fresh-bootstrap"
             or os.getenv("GITHUB_WORKFLOW_REF") != f"{REPO}/{WORKFLOW}@refs/heads/main"
-            or os.getenv("GITHUB_RUN_ID") != scope.epoch.run_id or os.getenv("GITHUB_SHA") != scope.epoch.source_sha):
+            or os.getenv("GITHUB_RUN_ID") != source.run_id or os.getenv("GITHUB_SHA") != source.source_sha):
         raise ValueError("fresh_receipt_protected_context_required")
     target = Path(path)
     temp = ROOT / ".temp"

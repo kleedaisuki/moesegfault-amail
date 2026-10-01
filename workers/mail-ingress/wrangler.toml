@@ -2,6 +2,7 @@ name = "amail-inbound"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-09-25"
 workers_dev = false
+preview_urls = false
 
 [vars]
 MAIL_API_ORIGIN = "https://mail.moesegfault.dev"
@@ -15,9 +16,20 @@ service = "amail-mail"
 [observability]
 enabled = false
 
+[observability.logs]
+enabled = false
+invocation_logs = false
+
+[observability.traces]
+enabled = false
+
+[observability.issues]
+enabled = false
+
 [env.staging]
 name = "amail-inbound-staging"
 workers_dev = false
+preview_urls = false
 
 [env.staging.vars]
 MAIL_API_ORIGIN = "https://mail-staging.moesegfault.dev"
@@ -27,4 +39,14 @@ binding = "MAIL_API"
 service = "amail-mail-staging"
 
 [env.staging.observability]
+enabled = false
+
+[env.staging.observability.logs]
+enabled = false
+invocation_logs = false
+
+[env.staging.observability.traces]
+enabled = false
+
+[env.staging.observability.issues]
 enabled = false

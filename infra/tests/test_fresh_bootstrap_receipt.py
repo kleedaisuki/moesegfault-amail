@@ -57,6 +57,23 @@ def origin_fixture():
 class FreshReceiptTests(unittest.TestCase):
     """Self-authored success-looking JSON never replaces protected producer origin."""
 
+    def test_resumed_v3_separates_positive_creation_from_current_deployment_source(self):
+        """Old v2 stays closed; v3's current origin never renames the owned old scope."""
+        value = fixture()
+        creation = deepcopy(value["source_epoch"])
+        value["schema"] = record.RESUMED_SCHEMA
+        value["creation_epoch"] = creation
+        value["source_epoch"] = {**creation, "source_sha": "d" * 40, "run_id": "456", "artifact_id": 43}
+        self.assertEqual(record.validate(value), value)
+        changed = deepcopy(value)
+        changed["schema"] = record.SCHEMA
+        with self.assertRaises(ValueError):
+            record.validate(changed)
+        changed = deepcopy(value)
+        changed["creation_epoch"]["run_id"] = "789"
+        with self.assertRaisesRegex(ValueError, "fresh_receipt_scope_mismatch"):
+            record.validate(changed)
+
     def test_closed_first_paused_schema_rejects_every_missing_or_extra_field(self):
         """Stored claims are fixed, including adoption-required and old-work unknown."""
         value = fixture()
