@@ -39,7 +39,7 @@ def inventory(provider, path):
     """Require complete, count-consistent paginated inventories before absence."""
     rows, expected, seen = [], None, set()
     for page in range(1, 101):
-        value = provider.request("GET", f"{path}?per_page=100&page={page}", envelope=True)
+        value = provider.request("GET", f"{path}?per_page=50&page={page}", envelope=True)
         items, info = value.get("result"), value.get("result_info")
         if not isinstance(items, list) or not isinstance(info, dict):
             raise ValueError("native_ingress_inventory_incomplete")

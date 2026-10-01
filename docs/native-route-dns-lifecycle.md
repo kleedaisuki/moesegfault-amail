@@ -170,7 +170,8 @@ must expose `request(method, suffix, data=None, *, envelope=False)`, `account`,
 and `script(name, suffix="settings")`; envelope mode preserves pagination metadata.
 The Routes endpoint is a documented non-paginated array. DNS, certificates and
 Worker Domains require count-consistent complete paginated inventories, bounded
-at 100 pages / 10,000 objects, with duplicate IDs refused. Worker deployment GET
+at 100 pages / 10,000 objects, with duplicate IDs refused. Requests use 50
+objects per page, respecting the certificate-packs documented maximum of 50. Worker deployment GET
 returns `{deployments: [...]}`.
 
 `preflight(provider)` returns only fixed coordinates and successful booleans,
