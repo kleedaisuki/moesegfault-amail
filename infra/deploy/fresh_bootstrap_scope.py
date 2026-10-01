@@ -181,13 +181,12 @@ class FreshProvider:
                     raise FreshError("fresh_provider_body_limit")
                 value = json.loads(raw, object_pairs_hook=_unique)
                 facts.provider_error_codes = _codes(value)
-                # Queue success envelopes document errors as optional. This is
+                # Cloudflare success envelopes document errors as optional. This is
                 # https://developers.cloudflare.com/api/resources/queues/
                 # absence of errors after a successful response, never absence
                 # of queues or acceptance of an unsuccessful provider response.
-                if isinstance(value, dict) and family in ("queues.inventory", "queues.readback"):
-                    if value.get("errors") is None:
-                        value["errors"] = []
+                if isinstance(value, dict) and value.get("errors") is None:
+                    value["errors"] = []
                 if (not isinstance(value, dict) or value.get("success") is not True
                         or value.get("errors") != [] or "result" not in value
                         or facts.http_status is None or not 200 <= facts.http_status < 300):

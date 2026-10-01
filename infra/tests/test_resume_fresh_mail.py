@@ -91,7 +91,7 @@ class ResumeTests(unittest.TestCase):
                       "2026-10-01T19:20:25Z", "2026-10-01T19:20:26Z")
         temp = ROOT / ".temp"
         temp.mkdir(exist_ok=True)
-        for failure in (None, "partial_schema", "changed_sink"):
+        for failure in (None, "partial_schema", "changed_sink", "retained_wrapper"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory(
                     dir=temp, prefix="resume-sink-") as folder, ExitStack() as stack:
                 path = Path(folder)
@@ -100,7 +100,8 @@ class ResumeTests(unittest.TestCase):
                     "{}\n" + json.dumps({"scope": asdict(scope), "creation_epoch": asdict(creation)}), encoding="utf-8")
                 provider, s3 = Mock(account="a" * 32), Mock()
                 stack.enter_context(patch.object(resume, "load_sink_checkpoint",
-                                                return_value=("123", sink, version, "3" * 32, "4" * 32)))
+                                                return_value=("123", sink, version, "3" * 32, "4" * 32,
+                                                              failure != "retained_wrapper")))
                 owned = stack.enter_context(patch.object(resume, "owned_scope", return_value=scope))
                 stack.enter_context(patch.object(resume.bootstrap, "inspect_old_scope", return_value={"sink_present": True}))
                 stack.enter_context(patch.object(resume.old, "Provider"))
@@ -119,24 +120,32 @@ class ResumeTests(unittest.TestCase):
                 persist = stack.enter_context(patch.object(resume, "persist", return_value={"state": "paused"}))
                 if failure == "changed_sink":
                     previous.side_effect = ValueError("fresh_serving_unverified")
-                if failure:
+                if failure in ("partial_schema", "changed_sink"):
                     with self.assertRaises(ValueError):
                         resume.run(provider, s3, current, "456", path)
                     submits.assert_not_called()
                     persist.assert_not_called()
                 else:
                     self.assertEqual(resume.run(provider, s3, current, "456", path), {"state": "paused"})
-                    previous.assert_called_once_with(scope, version, "3" * 32, "4" * 32, provider)
-                    new_version = submits.return_value
+                    if failure == "retained_wrapper":
+                        previous.assert_not_called()
+                        new_version = version
+                        roles = ["maintenance", "api"]
+                        provenance = {"retained_sink": {"source_epoch": asdict(sink), "version": version}}
+                    else:
+                        previous.assert_called_once_with(scope, version, "3" * 32, "4" * 32, provider)
+                        new_version, roles, provenance = submits.return_value, ["sink", "maintenance", "api"], {}
                     read.assert_called_once_with(scope, new_version, "3" * 32, "4" * 32, provider)
-                    self.assertEqual([call.args[0] for call in submits.call_args_list], ["sink", "maintenance", "api"])
+                    self.assertEqual([call.args[0] for call in submits.call_args_list], roles)
                     self.assertEqual(graph.call_args.args[1]["amail-trace-sink"], new_version)
-                    self.assertEqual(persist.call_args.kwargs, {"deployment_epoch": current})
+                    self.assertEqual(persist.call_args.kwargs, {"deployment_epoch": current, **provenance})
                     records = [json.loads(line) for line in (path / "recovery/resume.jsonl").read_text().splitlines()]
                     self.assertTrue(all(row["creation_run"] == "123" for row in records))
                     self.assertFalse(any(row["phase"] in ("migrate", "queues", "sink") for row in records))
-                    intent = next(row for row in records if row["phase"] == "sink_replacement" and row["state"] == "intent")
-                    self.assertEqual(intent["previous_version"], version)
+                    intents = [row for row in records if row["phase"] == "sink_replacement" and row["state"] == "intent"]
+                    self.assertEqual(len(intents), 0 if failure == "retained_wrapper" else 1)
+                    if intents:
+                        self.assertEqual(intents[0]["previous_version"], version)
                 owned.assert_called_once_with(provider, "123", path)
                 migrate.assert_not_called()
                 queues.assert_not_called()
