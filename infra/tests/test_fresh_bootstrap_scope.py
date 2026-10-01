@@ -124,14 +124,32 @@ class FreshScopeTests(unittest.TestCase):
         self.assertFalse(any(method == "POST" for method, _ in self.provider.calls))
 
     def test_r2_incomplete_or_existing_blocks_first_post(self):
-        """Missing final metadata cannot be inferred as a successful empty inventory."""
-        for index, value in enumerate((envelope({"buckets": []}), envelope({"buckets": [self.provider.bucket]}, {"per_page": 1000}))):
+        """Missing bucket rows or malformed metadata cannot establish absence."""
+        for index, value in enumerate((envelope({}), envelope({"buckets": []}, {"per_page": False}),
+                                      envelope({"buckets": [self.provider.bucket]}, {"per_page": 1000}))):
             journal = self.folder / f"r2-{index}.jsonl"
             provider = FakeProvider(journal)
             provider.r2_inventory = value
             with self.assertRaises(fresh.FreshError):
                 fresh.create_scope(provider, EPOCH, journal)
             self.assertFalse(any(method == "POST" for method, _ in provider.calls))
+
+    def test_r2_optional_metadata_and_server_page_limit_follow_documented_cursor_contract(self):
+        """Successful explicit bucket rows remain complete after every cursor terminates."""
+        for index, info in enumerate((None, {}, {"cursor": ""}, {"per_page": 20})):
+            with self.subTest(info=info):
+                journal = self.folder / f"r2-optional-{index}.jsonl"
+                provider = FakeProvider(journal)
+                provider.r2_inventory = envelope({"buckets": [{"name": "unrelated"}]}, info)
+                fresh.create_scope(provider, EPOCH, journal)
+                self.assertEqual(sum(method == "POST" for method, _ in provider.calls), 2)
+
+        self.provider.envelope = Mock(side_effect=[self.provider.d1_inventory,
+            envelope({"buckets": [{"name": "unrelated"}]}, {"cursor": "next", "per_page": 20}),
+            envelope({"buckets": []})])
+        fresh._absence(self.provider, EPOCH)
+        self.assertEqual(self.provider.envelope.call_count, 3)
+        self.assertIn("cursor=next", self.provider.envelope.call_args.args[1])
 
     def test_inventory_pagination_is_complete_and_duplicate_free(self):
         """All D1 pages and R2 cursor pages finish before a positive absence verdict."""

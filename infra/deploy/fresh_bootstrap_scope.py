@@ -264,11 +264,15 @@ def _absence(provider, epoch: Epoch) -> None:
         if cursor:
             query["cursor"] = cursor
         value = provider.envelope("GET", prefix + "/r2/buckets?" + urlencode(query))
-        result, info = value.get("result"), value.get("result_info")
+        result, info = value.get("result"), value.get("result_info", {})
         rows = result.get("buckets") if isinstance(result, dict) else None
+        # R2 continuation metadata is optional, unlike D1's counted pages.
+        # A present smaller server limit is valid; every returned cursor is followed.
+        page_limit = info.get("per_page", PAGE_SIZE) if isinstance(info, dict) else None
         if (value.get("success") is not True or value.get("errors") != []
                 or not isinstance(rows, list) or len(rows) > PAGE_SIZE or not isinstance(info, dict)
-                or type(info.get("per_page")) is not int or info["per_page"] != PAGE_SIZE
+                or type(page_limit) is not int or not 1 <= page_limit <= PAGE_SIZE
+                or len(rows) > page_limit
                 or not isinstance(info.get("cursor", ""), str)
                 or len(info.get("cursor", "")) > 2048):
             raise FreshError("fresh_r2_inventory_incomplete")
