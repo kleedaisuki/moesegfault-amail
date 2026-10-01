@@ -90,3 +90,20 @@ Use the real built Rust/Wasm entry, isolated native D1/R2, synthetic ZIPs and co
 | Older extra chunks / shorter new body | Stale suffix removed under lease; exact current compiled body and original mutable read/delete flags |
 
 Only static Rust formatting/parsing and `git diff --check` were run locally. No runtime result is asserted here.
+
+### Integrated hosted test selection
+
+The selected final validator files/reviews come from `570554ce395f1b7aac740c5828b2a7f330511dc0`; provider-free EmailService adapter research comes from `a723eb7`. They are integrated as scoped file snapshots, not a merge of the validator's older branch. Main's existing address, embedding HTTP and SQL-comment suites remain in the default package script.
+
+The default hosted workerd suite adds **11 standalone accepted-integrity cases** in `outbound-recovery.test.mjs` and **3 deterministic HTTP/Cron cases** in `accepted-http-cron-race.test.mjs`. `outbound-recovery-budget.test.mjs` remains explicitly outside that default: twenty maximum valid archives are a known resource-bound counterexample awaiting the separate budget/fairness repair, not a skipped integrity assertion or a passing budget claim.
+
+The corrected archive-present tombstone fixture observes zero new body-chunk staging, exact journal terminalization and real GC. It does **not** claim its removed, unreachable trigger exercised cached-R2 mid-projection GC. The HTTP expired-lease fixture resumes the stale HTTP holder after the new owner has already terminalized/deleted/collected; it proves that no resurrection occurs then, not separate runtime proof of stale-token isolation while a new owner is still publishing in accepted state. Token predicates also have independent source review. No expanded hosted result is asserted before the exact integration commit runs in Actions.
+
+Reproduce only on the hosted runner after its real Rust/Wasm build and shim preparation:
+
+```sh
+pnpm --dir infra/tests/worker-boundary install --frozen-lockfile
+pnpm --dir infra/tests/worker-boundary test
+```
+
+Local checks of the integration were `node --check` for the six new JavaScript modules and `git diff --check`, not test execution.
