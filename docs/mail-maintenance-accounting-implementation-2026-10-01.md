@@ -167,3 +167,23 @@ There are five native batches containing fifteen statements, and 364 individual
 executors. The exact count would detect treating batch(N) as one, skipped/bypassed
 binding calls, or accidental retries. It remains a synthetic path count, not a
 proof of every error branch, actual plan enforcement, CPU usage or peak RSS.
+
+## Next scheduling invariant: admitted maximum-valid work must make progress
+
+Phase rotation/deadline behavior is intentionally outside these accounting/due/R2
+commits. One maximum service-valid accepted archive completing under its admitted
+turn is a liveness invariant, not merely a low statement count. A 15-second
+per-chunk phase cutoff is unsafe without durable continuation: 66 successful
+chunk roundtrips at 300ms each replay the same prefix every future tick and never
+publish, despite fair retry slots. This is a source counterexample, not measured
+production latency.
+
+After exact hosted fairness/accounting evidence, measure the full maximum-valid
+item's wall time and roundtrips. A next candidate may check a phase's soft admission
+slice before starting an item and allow an admitted item to complete within its
+separate global turn, yielding before the following item. If one valid item
+threatens that global allowance, investigate bounded transactional chunk batches
+(all current lease predicates, N statement debits, <=30s entire batch) or durable
+chunk continuation. Do not add a speculative cutoff that preserves safety while
+silently destroying eventual completion. None of these wall policies certifies
+the short-interval platform CPU allowance or cancellation of admitted D1 writes.
