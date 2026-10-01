@@ -324,3 +324,42 @@ evidence without copying arbitrary provider data or guessing hundreds of keys.
 Likewise, marker absence is conclusive only for a surface whose baseline marker
 was actually retained; path baseline alone does not prove deletion of a header
 or body that the provider never captured.
+
+## New exact-main pair: live POST still refused
+
+One normal run36884872446 used fully successful exact-main CI36883747018,
+source6f63e1f559bc2d0a5c9d27c40294349fcf77dde1 and original built artifact
+11172022967. The reviewed lifecycle restored the checked module bytes and passed
+ownership, serving-version, capture and endpoint-isolation readback for caller
+b9d576c9-bd49-4e8f-a050-f9f0f4bbeaa7 and probe
+ff5ff33e-63bb-4ee6-b02b-c2edcf1dcba6.
+
+The single fixed-client empty POST returned **HTTP404 / numeric1042**, text/plain,
+17bytes, CF-Ray a43c844c1c628c81-EWR, Cloudflare server and no managed-challenge
+marker. No case receipts exist and collection was skipped: there is **no actual
+native retained-record representation to interpret or repair** from this run.
+This directly demonstrates why the absent-host404 did not admit the live POST.
+Do not change the platform getter, service-binding implementation or sampling on
+the strength of a front-door response with no Rust receipt.
+
+Always-cleanup removed both receipt-owned scripts, verified settings GET404 for
+both and retained cleaned_at2026-10-01T15:31:53.852080+00:00. Artifact11174410747
+contains the safe receipt; run15:30:59--15:31:56UTC. No Mail storage/account/send
+state changed. No repeated pair recreation, token workaround, header sweep or
+propagation assumption is warranted.
+
+The next transport must be selected explicitly before another deployment. A
+separate owned-zone Custom Domain can preserve the current compiled fetch product
+and synchronous case response, but exact hostname/domain/DNS/certificate
+ownership and cleanup need admission; deleting the domain leaves its generated
+Advanced Certificate according to [Cloudflare's certificate lifecycle documentation](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/#certificates).
+A private scheduled caller avoids the public front door but adds a new handler,
+schedule propagation, repeat-invocation and receipt-channel semantics. Neither
+alternative is already admitted by the existing two-script experiment.
+
+The parallel [native evidence review](native-retained-evidence-review.md) defines
+per-case API versus independently retained context/error/privacy evidence without
+guessing the provider wrapper. The separate [machine-client interoperability design](cli-machine-client-interoperability.md)
+keeps five CLI client contracts intact and does not recast the user's resolved
+production/staging environment mismatch as an authentication bug. These are
+source-only designs, not deployed acceptance or permission for business debug.
