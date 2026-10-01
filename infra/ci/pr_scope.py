@@ -12,12 +12,18 @@ import re
 import subprocess
 
 COMPONENTS = ("cli", "worker", "site")
+# This exact deployment-only Python module is covered by the mandatory hosted
+# infrastructure/observability tests and is not an input to Rust/Wasm bundling.
+# Do not generalize to *.py: future build generators may change runtime artifacts.
+INFRASTRUCTURE_ONLY = {"crates/mail-worker/check_trace_sink_isolation.py"}
 
 
 def select(paths: list[str]) -> dict[str, bool]:
     """Map complete changed paths to consumers; additions/deletions use the same rule."""
     result = dict.fromkeys(COMPONENTS, False)
     for path in paths:
+        if path in INFRASTRUCTURE_ONLY:
+            continue
         if path.startswith("crates/amail/"):
             result["cli"] = True
         elif path.startswith(("crates/mail-worker/", "crates/trace-schema/", "workers/",
