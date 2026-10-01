@@ -24,6 +24,21 @@ heading positions are consistent with the heading scroll margin being limited
 at that inner container's beginning; hosted ancestor diagnostics are required
 to verify that explanation rather than treating it as directly measured fact.
 
+### Follow-up hosted diagnostics
+
+Validator-reported [run 36809130233, attempt 1](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36809130233)
+tested diagnostic merge source `f050fa3`, without this CSS fix. It confirmed the
+manual's `ARTICLE.prose.manual-prose` ancestor has computed `overflow-y: auto`,
+`scrollTop: 0`, and equal client/scroll heights (12977, 11548, 8429 and 7912 px
+at 320, 390, 768 and 1440 px respectively). Its first heading remains near
+viewport top zero with computed scroll margin 105 px. The subsequent installation
+heading lands near 105 px: that is still under the 125-129 px mobile header.
+The desktop changelog heading lands at 110.344 px below its 77 px header.
+These observations substantiate both the nested-container first-heading behavior
+and the insufficient mobile offsets; they do not yet verify the proposed fix.
+The follow-up artifact includes first-heading failure screenshots at 320 and
+1440 px under `site-browser-evidence/*-manual-toc-0-failure.png`.
+
 ## Source correction
 
 Apply the exclusion area to the viewport using `html { scroll-padding-top: ... }`,
