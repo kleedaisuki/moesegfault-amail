@@ -1,4 +1,4 @@
-"""Guarded hosted quota prepare/campaign/recovery; workflow wiring remains NO-GO.
+"""Guarded hosted quota prepare/campaign/recovery; live admission remains unproven.
 
 Only a registered manual staging workflow for the exact reviewed checkout can
 enter. Credentials come from protected environment Secrets, never arguments or
@@ -123,11 +123,12 @@ def execute(args: argparse.Namespace) -> tuple[str, ...]:
 
 
 def prepare_escrow(args: argparse.Namespace) -> tuple[str, ...]:
-    """Dormant prepare-only D1 durability seam, before any artifact upload.
+    """Explicit prepare-only D1 durability seam, before any artifact upload.
 
     A reviewed wrapper may call this with prepare, empty original/artifact IDs,
     and the fixed retained-key generation. Only the explicit prepare-escrow
-    CLI selector calls this seam; no existing workflow activates it.
+    CLI selector calls this seam. The registered workflow wires it explicitly;
+    live use still requires independently admitted supervision and privacy.
     The exact authenticated ciphertext must be sealed in D1 before the upload
     file becomes available. This never attaches an artifact, arms a campaign,
     allocates/retires aliases, writes a receipt or purges ciphertext. Failure
@@ -187,12 +188,13 @@ def finalize_recovery(args: argparse.Namespace) -> tuple[str, ...]:
 
 
 def finalize_escrow_recovery(args: argparse.Namespace) -> tuple[str, ...]:
-    """Dormant explicit D1-only recovery; verify receipt while retaining ALL ciphertext.
+    """Explicit D1-only recovery; verify receipt while retaining ALL ciphertext.
 
     This deliberate transport is never an artifact-error fallback. It cannot
     prepare/campaign, download the original artifact, purge chunks or replace
     missing original GitHub run provenance. Only explicit recover-escrow selects
-    it; the existing workflow does not activate this retained transport.
+    it. The registered workflow wires this retained transport explicitly;
+    source wiring does not prove external supervised admission or live recovery.
     """
     require(args.mode == "recover" and args.artifact_id == "", "quota_escrow_recovery_only")
     return _execute(args,terminal=True,transport="escrow")
