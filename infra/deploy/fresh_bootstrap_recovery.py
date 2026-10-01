@@ -193,6 +193,9 @@ def scope_journal(raw: bytes, epoch: Epoch) -> None:
         raise ValueError("fresh_recovery_scope_unreviewed")
     sequence = ("d1_submit_intent", "d1_created", "d1_readback_verified", "r2_submit_intent", "r2_created", "scope_readback_verified")
     database = None
+    database_time = bucket_time = None
+    if rows[0]["may_replay_write"] is not False:
+        raise ValueError("fresh_recovery_scope_unreviewed")
     for index, row in enumerate(rows[1:]):
         event = row.get("event")
         if event == "recovery_only":
@@ -213,16 +216,17 @@ def scope_journal(raw: bytes, epoch: Epoch) -> None:
             _timestamp(row["created_at"])
             Scope(epoch, row["database"], _timestamp(row["created_at"]), _timestamp(row["created_at"]))
             database = row["database"]
+            database_time = _timestamp(row["created_at"])
         elif event == "d1_readback_verified":
             if row != {"event": event, "database": database}:
                 raise ValueError("fresh_recovery_scope_unreviewed")
         elif event == "r2_created":
             if set(row) != {"event", "bucket", "creation_date"} or row["bucket"] != epoch.bucket_name:
                 raise ValueError("fresh_recovery_scope_unreviewed")
-            _timestamp(row["creation_date"])
+            bucket_time = _timestamp(row["creation_date"])
         elif event == "scope_readback_verified":
             scope = row.get("scope")
-            if set(row) != {"event", "scope"} or not isinstance(scope, dict) or set(scope) != {"epoch", "database", "database_created_at", "bucket_created_at"} or scope["epoch"] != asdict(epoch) or scope["database"] != database:
+            if set(row) != {"event", "scope"} or not isinstance(scope, dict) or set(scope) != {"epoch", "database", "database_created_at", "bucket_created_at"} or scope["epoch"] != asdict(epoch) or scope["database"] != database or scope["database_created_at"] != database_time or scope["bucket_created_at"] != bucket_time:
                 raise ValueError("fresh_recovery_scope_unreviewed")
             Scope(epoch, scope["database"], scope["database_created_at"], scope["bucket_created_at"])
 
@@ -232,14 +236,15 @@ def queue_receipt(raw: bytes) -> None:
     value = decode(raw)
     if not isinstance(value, list) or not 1 <= len(value) <= 2:
         raise ValueError("fresh_recovery_queue_unreviewed")
-    seen = set()
+    seen, identities = set(), set()
     for row in value:
         if (not isinstance(row, dict) or set(row) != {"target", "queue_name", "queue_id"}
-                or row["target"] != "production" or row["queue_name"] not in {"amail-trace-events", "amail-trace-dlq"}
+                or row["target"] != "production" or not isinstance(row["queue_name"], str) or row["queue_name"] not in {"amail-trace-events", "amail-trace-dlq"}
                 or row["queue_name"] in seen or not isinstance(row["queue_id"], str)
-                or re.fullmatch(r"[0-9a-f]{32}", row["queue_id"]) is None):
+                or re.fullmatch(r"[0-9a-f]{32}", row["queue_id"]) is None or row["queue_id"] in identities):
             raise ValueError("fresh_recovery_queue_unreviewed")
         seen.add(row["queue_name"])
+        identities.add(row["queue_id"])
 
 
 
@@ -256,7 +261,8 @@ def preflight(raw: bytes, sha: str, run_id: str) -> None:
             if not isinstance(row.get("error_type"), str) or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,63}", row["error_type"]) is None:
                 raise ValueError("fresh_recovery_preflight_unreviewed")
         if (set(row) != fields or row["schema"] != "mail-fresh-preflight/v1"
-                or row["source_sha"] not in {sha, "UNVERIFIED"} or row["run_id"] not in {run_id, "UNVERIFIED"}
+                or not isinstance(row["source_sha"], str) or row["source_sha"] not in {sha, "UNVERIFIED"}
+                or not isinstance(row["run_id"], str) or row["run_id"] not in {run_id, "UNVERIFIED"}
                 or row["activation"] != "NOT_GRANTED" or row["replay"] != "NOT_GRANTED"):
             raise ValueError("fresh_recovery_preflight_unreviewed")
 

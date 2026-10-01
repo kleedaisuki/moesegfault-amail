@@ -232,7 +232,7 @@ class RecoveryAdmissionTests(unittest.TestCase):
         """Only the existing fixed two source-owned Queue IDs are persisted."""
         row = {"target": "production", "queue_name": "amail-trace-events", "queue_id": "a" * 32}
         admission.queue_receipt(json.dumps([row]).encode())
-        for rows in ([row, row], [{**row, 'body': 'private'}], [{**row, 'target': 'staging'}]):
+        for rows in ([row, row], [row, {**row, "queue_name": "amail-trace-dlq"}], [{**row, 'body': 'private'}], [{**row, 'target': 'staging'}]):
             with self.assertRaises(ValueError):
                 admission.queue_receipt(json.dumps(rows).encode())
 
