@@ -15,6 +15,7 @@ import time
 from typing import Callable
 
 import staging_ten_address_manifest as manifest
+import staging_ten_address_escrow as escrow
 
 require = manifest.require
 RETIREMENT_TIMEOUT_SECONDS = 360
@@ -193,6 +194,29 @@ def campaign(evidence: Evidence, local: bytes, downloaded: bytes, artifact_id: s
     finally, so external recovery uses the uploaded full plan, not this stack.
     Re-entering campaign after partial progress fails the empty-baseline gate.
     """
+    return _campaign(evidence, local, downloaded, artifact_id, secret, generation,
+                     now_ms, adapter, None)
+
+
+def campaign_escrow(evidence: Evidence, local: bytes, downloaded: bytes, artifact_id: str,
+                    secret: str, generation: str, now_ms: int, adapter: Adapter,
+                    client: escrow.Escrow) -> tuple[str, ...]:
+    """Attach exact artifact and obtain current-invocation arm ACK before any add.
+
+    This explicit supervised-campaign path never infers permission from an
+    already-armed row or repairs a lost arm response. All admission precedes
+    arming, and an arm exception is outside mutating finally. Ciphertext and
+    the armed parent remain retained after ordinary serial resource cleanup;
+    independent retained-ciphertext finalization is a separate operation.
+    """
+    return _campaign(evidence, local, downloaded, artifact_id, secret, generation,
+                     now_ms, adapter, client)
+
+
+def _campaign(evidence: Evidence, local: bytes, downloaded: bytes, artifact_id: str,
+              secret: str, generation: str, now_ms: int, adapter: Adapter,
+              client: escrow.Escrow | None) -> tuple[str, ...]:
+    """Share admission and serial cleanup without weakening the legacy entrypoint."""
     evidence.validate()
     plan = manifest.artifact_readback(local, downloaded, artifact_id, secret,
                                       evidence.run, generation)
@@ -204,6 +228,20 @@ def campaign(evidence: Evidence, local: bytes, downloaded: bytes, artifact_id: s
     # Establish the empty baseline before granting this invocation cleanup
     # permission. A restarted partial campaign must not enter mutating finally.
     _observe(adapter, plan, 0, secret, evidence.run, generation)
+    if client is not None:
+        retained, actual = client.read(evidence.run, secret, generation)
+        require(retained["state"] == "sealed" and actual == downloaded
+                and retained["armed_at"] is None and retained["cleanup_receipt_sha"] is None,
+                "campaign_escrow_unverified")
+        client.attach(evidence.run, secret, generation, artifact_id, downloaded)
+        # Attachment may take time. Recheck all independent admission before
+        # granting a known transition; no address cleanup permission exists yet.
+        _observe(adapter, plan, 0, secret, evidence.run, generation)
+        permit = client.arm(evidence.run, secret, generation, artifact_id, downloaded)
+        require(isinstance(permit, escrow.Arm) and permit.original_run == evidence.run
+                and permit.envelope_sha == escrow.hash_bytes(downloaded)
+                and permit.artifact_id == artifact_id and type(permit.armed_at) is int,
+                "campaign_arm_unverified")
     primary = False
     try:
         for part in plan["submissions"]:

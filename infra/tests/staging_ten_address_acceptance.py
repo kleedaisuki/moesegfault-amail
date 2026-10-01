@@ -133,6 +133,19 @@ def prepare_escrow(args: argparse.Namespace) -> tuple[str, ...]:
     return _execute(args, durable_prepare=True)
 
 
+def campaign_escrow(args: argparse.Namespace) -> tuple[str, ...]:
+    """Explicit supervised durable campaign; no replay or implicit legacy fallback.
+
+    The wrapper must establish actual supervision/handoff before invocation.
+    This source seam authenticates/attaches retained ciphertext and requires a
+    known arm ACK before the serial controller gains mutation/cleanup powers.
+    Empty original-run input binds the campaign to this exact current run.
+    """
+    require(args.mode == "campaign" and args.prior_run == "" and args.artifact_id != "",
+            "quota_escrow_campaign_only")
+    return _execute(args, durable_campaign=True)
+
+
 def _publish_prepared(blob: bytes, run: str, secret: str, generation: str,
                       client: escrow.Escrow | None) -> None:
     """Expose upload bytes only after optional independently authenticated D1 seal.
@@ -180,7 +193,7 @@ def finalize_escrow_recovery(args: argparse.Namespace) -> tuple[str, ...]:
 
 
 def _execute(args: argparse.Namespace, *, terminal: bool = False, transport: str = "artifact",
-             durable_prepare: bool = False) -> tuple[str, ...]:
+             durable_prepare: bool = False, durable_campaign: bool = False) -> tuple[str, ...]:
     """Compose concrete observed checks; terminal enables work, never asserts success."""
     require(not terminal or args.mode == "recover", "quota_terminal_recovery_only")
     require(transport == "artifact" or transport == "escrow" and terminal and args.mode == "recover",
@@ -188,8 +201,11 @@ def _execute(args: argparse.Namespace, *, terminal: bool = False, transport: str
     require(not durable_prepare or args.mode == "prepare" and not terminal
             and transport == "artifact" and args.artifact_id == "" and args.prior_run == "",
             "quota_escrow_prepare_only")
+    require(not durable_campaign or args.mode == "campaign" and not terminal
+            and not durable_prepare and transport == "artifact" and args.prior_run == ""
+            and args.artifact_id != "", "quota_escrow_campaign_only")
     values = environment(args.mode)
-    require(not durable_prepare or values["AMAIL_TEN_ADDRESS_KEY_GENERATION"] == ESCROW_GENERATION,
+    require(not (durable_prepare or durable_campaign) or values["AMAIL_TEN_ADDRESS_KEY_GENERATION"] == ESCROW_GENERATION,
             "escrow_generation_unsupported")
     sha = checkout()
     current_run = os.environ["GITHUB_RUN_ID"]
@@ -289,8 +305,14 @@ def _execute(args: argparse.Namespace, *, terminal: bool = False, transport: str
                 require(local_path.resolve() == local_path and local_path.is_file() and not local_path.is_symlink(),
                         "campaign_local_manifest_unverified")
                 local = local_path.read_bytes()
-                labels = hosted.campaign(evidence, local, downloaded, args.artifact_id, secret, generation,
-                                         int(datetime.now(timezone.utc).timestamp() * 1000), adapter)
+                campaign_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+                if durable_campaign:
+                    client = escrow.Escrow(values["CLOUDFLARE_ACCOUNT_ID"], values["CLOUDFLARE_API_TOKEN"])
+                    labels = hosted.campaign_escrow(evidence, local, downloaded, args.artifact_id,
+                                                   secret, generation, campaign_time, adapter, client)
+                else:
+                    labels = hosted.campaign(evidence, local, downloaded, args.artifact_id,
+                                             secret, generation, campaign_time, adapter)
                 require(provenance.mail_pin.run(values["CLOUDFLARE_ACCOUNT_ID"], values["CLOUDFLARE_API_TOKEN"],
                                                 pins.mail, phase=args.mail_phase, queue_id=args.queue_id) == "match",
                         "quota_effective_privacy_unverified")

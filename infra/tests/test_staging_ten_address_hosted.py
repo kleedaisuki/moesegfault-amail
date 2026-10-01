@@ -101,6 +101,59 @@ class HostedTests(unittest.TestCase):
             return target.campaign(replace(evidence(), **changes), blob, blob, "123", KEY,
                                    GEN, 1001, world.adapter())
 
+    def test_escrow_attach_arm_order_follows_complete_admission_before_first_add(self):
+        """Real synthetic SQL ACK is required; no purge/finalize occurs in campaign."""
+        from test_staging_ten_address_escrow import Database
+        database = Database()
+        self.addCleanup(database.db.close)
+        world = World()
+        events = []
+        with mock.patch.object(manifest, "_cipher", SyntheticAEAD):
+            blob = manifest.seal(plan(), KEY, RUN, GEN)
+            client = target.escrow.Escrow("a"*32, "synthetic", query=database.query)
+            client.put(blob, KEY, RUN, GEN)
+            attach, arm, add = client.attach, client.arm, world.add
+            def attached(*args):
+                self.assertEqual(world.calls, [])
+                events.append("attach")
+                return attach(*args)
+            def armed(*args):
+                self.assertEqual(events, ["attach"])
+                self.assertEqual(world.calls, [])
+                events.append("arm")
+                return arm(*args)
+            def added(part):
+                self.assertEqual(events[:2], ["attach", "arm"])
+                self.assertEqual(client.parent(RUN)["state"], "armed")
+                events.append("add")
+                return add(part)
+            client.attach, client.arm, world.add = attached, armed, added
+            adapter = world.adapter()
+            with mock.patch.object(client, "_purge") as purge, mock.patch.object(client, "_finalize") as finalize:
+                labels = target.campaign_escrow(evidence(), blob, blob, "123", KEY, GEN,
+                                                1001, adapter, client)
+                purge.assert_not_called(); finalize.assert_not_called()
+            self.assertEqual(labels[-1], "ten_address_cleanup_verified")
+            self.assertEqual(events[:3], ["attach", "arm", "add"])
+            self.assertEqual(client.read(RUN, KEY, GEN)[1], blob)
+
+    def test_escrow_admission_or_attachment_failure_never_arms_or_cleans_addresses(self):
+        """Neither missing durable evidence nor artifact attach ambiguity grants finally."""
+        for failure in ("read", "attach"):
+            with self.subTest(failure=failure), mock.patch.object(manifest, "_cipher", SyntheticAEAD):
+                blob = manifest.seal(plan(), KEY, RUN, GEN)
+                world = World()
+                client = mock.Mock()
+                client.read.return_value = ({"state":"sealed", "armed_at":None,
+                                            "cleanup_receipt_sha":None}, blob)
+                getattr(client, failure).side_effect = manifest.ContractFailure("synthetic_failure")
+                with self.assertRaises(manifest.ContractFailure):
+                    target.campaign_escrow(evidence(), blob, blob, "123", KEY, GEN,
+                                           1001, world.adapter(), client)
+                client.arm.assert_not_called()
+                self.assertEqual(world.calls, [])
+                self.assertEqual(world.deletes, [])
+
     def test_ten_serial_reserved_and_exact_cleanup(self):
         """Ten simultaneous active routes and exact quota denial precede cleanup."""
         world = World()

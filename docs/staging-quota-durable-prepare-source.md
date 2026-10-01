@@ -1,6 +1,6 @@
 # Durable quota preparation source seam
 
-Date: 2026-10-01. Status: dormant source implementation, not live admission.
+Date: 2026-10-01. Status: dormant supervised source implementation, not live admission.
 
 ## Contract
 
@@ -59,20 +59,51 @@ not exercise this new concrete native-account composition.
   immediately invoking the legacy artifact-only campaign. The present workflow
   `accept` path must not merely substitute this function and proceed: its campaign
   does not yet require a durable arm ACK or accountable intake.
-- Exact independently downloaded artifact attachment, verified distinct Agent
-  intake/freshness and known `changes=1` arm ACK must precede **every** campaign
-  allocation. No one may infer permission from observing an armed parent.
+- The explicit `campaign_escrow(args)` source seam now independently validates
+  the downloaded artifact/local envelope, authenticates the same sealed D1
+  record, attaches the exact artifact ID, repeats admission, and obtains a known
+  `changes=1` arm ACK plus complete readback before the first add. It is not yet
+  workflow-wired. No one may infer permission from observing an armed parent.
 - Bind the complete retained-ciphertext D1 recovery finalizer to a restricted
   registered workflow only after original-run settlement/provenance admission.
   Do not wire the artifact finalizer's per-chunk purge.
-- Implement and exercise metadata-only watchdog delivery, real Agent ACK/task,
-  freshness monitoring and escalation. A GitHub cron or this interactive session
-  is not an independent 24-hour commitment.
+- Before one supervised experiment is armed, record a specific capable primary
+  supervisor, actual watch window and acknowledged interruption/handoff path.
+  Same-day restricted intervention is the target; 24 hours is an escalation
+  objective, not expiry or proof of autonomous operations. A general watchdog
+  and issue-ACK platform are not prerequisites for this one staffed experiment.
+  Unattended operation requires its own independently exercised intake design.
 - Review and host-test the assembled contract, then conduct a separately admitted
   bounded staging run. Effective privacy remains an independent gate.
 
-See `staging-quota-accountable-agent-recovery-path-2026-10-01.md`,
-`staging-quota-d1-recovery-escrow-design.md`, and
+See `staging-quota-d1-recovery-escrow-design.md` and
 `staging-quota-d1-native-provider-proof.md`. This seam does not attest cleanup,
 complete ten-address acceptance, deploy Mail, enable public sending, or release
 v0.1.0.
+
+## Explicit supervised campaign seam
+
+`campaign_escrow(args)` requires `mode="campaign"`, empty `prior_run`, a nonempty
+exact immutable `artifact_id`, the source run and service coordinates. Existing
+environment confirmation remains `RUN_STAGING_TEN_ADDRESSES`; generation remains
+`ten-address-v1`. It shares the normal artifact provenance and source-built
+binary/native authentication path. The supervisor/handoff is a separately
+reviewed workflow admission obligation, not a caller `passed=true` value.
+
+`hosted.campaign_escrow(..., client)` shares the legacy campaign's complete
+manifest/freshness/owner/service/storage/empty-prefix validation. It then reads
+and authenticates the full sealed D1 envelope, attaches the unique artifact,
+rechecks independent admission, and calls `Escrow.arm`. A valid returned Arm
+must bind original run, ciphertext digest, artifact ID and integer server time.
+The underlying arm method requires this invocation's conditional `changes=1`
+and independently authenticated complete readback; already-armed, zero-change,
+lost ACK and mismatched bytes are failures. These failures occur outside the
+mutating `finally`, so neither add nor cleanup DELETE is attempted. After a
+successful arm, the normal serial quota controller and exact same-process
+cleanup own mutation capability. No per-chunk purge or receipt is performed by
+campaign. Its retained armed parent is deliberately distinct from an independent
+verified cleanup receipt.
+
+Hosted synthetic contracts cover exact attach/arm/first-add order, complete
+ciphertext retention, legacy compatibility, pre-arm failures, already-armed,
+lost arm ACK and a mismatched permit. Tests remain unexecuted locally.
