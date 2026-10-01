@@ -411,6 +411,55 @@ class RecoveryAdmissionTests(unittest.TestCase):
                 admission, "module_zip", return_value=self.modules):
             return admission.load_sink_checkpoint(self.epoch.run_id, self.destination)
 
+    def settings_checkpoint(self):
+        """Reproduce the six actual rows after the maintenance settings PATCH."""
+        rows = self.sink_checkpoint(all_workers=True)
+        base = {key: rows[0][key] for key in ("schema", "deployment_epoch", "creation_run")}
+        deployed = Epoch("024aae8cb31fe063ffe4581a85e8e9e8edbec097", "36927505375", 11194482853,
+                         "ef9142f6ad30b37f7f9aab6a2e8cc286fea626e9474ec5d9c84d0ae10675c449", "1.98.1")
+        workers = {"amail-trace-sink": {"source_epoch": rows[3]["source_epoch"], "version": rows[3]["version"]},
+                   "amail-mail-maintenance": {"source_epoch": asdict(deployed), "version": rows[5]["version"]},
+                   "amail-mail": {"source_epoch": asdict(deployed), "version": rows[7]["version"]}}
+        return rows[:2] + [
+            {**base, "phase": "retained_workers", "state": "intent"},
+            {**base, "phase": "retained_workers", "state": "observed", "workers": workers,
+             "queue": rows[3]["queue"], "dlq": rows[3]["dlq"]},
+            {**base, "phase": "maintenance_capture_off", "state": "intent",
+             "worker_id": "d7f826f3eba3497aae6c80ee771d6ca4", "version": rows[5]["version"]},
+            {**base, "phase": "maintenance_capture_off", "state": "failed", "error_type": "ValueError"}]
+
+    def test_settings_failure_retains_worker_sources_and_rejects_ambiguous_suffix(self):
+        """The latest writer is admitted without attributing retained binaries to it."""
+        rows = self.settings_checkpoint()
+        checkpoint = self.load_checkpoint(rows)
+        roles = {"sink": "amail-trace-sink", "maintenance": "amail-mail-maintenance", "api": "amail-mail"}
+        self.assertEqual(checkpoint.deployment_epoch, self.epoch)
+        self.assertEqual(checkpoint.worker_epochs, {role: Epoch(**rows[3]["workers"][script]["source_epoch"])
+                                                  for role, script in roles.items()})
+        self.assertEqual(checkpoint.pins, {role: rows[3]["workers"][script]["version"] for role, script in roles.items()})
+        self.assertEqual(checkpoint.sink_epoch, checkpoint.worker_epochs["sink"])
+        self.assertFalse(checkpoint.replace_sink)
+        self.assertEqual(admission.lines((self.destination / "resume.jsonl").read_bytes(), 10), rows)
+        self.destination = Path(self.folder.name) / "rejected-settings"
+        for index, key, value in ((4, "worker_id", "wrong"), (4, "version", checkpoint.pins["api"]),
+                                  (5, "state", "observed"), (5, "error_type", "FreshError"),
+                                  (3, "source_epoch", asdict(self.epoch)), (1, "schema_prefix", True),
+                                  (4, "phase", "receipt")):
+            changed = self.settings_checkpoint()
+            changed[index][key] = value
+            with self.subTest(index=index, key=key), self.assertRaises(ValueError):
+                self.load_checkpoint(changed)
+        for source in (asdict(self.epoch), rows[1]["creation_epoch"]):
+            changed = self.settings_checkpoint()
+            changed[3]["workers"]["amail-mail"]["source_epoch"] = source
+            with self.assertRaises(ValueError):
+                self.load_checkpoint(changed)
+        changed = self.settings_checkpoint()
+        del changed[3]["workers"]["amail-mail"]
+        with self.assertRaises(ValueError):
+            self.load_checkpoint(changed)
+        self.assertFalse(self.destination.exists())
+
     def test_known_sink_readback_failure_admits_exact_observed_coordinates(self):
         """The actual failure shape yields sink coordinates, not replacement creation proof."""
         for replacement, all_workers, queue_index, sink_index in ((False, False, 5, 7), (True, False, 3, 5), (False, True, 3, 3)):
