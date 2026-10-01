@@ -72,3 +72,10 @@ the newly propagated realm keyword. All eleven new realm tests passed. The mock
 signature now accepts keyword context, restoring the real snapshot-before-cleanup
 failure path; production snapshot behavior is unchanged. This failed run is not
 accepted evidence. Automatic corrected-source CI must pass before merge.
+
+Run 36824480458 subsequently passed all 1,004 infrastructure discovery cases but
+found the separate role-monitor suite's spec_from_file_location loader lacked the
+new sibling module search path. Both legacy helper files now add only their exact
+trusted sibling directory before importing the model, preserving standalone and
+file-loaded entrypoints. Corrected source CI remains required; neither historical
+failed run is accepted as end-to-end success.

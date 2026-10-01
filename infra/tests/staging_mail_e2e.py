@@ -35,6 +35,11 @@ import tomllib
 import urllib.request
 
 
+# Legacy role/hosted callers load this file via spec_from_file_location rather
+# than a package import; make its trusted sibling model discoverable as well.
+_module_dir = str(Path(__file__).resolve().parent)
+if _module_dir not in sys.path:
+    sys.path.insert(0, _module_dir)
 from acceptance_realm import AcceptanceRealm, STAGING
 
 
