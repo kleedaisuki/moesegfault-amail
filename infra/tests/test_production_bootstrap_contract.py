@@ -142,6 +142,30 @@ class BootstrapInspectionTests(unittest.TestCase):
             self.assertEqual(inspect.main(), 1)
         provider.assert_not_called()
 
+    def test_failure_bins_reject_exception_prose_and_arbitrary_sdk_codes(self):
+        """Diagnostic output can be useful without leaking SDK tokens, object keys or mail."""
+        self.assertEqual(inspect.failure_reason(ValueError("production_scripts_completeness_unverified")),
+                         "production_scripts_completeness_unverified")
+        self.assertEqual(inspect.failure_reason(ValueError("private-address@example.invalid secret-token")), "unexpected")
+        error = Exception("private provider prose")
+        error.response = {"Error": {"Code": "AccessDenied", "Message": "private-address@example.invalid"}}
+        self.assertEqual(inspect.failure_reason(error), "r2_access_denied")
+        error.response["Error"]["Code"] = "private-address@example.invalid"
+        self.assertEqual(inspect.failure_reason(error), "unexpected")
+        error.response = {"Error": {"Code": ["unsafe-type"]}}
+        self.assertEqual(inspect.failure_reason(error), "unexpected")
+
+    def test_provider_http_denial_has_no_url_or_body_in_reason(self):
+        """A documented status category is sufficient to distinguish permission failures."""
+        from urllib.error import HTTPError
+        provider = object.__new__(inspect.Provider)
+        provider.token = "synthetic-secret"
+        provider.opener = Mock()
+        provider.opener.open.side_effect = HTTPError("https://private.invalid/path", 403, "private prose", {}, None)
+        with self.assertRaisesRegex(ValueError, "^production_provider_http_403$") as result:
+            provider.envelope("/accounts/" + "a" * 32 + "/workers/scripts")
+        self.assertEqual(inspect.failure_reason(result.exception), "production_provider_http_403")
+
     def test_summary_excludes_raw_provider_configs(self):
         """Persist only approved aggregate facts and canonical digests, not arbitrary settings."""
         snapshot = {"scripts": {"unrelated": {"private": "not-for-artifacts"}}, "source_sha": SHA,
