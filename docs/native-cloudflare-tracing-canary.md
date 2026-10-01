@@ -181,3 +181,35 @@ Source-owned caller version ec89d865-d235-4a09-9c51-7e962ca1438d and probe versi
 2026-10-01T13:44:32.718360+00:00 and both absence GETs were verified. No Mail data,
 identity, route or sending state changed. Native API and retention acceptance
 remain pending.
+
+## Typed public refusal and no-write follow-up
+
+Run 36873792849 accepted original build artifact 11164304271 under current
+orchestration 4c6b78914da38e9233b1abec596e640cf9155be8. Deployment/readback passed;
+the public POST returned HTTP403, text/plain, 17 bytes, CF-Ray
+a43c08d1da3267c4-SJC, server Cloudflare, without cf-mitigated:challenge. The body
+was not a bare Forbidden literal and was not persisted. Both owned scripts were
+deleted and absence verified at 2026-10-01T14:07:35.985403+00:00. Native API/
+retained-record acceptance remains missing; this is not an authentication-token
+or native API diagnosis.
+
+Do not recreate the pair merely to inspect an endpoint refusal. The existing
+workflow has a separate DIAGNOSE_NATIVE_TRACING_ENDPOINT job that first runs
+current hosted infrastructure tests, positively reads both scripts absent, then
+makes one credential-free GET to the fixed absent caller hostname. It cannot
+create or invoke a Worker; a live script refuses the probe, a failed provider read
+is not absence, redirects/retries remain forbidden and writer serialization stays
+in place. It captures safe response facts and a numeric code only when the entire
+body matches the standard `error code: NNNN` form. No build/artifact/source-run
+input is needed for this read-only boundary. A new artifact is not manufactured
+and this diagnostic grants no runtime acceptance.
+
+Official evidence constrains interpretation:
+- https://developers.cloudflare.com/cloudflare-challenges/challenge-types/challenge-pages/detect-response/
+  documents cf-mitigated:challenge and HTML for managed challenge responses.
+- https://developers.cloudflare.com/workers/configuration/routing/workers-dev/
+  documents Access on one deployment or all Workers; enabled alone is not public reachability proof.
+- https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/error-403/
+  includes early unstyled403; a bare body alone cannot determine origin/cause.
+No documented fresh-deployment403 guarantee justifies a retry or propagation
+assumption. Next action is the absent-host diagnostic, not business debugging.
