@@ -15,6 +15,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/deploy"))
 import native_tracing_experiment as experiment
+from test_native_route_lifecycle_contract import FakeProvider
 
 NONCE="a"*32
 
@@ -82,9 +83,170 @@ class NativeTracingExperimentTests(unittest.TestCase):
             build.__truediv__ = Mock(return_value=build)
             with self.assertRaisesRegex(ValueError, "synthetic_dns_denied"):
                 experiment.deploy(route=True)
-        self.assertEqual(events, ["preflight", "persist", "persist", "dns"])
+        self.assertEqual(events, ["persist", "preflight", "persist", "dns"])
         process.assert_not_called()
         route.assert_not_called()
+
+    def assert_preflight_refusal_retained(self, provider, error_type):
+        """Exercise real preread admission and prove refused cleanup is provider-free."""
+        retained = []
+        build = MagicMock()
+        build.__truediv__ = Mock(return_value=build)
+        build.read_text.return_value = '{"source_sha":"original-build"}'
+        receipt = Mock()
+        receipt.exists.return_value = True
+        receipt.read_text.side_effect = lambda: json.dumps(retained[-1])
+        provider.last_request = getattr(provider, "last_request", None)
+        with patch.object(experiment, "Provider", return_value=provider) as constructor, \
+             patch.object(experiment, "ROOT", build), \
+             patch.object(experiment, "RECEIPT", receipt), \
+             patch.object(experiment, "write_receipt", side_effect=lambda value: retained.append(deepcopy(value))), \
+             patch.object(experiment.ingress, "create_dns") as dns, \
+             patch.object(experiment.ingress, "create_route") as route, \
+             patch.object(experiment.ingress, "cleanup_ingress") as cleanup, \
+             patch.object(experiment.subprocess, "run") as process, \
+             patch.dict(experiment.os.environ, {"GITHUB_SHA": "b" * 40, "GITHUB_RUN_ID": "123"}):
+            with self.assertRaises(error_type):
+                experiment.deploy(route=True)
+            self.assertEqual(retained[0]["preflight_state"]["phase"], "attempted")
+            self.assertFalse(retained[0]["preflight_state"]["mutation_admitted"])
+            self.assertEqual(retained[-1]["preflight_state"]["phase"], "refused")
+            self.assertFalse(retained[-1]["preflight_state"]["mutation_admitted"])
+            self.assertEqual(retained[-1]["build_identity"], {"source_sha": "original-build"})
+            self.assertEqual(retained[-1]["source_sha"], "b" * 40)
+            self.assertEqual(retained[-1]["versions"], {})
+            if provider.last_request is not None:
+                self.assertEqual(retained[-1]["preflight_state"]["last_request"], provider.last_request)
+            self.assertNotIn("private-provider-prose", json.dumps(retained))
+            before = deepcopy(provider.calls)
+            experiment.cleanup()
+            self.assertEqual(provider.calls, before)
+            constructor.assert_called_once()
+            for operation in (dns, route, cleanup, process):
+                operation.assert_not_called()
+        self.assertEqual(retained[-1]["cleanup"]["outcome"], "not_needed_no_mutation_admitted")
+        self.assertFalse(retained[-1]["cleanup"]["resource_absence_verified"])
+        self.assertNotIn("cleaned_at", retained[-1])
+
+    def test_each_failed_route_preread_retains_no_write_receipt(self):
+        """Any denied or interrupted preread stays a refusal, never absence/recovery."""
+        sample = FakeProvider()
+        endpoints = [experiment.ingress.ZONE, experiment.ingress.ZONE + "/ssl/universal/settings",
+                     experiment.ingress.ZONE + "/ssl/certificate_packs",
+                     experiment.ingress.ZONE + "/dns_records", experiment.ingress.ZONE + "/workers/routes",
+                     f"/accounts/{sample.account}/workers/domains",
+                     sample.script(experiment.PROBE), sample.script(experiment.CALLER)]
+        for endpoint in endpoints:
+            for error in (HTTPError("https://synthetic.invalid", 403, "private-provider-prose", {}, None),
+                          TimeoutError("private-provider-prose")):
+                with self.subTest(endpoint=endpoint, error_type=type(error).__name__):
+                    provider = FakeProvider()
+                    provider.overrides[("GET", endpoint)] = error
+                    self.assert_preflight_refusal_retained(provider, type(error))
+
+    def test_schema_and_conflict_preflight_refusals_retain_no_write_receipt(self):
+        """Malformed inventories and positive conflicts cannot admit mutation."""
+        variants = (lambda p: p.zone.update(paused=True),
+                    lambda p: p.ssl.update(enabled=False),
+                    lambda p: p.packs[0].update(status="pending_validation"),
+                    lambda p: p.overrides.update({("GET", experiment.ingress.ZONE + "/dns_records"): {}}),
+                    lambda p: p.overrides.update({("GET", experiment.ingress.ZONE + "/workers/routes"): {}}),
+                    lambda p: p.overrides.update({("GET", f"/accounts/{p.account}/workers/domains"): {}}),
+                    lambda p: p.dns.append({"id": "foreign", "name": experiment.ingress.HOST}),
+                    lambda p: p.routes.append({"id": "foreign", "pattern": experiment.ingress.PATTERN}),
+                    lambda p: p.domains.append({"id": "foreign", "hostname": experiment.ingress.HOST}),
+                    lambda p: setattr(p, "live", True))
+        for index, mutate in enumerate(variants):
+            with self.subTest(variant=index):
+                provider = FakeProvider()
+                mutate(provider)
+                self.assert_preflight_refusal_retained(provider, ValueError)
+
+    def test_provider_ssl_403_preserves_typed_facts_without_provider_prose(self):
+        """The observed SSL refusal shape survives error-body consumption safely."""
+        headers = Message()
+        headers["cf-ray"] = "a43d0cd0f97267c5-DFW"
+        headers["set-cookie"] = "private-provider-prose"
+        error = HTTPError("https://synthetic.invalid/private-provider-prose", 403,
+                          "private-provider-prose", headers,
+                          io.BytesIO(b'{"errors":[{"code":9109,"message":"private-provider-prose"}]}'))
+        with patch.dict(experiment.os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+                                                "CLOUDFLARE_API_TOKEN": "private-provider-prose"}), \
+             redirect_stdout(io.StringIO()):
+            provider = experiment.Provider()
+            provider.opener = Mock()
+            provider.opener.open.side_effect = error
+            with self.assertRaises(HTTPError):
+                provider.request("GET", experiment.ingress.ZONE + "/ssl/universal/settings")
+        facts = provider.last_request
+        self.assertEqual(facts["endpoint"], "workers.canary.existing_tls")
+        self.assertEqual(facts["resource"], "universal_ssl_settings")
+        self.assertEqual(facts["method"], "GET")
+        self.assertEqual(facts["http_status"], 403)
+        self.assertEqual(facts["provider_error_codes"], [9109])
+        self.assertEqual(facts["cf_ray"], "a43d0cd0f97267c5-DFW")
+        self.assertGreaterEqual(facts["duration_ms"], 0)
+        self.assertNotIn("private-provider-prose", json.dumps(facts))
+        fixture = FakeProvider()
+        fixture.last_request = facts
+        fixture.overrides[("GET", experiment.ingress.ZONE + "/ssl/universal/settings")] = error
+        self.assert_preflight_refusal_retained(fixture, HTTPError)
+
+    def test_missing_provider_context_is_retained_before_any_preread(self):
+        """Missing configuration is a no-write refusal, not a missing artifact."""
+        retained = []
+        build = MagicMock()
+        build.__truediv__ = Mock(return_value=build)
+        build.read_text.return_value = "{}"
+        with patch.object(experiment, "Provider", side_effect=KeyError("private-provider-prose")), \
+             patch.object(experiment, "ROOT", build), \
+             patch.object(experiment, "write_receipt", side_effect=lambda value: retained.append(deepcopy(value))), \
+             patch.dict(experiment.os.environ, {"GITHUB_SHA": "b" * 40, "GITHUB_RUN_ID": "123"}):
+            with self.assertRaises(KeyError):
+                experiment.deploy(route=True)
+        self.assertEqual([value["preflight_state"]["phase"] for value in retained], ["attempted", "refused"])
+        self.assertEqual(retained[-1]["preflight_state"]["error_type"], "KeyError")
+        self.assertNotIn("private-provider-prose", json.dumps(retained))
+
+    def test_legacy_workers_dev_preread_failure_is_also_retained(self):
+        """The compatibility ingress keeps its absence gate and gains safe receipts."""
+        retained = []
+        build = MagicMock()
+        build.__truediv__ = Mock(return_value=build)
+        build.read_text.return_value = "{}"
+        provider = Mock(last_request=None)
+        provider.request.side_effect = HTTPError("https://synthetic.invalid", 403,
+                                               "private-provider-prose", {}, None)
+        with patch.object(experiment, "Provider", return_value=provider), \
+             patch.object(experiment, "ROOT", build), \
+             patch.object(experiment, "write_receipt", side_effect=lambda value: retained.append(deepcopy(value))), \
+             patch.object(experiment.subprocess, "run") as process, \
+             patch.dict(experiment.os.environ, {"GITHUB_SHA": "b" * 40, "GITHUB_RUN_ID": "123"}):
+            with self.assertRaises(HTTPError):
+                experiment.deploy()
+        self.assertEqual(retained[-1]["preflight_state"]["phase"], "refused")
+        self.assertFalse(retained[-1]["preflight_state"]["mutation_admitted"])
+        self.assertNotIn("transport", retained[-1])
+        process.assert_not_called()
+
+    def test_no_write_cleanup_refuses_contradictory_receipt(self):
+        """An unknown mutation can never be hidden by a preflight refusal label."""
+        base = {"versions": {}, "preflight_state": {"phase": "refused", "mutation_admitted": False}}
+        for fields in ({"versions": {experiment.PROBE: "owned-version"}},
+                       {"ingress": {"dns": {"phase": "unknown"}}},
+                       {"ingress": {"route": {"phase": "attempted"}}},
+                       {"url": "https://synthetic.invalid"},
+                       {"preflight_state": {"phase": "refused", "mutation_admitted": True}}):
+            receipt = Mock()
+            receipt.exists.return_value = True
+            receipt.read_text.return_value = json.dumps({**base, **fields})
+            with patch.object(experiment, "RECEIPT", receipt), \
+                 patch.object(experiment, "Provider") as provider, \
+                 patch.object(experiment, "write_receipt") as persist:
+                with self.assertRaisesRegex(ValueError, "canary_preflight_no_write_state_invalid"):
+                    experiment.cleanup()
+            provider.assert_not_called()
+            persist.assert_not_called()
 
     def test_route_cleanup_refusal_prevents_any_script_deletion(self):
         """An unresolved ingress cannot leave a live route pointing at no Worker."""
