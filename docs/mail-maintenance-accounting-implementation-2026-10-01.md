@@ -195,3 +195,26 @@ threatens that global allowance, investigate bounded transactional chunk batches
 chunk continuation. Do not add a speculative cutoff that preserves safety while
 silently destroying eventual completion. None of these wall policies certifies
 the short-interval platform CPU allowance or cancellation of admitted D1 writes.
+
+## First hosted diagnostic: actual count passed; legacy test needs due expiry
+
+Exact head `059dcd624eb6dcfe295f8f6f07e8e9d644747a63`, PR #23 hosted run
+[36808092751](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36808092751):
+Rust native tests, Wasm compilation and bundle succeeded; the full built-workerd
+step ran 96 cases, **95 passed / one failed**, so the overall Worker job failed.
+The independent D1 observer confirmed the exact 379/364 individual/5 batches/15
+batch-statement hypothesis for this synthetic workload. All four new fairness
+cases and all three native R2 overflow/cancellation cases passed. These scoped
+results are not a successful final-head acceptance or live resource proof.
+
+The failure was the legacy hidden-accepted DELETE fixture: after its first Cron
+published sent, it manually recreated accepted state while retaining the new
+future +5min due slot, then expected another immediate fake tick to terminalize
+and physically GC it. Correct runtime behavior skipped not-yet-due recovery and
+kept the deleted accepted tombstone/ZIP; DELETE's immediate hiding/owner predicate
+was not broken. The test-only correction first asserts accepted+tombstone+ZIP
+retention on that immediate tick, then explicitly expires only its synthetic row's
+due slot, preserving every original actual GC/archive-null/late-writer non-
+resurrection and foreign/repeated DELETE assertion. No production GC, schedule,
+lease or ownership semantics change. The corrected exact head needs a new hosted
+run; the diagnostic failure is not converted into a pass by explanation.

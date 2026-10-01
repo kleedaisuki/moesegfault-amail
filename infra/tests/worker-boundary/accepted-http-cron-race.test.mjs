@@ -163,6 +163,20 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
       const repeated = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { method: "DELETE", headers: { Authorization: authorization } });
       assert.equal(repeated.status, 404, "already deleted delivery does not match the atomic predicate");
       assert.equal((await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first()).deleted_at, tombstone.deleted_at);
+      if (hiddenAccepted) {
+        // The earlier Cron reserved a future retry slot. A synthetic immediate
+        // tick is not five minutes later: accepted GC must retain its tombstone
+        // and source until the due projector can terminalize that deletion.
+        const due = await db.prepare("SELECT index_next_attempt_at FROM send_requests WHERE idem_key=?1").bind(idem).first();
+        assert.ok(due.index_next_attempt_at > Date.now(), "the existing retry slot is still in the future");
+        await (await mf.getWorker()).scheduled();
+        assert.equal((await db.prepare("SELECT state FROM send_requests WHERE idem_key=?1").bind(idem).first()).state, "accepted");
+        assert.equal((await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first()).deleted_at, tombstone.deleted_at);
+        assert.ok(await bucket.get(`messages/${journal.message_id}.zip`), "accepted deletion retains its archive until due terminalization");
+        // Model only this fixture row's durable due expiry, without sleeping,
+        // changing production cadence, or stealing its projection lease.
+        await db.prepare("UPDATE send_requests SET index_next_attempt_at=0 WHERE idem_key=?1").bind(idem).run();
+      }
       await (await mf.getWorker()).scheduled();
       assert.equal(await bucket.get(`messages/${journal.message_id}.zip`), null, "real GC removed the immutable archive");
       assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM messages").first()).n, 0);
