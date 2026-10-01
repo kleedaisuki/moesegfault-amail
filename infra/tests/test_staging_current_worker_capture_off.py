@@ -16,7 +16,7 @@ from test_staging_capture_off import deployment, version
 from apply_staging_capture_off import POLICY
 
 
-def worker(issues=None):
+def worker(issues=True):
     """Make writable and response-only fields distinguishable in private fixtures."""
     policy = copy.deepcopy(POLICY)
     if issues is None:
@@ -127,10 +127,11 @@ class CurrentWorkerTests(unittest.TestCase):
         self.assertEqual(phases["serving_pin"], "match")
 
     def test_already_explicit_off_never_writes(self):
-        """Positive state reconciliation remains bracketed and independently read."""
-        result, writer, _ = self.execute(prior=worker(False))
-        self.assertEqual(result, "unchanged")
-        writer.assert_not_called()
+        """Explicit or default-off Issues reconcile without writing, still bracketed."""
+        for issues in (False, None):
+            result, writer, _ = self.execute(prior=worker(issues), current=worker(issues))
+            self.assertEqual(result, "unchanged")
+            writer.assert_not_called()
 
     def test_missing_required_projection_rejects(self):
         """Missing or mistyped required writable fields never get defaults."""
@@ -158,7 +159,7 @@ class CurrentWorkerTests(unittest.TestCase):
                 self.execute(prior=prior)
 
     def test_preserve_optional_preferences(self):
-        """Recognized inactive sampling/export preferences are never round-trip loss."""
+        """Preserve writable preferences, accepting safe provider-normalized readback."""
         prior = worker(True)
         prior["observability"]["logs"]["destinations"] = ["cloudflare"]
         prior["observability"]["traces"]["propagation_policy"] = None
@@ -167,8 +168,9 @@ class CurrentWorkerTests(unittest.TestCase):
         _, writer, _ = self.execute(prior=prior, current=current)
         self.assertEqual(writer.call_args.args[3]["observability"], current["observability"])
         del current["observability"]["traces"]["propagation_policy"]
-        with self.assertRaises(ValueError):
-            self.execute(prior=prior, current=current)
+        current["observability"]["redact_query_string"] = False
+        current["observability"]["logs"]["invocation_logs"] = True
+        self.assertEqual(self.execute(prior=prior, current=current)[0], "applied")
 
     def test_explicit_null_read_preferences_cannot_enter_patch(self):
         """A safe GET null is not a schema-valid optional PATCH bool/list/number."""
@@ -200,13 +202,16 @@ class CurrentWorkerTests(unittest.TestCase):
                 subject.validate_write_policy(invalid)
 
     def test_patch_identity_and_missing_readback_fail_closed(self):
-        """An accepted write alone or provider omission is never an attestation."""
+        """Accepted writes cannot hide unsafe/null Issues; omission is default-off."""
         for response in ({"id": "other", "name": subject.SCRIPT}, {"id": "synthetic-worker-id"}):
             with self.assertRaises(ValueError):
                 self.execute(response=response)
-        for issues in (None, True):
+        null_issues = worker(False)
+        null_issues["observability"]["issues"] = None
+        for current in (null_issues, worker(True)):
             with self.assertRaises(ValueError):
-                self.execute(current=worker(issues))
+                self.execute(current=current)
+        self.assertEqual(self.execute(current=worker(None))[0], "applied")
 
     def test_unaffected_preview_references_and_subdomain_drift(self):
         """Private response-only settings must remain present and equal."""

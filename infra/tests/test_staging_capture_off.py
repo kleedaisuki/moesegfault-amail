@@ -60,7 +60,7 @@ class CaptureCorrectionTests(unittest.TestCase):
         reads = reads or [deployment(), version(), deployment(), version(), deployment()]
         with patch.object(subject, "source_policy", return_value=copy.deepcopy(subject.POLICY)), \
              patch.object(subject, "fetch", side_effect=reads) as fetch, \
-             patch.object(subject, "settings", side_effect=[prior or settings(None), current or settings()]), \
+             patch.object(subject, "settings", side_effect=[prior or settings(True), current or settings()]), \
              patch.object(subject, "patch_policy", side_effect=patch_error) as writer:
             result = subject.apply("a" * 32, "PRIVATE_TOKEN", subject.VERSION)
         return result, fetch, writer
@@ -81,10 +81,14 @@ class CaptureCorrectionTests(unittest.TestCase):
         self.assertEqual(result, "unchanged")
         writer.assert_not_called()
 
-    def test_enabled_or_missing_issues_can_be_corrected(self):
-        """Independent Issues does not make the preflight claim full containment."""
-        for old in (True, None):
-            self.assertEqual(self.apply_fixture(prior=settings(old))[0], "applied")
+    def test_enabled_issues_corrected_and_missing_issues_unchanged(self):
+        """Only enabled Issues needs correction; absent opt-in Issues is already off."""
+        result, _, writer = self.apply_fixture(prior=settings(True))
+        self.assertEqual(result, "applied")
+        writer.assert_called_once()
+        result, _, writer = self.apply_fixture(prior=settings(None))
+        self.assertEqual(result, "unchanged")
+        writer.assert_not_called()
 
     def test_other_capture_and_identity_fail_before_patch(self):
         """No unrelated unsafe subsystem, export or wrong Worker is admitted."""
@@ -101,11 +105,14 @@ class CaptureCorrectionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.apply_fixture(prior=prior)
 
-    def test_missing_issues_after_patch_never_passes(self):
-        """A provider omission remains unverified after an explicit successful write."""
-        for issues in (None, True):
+    def test_post_patch_issues_defaults_and_unsafe_readback(self):
+        """Absent opt-in Issues is off; explicit null or enabled readback still fails."""
+        null_issues = settings()
+        null_issues[0]["observability"]["issues"] = None
+        for current in (null_issues, settings(True)):
             with self.assertRaises(ValueError):
-                self.apply_fixture(current=settings(issues))
+                self.apply_fixture(current=current)
+        self.assertEqual(self.apply_fixture(current=settings(None))[0], "applied")
 
     def test_identity_or_unaffected_state_drift_rejects(self):
         """Keep private Worker identity, tags, Logpush and tails outside the write."""
@@ -135,7 +142,7 @@ class CaptureCorrectionTests(unittest.TestCase):
         """An ambiguous mutation stops; only a later read-only reconciliation may pass."""
         with patch.object(subject, "source_policy", return_value=subject.POLICY), \
              patch.object(subject, "fetch", side_effect=[deployment(), version(), deployment()]), \
-             patch.object(subject, "settings", return_value=settings(None)), \
+             patch.object(subject, "settings", return_value=settings(True)), \
              patch.object(subject, "patch_policy", side_effect=ValueError("PRIVATE_BODY")) as writer:
             with self.assertRaises(ValueError):
                 subject.apply("a" * 32, "PRIVATE_TOKEN", subject.VERSION)
