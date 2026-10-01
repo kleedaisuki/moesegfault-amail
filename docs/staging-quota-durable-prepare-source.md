@@ -1,11 +1,11 @@
 # Durable quota preparation source seam
 
-Date: 2026-10-01. Status: dormant supervised source implementation, not live admission.
+Date: 2026-10-01. Status: explicitly workflow-wired supervised source, not live admission.
 
 ## Contract
 
 `infra/tests/staging_ten_address_acceptance.py::prepare_escrow(args)` is a
-prepare-only composition boundary. A future reviewed hosted wrapper supplies
+prepare-only composition boundary. The explicitly selected hosted workflow supplies
 `mode="prepare"`, empty `artifact_id` and `prior_run`, the existing exact source
 CI run and service phase coordinates. It reuses all existing manual Windows
 GitHub-hosted dispatch, source, identity, global-hold, complete baseline, effective
@@ -15,8 +15,9 @@ mismatch fails before checkout/provider/native work.
 Legacy `prepare`, `campaign`, `recover` and `execute()` retain their existing
 file-only preparation, artifact campaign and read-only recovery contracts.
 New explicit `prepare-escrow`, `campaign-escrow`, `recover-escrow` selectors choose
-only their named durable coordinator. No workflow, secret, repository variable
-or provider deployment is changed; existing workflows do not use these modes.
+only their named durable coordinator. The separately reviewed workflow exposes explicit supervised modes; legacy
+`accept` remains file-only. No secret, repository variable or provider deployment
+is activated by source wiring. Live admission remains separately required.
 
 The sequence is:
 
@@ -55,19 +56,18 @@ review are required before integration. No claim of provider acceptance is made.
 The existing native D1 synthetic provider proof is separate evidence and does
 not exercise this new concrete native-account composition.
 
-## Required follow-up (not implemented by this slice)
+## Workflow integration and remaining live admission
 
-- A separately reviewed workflow must expose prepare-only durability without
-  immediately invoking the legacy artifact-only campaign. The present workflow
-  `accept` path must not merely substitute this function and proceed: its campaign
-  does not yet require a durable arm ACK or accountable intake.
+- The explicit `prepare-escrow-only` workflow mode exposes prepare-only durability,
+  uploads and independently checks the immutable ciphertext receipt, then stops
+  without campaign/arm/add/delete. Legacy `accept` is not substituted or upgraded.
 - The explicit `campaign_escrow(args)` source seam now independently validates
   the downloaded artifact/local envelope, authenticates the same sealed D1
   record, attaches the exact artifact ID, repeats admission, and obtains a known
-  `changes=1` arm ACK plus complete readback before the first add. It is not yet
-  workflow-wired. No one may infer permission from observing an armed parent.
+  `changes=1` arm ACK plus complete readback before the first add. It is wired
+  only by explicit `supervised-escrow`. No one may infer permission from an armed parent.
 - The explicit `recover-escrow` selector now chooses the complete retained-
-  ciphertext D1 finalizer. A future restricted registered workflow must admit
+  ciphertext D1 finalizer. Its explicit workflow mode requires
   the original completed run and exact source. Do not wire the artifact
   finalizer's per-chunk purge.
 - Before one supervised experiment is armed, record a specific capable primary
@@ -111,7 +111,7 @@ Hosted synthetic contracts cover exact attach/arm/first-add order, complete
 ciphertext retention, legacy compatibility, pre-arm failures, already-armed,
 lost arm ACK and a mismatched permit. Tests remain unexecuted locally.
 
-## CLI interface for later reviewed workflow wiring
+## CLI interface selected by explicit supervised workflow modes
 
 All modes still require the existing exact manual attempt-1 GitHub-hosted Windows
 staging dispatch environment and independent source CI. These examples are
@@ -137,3 +137,7 @@ The workflow owner must preserve exact supervision/handoff admission, global
 concurrency/writer exclusion, original workflow provenance registration, complete
 real-cipher/source checks, protected capabilities and privacy validation. Existing
 `accept` does not call these selectors and must not be described as durable.
+
+See `staging-quota-supervised-workflow-admission.md` for mode-specific confirmations,
+actor attribution and mandatory external supervision/handoff admission. Source
+wiring does not demonstrate a completed rehearsal or live campaign.

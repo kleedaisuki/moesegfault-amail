@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: One quota campaign or same-manifest recovery; never account provisioning
+        description: Legacy campaign/recovery or explicit supervised retained escrow; no account provisioning
         type: choice
-        options: [accept, recover]
+        options: [accept, recover, supervised-escrow, prepare-escrow-only, recover-escrow]
         default: accept
         required: true
       confirm:
-        description: RUN_STAGING_TEN_ADDRESSES or RECOVER_STAGING_TEN_ADDRESSES
+        description: Exact mode-specific confirmation; supervised escrow requires external staffed admission
         type: string
         required: true
       source_run:
@@ -22,7 +22,11 @@ on:
         type: string
         default: ''
       artifact_id:
-        description: Exact immutable original ciphertext artifact ID; recovery only
+        description: Exact immutable original ciphertext artifact ID; legacy recovery only, empty for retained escrow
+        type: string
+        default: ''
+      supervised_by:
+        description: Exact dispatch actor login; escrow only, not proof of continuous supervision
         type: string
         default: ''
       mail_phase:
@@ -49,8 +53,8 @@ jobs:
       github.run_attempt == 1
     runs-on: windows-latest
     environment: staging
-    # Existing reviewed per-address retirement can take one Cron window each.
-    # Do not run live until the separately reviewed bounded shared settlement exists.
+    # Hard wall-clock bound; interrupted escrow needs separately admitted recovery.
+    # Runbook supervision and independent privacy/source admission remain mandatory.
     timeout-minutes: 80
     concurrency:
       group: staging-native-mail-acceptance
@@ -64,6 +68,7 @@ jobs:
       PUBLIC_PRIOR_RUN: ${{ inputs.prior_run }}
       PUBLIC_ARTIFACT_ID: ${{ inputs.artifact_id }}
       PUBLIC_QUOTA_MODE: ${{ inputs.mode }}
+      PUBLIC_SUPERVISED_BY: ${{ inputs.supervised_by }}
       PUBLIC_QUOTA_CONFIRM: ${{ inputs.confirm }}
       PUBLIC_MAIL_PHASE: ${{ inputs.mail_phase }}
       PUBLIC_QUEUE_ID: ${{ inputs.queue_id }}
@@ -74,15 +79,28 @@ jobs:
           if ($env:GITHUB_RUN_ATTEMPT -cne '1' -or $env:GITHUB_REF -cne 'refs/heads/codex/amail-v0.1.0') { throw 'quota_dispatch_unconfirmed' }
           if ($env:PUBLIC_SOURCE_RUN -cnotmatch '^[1-9][0-9]{0,19}$') { throw 'quota_source_run_invalid' }
           if ($env:PUBLIC_QUOTA_MODE -ceq 'accept') {
-            if ($env:PUBLIC_QUOTA_CONFIRM -cne 'RUN_STAGING_TEN_ADDRESSES' -or $env:PUBLIC_PRIOR_RUN -or $env:PUBLIC_ARTIFACT_ID) { throw 'quota_dispatch_unconfirmed' }
+            if ($env:PUBLIC_QUOTA_CONFIRM -cne 'RUN_STAGING_TEN_ADDRESSES' -or $env:PUBLIC_PRIOR_RUN -or $env:PUBLIC_ARTIFACT_ID -or $env:PUBLIC_SUPERVISED_BY) { throw 'quota_dispatch_unconfirmed' }
           } elseif ($env:PUBLIC_QUOTA_MODE -ceq 'recover') {
             if ($env:PUBLIC_QUOTA_CONFIRM -cne 'RECOVER_STAGING_TEN_ADDRESSES' -or $env:PUBLIC_PRIOR_RUN -cnotmatch '^[1-9][0-9]{0,19}$' -or $env:PUBLIC_ARTIFACT_ID -cnotmatch '^[1-9][0-9]{0,19}$') { throw 'quota_recovery_unconfirmed' }
+            if ($env:PUBLIC_SUPERVISED_BY) { throw 'quota_recovery_unconfirmed' }
+          } elseif ($env:PUBLIC_QUOTA_MODE -ceq 'supervised-escrow') {
+            if ($env:PUBLIC_QUOTA_CONFIRM -cne 'RUN_SUPERVISED_STAGING_TEN_ADDRESSES' -or $env:PUBLIC_PRIOR_RUN -or $env:PUBLIC_ARTIFACT_ID) { throw 'quota_escrow_dispatch_unconfirmed' }
+          } elseif ($env:PUBLIC_QUOTA_MODE -ceq 'prepare-escrow-only') {
+            if ($env:PUBLIC_QUOTA_CONFIRM -cne 'PREPARE_STAGING_TEN_ADDRESS_ESCROW_ONLY' -or $env:PUBLIC_PRIOR_RUN -or $env:PUBLIC_ARTIFACT_ID) { throw 'quota_escrow_prepare_unconfirmed' }
+          } elseif ($env:PUBLIC_QUOTA_MODE -ceq 'recover-escrow') {
+            if ($env:PUBLIC_QUOTA_CONFIRM -cne 'RECOVER_STAGING_TEN_ADDRESS_ESCROW' -or $env:PUBLIC_PRIOR_RUN -cnotmatch '^[1-9][0-9]{0,19}$' -or $env:PUBLIC_PRIOR_RUN -ceq $env:GITHUB_RUN_ID -or $env:PUBLIC_ARTIFACT_ID) { throw 'quota_escrow_recovery_unconfirmed' }
           } else { throw 'quota_dispatch_unconfirmed' }
           if ($env:PUBLIC_MAIL_PHASE -ceq 'pre-queue') {
             if ($env:PUBLIC_QUEUE_ID) { throw 'quota_phase_unreviewed' }
           } elseif ($env:PUBLIC_MAIL_PHASE -ceq 'queue-api') {
             if ($env:PUBLIC_QUEUE_ID -cnotmatch '^[a-f0-9]{32}$') { throw 'quota_phase_unreviewed' }
           } else { throw 'quota_phase_unreviewed' }
+      # This establishes actor accountability, not proof of watch/handoff.
+      # The runbook's staffed admission is mandatory before either escrow dispatch.
+      - name: Bind explicit supervised escrow decision to the actual dispatch actor
+        if: inputs.mode == 'supervised-escrow' || inputs.mode == 'prepare-escrow-only' || inputs.mode == 'recover-escrow'
+        run: |
+          if ($env:PUBLIC_SUPERVISED_BY -cnotmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$' -or $env:PUBLIC_SUPERVISED_BY -cne $env:GITHUB_ACTOR) { throw 'quota_escrow_supervisor_actor_unverified' }
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -98,10 +116,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'quota_composition_tests_failed' }
       - name: Prepare immutable encrypted baseline without alias mutation
         id: prepare
-        if: inputs.mode == 'accept'
+        if: inputs.mode == 'accept' || inputs.mode == 'supervised-escrow' || inputs.mode == 'prepare-escrow-only'
         env:
           AMAIL_QUOTA_ENVIRONMENT: staging
-          AMAIL_QUOTA_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_QUOTA_CONFIRM: ${{ (inputs.mode == 'supervised-escrow' || inputs.mode == 'prepare-escrow-only') && 'RUN_STAGING_TEN_ADDRESSES' || inputs.mode == 'recover-escrow' && 'RECOVER_STAGING_TEN_ADDRESSES' || inputs.confirm }}
           AMAIL_TEN_ADDRESS_KEY_GENERATION: ten-address-v1
           AMAIL_TEN_ADDRESS_RECOVERY_KEY: ${{ secrets.AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1 }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -112,13 +130,14 @@ jobs:
           STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
           STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
         run: |
-          $arguments = @('prepare', '--source-run', $env:PUBLIC_SOURCE_RUN, '--mail-phase', $env:PUBLIC_MAIL_PHASE)
+          $selector = if ($env:PUBLIC_QUOTA_MODE -ceq 'supervised-escrow' -or $env:PUBLIC_QUOTA_MODE -ceq 'prepare-escrow-only') { 'prepare-escrow' } else { 'prepare' }
+          $arguments = @($selector, '--source-run', $env:PUBLIC_SOURCE_RUN, '--mail-phase', $env:PUBLIC_MAIL_PHASE)
           if ($env:PUBLIC_QUEUE_ID) { $arguments += @('--queue-id', $env:PUBLIC_QUEUE_ID) }
           python infra/tests/staging_ten_address_acceptance.py @arguments
           if ($LASTEXITCODE -ne 0) { throw 'quota_prepare_unverified' }
       - name: Retain exact recovery ciphertext before any alias mutation
         id: recovery_artifact
-        if: inputs.mode == 'accept'
+        if: (inputs.mode == 'accept' || inputs.mode == 'supervised-escrow' || inputs.mode == 'prepare-escrow-only') && steps.prepare.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: ten-address-recovery-${{ github.run_id }}
@@ -127,13 +146,31 @@ jobs:
           if-no-files-found: error
           overwrite: false
           retention-days: 30
-      - name: Run one serial quota campaign after exact artifact readback
-        id: campaign
-        if: inputs.mode == 'accept' && steps.recovery_artifact.outputs.artifact-id != ''
+      - name: Independently read back exact encrypted artifact receipt
+        id: artifact_readback
+        if: (inputs.mode == 'accept' || inputs.mode == 'supervised-escrow' || inputs.mode == 'prepare-escrow-only') && steps.prepare.outcome == 'success' && steps.recovery_artifact.outcome == 'success'
         env:
           ORIGINAL_ARTIFACT_ID: ${{ steps.recovery_artifact.outputs.artifact-id }}
+          ORIGINAL_ARTIFACT_DIGEST: ${{ steps.recovery_artifact.outputs.artifact-digest }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:ORIGINAL_ARTIFACT_ID -cnotmatch '^[1-9][0-9]{0,19}$') { throw 'quota_artifact_unverified' }
+          if ($env:ORIGINAL_ARTIFACT_DIGEST -cnotmatch '^(sha256:)?[a-f0-9]{64}$') { throw 'quota_artifact_digest_unverified' }
+          # Bind upload's immutable receipt to independent GitHub metadata before arm.
+          # Never log the provider response or signed artifact download URL.
+          $expectedDigest = $env:ORIGINAL_ARTIFACT_DIGEST -creplace '^sha256:', ''
+          try {
+            $artifact = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/kleedaisuki/moesegfault-amail/actions/artifacts/$($env:ORIGINAL_ARTIFACT_ID)" -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' } -TimeoutSec 30
+          } catch { throw 'quota_artifact_receipt_readback_unverified' }
+          if (([string]$artifact.id) -cne $env:ORIGINAL_ARTIFACT_ID -or $artifact.expired -ne $false -or $artifact.name -cne "ten-address-recovery-$env:GITHUB_RUN_ID" -or ([string]$artifact.workflow_run.id) -cne $env:GITHUB_RUN_ID -or $artifact.workflow_run.head_sha -cne $env:GITHUB_SHA -or $artifact.digest -cne "sha256:$expectedDigest") { throw 'quota_artifact_receipt_mismatch' }
+      - name: Run one serial quota campaign after exact artifact readback
+        id: campaign
+        if: (inputs.mode == 'accept' || inputs.mode == 'supervised-escrow') && steps.prepare.outcome == 'success' && steps.recovery_artifact.outcome == 'success' && steps.artifact_readback.outcome == 'success' && steps.recovery_artifact.outputs.artifact-id != ''
+        env:
+          ORIGINAL_ARTIFACT_ID: ${{ steps.recovery_artifact.outputs.artifact-id }}
+          ORIGINAL_ARTIFACT_DIGEST: ${{ steps.recovery_artifact.outputs.artifact-digest }}
           AMAIL_QUOTA_ENVIRONMENT: staging
-          AMAIL_QUOTA_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_QUOTA_CONFIRM: ${{ (inputs.mode == 'supervised-escrow' || inputs.mode == 'prepare-escrow-only') && 'RUN_STAGING_TEN_ADDRESSES' || inputs.mode == 'recover-escrow' && 'RECOVER_STAGING_TEN_ADDRESSES' || inputs.confirm }}
           AMAIL_TEN_ADDRESS_KEY_GENERATION: ten-address-v1
           AMAIL_TEN_ADDRESS_RECOVERY_KEY: ${{ secrets.AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1 }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -144,17 +181,18 @@ jobs:
           STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
           STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
         run: |
-          if ($env:ORIGINAL_ARTIFACT_ID -cnotmatch '^[1-9][0-9]{0,19}$') { throw 'quota_artifact_unverified' }
-          $arguments = @('campaign', '--source-run', $env:PUBLIC_SOURCE_RUN, '--artifact-id', $env:ORIGINAL_ARTIFACT_ID, '--mail-phase', $env:PUBLIC_MAIL_PHASE)
+          # The selector downloads this exact artifact and independently validates bytes.
+          $selector = if ($env:PUBLIC_QUOTA_MODE -ceq 'supervised-escrow') { 'campaign-escrow' } else { 'campaign' }
+          $arguments = @($selector, '--source-run', $env:PUBLIC_SOURCE_RUN, '--artifact-id', $env:ORIGINAL_ARTIFACT_ID, '--mail-phase', $env:PUBLIC_MAIL_PHASE)
           if ($env:PUBLIC_QUEUE_ID) { $arguments += @('--queue-id', $env:PUBLIC_QUEUE_ID) }
           python infra/tests/staging_ten_address_acceptance.py @arguments
           if ($LASTEXITCODE -ne 0) { throw 'quota_campaign_unverified' }
       - name: Same original manifest recovery without add capability
         id: recovery
-        if: inputs.mode == 'recover'
+        if: inputs.mode == 'recover' || inputs.mode == 'recover-escrow'
         env:
           AMAIL_QUOTA_ENVIRONMENT: staging
-          AMAIL_QUOTA_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_QUOTA_CONFIRM: ${{ (inputs.mode == 'supervised-escrow' || inputs.mode == 'prepare-escrow-only') && 'RUN_STAGING_TEN_ADDRESSES' || inputs.mode == 'recover-escrow' && 'RECOVER_STAGING_TEN_ADDRESSES' || inputs.confirm }}
           AMAIL_TEN_ADDRESS_KEY_GENERATION: ten-address-v1
           AMAIL_TEN_ADDRESS_RECOVERY_KEY: ${{ secrets.AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1 }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -165,13 +203,26 @@ jobs:
           STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
           STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
         run: |
-          $arguments = @('recover', '--source-run', $env:PUBLIC_SOURCE_RUN, '--prior-run', $env:PUBLIC_PRIOR_RUN, '--artifact-id', $env:PUBLIC_ARTIFACT_ID, '--mail-phase', $env:PUBLIC_MAIL_PHASE)
+          $selector = if ($env:PUBLIC_QUOTA_MODE -ceq 'recover-escrow') { 'recover-escrow' } else { 'recover' }
+          $arguments = @($selector, '--source-run', $env:PUBLIC_SOURCE_RUN, '--prior-run', $env:PUBLIC_PRIOR_RUN, '--mail-phase', $env:PUBLIC_MAIL_PHASE)
+          if ($env:PUBLIC_QUOTA_MODE -ceq 'recover') { $arguments += @('--artifact-id', $env:PUBLIC_ARTIFACT_ID) }
           if ($env:PUBLIC_QUEUE_ID) { $arguments += @('--queue-id', $env:PUBLIC_QUEUE_ID) }
           python infra/tests/staging_ten_address_acceptance.py @arguments
           if ($LASTEXITCODE -ne 0) { throw 'quota_recovery_unverified' }
       - name: Reject skipped campaign authority
-        if: inputs.mode == 'accept' && steps.campaign.outcome == 'skipped'
+        if: (inputs.mode == 'accept' || inputs.mode == 'supervised-escrow') && steps.campaign.outcome == 'skipped'
         run: throw 'quota_campaign_not_executed'
+      - name: Require complete prepare-only rehearsal and stop without mutation
+        if: inputs.mode == 'prepare-escrow-only'
+        env:
+          PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.recovery_artifact.outcome }}
+          READBACK_OUTCOME: ${{ steps.artifact_readback.outcome }}
+          CAMPAIGN_OUTCOME: ${{ steps.campaign.outcome }}
+          RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
+        run: |
+          if ($env:PREPARE_OUTCOME -cne 'success' -or $env:UPLOAD_OUTCOME -cne 'success' -or $env:READBACK_OUTCOME -cne 'success' -or $env:CAMPAIGN_OUTCOME -cne 'skipped' -or $env:RECOVERY_OUTCOME -cne 'skipped') { throw 'quota_escrow_prepare_only_unverified' }
+          Write-Output 'ten_address_escrow_prepare_only_rehearsal_verified'
       - name: Record recovery availability without plaintext
-        if: always() && inputs.mode == 'accept' && steps.recovery_artifact.outputs.artifact-id != ''
+        if: always() && (inputs.mode == 'accept' || inputs.mode == 'supervised-escrow' || inputs.mode == 'prepare-escrow-only') && steps.recovery_artifact.outputs.artifact-id != ''
         run: Write-Output 'ten_address_immutable_recovery_artifact_retained'

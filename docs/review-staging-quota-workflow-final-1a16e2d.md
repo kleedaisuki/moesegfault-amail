@@ -1,0 +1,25 @@
+# Final independent review: quota workflow transplant
+
+Date: 2026-10-01. Candidate: `1a16e2db0c247bf7224948a4b689346477286e48`; base: `68769bf`.
+
+## Decision
+
+**GO for hosted source validation only. No substantive blocking defect found in this bounded transplant.** No live dispatch, quota success, recovery success, provider privacy state, Environment protection, supervision or release admission is established by this review.
+
+## Scope and evidence
+
+Reviewed all six changed files, the complete workflow, static workflow tests, the original independent review, and unchanged coordinator/artifact/provenance callers. The diff contains workflow wiring, tests, documentation and coordinator docstrings only. An independently parsed Python AST comparison, with docstrings removed, found the coordinator executable AST identical between base and candidate (`coordinator_executable_ast_equal=True`). `git diff --check 68769bf HEAD` passed. No local project tests/builds, provider operations, push or dispatch occurred.
+
+- Exactly eight dispatch inputs remain. Legacy `accept` is the default; legacy `accept`/`recover` selectors remain explicit and reject escrow-only coordinates. The manual job enforces the fixed feature branch, attempt 1, hosted Windows, staging Environment, 80-minute timeout, and shared noncancelling concurrency. Independent coordinator provenance additionally checks the actual checkout, original invocation and exact six-job source CI.
+- Explicit `supervised-escrow` chooses `prepare-escrow` then `campaign-escrow`; `recover-escrow` chooses only retained recovery, requires a distinct original run and empty artifact ID. Mode-specific confirmation translation follows the initial strict guard. All escrow modes require a bounded actor login equal to `GITHUB_ACTOR`; this is attribution, not evidence of continuous supervision. The runbook correctly preserves external staffed watch, handoff, writer exclusion and effective privacy as separate live prerequisites.
+- `prepare-escrow-only` chooses only durable preparation, exact ciphertext upload and independent receipt readback. Campaign and recovery conditions exclude that mode. Its final fixed rehearsal label requires success outcomes for preparation/upload/readback and skipped campaign/recovery, rather than file existence. The unchanged prepare coordinator has no arm/add/delete capability and seals/authenticates D1 bytes before publishing the upload file. Interrupted or failed preparation retains provider-side evidence for explicit recovery.
+- Synthetic composition and real-cipher checks precede the first explicit private provider/native/recovery credentials. No automatic replay, scheduled trigger, fallback, per-chunk purge or unguarded retry was added. Failure of preparation, upload or receipt prevents mutation; the prepare-only success label cannot run after an earlier failure under normal GitHub step status semantics.
+- Immutable upload remains one exact `manifest.bin`, error-on-missing, nonoverwriting and 30-day retention. The new independent metadata GET binds artifact ID, run-derived name, original run, checkout SHA, nonexpired status and upload digest before campaign. The unchanged campaign reader independently validates strict metadata/lifetime/repository/branch relations, exact archive SHA-256 and one-file ZIP, compares metadata before/after download, authenticates the envelope and compares downloaded/local/D1 bytes before attach/arm. Metadata alone does not authorize adds.
+- Retained recovery still requires the completed distinct original attempt, authenticated D1 envelope/receipt, fresh native admission and postchecks; it retains all ciphertext and does not use the artifact finalizer's purge. Source-green status cannot substitute for those observed results.
+- The prior optional stale-docstring concern is closed: prepare/recovery docstrings and durable-prepare documentation now distinguish explicitly wired source from unproven live admission. Remaining dormant `finalize_recovery` wording refers to the separately unregistered artifact-terminal seam, not the newly wired retained selector.
+
+## Test limits and next gate
+
+The workflow tests are static contract assertions, not execution of GitHub expressions or PowerShell REST calls. The recovery-step substring collision is corrected with the exact `id: recovery\n` delimiter, and the prepare-only test checks exclusion from campaign/recovery conditions plus outcome-based stopping. Hosted CI is required on the exact candidate-derived source before any separately admitted live rehearsal. Provider effective privacy and operator availability remain unverified here.
+
+Official references rechecked: [GitHub workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatchinputs) documents a 25-input maximum; the candidate uses eight. [GitHub artifact REST API](https://docs.github.com/en/rest/actions/artifacts#get-an-artifact) documents the exact artifact endpoint, Actions read permission, digest and workflow-run relation used by the receipt check.
