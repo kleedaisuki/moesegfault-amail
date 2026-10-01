@@ -311,15 +311,29 @@ def cleanup_ingress(provider, receipt, persist):
     ingress = state(provider, receipt)
     for kind in ("route", "dns"):
         item = ingress.get(kind)
+        if item is not None and (not isinstance(item, dict) or item.get("phase") not in (
+                "attempted", "verified", "unknown", "delete_attempted", "delete_unknown", "deleted")):
+            raise ValueError("native_ingress_phase_invalid")
+        # Read a known ID before filtering inventory: a renamed DNS record or
+        # moved Route is still live, and must not be misclassified as absent.
+        known = item.get("id") if item is not None else None
+        actual = read_optional(provider, resource_path(kind, known)) if known is not None else None
+        if actual is not None:
+            matches = (route_matches(actual, known) if kind == "route"
+                       else dns_matches(actual, receipt, known))
+            if not matches:
+                raise ValueError("native_ingress_replaced")
         rows = ([row for row in routes(provider) if overlaps(row.get("pattern"))]
                 if kind == "route" else dns_rows(provider))
         if item is None:
             if rows:
                 raise ValueError("native_ingress_unowned_resource")
             continue
-        if not isinstance(item, dict) or item.get("phase") not in (
-                "attempted", "verified", "unknown", "delete_attempted", "delete_unknown", "deleted"):
-            raise ValueError("native_ingress_phase_invalid")
+        if known is not None:
+            if actual is None and rows:
+                raise ValueError("native_ingress_replaced")
+            if actual is not None and (len(rows) != 1 or rows[0].get("id") != known):
+                raise ValueError("native_ingress_cleanup_ambiguous")
         if not rows:
             item["phase"] = "deleted"
             persist(receipt)

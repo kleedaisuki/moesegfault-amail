@@ -232,3 +232,12 @@ TTL and exact nonce comment. Route checks its ID, fixed pattern and caller plus
 both serving roles/nonces/versions. No provider request or local runtime test was
 performed while implementing this source. Static Python syntax and whitespace
 checks do not constitute hosted contract or provider acceptance.
+
+### Known-ID cleanup readback
+
+Cleanup reads any positively recorded resource ID before hostname/pattern
+filtering. A renamed DNS record or moved Route remains live and is refused,
+not classified as absent. Only exact-ID HTTP 404 plus a complete conflict-free
+inventory permits an already-absent receipt to advance. Unknown-ID creation
+recovery remains scoped to a unique nonce/pair-owned inventory match; known-ID
+replacement never falls back to adoption by name or pattern.
