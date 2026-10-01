@@ -204,7 +204,7 @@ cec8ac2451516e6be6228673176a4048f248976b has the accepted tree. Reader rollout,
 producer clocks/remote client failure semantics and the deployed native platform
 canary are still pending; do not confuse this acceptance with their completion.
 
-## Remote CLI attempt reader (source implementation; hosted check pending)
+## Remote CLI attempt reader (initial hosted source accepted)
 
 The next bounded patch upgrades readers, not the current CLI upload producer.
 The legacy upload serializer is unchanged: new CLI binaries still work against
@@ -275,3 +275,32 @@ https://opentelemetry.io/docs/collector/internal-telemetry/ separates failed
 enqueue/send from successful export. We borrow those distinctions, not a new
 collector or speculative automated diagnosis system. Native span/privacy
 research remains the separate infrastructure canary acceptance lane above.
+
+Academic context: Pivot Tracing's causal monitoring work
+(https://www.usenix.org/conference/atc16/technical-sessions/presentation/mace)
+illustrates why identifying dependency boundaries matters beyond joining IDs.
+The recent UniSage preprint (https://arxiv.org/abs/2509.26336) investigates
+analysis-aware telemetry sampling; it is not production acceptance or a reason
+to add a sampler here. First make failures/timing and diagnostic loss observable,
+then evaluate sampling against retained failure coverage rather than volume alone.
+
+Initial PR 54 head `4b12fbdb3363f835226c49d86b76f590c5e43757` passed full CI
+`36873422808` and syntax `36873422784`. Actual PR merge checkout/build source was
+`e2d6b5f71e7197e5572a0a249578a05e83b8071e`. Each CLI platform passed 34 unit
+and 2 actual process tests. Schema passed 12 unit tests; Mail Worker passed 74
+main tests plus its existing integration targets. All eight native suites and
+the stable Wasm aggregate succeeded. The 35-file same-run artifact
+`11168665871` remained source/run/attempt-bound and was verified independently
+before native consumption. CLI dependency, Worker dependency and bundler cache
+receipts explicitly reported `exact_hit`.
+
+Observed whole workflow time was 14:03:57–14:09:14 UTC (5m17s), build job
+14:04:12–14:06:02 (1m50s), native core including setup 14:06:05–14:09:06
+(3m01s). These are samples, not a performance SLA. No Astro job was required for
+this scoped source change; no skipped business/deploy lane is counted as tested.
+Independent review found no demonstrated blocker and requested two additional
+native cases: a historical exact-only Mail CLI record and rejection of otherwise
+valid closed client metadata on a Mail API record. Those fixture-only additions
+are pending final-head hosted checks; they do not change compilation inputs.
+No reader deployment, enriched upload rollout, Mail mutation or native deployed
+privacy acceptance is implied by the successful source run.

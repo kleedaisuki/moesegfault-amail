@@ -90,9 +90,11 @@ test("native sink retains legacy and enriched causal measurements exactly", asyn
   const old = legacy();
   const enriched = { ...legacy(), event_id: "00000000-0000-4000-8000-000000000003",
     occurred_at_ms: 1_790_000_000_123, duration_ms: 7, http_status: 201 };
+  const exactOnlyClient = { ...clientAttempts()[3] };
+  delete exactOnlyClient.client_phase;
   const attempts = clientAttempts();
-  const { records } = await consume([old, enriched, ...attempts]);
-  assert.deepEqual(records, [old, enriched, ...attempts]);
+  const { records } = await consume([old, enriched, ...attempts, exactOnlyClient]);
+  assert.deepEqual(records, [old, enriched, ...attempts, exactOnlyClient]);
   assert.equal(records[0].occurred_at_ms, undefined);
   assert.equal(records[1].occurred_at_ms, enriched.occurred_at_ms,
     "source event clock must not be replaced by Queue delivery time");
@@ -110,7 +112,7 @@ test("native sink drops invalid measurement types and mismatched status without 
     { ...bodyFailure, duration_ms: null },
     { ...bodyFailure, client_error_kind: "credential_unavailable" },
     { ...bodyFailure, client_phase: "complete" },
-    { ...legacy(), client_phase: "complete" },
+    { ...legacy(), duration_ms: 7, http_status: 200, client_phase: "complete" },
   ]);
   assert.deepEqual(records, []);
 });
