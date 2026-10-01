@@ -16,7 +16,9 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "provider"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy"))
 import ensure_role_forwarding as forwarding
+from control_plane_trace import response_facts, span
 from send_control import DATABASES
 
 PIN_COLUMNS = ("apex_abuse_rule_id", "apex_postmaster_rule_id", "mail_abuse_rule_id", "mail_postmaster_rule_id")
@@ -48,6 +50,11 @@ IDLE_READY_SQL = "SELECT COUNT(*) AS ready_rows FROM direct_role_contact_ready"
 class HealthError(Exception):
     """Carry a fixed non-secret failure category, never remote text."""
 
+    def __init__(self, reason: str, *, http_status: int | None = None):
+        """Preserve existing reason args and only an actually observed status."""
+        super().__init__(reason)
+        self.http_status = http_status if type(http_status) is int and 100 <= http_status <= 599 else None
+
 
 class RejectRedirect(urllib.request.HTTPRedirectHandler):
     """Do not send either bearer credential to a redirect target."""
@@ -60,23 +67,43 @@ class RejectRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(RejectRedirect)
 
 
-def request_json(request: urllib.request.Request) -> dict:
+def request_json(request: urllib.request.Request, **coordinates) -> dict:
     """Bound network time/response bytes and suppress provider exception bodies."""
+    with span("direct_contact", "provider_request", method=request.get_method(), **coordinates) as facts:
+        try:
+            return _request_json(request, facts)
+        except HealthError as error:
+            facts.reason = error.args[0]
+            raise
+
+
+def _request_json(request: urllib.request.Request, facts) -> dict:
+    """Capture bounded numeric provider facts; never emit the response payload."""
     try:
         with OPENER.open(request, timeout=20) as response:
-            if response.status != 200:
-                raise HealthError("provider_unavailable")
+            response_facts(facts, response.status, response.headers)
             raw = response.read(MAX_REPLY + 1)
+    except urllib.error.HTTPError as error:
+        response_facts(facts, error.code, error.headers)
+        try:
+            raw = error.read(MAX_REPLY + 1)
+        except (OSError, TimeoutError):
+            raise HealthError("provider_unavailable", http_status=facts.http_status) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise HealthError("provider_unavailable") from None
     if len(raw) > MAX_REPLY:
-        raise HealthError("response_invalid")
+        raise HealthError("response_invalid", http_status=facts.http_status)
     try:
         payload = json.loads(raw)
     except (ValueError, UnicodeDecodeError):
-        raise HealthError("response_invalid") from None
+        raise HealthError("response_invalid", http_status=facts.http_status) from None
+    if isinstance(payload, dict) and isinstance(payload.get("errors"), list):
+        facts.provider_error_codes = [item["code"] for item in payload["errors"][:16]
+            if isinstance(item, dict) and type(item.get("code")) is int and 0 <= item["code"] <= 2**31 - 1]
+    if facts.http_status != 200:
+        raise HealthError("provider_unavailable", http_status=facts.http_status)
     if not isinstance(payload, dict) or payload.get("success") is not True:
-        raise HealthError("response_invalid")
+        raise HealthError("response_invalid", http_status=facts.http_status)
     return payload
 
 
@@ -86,6 +113,7 @@ class RoutingClient:
     def __init__(self, token: str, account: str):
         """Keep the existing routing token in memory, not diagnostics."""
         self.token = token
+        self.account = account
         self.paths = (f"/accounts/{account}/email/routing/addresses?", f"/zones/{forwarding.ZONE}/email/routing/rules?")
 
     def request(self, method: str, path: str, body: object = None) -> dict:
@@ -93,7 +121,9 @@ class RoutingClient:
         if method != "GET" or body is not None or not path.startswith(self.paths):
             raise HealthError("request_invalid")
         return request_json(urllib.request.Request(forwarding.API + path,
-            headers={"Authorization": "Bearer " + self.token, "Accept": "application/json"}, method="GET"))
+            headers={"Authorization": "Bearer " + self.token, "Accept": "application/json"}, method="GET"),
+            endpoint="email-routing.destinations" if path.startswith(self.paths[0]) else "email-routing.rules",
+            account_id=self.account, zone_id=forwarding.ZONE, component="contact_routing")
 
 
 class DatabaseClient:
@@ -103,12 +133,14 @@ class DatabaseClient:
         """Select a fixed database, never an arbitrary workflow-supplied ID."""
         self.url = f"{forwarding.API}/accounts/{account}/d1/database/{DATABASES[target][0]}/query"
         self.token = token
+        self.target = target
 
     def query(self, sql: str, params: list | None = None) -> dict:
         """Reject malformed/non-singleton D1 batch envelopes without logging them."""
         payload = request_json(urllib.request.Request(self.url,
             data=json.dumps({"sql": sql, "params": params or []}).encode(),
-            headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"}, method="POST"))
+            headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"}, method="POST"),
+            endpoint="d1.query", realm=self.target, component="contact_database")
         batches = payload.get("result")
         if not isinstance(batches, list) or len(batches) != 1 or not isinstance(batches[0], dict) or batches[0].get("success") is not True:
             raise HealthError("database_unavailable")
