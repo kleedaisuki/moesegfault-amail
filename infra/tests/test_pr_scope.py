@@ -45,6 +45,21 @@ class PrScopeTests(unittest.TestCase):
         self.assertEqual(scope.select(["crates/amail/src/main.rs","site/src/layout.astro"]),
                          {"cli":True,"worker":False,"site":True})
 
+    def test_exact_deployment_validator_is_not_a_compilation_input(self):
+        """Only the audited file skips compilation; nearby inputs and mixed edits do not."""
+        path = "crates/mail-worker/check_trace_sink_isolation.py"
+        self.assertEqual(scope.select([path]), dict.fromkeys(scope.COMPONENTS, False))
+        for nearby in ("crates/mail-worker/build.py", "crates/mail-worker/entry/api.mjs",
+                       "crates/mail-worker/wrangler.toml", "crates/mail-worker/src/lib.rs"):
+            with self.subTest(path=nearby):
+                self.assertEqual(scope.select([path, nearby]), {"cli": False, "worker": True, "site": False})
+        from workflow_source import job_block
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        mandatory = job_block(source, "dns")
+        self.assertNotIn("needs.changes", mandatory)
+        self.assertIn("unittest discover -s infra/tests", mandatory)
+        self.assertIn("test_check_observability.py", mandatory)
+
     def test_non_pr_is_full_and_never_reads_event(self):
         """Push/main/manual/release use full source checks regardless of changed paths."""
         for event in ("push","workflow_dispatch","release",""):

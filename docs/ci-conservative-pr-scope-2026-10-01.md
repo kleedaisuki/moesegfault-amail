@@ -48,3 +48,16 @@ This is mature dependency-oriented CI design, not an early-exit acceptance hack.
 Paths remain a conservative interface: a new consumer hidden behind an existing
 Python path must either extend the rules or choose the default full path. The
 main/manual full lane provides the independent integration check.
+
+## Exact deployment-only module refinement
+
+PR 40 changes the domain isolation Python validator next to Rust source. The
+coarse crate prefix correctly selected Worker checks, but this module is not
+read by Cargo, worker-build, adapters or any native fixture. Its behavior is
+covered by the always-on infra test discovery and separate observability tests.
+Add that exact filename to an infrastructure-only allowlist, not a general
+Python extension exemption. A new build.py, Wrangler config, adapter, Rust input
+or mixed change still selects Worker. Main/manual/full/cache contracts are
+unchanged. A hosted selector test brackets the exemption and confirms mandatory
+infra execution. This avoids rebuilding an unchanged Wasm artifact for the next
+protocol correction without shortening native timeout/lifetime discriminators.
