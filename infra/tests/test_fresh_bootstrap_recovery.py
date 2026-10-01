@@ -360,8 +360,8 @@ class RecoveryAdmissionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             admission.scope_journal(wrong, self.epoch)
 
-    def sink_checkpoint(self):
-        """Reproduce the ten-row production failure shape with synthetic module bytes."""
+    def sink_checkpoint(self, replacement=False):
+        """Reproduce both observed production prefixes with synthetic module bytes."""
         creation = Epoch("87acaaa4ddbc2c22233fb5e5fc74f1778f86f3aa", "36912824752",
                          11188385927, "ea687638b68ec1791c9754c92e0df9aad3105a909cf92163d1dc68140a4619ec",
                          "1.98.1")
@@ -377,6 +377,16 @@ class RecoveryAdmissionTests(unittest.TestCase):
         rows[5].update(queue="e7a80fba65b0471aa4a267527d83d2d3", dlq="7eab75daab9345e9ad6d0c1fa6f0e37c")
         rows[7].update(version="c56c8062-ef7f-48ed-b91f-91394b03cd69")
         rows[9].update(state="failed", error_type="FreshError")
+        if replacement:
+            rows[1]["schema_prefix"] = 11
+            source = Epoch("b2b64ae76fb8096cc566f50b6510e2e6522822ec", "36916937613", 11190151442,
+                           "ed1b076b54fbee527c33378021e5a391eea6ea7eff2fa371acbba4afa2cee7c3", "1.98.1")
+            rows = [rows[0], rows[1], {**base, "phase": "retained_sink", "state": "intent"},
+                    {**base, "phase": "retained_sink", "state": "observed", "source_epoch": asdict(source),
+                     "version": rows[7]["version"], "queue": rows[5]["queue"], "dlq": rows[5]["dlq"]},
+                    {**base, "phase": "sink_replacement", "state": "intent", "previous_version": rows[7]["version"]},
+                    {**base, "phase": "sink_replacement", "state": "observed", "version": "d372b6f0-42ed-4536-b7ee-15273b50d6a3"},
+                    rows[8], rows[9]]
         return rows
 
     def load_checkpoint(self, rows, queue=None):
@@ -392,14 +402,17 @@ class RecoveryAdmissionTests(unittest.TestCase):
 
     def test_known_sink_readback_failure_admits_exact_observed_coordinates(self):
         """The actual failure shape yields sink coordinates, not replacement creation proof."""
-        rows = self.sink_checkpoint()
-        queue = [{"target": "production", "queue_name": name, "queue_id": rows[5][key]}
-                 for name, key in (("amail-trace-events", "queue"), ("amail-trace-dlq", "dlq"))]
-        result = self.load_checkpoint(rows, queue)
-        self.assertEqual(result, ("36912824752", self.epoch, rows[7]["version"], rows[5]["queue"], rows[5]["dlq"]))
-        self.assertEqual(admission.lines((self.destination / "resume.jsonl").read_bytes(), 10), rows)
-        self.assertEqual({path.name for path in self.destination.iterdir()},
-                         {"resume.jsonl", "trace-queue-provision-production.json"})
+        for replacement, queue_index, sink_index in ((False, 5, 7), (True, 3, 5)):
+            rows = self.sink_checkpoint(replacement)
+            self.destination = Path(self.folder.name) / f"admitted-{replacement}"
+            queue = [{"target": "production", "queue_name": name, "queue_id": rows[queue_index][key]}
+                     for name, key in (("amail-trace-events", "queue"), ("amail-trace-dlq", "dlq"))]
+            result = self.load_checkpoint(rows, queue)
+            self.assertEqual(result, ("36912824752", self.epoch, rows[sink_index]["version"],
+                                      rows[queue_index]["queue"], rows[queue_index]["dlq"], not replacement))
+            self.assertEqual(admission.lines((self.destination / "resume.jsonl").read_bytes(), 10), rows)
+            self.assertEqual({path.name for path in self.destination.iterdir()},
+                             {"resume.jsonl", "trace-queue-provision-production.json"})
         self.assertNotIn("resume.jsonl", admission.ALLOWED)
         self.recovery = zipped([("controller.jsonl", self.controller)])
         with patch.object(admission, "github", side_effect=self.github):
@@ -415,6 +428,15 @@ class RecoveryAdmissionTests(unittest.TestCase):
             rows = self.sink_checkpoint()
             rows[index][key] = value
             with self.subTest(key=key, index=index), self.assertRaises(ValueError):
+                self.load_checkpoint(rows)
+            self.assertFalse(self.destination.exists())
+        for index, key, value in ((1, "schema_prefix", 0), (4, "previous_version", "a" * 36),
+                                  (5, "state", "failed"), (4, "phase", "sink"),
+                                  (5, "version", "c56c8062-ef7f-48ed-b91f-91394b03cd69"),
+                                  (3, "source_epoch", asdict(self.epoch))):
+            rows = self.sink_checkpoint(replacement=True)
+            rows[index][key] = value
+            with self.subTest(replacement=True, index=index, key=key), self.assertRaises(ValueError):
                 self.load_checkpoint(rows)
             self.assertFalse(self.destination.exists())
         rows = self.sink_checkpoint()
