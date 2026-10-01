@@ -73,6 +73,7 @@ function database(native) {
 /** Observe native object access without changing stream or bounded reader behavior. */
 function bucket(native) {
   return new Proxy(native, { get(target, key) {
+    if (key === "constructor") return target.constructor;
     const value = target[key];
     if (typeof value !== "function") return value;
     return (...args) => {
