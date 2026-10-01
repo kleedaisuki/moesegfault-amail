@@ -309,3 +309,100 @@ def load(run_id: str, folder: Path) -> tuple[Epoch, Path]:
             output.write(data)
         (folder / name).chmod(0o600)
     return epoch, folder / "controller.jsonl"
+
+
+def _sink_checkpoint(raw: bytes, sha: str, run_id: str) -> tuple[str, Epoch, str, str, str]:
+    """Admit only the observed sink followed by the known readback failure.
+
+    The captured creation scope is type-checked, not treated as creation proof.
+    Callers must independently load the original creator's ownership journal.
+    """
+    rows = lines(raw, 10)
+    fields = {"source_sha", "run_id", "artifact_id", "manifest_sha256", "rust", "worker_build"}
+    value = rows[0].get("deployment_epoch")
+    creation_run = rows[0].get("creation_run")
+    if (not isinstance(value, dict) or set(value) != fields
+            or not isinstance(creation_run, str) or RUN.fullmatch(creation_run) is None
+            or creation_run == run_id):
+        raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+    epoch = Epoch(**value)
+    if epoch.source_sha != sha or epoch.run_id != run_id:
+        raise ValueError("fresh_recovery_epoch_origin_mismatch")
+    base = {"schema": "mail-fresh-resume/v1", "deployment_epoch": value, "creation_run": creation_run}
+    expected = [{**base, "phase": phase, "state": state}
+                for phase in ("ownership", "migrate", "queues", "sink", "sink_readback")
+                for state in ("intent", "observed")]
+    if len(rows) != len(expected):
+        raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+    ownership = rows[1]
+    creation_value, scope = ownership.get("creation_epoch"), ownership.get("scope")
+    if (not isinstance(creation_value, dict) or set(creation_value) != fields
+            or not isinstance(scope, dict)
+            or set(scope) != {"epoch", "database", "database_created_at", "bucket_created_at"}
+            or scope["epoch"] != creation_value or type(ownership.get("schema_prefix")) is not int
+            or ownership["schema_prefix"] != 0):
+        raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+    creation_epoch = Epoch(**creation_value)
+    if creation_epoch.run_id != creation_run:
+        raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+    Scope(creation_epoch, scope["database"], scope["database_created_at"], scope["bucket_created_at"])
+    queue, dlq, version = rows[5].get("queue"), rows[5].get("dlq"), rows[7].get("version")
+    if (any(not isinstance(item, str) or re.fullmatch(r"[0-9a-f]{32}", item) is None
+            for item in (queue, dlq)) or queue == dlq
+            or not isinstance(version, str) or UUID.fullmatch(version) is None):
+        raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+    expected[1].update(creation_epoch=creation_value, scope=scope, schema_prefix=0)
+    expected[5].update(queue=queue, dlq=dlq)
+    expected[7].update(version=version)
+    expected[9].update(state="failed", error_type="FreshError")
+    if rows != expected:
+        raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+    return creation_run, epoch, version, queue, dlq
+
+
+def load_sink_checkpoint(run_id: str, folder: Path) -> tuple[str, Epoch, str, str, str] | None:
+    """Load one protected sink-readback failure without granting replay or ownership.
+
+    Example: ``creator, epoch, version, queue, dlq = load_sink_checkpoint(
+    latest_attempt, ROOT / '.temp/recovery/sink')``. The caller separately proves
+    original storage ownership and reads back this exact sink before proceeding.
+    A fully downloaded original controller artifact returns ``None`` so the caller
+    can use the existing original-creation admission path. Missing or ambiguous
+    evidence never returns ``None``. No Cloudflare operation is performed; only
+    validated checkpoint artifact members persist.
+    """
+    sha, rows = origin(run_id)
+    recovery = artifact(rows, f"mail-fresh-bootstrap-recovery-{run_id}-1", LIMIT * 2)
+    allowed = {"resume.jsonl", "preflight.jsonl", "trace-queue-provision-production.json"}
+    files = members(github(f"artifacts/{recovery['id']}/zip", binary=True), allowed | ALLOWED, LIMIT * 2, 4)
+    if "resume.jsonl" not in files:
+        if "controller.jsonl" in files:
+            return None
+        raise ValueError("fresh_recovery_sink_checkpoint_unavailable")
+    if not set(files) <= allowed:
+        raise ValueError("fresh_recovery_sink_checkpoint_unreviewed")
+    checkpoint = _sink_checkpoint(files["resume.jsonl"], sha, run_id)
+    creation_run, epoch, version, queue, dlq = checkpoint
+    if "preflight.jsonl" in files:
+        preflight(files["preflight.jsonl"], sha, run_id)
+    build = artifact(rows, f"worker-native-modules-{sha}", MODULE_LIMIT)
+    if build["id"] != epoch.artifact_id:
+        raise ValueError("fresh_recovery_original_artifact_id_mismatch")
+    original(module_zip(build["id"]), epoch)
+    if "trace-queue-provision-production.json" in files:
+        raw = files["trace-queue-provision-production.json"]
+        queue_receipt(raw)
+        identities = {row["queue_name"]: row["queue_id"] for row in decode(raw)}
+        expected = {"amail-trace-events": queue, "amail-trace-dlq": dlq}
+        if any(identity != expected[name] for name, identity in identities.items()):
+            raise ValueError("fresh_recovery_sink_queue_mismatch")
+    folder = Path(folder)
+    owned, resolved = (ROOT / ".temp").resolve(), folder.resolve()
+    if not resolved.is_relative_to(owned) or resolved == owned or folder.exists() or folder.is_symlink():
+        raise ValueError("fresh_recovery_destination_unreviewed")
+    folder.mkdir(parents=True, exist_ok=False, mode=0o700)
+    for name, data in files.items():
+        with (folder / name).open("xb") as output:
+            output.write(data)
+        (folder / name).chmod(0o600)
+    return creation_run, epoch, version, queue, dlq

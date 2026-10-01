@@ -360,6 +360,88 @@ class RecoveryAdmissionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             admission.scope_journal(wrong, self.epoch)
 
+    def sink_checkpoint(self):
+        """Reproduce the ten-row production failure shape with synthetic module bytes."""
+        creation = Epoch("87acaaa4ddbc2c22233fb5e5fc74f1778f86f3aa", "36912824752",
+                         11188385927, "ea687638b68ec1791c9754c92e0df9aad3105a909cf92163d1dc68140a4619ec",
+                         "1.98.1")
+        base = {"schema": "mail-fresh-resume/v1", "deployment_epoch": asdict(self.epoch),
+                "creation_run": creation.run_id}
+        rows = [{**base, "phase": phase, "state": state}
+                for phase in ("ownership", "migrate", "queues", "sink", "sink_readback")
+                for state in ("intent", "observed")]
+        rows[1].update(creation_epoch=asdict(creation), schema_prefix=0,
+                       scope={"epoch": asdict(creation), "database": "d9be9bb4-5a73-4223-85d6-b04763e6f03b",
+                              "database_created_at": "2026-10-01T19:20:25Z",
+                              "bucket_created_at": "2026-10-01T19:20:26Z"})
+        rows[5].update(queue="e7a80fba65b0471aa4a267527d83d2d3", dlq="7eab75daab9345e9ad6d0c1fa6f0e37c")
+        rows[7].update(version="c56c8062-ef7f-48ed-b91f-91394b03cd69")
+        rows[9].update(state="failed", error_type="FreshError")
+        return rows
+
+    def load_checkpoint(self, rows, queue=None):
+        """Exercise protected admission using only existing mocked immutable reads."""
+        raw = b"\n".join(json.dumps(row).encode() for row in rows) + b"\n"
+        entries = [("resume.jsonl", raw)]
+        if queue is not None:
+            entries.append(("trace-queue-provision-production.json", json.dumps(queue).encode()))
+        self.recovery = zipped(entries)
+        with patch.object(admission, "github", side_effect=self.github), patch.object(
+                admission, "module_zip", return_value=self.modules):
+            return admission.load_sink_checkpoint(self.epoch.run_id, self.destination)
+
+    def test_known_sink_readback_failure_admits_exact_observed_coordinates(self):
+        """The actual failure shape yields sink coordinates, not replacement creation proof."""
+        rows = self.sink_checkpoint()
+        queue = [{"target": "production", "queue_name": name, "queue_id": rows[5][key]}
+                 for name, key in (("amail-trace-events", "queue"), ("amail-trace-dlq", "dlq"))]
+        result = self.load_checkpoint(rows, queue)
+        self.assertEqual(result, ("36912824752", self.epoch, rows[7]["version"], rows[5]["queue"], rows[5]["dlq"]))
+        self.assertEqual(admission.lines((self.destination / "resume.jsonl").read_bytes(), 10), rows)
+        self.assertEqual({path.name for path in self.destination.iterdir()},
+                         {"resume.jsonl", "trace-queue-provision-production.json"})
+        self.assertNotIn("resume.jsonl", admission.ALLOWED)
+        self.recovery = zipped([("controller.jsonl", self.controller)])
+        with patch.object(admission, "github", side_effect=self.github):
+            self.assertIsNone(admission.load_sink_checkpoint(self.epoch.run_id, self.destination))
+
+    def test_sink_checkpoint_refuses_tamper_unknown_writes_and_missing_observation(self):
+        """Closed checkpoints and immutable modules gate persistence before any replay."""
+        mutations = ((7, "state", "failed"), (6, "phase", "maintenance"),
+                     (7, "version", "not-a-version"), (9, "error_type", "OtherError"),
+                     (1, "schema_prefix", True), (0, "creation_run", self.epoch.run_id),
+                     (3, "message", "private payload"))
+        for index, key, value in mutations:
+            rows = self.sink_checkpoint()
+            rows[index][key] = value
+            with self.subTest(key=key, index=index), self.assertRaises(ValueError):
+                self.load_checkpoint(rows)
+            self.assertFalse(self.destination.exists())
+        rows = self.sink_checkpoint()
+        rows[1]["creation_epoch"]["run_id"] = "36912824753"
+        rows[1]["scope"]["epoch"] = dict(rows[1]["creation_epoch"])
+        with self.assertRaises(ValueError):
+            self.load_checkpoint(rows)
+        rows = self.sink_checkpoint()
+        for changed in (rows[:7] + rows[8:], rows + [{**rows[-1], "phase": "api"}]):
+            with self.assertRaises(ValueError):
+                self.load_checkpoint(changed)
+        bad_queue = [{"target": "production", "queue_name": "amail-trace-events", "queue_id": "a" * 32}]
+        with self.assertRaisesRegex(ValueError, "sink_queue_mismatch"):
+            self.load_checkpoint(rows, bad_queue)
+        self.artifacts[1]["id"] += 1
+        with self.assertRaisesRegex(ValueError, "artifact_id_mismatch"):
+            self.load_checkpoint(rows)
+        self.assertFalse(self.destination.exists())
+
+        self.artifacts[1]["id"] -= 1
+        for entries in ([("preflight.jsonl", b"{}")], [("unknown.jsonl", b"{}")],
+                        [("controller.jsonl", self.controller), ("resume.jsonl", b"{}")]):
+            self.recovery = zipped(entries)
+            with patch.object(admission, "github", side_effect=self.github), self.assertRaises(ValueError):
+                admission.load_sink_checkpoint(self.epoch.run_id, self.destination)
+        self.assertFalse(self.destination.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
