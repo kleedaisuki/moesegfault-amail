@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: Successful full compiled-main source CI run (all platforms/native suites)
-        required: true
+        description: Successful full compiled-main CI run (required for experiment, unused by absent-endpoint diagnosis)
+        required: false
         type: string
       confirm:
-        description: RUN_NATIVE_TRACING_CANARY
+        description: RUN_NATIVE_TRACING_CANARY or read-only DIAGNOSE_NATIVE_TRACING_ENDPOINT / DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE
         required: true
         type: string
 permissions:
@@ -80,6 +80,42 @@ jobs:
         if: always()
         with:
           name: native-tracing-experiment-${{ github.run_id }}
+          path: .temp/native-tracing/experiment.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+  diagnose:
+    if: github.ref == 'refs/heads/main' && (inputs.confirm == 'DIAGNOSE_NATIVE_TRACING_ENDPOINT' || inputs.confirm == 'DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE') && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CANARY_CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate source orchestration without provider capabilities
+        run: |
+          python -m pip install --only-binary=:all: -r infra/dns/requirements.txt -r infra/tests/ten_address_requirements.txt
+          python -m unittest discover -s infra/tests -v
+      - name: Diagnose only an absent infrastructure caller hostname (no deploy or invocation)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ "$CANARY_CONFIRM" = "DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE" ]; then
+            python infra/deploy/native_tracing_experiment.py diagnose-client-signature
+          else
+            python infra/deploy/native_tracing_experiment.py diagnose
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: native-endpoint-diagnostic-${{ github.run_id }}
           path: .temp/native-tracing/experiment.json
           include-hidden-files: true
           if-no-files-found: ignore

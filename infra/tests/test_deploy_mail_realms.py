@@ -68,7 +68,7 @@ class MailDeployTests(unittest.TestCase):
 
             captured = io.StringIO()
             argv = ["--target", "staging"] if target == "staging" else []
-            with patch.object(deployer, "ROOT", root), patch.dict(os.environ, environment, clear=True), patch.object(deployer.subprocess, "run", side_effect=run) as call, redirect_stdout(captured):
+            with patch.object(deployer, "ROOT", root), patch.object(deployer, "require_artifact"), patch.dict(os.environ, environment, clear=True), patch.object(deployer.subprocess, "run", side_effect=run) as call, redirect_stdout(captured):
                 code = deployer.main(argv)
             self.assertEqual(call.call_count, 1)
             self.assertEqual(len(seen), 1)
@@ -122,7 +122,7 @@ class MailDeployTests(unittest.TestCase):
         for target, name, value in cases:
             environment = dict(self.environment(target, ROOT / ".temp/synthetic-unused-output"), **{name: value})
             argv = ["--target", target]
-            with patch.dict(os.environ, environment, clear=True), patch.object(deployer.tempfile, "mkstemp") as write, patch.object(deployer.subprocess, "run") as run, redirect_stdout(io.StringIO()):
+            with patch.dict(os.environ, environment, clear=True), patch.object(deployer, "require_artifact"), patch.object(deployer.tempfile, "mkstemp") as write, patch.object(deployer.subprocess, "run") as run, redirect_stdout(io.StringIO()):
                 self.assertEqual(deployer.main(argv), 1)
             write.assert_not_called()
             run.assert_not_called()
@@ -134,6 +134,15 @@ class MailDeployTests(unittest.TestCase):
         with patch.dict(os.environ, environment, clear=True), patch.object(check_staging, "check", side_effect=ValueError(PRIVATE)), patch.object(deployer.tempfile, "mkstemp") as write, patch.object(deployer.subprocess, "run") as run, redirect_stdout(captured):
             self.assertEqual(deployer.main(["--target", "staging"]), 1)
         self.assertNotIn(PRIVATE, captured.getvalue())
+        write.assert_not_called()
+        run.assert_not_called()
+
+    def test_unverified_artifact_precedes_secret_material_and_provider_write(self):
+        """Normal deployments cannot bypass the same-run artifact boundary."""
+        environment = self.environment("production", ROOT / ".temp/synthetic-unused-output")
+        with patch.dict(os.environ, environment, clear=True), patch.object(deployer, "require_artifact", side_effect=ValueError("artifact_provenance_mismatch")) as artifact, patch.object(deployer.tempfile, "mkstemp") as write, patch.object(deployer.subprocess, "run") as run, redirect_stdout(io.StringIO()):
+            self.assertEqual(deployer.main([]), 1)
+        artifact.assert_called_once_with("mail_api")
         write.assert_not_called()
         run.assert_not_called()
 

@@ -154,3 +154,125 @@ policy admits only this infrastructure experiment, never Mail sending or release
 References:
 - https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/settings/methods/get/
 - https://github.com/cloudflare/workers-sdk/blob/wrangler%404.142.0/packages/deploy-helpers/src/deploy/helpers/create-worker-upload-form.ts
+
+## Executed unchanged-build admission and public-trigger boundary
+
+Experiment 36870838693 (13:43:46–13:44:36 UTC, 50 seconds total) executed the
+new lane without waiting for another full original-main build. It passed current
+hosted infrastructure tests, ancestry/narrow-input admission, original artifact
+11164304271 hash/source/compiler/run restoration (compiled source dcc4eed6,
+full CI 36867766344), and pair deployment/version/isolation readback under current
+orchestration source e9a56069898f74be7cda15ad4cc9ca42f41487c4. Caller observability
+was specifically a missing key; probe flags were three true booleans. Both
+identities are in its public receipt. This is real reuse evidence, not a cache
+inference or general release admission.
+
+The first public POST returned HTTP 403 before any valid case receipt. This does
+not prove the Rust native API failed: caller source returns a JSON aggregate,
+not this status. Native trace collection remained skipped. No raw challenge body
+or authentication data was captured; the old trigger also omitted useful status/
+CF-Ray/content-type boundary facts. A bounded repair persists those operational
+facts, distinguishes a bare Forbidden reply and managed challenge, and always
+records the request time window even on failure. It does not retry the POST or
+attribute the refusal to a token/WAF/propagation issue without evidence.
+
+Source-owned caller version ec89d865-d235-4a09-9c51-7e962ca1438d and probe version
+6b6ef8ac-4779-46a1-a6e4-5011da759a90 were deleted; receipt cleaned_at is
+2026-10-01T13:44:32.718360+00:00 and both absence GETs were verified. No Mail data,
+identity, route or sending state changed. Native API and retention acceptance
+remain pending.
+
+## Typed public refusal and no-write follow-up
+
+Run 36873792849 accepted original build artifact 11164304271 under current
+orchestration 4c6b78914da38e9233b1abec596e640cf9155be8. Deployment/readback passed;
+the public POST returned HTTP403, text/plain, 17 bytes, CF-Ray
+a43c08d1da3267c4-SJC, server Cloudflare, without cf-mitigated:challenge. The body
+was not a bare Forbidden literal and was not persisted. Both owned scripts were
+deleted and absence verified at 2026-10-01T14:07:35.985403+00:00. Native API/
+retained-record acceptance remains missing; this is not an authentication-token
+or native API diagnosis.
+
+Do not recreate the pair merely to inspect an endpoint refusal. The existing
+workflow has a separate DIAGNOSE_NATIVE_TRACING_ENDPOINT job that first runs
+current hosted infrastructure tests, positively reads both scripts absent, then
+makes one credential-free GET to the fixed absent caller hostname. It cannot
+create or invoke a Worker; a live script refuses the probe, a failed provider read
+is not absence, redirects/retries remain forbidden and writer serialization stays
+in place. It captures safe response facts and a numeric code only when the entire
+body matches the standard `error code: NNNN` form. No build/artifact/source-run
+input is needed for this read-only boundary. A new artifact is not manufactured
+and this diagnostic grants no runtime acceptance.
+
+Official evidence constrains interpretation:
+- https://developers.cloudflare.com/cloudflare-challenges/challenge-types/challenge-pages/detect-response/
+  documents cf-mitigated:challenge and HTML for managed challenge responses.
+- https://developers.cloudflare.com/workers/configuration/routing/workers-dev/
+  documents Access on one deployment or all Workers; enabled alone is not public reachability proof.
+- https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/error-403/
+  includes early unstyled403; a bare body alone cannot determine origin/cause.
+No documented fresh-deployment403 guarantee justifies a retry or propagation
+assumption. Next action is the absent-host diagnostic, not business debugging.
+
+## Absent-host 1010 and bounded client-signature test
+
+The same no-write run 36877264235 completed successfully on exact main
+d593d1a20fa2bbf59b997e13343373614aa7fcf7. Hosted infrastructure tests passed,
+both script settings reads positively returned 404, and the single anonymous GET
+to the absent caller returned HTTP403, text/plain, 17 bytes. The complete-body
+numeric classifier retained **1010**, CF-Ray a43c2f468e148537-SJC, Cloudflare server
+and no managed-challenge marker. Artifact 11169737986 contains the public receipt;
+run interval was 2026-10-01T14:33:26Z--14:33:56Z. No Worker was deployed or invoked.
+This directly separates the endpoint refusal from Rust/Span execution. It does
+not retroactively establish the numeric code of previous unclassified POSTs.
+
+Cloudflare's [1010 documentation](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/)
+defines browser-signature-based denial. [Browser Integrity Check documentation](https://developers.cloudflare.com/waf/tools/browser-integrity-check/)
+describes HTTP-header inspection, missing/nonstandard User-Agent treatment and
+selective hostname/path exemptions on a controlled zone. The actual workers.dev
+policy/rule owner has not been identified; these references do not prove that our
+account can edit the shared workers.dev zone. Access-token failure, propagation,
+application failure and a particular editable WAF rule are not established.
+
+The next exact no-write operation is
+`DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE`. It runs current hosted infrastructure
+tests, proves both fixed scripts absent again, then changes **only User-Agent**
+on the same Python transport to the fixed truthful compatibility identity
+`Mozilla/5.0 (compatible; amail-native-tracing-canary/1.0)`. No Chrome identity,
+cookie, challenge solution, new token, arbitrary header/URL input, redirect,
+retry, rule change or new route is introduced. The existing default-urllib
+diagnostic remains separately available; the receipt identifies the chosen
+client profile rather than silently rewriting historical evidence.
+
+| Observed variant result | Interpretation and next bounded action |
+| --- | --- |
+| 404 without1010 | Supports header-sensitive denial for this absent-host GET; review the same client identity for one normal canary only after checked build admission |
+| 1010 remains | Header-only candidate did not remove denial; do not sweep user agents or recreate the pair. Identify workers.dev policy ownership or review a new isolated hostname on an owned zone separately |
+| Redirect/challenge/other error | Preserve typed boundary evidence; no automatic follow or token workaround; reassess from actual response |
+
+Even a404 is not evidence that a live POST will work, that native APIs execute,
+or that caller/root records contain no protected markers. Live version readback,
+four native cases, complete retained-window collection and owned-script cleanup
+remain necessary. The normal trigger is deliberately unchanged until this
+inexpensive discriminator is observed. No mail/storage/identity/send operation or
+general production security exception is admitted by either diagnostic.
+
+### Ordinary CLI implication (source inspection, not a live failure)
+
+`crates/amail/src/api.rs` constructs its reqwest client without `user_agent()`;
+the request path adds bearer/traceparent/body/idempotency headers, not User-Agent.
+The separate login/refresh/logout and telemetry clients likewise have no explicit
+client identity. Cargo.lock pins reqwest0.12.28; its [exact ClientBuilder source](https://github.com/seanmonstar/reqwest/blob/v0.12.28/src/async_impl/client.rs)
+initializes Accept but no default User-Agent. Therefore the ordinary CLI sends no
+application User-Agent unless a later transport intermediary inserts one.
+
+The configured defaults are **mail.moesegfault.dev** and
+**identity.moesegfault.dev**, not the failing workers.dev hostname. Missing-UA
+compatibility with Browser Integrity Check on an owned custom domain deserves a
+separate interoperability check, but this workers.dev1010 does not prove those
+domains currently deny the CLI. A future ordinary-client fix should use one
+truthful stable application identity (the [reqwest API example](https://docs.rs/reqwest/latest/reqwest/struct.ClientBuilder.html#method.user_agent)
+uses app name/version), cover all relevant clients and retain existing auth/data
+contracts. Do not copy the experimental compatibility profile into business
+clients automatically or add a broad WAF exception. No CLI Rust file is changed
+by this diagnostic work.

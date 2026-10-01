@@ -26,6 +26,10 @@ PROBE = "amail-native-trace-probe"
 CALLER = "amail-native-trace-caller"
 NAMES = (PROBE, CALLER)
 API = "https://api.cloudflare.com/client/v4"
+# A fixed, truthful client identity tests the documented browser-signature boundary.
+# This is not a browser impersonation, credential, or security-policy change.
+CLIENT_USER_AGENT = "Mozilla/5.0 (compatible; amail-native-tracing-canary/1.0)"
+CLIENT_PROFILE = "self_identified_compatibility_v1"
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -209,29 +213,106 @@ def deploy() -> None:
     write_receipt(receipt)
 
 
+def trigger_facts(response, raw: bytes) -> dict:
+    """Classify a credential-free synthetic endpoint reply, never dump a challenge body.
+
+    Header names are public schema facts; values are restricted to reviewed
+    operational fields. Cookies, challenge tokens, redirect URLs and prose never
+    enter the receipt. A bare Forbidden response differs from our JSON receipt.
+    """
+    headers = response.headers
+    result = {"http_status": response.code, "body_bytes": len(raw),
+              "body_class": "bare_forbidden" if raw.strip() == b"Forbidden" else "other",
+              "header_names": sorted(key.lower() for key in headers.keys())}
+    media = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    result["media_type"] = media if media in ("application/json", "text/html", "text/plain") else "other"
+    ray = headers.get("cf-ray", "")
+    if re.fullmatch(r"[A-Za-z0-9-]{1,64}", ray):
+        result["cf_ray"] = ray
+    result["cloudflare_server"] = headers.get("server", "").lower() == "cloudflare"
+    result["cloudflare_challenge"] = headers.get("cf-mitigated", "").lower() == "challenge"
+    code = re.fullmatch(rb"error code:\s*([0-9]{4})\s*", raw, re.IGNORECASE)
+    if code:
+        result["body_class"] = "cloudflare_error_code"
+        result["provider_error_code"] = int(code[1])
+    return result
+
+
+def diagnose_endpoint(*, client_signature: bool = False) -> None:
+    """Read an absent caller hostname without deploying or invoking a Worker.
+
+    Both fixed scripts must be absent before the anonymous GET. The writer lock
+    remains held, and the public request never receives provider credentials.
+    The separately admitted client-signature variant changes only User-Agent.
+    It does not sweep headers, retry the default request, or weaken provider rules.
+    """
+    provider = Provider()
+    for name in NAMES:
+        try:
+            provider.request("GET", provider.script(name))
+        except HTTPError as error:
+            if error.code != 404:
+                raise
+        else:
+            raise ValueError("endpoint_diagnostic_requires_absent_scripts")
+    subdomain = provider.request("GET", f"/accounts/{provider.account}/workers/subdomain")["subdomain"]
+    if not re.fullmatch(r"[a-z0-9-]{1,63}", subdomain):
+        raise ValueError("canary_account_subdomain_invalid")
+    url = f"https://{CALLER}.{subdomain}.workers.dev"
+    headers = {"User-Agent": CLIENT_USER_AGENT} if client_signature else {}
+    request = Request(url, method="GET", headers=headers)
+    try:
+        response = build_opener(NoRedirect).open(request, timeout=30)
+    except HTTPError as error:
+        response = error
+    with response:
+        facts = trigger_facts(response, response.read(65537))
+    write_receipt({"schema": "native-endpoint-diagnostic/v1", "source_sha": os.environ["GITHUB_SHA"],
+                   "run_id": os.environ["GITHUB_RUN_ID"], "scripts_absent": True, "url": url,
+                   "client_profile": CLIENT_PROFILE if client_signature else "python_urllib_default",
+                   "response": facts})
+    print(json.dumps({"event": "absent_canary_endpoint_diagnostic", **facts}, sort_keys=True))
+
+
 def trigger() -> None:
-    """Single synthetic trigger; never send credentials or retry an uncertain invocation."""
+    """Single trigger with persisted failure boundary; never retry an uncertain invocation."""
     receipt = json.loads(RECEIPT.read_text())
     receipt["from"] = int(time.time() * 1000) - 2000
     write_receipt(receipt)
     request = Request(receipt["url"], data=b"", method="POST")
-    with build_opener(NoRedirect).open(request, timeout=60) as response:
-        raw = response.read(65537)
-    if len(raw) > 65536:
-        raise ValueError("canary_receipt_body_limit")
-    value = json.loads(raw)
-    rows = value.get("receipts", [])
-    if len(rows) != 4:
-        raise ValueError("four_canary_case_receipts_required")
-    for row in rows:
-        report = row["report"]
-        if (report.get("available") is not True or report.get("sampled") is not True
-                or report.get("stage") != "complete" or report["case"]["run"] != receipt["probe_id"]):
-            raise ValueError(f"native_api_not_accepted: stage={report.get('stage')} sampled={report.get('sampled')}")
-        if row.get("status") != (200 if report["case"]["kind"] == "success" else 500):
-            raise ValueError("canary_case_status_mismatch")
-    receipt["receipts"], receipt["to"] = rows, int(time.time() * 1000) + 2000
-    write_receipt(receipt)
+    try:
+        with span("canary.trigger", "post", component="native_tracing", script_name=CALLER) as facts:
+            try:
+                response = build_opener(NoRedirect).open(request, timeout=60)
+            except HTTPError as error:
+                response_facts(facts, error.code, error.headers)
+                with error:
+                    raw = error.read(65537)
+                    receipt["trigger"] = trigger_facts(error, raw)
+                facts.reason = "http_status"
+                raise ValueError("canary_trigger_http_failed") from None
+            with response:
+                response_facts(facts, response.status, response.headers)
+                raw = response.read(65537)
+                receipt["trigger"] = trigger_facts(response, raw)
+        if len(raw) > 65536:
+            raise ValueError("canary_receipt_body_limit")
+        value = json.loads(raw)
+        rows = value.get("receipts", [])
+        if len(rows) != 4:
+            raise ValueError("four_canary_case_receipts_required")
+        # The caller constructs all reports itself, without reading user data.
+        receipt["receipts"] = rows
+        for row in rows:
+            report = row["report"]
+            if (report.get("available") is not True or report.get("sampled") is not True
+                    or report.get("stage") != "complete" or report["case"]["run"] != receipt["probe_id"]):
+                raise ValueError("native_api_not_accepted")
+            if row.get("status") != (200 if report["case"]["kind"] == "success" else 500):
+                raise ValueError("canary_case_status_mismatch")
+    finally:
+        receipt["to"] = int(time.time() * 1000) + 2000
+        write_receipt(receipt)
     print(json.dumps({"event": "native_canary_invoked", "probe_id": receipt["probe_id"], "cases": 4}, sort_keys=True))
 
 
@@ -391,10 +472,16 @@ def cleanup() -> None:
 
 def main() -> None:
     """Explicit hosted first-attempt experiment only, no mailbox or generic provider tool."""
-    if (os.getenv("GITHUB_ACTIONS") != "true" or os.getenv("GITHUB_REF") != "refs/heads/main"
-            or os.getenv("GITHUB_RUN_ATTEMPT") != "1" or os.getenv("CANARY_CONFIRM") != "RUN_NATIVE_TRACING_CANARY"):
+    operations = {"deploy": deploy, "trigger": trigger, "collect": collect, "cleanup": cleanup,
+                  "diagnose": diagnose_endpoint,
+                  "diagnose-client-signature": lambda: diagnose_endpoint(client_signature=True)}
+    operation = sys.argv[1] if len(sys.argv) == 2 else ""
+    expected = {"diagnose": "DIAGNOSE_NATIVE_TRACING_ENDPOINT",
+                "diagnose-client-signature": "DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE"}.get(operation, "RUN_NATIVE_TRACING_CANARY")
+    if (operation not in operations or os.getenv("GITHUB_ACTIONS") != "true" or os.getenv("GITHUB_REF") != "refs/heads/main"
+            or os.getenv("GITHUB_RUN_ATTEMPT") != "1" or os.getenv("CANARY_CONFIRM") != expected):
         raise SystemExit("Explicit hosted main first-attempt canary context required.")
-    {"deploy": deploy, "trigger": trigger, "collect": collect, "cleanup": cleanup}[sys.argv[1]]()
+    operations[operation]()
 
 
 if __name__ == "__main__":
