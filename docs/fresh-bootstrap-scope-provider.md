@@ -21,7 +21,9 @@ successful inventories must establish name absence before the first create.
 D1 uses unfiltered account pagination, consistent total_count, exact page/count/
 per_page and duplicate-free UUIDs. R2 uses default-jurisdiction cursor pagination,
 duplicate-free names and a terminal missing/empty continuation cursor in validated
-result_info. Missing result_info, unreadable lists, cycles, drift or over-bound
+optional result_info. R2's optional per_page may be omitted or smaller than the
+requested limit; it is not D1's required counted-page contract. Missing bucket
+rows, malformed present metadata, unreadable lists, cycles, drift or over-bound
 inventory fail closed, never become absence. Limits are 1 MiB per HTTP response,
 1000 rows per page and 10000 inventory entries; exhaustion refuses provisioning.
 

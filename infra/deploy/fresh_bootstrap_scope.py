@@ -265,13 +265,26 @@ def _absence(provider, epoch: Epoch) -> None:
             query["cursor"] = cursor
         value = provider.envelope("GET", prefix + "/r2/buckets?" + urlencode(query))
         result, info = value.get("result"), value.get("result_info")
+        if info is None:
+            info = {}
         rows = result.get("buckets") if isinstance(result, dict) else None
+        # R2 continuation metadata is optional, unlike D1's counted pages.
+        # A present smaller server limit is valid; every returned cursor is followed.
+        page_limit = info.get("per_page", PAGE_SIZE) if isinstance(info, dict) else None
+        if page_limit is None:
+            page_limit = PAGE_SIZE
         if (value.get("success") is not True or value.get("errors") != []
-                or not isinstance(rows, list) or len(rows) > PAGE_SIZE or not isinstance(info, dict)
-                or type(info.get("per_page")) is not int or info["per_page"] != PAGE_SIZE
-                or not isinstance(info.get("cursor", ""), str)
-                or len(info.get("cursor", "")) > 2048):
+                or not isinstance(rows, list) or len(rows) > PAGE_SIZE):
             raise FreshError("fresh_r2_inventory_incomplete")
+        if not isinstance(info, dict):
+            raise FreshError("fresh_r2_result_info_type")
+        if type(page_limit) is not int or not 1 <= page_limit <= PAGE_SIZE:
+            raise FreshError("fresh_r2_page_limit_unverified")
+        cursor = info.get("cursor")
+        if cursor is None:
+            cursor = ""
+        if not isinstance(cursor, str) or len(cursor) > 2048:
+            raise FreshError("fresh_r2_cursor_unverified")
         for row in rows:
             if (not isinstance(row, dict) or not isinstance(row.get("name"), str)
                     or not row["name"] or row["name"] in seen):
@@ -279,7 +292,6 @@ def _absence(provider, epoch: Epoch) -> None:
             seen.add(row["name"])
             if row["name"] == epoch.bucket_name:
                 raise FreshError("fresh_create_existing_refused")
-        cursor = info.get("cursor", "")
         if len(seen) > INVENTORY_LIMIT or cursor and (not rows or cursor in cursors):
             raise FreshError("fresh_r2_inventory_incomplete")
         if not cursor:
