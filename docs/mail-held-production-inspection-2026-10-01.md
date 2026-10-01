@@ -81,3 +81,22 @@ Cron CPU/memory/wall or public release acceptance. These remain explicit next wo
 The implementation uses mature platform mechanisms rather than a new deployment
 framework. No academic novelty or speculative historical-proof abstraction is
 claimed; discriminating observable contracts are the appropriate method here.
+
+## First actual inspection and privacy-preserving diagnostics
+
+Manual main run 36828109460 used source6527c82982c1252025f942da9bd8fd924c0e84a2.
+Its 6 schema +11 inventory contracts passed, the pinned SDK installed successfully,
+and the sole actual inspection step returned UNVERIFIED after about4.1seconds.
+No provider write/deploy/migration/grant/send occurred and no success artifact was
+produced. The original verdict collapsed every failure stage, so it does not yet
+identify the cause and must not be described as a proven missing permission.
+
+Add invocation-local enum stages and closed reason bins (own contract codes,
+selected HTTP statuses and selected SDK refusal codes). Never return arbitrary
+SDK message/URL/body/code, object key, address or token. Two negative/mock tests
+prove prose and malformed codes remain unexpected, while403/AccessDenied remain
+useful fixed diagnostics. This changes no provider read, admission or Secret scope.
+The next identical bounded inspection is warranted only after hosted source checks
+accept this diagnostic patch; no blind permission request or repeated full test
+campaign is appropriate. Its Python-only stacked PR also exercises the new
+conservative CI scope before main integration; main full checks remain required.
