@@ -129,3 +129,69 @@ References checked: [Miniflare scheduled-event API](https://developers.cloudflar
 [scheduled runtime contract](https://developers.cloudflare.com/workers/runtime-apis/handlers/scheduled/),
 and [Workers production practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/).
 No new academic claim is made by this focused fixture review.
+
+## Narrow follow-up: order-sensitive hidden accepted tombstone fixture
+
+Date: 2026-10-01. Reviewed base/head
+`048ce10f17d45d56947a233d70836adc8dbebaa5` plus exactly nine uncommitted added
+lines in `infra/tests/worker-boundary/accepted-http-cron-race.test.mjs`, lines
+179-187. Reviewed candidate file SHA-256:
+`0FC6112930E3C4F52859E7027FDD9F557F02B76FB9B8ED5704E27380AAE57648`.
+The concurrent implementation-notes update is documentation, not production
+source. No production implementation change is part of this narrow correction.
+
+**GO for committing this narrow fixture correction and nondeploying source CI
+rerun. No substantive blocker found. This is not approval to merge or deploy;
+main remains frozen and hosted runtime evidence is required.**
+
+### Failure evidence and causal interpretation
+
+Inspected retained `.temp/ci-36811279260-failed.log` for
+[CI run 36811279260](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36811279260)
+on the stated head. The default built-workerd suite reports **95 passed / 96
+tests / 1 failed**. The sole failure is `public owner DELETE tombstones a hidden
+accepted legacy projection`; the assertion `real GC removed the immutable
+archive` received an existing native object instead of null. The focused new
+liveness step did not run after this preceding failure; neither its pass nor
+failure can be inferred from the default-suite totals.
+
+Source inspection supports an order-sensitive fixture expectation as the cause,
+not permission to delete an accepted archive early. `garbage_collect()` explicitly
+excludes any tombstone whose journal is still accepted. Rotation can execute
+Deleted before Outbound in the same turn. Outbound then performs the existing
+leased atomic deleted-delivery terminalization, setting the journal to sent while
+preserving the tombstone. That turn legitimately retains the archive until a
+subsequent GC phase. The failed log alone does not record phase ordering; this
+causal interpretation comes from the phase rotation formula and executable
+selection/terminalization paths, and the added assertions make it discriminating.
+
+### Why this correction preserves the contract
+
+- The complete `race()` case and test adapter were inspected, including the paused
+  real HTTP acceptance, native binding forwarding, public owner/foreign/repeat
+  DELETE, fixture-only due expiry, and late HTTP/replay ledger checks.
+- `new Date(1680001200000)` is a historical native scheduled-event parameter, not
+  an invocation clock override. Its slot is 5,600,004, residue **4**, so Deleted
+  runs first and Outbound later. This follows the already checked pinned Miniflare
+  scheduledTime Date API and inherited generated scheduled handler; the adapter
+  does not override scheduled execution. Production elapsed time still begins at
+  actual handler entry, not at that historical scheduled slot.
+- Only `hiddenAccepted` receives the additional real Cron turn after the existing
+  single-row persisted due expiry. Before it, journal state is accepted, tombstone
+  identity and archive retention are independently checked. After it, new checks
+  demand sent state, the exact unchanged tombstone timestamp, and retained ZIP.
+  Premature GC, failed terminalization, or lost tombstone cannot silently pass.
+- The following existing native Cron call must still delete the ZIP and message;
+  now its journal is already terminal, so GC eligibility is independent of whether
+  that turn places Outbound before or after Deleted. No manual ZIP deletion or
+  terminal-state write has been substituted for either production action.
+- Existing resumed HTTP and replay assertions still require one provider send,
+  stable message ID, unchanged reservations/usage, empty derived tables and zero
+  usage after deletion. The fix neither removes those safety checks nor changes
+  authentication headers, egress stubs, canary admission or barrier controls.
+
+Validation: `node --check` on the modified test and `git diff --check` passed.
+No local runtime tests/builds, commits, pushes, merge, deployment or provider
+actions were performed by this reviewer. Hosted CI must establish the corrected
+sequence's runtime behavior and subsequently execute the five focused liveness
+cases; this narrow approval is not new hosted-pass evidence.

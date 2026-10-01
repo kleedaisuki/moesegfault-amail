@@ -88,3 +88,28 @@ References: [accounting implementation](mail-maintenance-accounting-implementati
 [Anvil, OSDI 2024](https://www.usenix.org/conference/osdi24/presentation/sun-xudong).
 The controller/liveness analogy motivates explicit recurring-progress assumptions;
 it is not a formal proof of this implementation.
+
+## First hosted result and order-sensitive fixture correction
+
+PR #25 head `048ce10f17d45d56947a233d70836adc8dbebaa5`,
+[CI run 36811279260](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36811279260),
+attempt 1: all three CLI platforms, infrastructure, site and workflow syntax
+checks passed. Worker Rust units and Wasm compilation/bundling passed. Existing
+built-workerd boundary tests passed **95/96**; the new focused liveness step was
+skipped because the preceding default suite failed, not tested successfully.
+
+The sole failure was the hidden accepted legacy tombstone case at its assertion
+that one immediate Cron turn physically removed the archive. Rotation can place
+deleted cleanup before outbound terminalization. Accepted-aware GC must then
+retain the ZIP and tombstone; after outbound terminalizes the deletion, another
+real GC turn can reclaim it. Restoring fixed production order would defeat the
+new scheduler, and deleting the archive earlier would violate journal safety.
+
+The test-only correction explicitly chooses slot residue four (Deleted first)
+after its existing fixture-only persisted due expiry. That first real turn must
+terminalize to sent, retain the exact tombstone, and still retain the ZIP because
+GC preceded terminalization. The following existing real turn must physically
+remove it. Owner/foreign/repeated DELETE and old HTTP no-resurrection/no-recharge
+assertions are unchanged. A narrow independent fixture review precedes rerun.
+Raw failed logs are retained only in worktree `.temp/ci-36811279260-failed.log`;
+this source correction is not yet new hosted-pass evidence.
