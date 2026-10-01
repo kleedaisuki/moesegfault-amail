@@ -20,6 +20,7 @@ INFRASTRUCTURE_ONLY = {
     "crates/mail-worker/check_trace_sink_isolation.py",
     ".github/workflows/native-fixture.yml",
     ".github/workflows/native-tracing-canary.yml",
+    ".github/workflows/probe-queues.yml",
     "infra/ci/native_fixture.py",
 }
 

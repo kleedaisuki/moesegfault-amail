@@ -18,6 +18,23 @@ Example after source validation/merge:
     gh workflow run native-fixture.yml --ref <reviewed-fixture-branch> \
       -f build_run_id=<completed-source-run> -f fixture=trace-sink.test.mjs
 
+## Separate packaging diagnostic mode
+
+The same dispatch also accepts the explicit `fixture=packaging` mode. It runs
+only the packaging job; ordinary named-file replay remains unchanged and does
+not install Wrangler. Packaging requires a **fully successful main CI run**,
+not just a successful build producer from failed CI, and proves a narrower set
+of unchanged compiler inputs. Its pinned Wrangler invocation is credential-free
+`deploy --dry-run`, followed by execution of the emitted module graphs only.
+No provider deployment, release admission or general artifact exception is
+introduced. See `docs/worker-packaging-boundary-probe.md` for exact scope and
+limits.
+
+    gh workflow run native-fixture.yml --ref <reviewed-probe-branch> \
+      -f build_run_id=<successful-full-main-ci-run> -f fixture=packaging
+
+## Ordinary fixture admission
+
 The conservative changed-file allowance covers repo docs/skills and native test
 .mjs files, plus this diagnostic helper/workflow/test. It is not a compiler input
 hash framework or a general old-artifact promotion mechanism. Unknown changes,

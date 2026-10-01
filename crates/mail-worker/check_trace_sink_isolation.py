@@ -11,6 +11,7 @@ from enum import Enum
 import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -115,8 +116,9 @@ def worker_domain_rows(value: object) -> list[dict]:
 
     Generic result_info is optional. Any supplied metadata must explicitly agree
     with the complete array and cannot claim another page or missing rows.
-    This extraction preserves the original acceptance rules; typed failures only
-    identify which rule rejected the response, without retaining its contents.
+    Domain IDs are opaque provider strings, not account/zone hexadecimal IDs.
+    The local 256-character bound limits inventory work; IDs remain byte-for-byte
+    unchanged for identity comparison. No ID is interpolated into a request path.
     """
     if (not isinstance(value, dict) or value.get("success") is not True
             or set(value) - ENVELOPE_FIELDS):
@@ -130,9 +132,10 @@ def worker_domain_rows(value: object) -> list[dict]:
             raise DomainInventoryError(DomainFailure.ROW)
         if not isinstance(row.get("id"), str):
             raise DomainInventoryError(DomainFailure.ID_TYPE)
-        if not ID.fullmatch(row["id"]):
-            reason = DomainFailure.ID_UUID if UUID.fullmatch(row["id"]) else DomainFailure.ID_FORMAT
-            raise DomainInventoryError(reason)
+        if (not 1 <= len(row["id"]) <= 256
+                or any(char.isspace() or unicodedata.category(char) in {"Cc", "Cf", "Cs"}
+                       for char in row["id"])):
+            raise DomainInventoryError(DomainFailure.ID_FORMAT)
         if row["id"] in seen:
             raise DomainInventoryError(DomainFailure.ID_DUPLICATE)
         if not isinstance(row.get("service"), str) or not row["service"]:
