@@ -36,6 +36,9 @@ from urllib.request import ProxyHandler, build_opener
 import websocket
 
 
+from acceptance_realm import AcceptanceRealm, STAGING
+
+
 ROOT = Path(__file__).resolve().parents[2]
 TEMP = (ROOT / ".temp").resolve()
 ROUTE_HELPER = ROOT / "workers" / "identity-test-inbox" / "ensure_route.py"
@@ -207,9 +210,10 @@ class Browser:
     中文：最小 CDP 页面驱动，不保存 HAR、截图、控制台或响应正文日志。
     """
 
-    def __init__(self, profile: Path):
+    def __init__(self, profile: Path, *, realm: AcceptanceRealm = STAGING):
         """Launch an isolated headless Chrome profile under `.temp`. / 在 `.temp` 启动隔离的无头 Chrome。"""
 
+        self.realm = realm
         self.port = local_port()
         self.profile = profile
         self.profile.mkdir(parents=True, exist_ok=False)
@@ -305,7 +309,7 @@ class Browser:
             url = params.get("response", {}).get("url", "")
             parsed = urlsplit(url)
             path = parsed.path
-            if f"{parsed.scheme}://{parsed.netloc}" == ISSUER and (
+            if f"{parsed.scheme}://{parsed.netloc}" == self.realm.issuer and (
                 path in (REGISTRATION, PASSWORD_AUTH)
                 or VERIFICATION_START.fullmatch(path) or VERIFICATION_DONE.fullmatch(path)
             ):
@@ -359,7 +363,7 @@ class Browser:
         """
 
         parsed = urlsplit(url)
-        if f"{parsed.scheme}://{parsed.netloc}" not in {LOGIN_ORIGIN, ISSUER, ACCOUNT_ORIGIN}:
+        if f"{parsed.scheme}://{parsed.netloc}" not in {self.realm.login_origin, self.realm.issuer, self.realm.account_origin}:
             raise ProbeError("unexpected_navigation_origin")
         self.call("Page.navigate", {"url": url})
 
@@ -381,13 +385,13 @@ class Browser:
     def require_login_origin(self) -> None:
         """Refuse to type credentials on any other origin. / 拒绝向其他来源输入凭据。"""
 
-        if self.evaluate("location.origin") != LOGIN_ORIGIN:
+        if self.evaluate("location.origin") != self.realm.login_origin:
             raise ProbeError("first_party_origin_mismatch")
 
     def require_account_origin(self) -> None:
         """Type a recovery code only on the reviewed staging Account Center."""
 
-        if self.evaluate("location.origin") != ACCOUNT_ORIGIN:
+        if self.evaluate("location.origin") != self.realm.account_origin:
             raise ProbeError("first_party_origin_mismatch")
 
     def fill(self, selector: str, value: str) -> None:
@@ -599,7 +603,7 @@ def cli_json(binary: Path, environment: dict[str, str], *args: str) -> dict:
     return value
 
 
-def valid_authorization_url(value: str) -> bool:
+def valid_authorization_url(value: str, *, realm: AcceptanceRealm = STAGING) -> bool:
     """Validate the sensitive native request in memory without returning its fields.
 
     中文：仅在内存检查敏感原生授权请求，不返回其中字段。
@@ -614,8 +618,8 @@ def valid_authorization_url(value: str) -> bool:
         redirect = urlsplit(redirect_values[0])
         proof = re.compile(r"[A-Za-z0-9_-]{43,128}")
         return (
-            f"{parsed.scheme}://{parsed.netloc}" == ISSUER
-            and query.get("client_id") == [CLIENT]
+            f"{parsed.scheme}://{parsed.netloc}" == realm.issuer
+            and query.get("client_id") == [realm.client_id]
             and query.get("response_type") == ["code"]
             and query.get("code_challenge_method") == ["S256"]
             and all(len(query.get(name, [])) == 1 and proof.fullmatch(query[name][0])
@@ -632,13 +636,24 @@ def valid_authorization_url(value: str) -> bool:
         return False
 
 
-def native_login(run_dir: Path, binary: Path, expected_address: str | None = None) -> None:
+def native_login(run_dir: Path, binary: Path, expected_address: str | None = None, *,
+                 realm: AcceptanceRealm = STAGING, credentials: tuple[str, str, str] | None = None) -> None:
     """Run actual native PKCE in a fresh browser and cross-process CLI session.
 
     中文：在全新浏览器内完成真实原生 PKCE，并跨进程检验 CLI 会话。
     """
 
-    username, password, address = load_credential(run_dir)
+    # Production must never load a staging DPAPI blob or default contact.
+    if realm.name == "production" and (credentials is None or expected_address is None):
+        raise ProbeError("production_explicit_credentials_required")
+    material = credentials if credentials is not None else load_credential(run_dir)
+    if (not isinstance(material, tuple) or len(material) != 3
+            or any(not isinstance(value, str) for value in material)):
+        raise ProbeError("native_credential_invalid")
+    username, password, address = material
+    if (not re.fullmatch(r"[a-z0-9_]{3,32}", username) or not 15 <= len(password) <= 128
+            or not isinstance(address, str) or "@" not in address):
+        raise ProbeError("native_credential_invalid")
     if expected_address is not None and address != expected_address:
         raise ProbeError("login_contact_does_not_match_encrypted_run")
     attempt = secrets.token_hex(8)
@@ -647,15 +662,15 @@ def native_login(run_dir: Path, binary: Path, expected_address: str | None = Non
     environment = browser_environment()
     environment.update({
         "AMAIL_HOME": str(home),
-        "AMAIL_ISSUER": ISSUER,
-        "AMAIL_CLIENT_ID": CLIENT,
-        "AMAIL_API_BASE": MAIL_API,
+        "AMAIL_ISSUER": realm.issuer,
+        "AMAIL_CLIENT_ID": realm.client_id,
+        "AMAIL_API_BASE": realm.mail_api,
         "AMAIL_REDIRECT_URI": "http://127.0.0.1/callback",
         "AMAIL_TELEMETRY": "off",
     })
     config = cli_json(binary, environment, "config")
     if any(config.get(key) != value for key, value in {
-        "issuer": ISSUER, "client_id": CLIENT, "api_base": MAIL_API,
+        "issuer": realm.issuer, "client_id": realm.client_id, "api_base": realm.mail_api,
         "redirect_uri": "http://127.0.0.1/callback", "telemetry_enabled": False,
     }.items()):
         raise ProbeError("cli_staging_coordinates_mismatch")
@@ -667,9 +682,10 @@ def native_login(run_dir: Path, binary: Path, expected_address: str | None = Non
     browser: Browser | None = None
     try:
         auth_url, lines = first_line(process)
-        if not valid_authorization_url(auth_url):
+        if not valid_authorization_url(auth_url, realm=realm):
             raise ProbeError("cli_authorization_request_mismatch")
-        browser = Browser(run_dir / f"authorization-browser-{attempt}")
+        browser = (Browser(run_dir / f"authorization-browser-{attempt}") if realm is STAGING
+                   else Browser(run_dir / f"authorization-browser-{attempt}", realm=realm))
         browser.navigate(auth_url)
         browser.wait_dom('input[name="login"]', timeout=60)
         browser.require_login_origin()

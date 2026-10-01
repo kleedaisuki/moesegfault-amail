@@ -39,6 +39,7 @@ class HarnessSafetyTests(unittest.TestCase):
         """A live Chrome with a late page target remains within the finite startup budget."""
 
         browser = object.__new__(probe.Browser)
+        browser.realm = probe.STAGING
         browser.port = 42317
         browser.process = Mock()
         browser.process.poll.return_value = None
@@ -59,6 +60,7 @@ class HarnessSafetyTests(unittest.TestCase):
         """Only fixed diagnostic labels leave a failed Chrome startup."""
 
         browser = object.__new__(probe.Browser)
+        browser.realm = probe.STAGING
         browser.port = 42317
         browser.process = Mock()
         browser.process.poll.return_value = 1
@@ -75,6 +77,7 @@ class HarnessSafetyTests(unittest.TestCase):
         """A wrong-port debugger URL never becomes a WebSocket connection."""
 
         browser = object.__new__(probe.Browser)
+        browser.realm = probe.STAGING
         browser.port = 42317
         browser.process = Mock()
         browser.process.poll.return_value = None
@@ -240,6 +243,7 @@ class HarnessSafetyTests(unittest.TestCase):
         for path in paths:
             with self.subTest(path=path):
                 browser = object.__new__(probe.Browser)
+                browser.realm = probe.STAGING
                 browser.request_methods = {}
                 browser.responses = {}
                 browser.finished = set()
@@ -272,6 +276,7 @@ class HarnessSafetyTests(unittest.TestCase):
         """
 
         browser = object.__new__(probe.Browser)
+        browser.realm = probe.STAGING
         browser.request_methods = {}
         browser.responses = {}
         browser.finished = set()

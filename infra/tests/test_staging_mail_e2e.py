@@ -807,7 +807,7 @@ class CleanupTests(unittest.TestCase):
             order.append(args)
             return []
 
-        def failed_messages(*_args):
+        def failed_messages(*_args, **_kwargs):
             order.append(("messages",))
             raise HARNESS.ProbeFailure("cleanup_search_transport_unverified")
 

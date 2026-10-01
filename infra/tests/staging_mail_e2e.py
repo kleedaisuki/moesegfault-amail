@@ -35,6 +35,9 @@ import tomllib
 import urllib.request
 
 
+from acceptance_realm import AcceptanceRealm, STAGING
+
+
 ROOT = Path(__file__).resolve().parents[2]
 TEMP = (ROOT / ".temp").resolve()
 API = "https://api.cloudflare.com/client/v4"
@@ -123,8 +126,8 @@ def inside_temp(value: str, *, must_exist: bool = True) -> Path:
     return path
 
 
-def cli_env(home: Path) -> dict[str, str]:
-    """Pin CLI to staging and prevent telemetry upload. / 固定预发布端点并关闭遥测上传。"""
+def cli_env(home: Path, realm: AcceptanceRealm = STAGING) -> dict[str, str]:
+    """Pin CLI to the explicit realm and exclude inherited credentials and telemetry."""
 
     allowed = {
         "SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "PATHEXT", "TEMP", "TMP",
@@ -135,9 +138,9 @@ def cli_env(home: Path) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
     env.update(
         AMAIL_HOME=str(home),
-        AMAIL_API_BASE="https://mail-staging.moesegfault.dev",
-        AMAIL_ISSUER="https://identity-staging.moesegfault.dev",
-        AMAIL_CLIENT_ID="amail-cli-staging",
+        AMAIL_API_BASE=realm.mail_api,
+        AMAIL_ISSUER=realm.issuer,
+        AMAIL_CLIENT_ID=realm.client_id,
         AMAIL_REDIRECT_URI="http://127.0.0.1/callback",
         AMAIL_TELEMETRY="off",
     )
@@ -333,11 +336,11 @@ def validated_rule_page(value: object, page: int, prior_total: int | None) -> tu
     return batch, available, pages
 
 
-def assert_staging_sender(zone: str, token: str) -> None:
+def assert_staging_sender(zone: str, token: str, realm: AcceptanceRealm = STAGING) -> None:
     """Require provider-enabled staging sender domain before SMTP. / SMTP 前核实预发布发信域已启用。"""
 
     req = urllib.request.Request(
-        f"{API}/zones/{zone}/email/sending/subdomains/{SENDING_TAG}",
+        f"{API}/zones/{zone}/email/sending/subdomains/{realm.sending_tag}",
         headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
     )
     try:
@@ -353,7 +356,7 @@ def assert_staging_sender(zone: str, token: str) -> None:
         status == 200
         and data.get("success") is True
         and isinstance(row, dict)
-        and row.get("name") == DOMAIN
+        and row.get("name") == realm.domain
         and row.get("enabled") is True,
         "staging_sender_not_enabled",
     )
@@ -376,7 +379,7 @@ def route_for(rules: list[dict], address: str) -> list[dict]:
     ]
 
 
-def route_snapshot(zone: str, token: str, address: str) -> str:
+def route_snapshot(zone: str, token: str, address: str, realm: AcceptanceRealm = STAGING) -> str:
     """Classify only the exact alias's complete provider inventory, fail closed."""
 
     try:
@@ -408,7 +411,7 @@ def route_snapshot(zone: str, token: str, address: str) -> str:
             rule.get("source") == "api"
             and rule.get("name") == f"amail {address}"
             and rule.get("enabled") is True
-            and rule.get("actions") == [{"type": "worker", "value": [INGRESS]}]
+            and rule.get("actions") == [{"type": "worker", "value": [realm.ingress]}]
             and rule.get("matchers") == [{"type": "literal", "field": "to", "value": address}]
         )
         return "one_exact_owned" if owned else "conflict"
@@ -416,12 +419,12 @@ def route_snapshot(zone: str, token: str, address: str) -> str:
         return "unverified"
 
 
-def row_snapshot(account: str, token: str, address: str) -> tuple[str, str, str]:
+def row_snapshot(account: str, token: str, address: str, realm: AcceptanceRealm = STAGING) -> tuple[str, str, str]:
     """Reduce a parameterized staging D1 SELECT to fixed state/flag labels."""
 
     try:
         req = urllib.request.Request(
-            f"{API}/accounts/{account}/d1/database/{ACCOUNT_DB}/query",
+            f"{API}/accounts/{account}/d1/database/{realm.mail_database_id}/query",
             data=json.dumps({"sql": ADDRESS_ROW_SQL, "params": [address]}).encode("utf-8"),
             headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
             method="POST",
@@ -446,7 +449,7 @@ def row_snapshot(account: str, token: str, address: str) -> tuple[str, str, str]
         if (not isinstance(row, dict)
                 or set(row) != {"state", "cf_rule_id", "needs_reconcile", "owner_iss", "owner_sub"}
                 or row["state"] not in ROW_STATES
-                or row["owner_iss"] != ISSUER
+                or row["owner_iss"] != realm.issuer
                 or not isinstance(row["owner_sub"], str)
                 or not 1 <= len(row["owner_sub"]) <= 256
                 or any(ord(char) < 33 or ord(char) > 126 for char in row["owner_sub"])
@@ -460,11 +463,11 @@ def row_snapshot(account: str, token: str, address: str) -> tuple[str, str, str]
         return "unverified", "unverified", "unverified"
 
 
-def print_snapshot(zone: str, route_token: str, account: str, api_token: str, address: str) -> tuple[str, str]:
+def print_snapshot(zone: str, route_token: str, account: str, api_token: str, address: str, realm: AcceptanceRealm = STAGING) -> tuple[str, str]:
     """Expose only fixed pre-cleanup route and D1 labels, never source data."""
 
-    route = route_snapshot(zone, route_token, address)
-    state, rule_id, reconcile = row_snapshot(account, api_token, address)
+    route = route_snapshot(zone, route_token, address, realm=realm)
+    state, rule_id, reconcile = row_snapshot(account, api_token, address, realm=realm)
     print(f"address_add_snapshot_route:{route}")
     print(f"address_add_snapshot_row:{state}")
     print(f"address_add_snapshot_rule_id:{rule_id}")
@@ -472,11 +475,11 @@ def print_snapshot(zone: str, route_token: str, account: str, api_token: str, ad
     return route, state
 
 
-def capture_snapshot(zone: str, route_token: str, account: str, api_token: str, address: str) -> tuple[str, str]:
+def capture_snapshot(zone: str, route_token: str, account: str, api_token: str, address: str, realm: AcceptanceRealm = STAGING) -> tuple[str, str]:
     """Never allow a failed diagnostic read to suppress alias retirement."""
 
     try:
-        return print_snapshot(zone, route_token, account, api_token, address)
+        return print_snapshot(zone, route_token, account, api_token, address, realm=realm)
     except Exception:
         print("address_add_snapshot_route:unverified")
         print("address_add_snapshot_row:unverified")
@@ -485,7 +488,7 @@ def capture_snapshot(zone: str, route_token: str, account: str, api_token: str, 
         return "unverified", "unverified"
 
 
-def assert_address_creation_preflight(owned: list[dict], rules: list[dict], address: str) -> None:
+def assert_address_creation_preflight(owned: list[dict], rules: list[dict], address: str, realm: AcceptanceRealm = STAGING) -> None:
     """Fail before mutation if the owned alias or provider domain is already full.
 
     The compact CLI intentionally emits address rows, not the API's D1-wide
@@ -517,14 +520,14 @@ def assert_address_creation_preflight(owned: list[dict], rules: list[dict], addr
             matcher.get("type") == "literal"
             and matcher.get("field") == "to"
             and isinstance(matcher.get("value"), str)
-            and matcher["value"].lower().endswith("@" + DOMAIN)
+            and matcher["value"].lower().endswith("@" + realm.domain)
             for matcher in matchers
         ):
             domain_rules += 1
     check(domain_rules < DOMAIN_LITERAL_RULE_LIMIT, "address_preflight_domain_full")
 
 
-def assert_route(zone: str, token: str, address: str, present: bool) -> None:
+def assert_route(zone: str, token: str, address: str, present: bool, realm: AcceptanceRealm = STAGING) -> None:
     """Cross-check service state with Cloudflare's exact rule. / 独立核对服务状态和规则。"""
 
     matches = route_for(cf_rules(zone, token), address)
@@ -537,7 +540,7 @@ def assert_route(zone: str, token: str, address: str, present: bool) -> None:
         rule.get("enabled") is True
         and rule.get("source") == "api"
         and rule.get("name") == f"amail {address}"
-        and rule.get("actions") == [{"type": "worker", "value": [INGRESS]}]
+        and rule.get("actions") == [{"type": "worker", "value": [realm.ingress]}]
         and rule.get("matchers")
         == [{"type": "literal", "field": "to", "value": address}],
         "route_target_mismatch",
@@ -558,14 +561,14 @@ def selected(values: list[dict], target: str, expected: int, label: str) -> list
     return hits
 
 
-def make_mail(address: str, nonce: str, rich: bool) -> tuple[EmailMessage, dict]:
+def make_mail(address: str, nonce: str, rich: bool, realm: AcceptanceRealm = STAGING) -> tuple[EmailMessage, dict]:
     """Generate one unique RFC 5322 MIME and its private oracle. / 生成唯一 MIME 和私有预言值。"""
 
     suffix = "Signal" if rich else "Distractor"
     subject = f"AMAIL-E2E-{nonce}-{suffix}"
     phrase = f"NebulaInvariant-{nonce}" if rich else f"HarborOpposite-{nonce}"
     msg = EmailMessage()
-    msg["From"] = SENDER
+    msg["From"] = realm.sender
     msg["To"] = address
     msg["Subject"] = subject
     msg["Date"] = format_datetime(datetime.now(timezone.utc))
@@ -611,7 +614,7 @@ def provider_receipt(reply: bytes) -> str:
     return value
 
 
-def smtp_send(token: str, address: str, messages: list[EmailMessage]) -> None:
+def smtp_send(token: str, address: str, messages: list[EmailMessage], realm: AcceptanceRealm = STAGING) -> None:
     """Submit legacy role/isolation probes without changing their public helper contract.
 
     This helper intentionally does not claim provider receipt provenance. The
@@ -624,7 +627,7 @@ def smtp_send(token: str, address: str, messages: list[EmailMessage]) -> None:
         ) as smtp:
             smtp.login("api_token", token)
             for message in messages:
-                check(not smtp.sendmail(SENDER, [address], message.as_bytes()), "smtp_recipient_refused")
+                check(not smtp.sendmail(realm.sender, [address], message.as_bytes()), "smtp_recipient_refused")
     except ProbeFailure:
         raise
     except Exception:
@@ -632,7 +635,7 @@ def smtp_send(token: str, address: str, messages: list[EmailMessage]) -> None:
 
 
 def smtp_send_receipts(token: str, address: str,
-                       fixtures: list[tuple[EmailMessage, dict]]) -> None:
+                       fixtures: list[tuple[EmailMessage, dict]], realm: AcceptanceRealm = STAGING) -> None:
     """Submit each MIME once and retain its private DATA receipt in the same oracle."""
 
     try:
@@ -643,7 +646,7 @@ def smtp_send_receipts(token: str, address: str,
             for message, oracle in fixtures:
                 check("Message-ID" not in message, "smtp_source_message_id_present")
                 check(oracle.get("provider_message_id") is None, "smtp_receipt_reused")
-                code, _ = smtp.mail(SENDER)
+                code, _ = smtp.mail(realm.sender)
                 check(code == 250, "smtp_sender_refused")
                 code, _ = smtp.rcpt(address)
                 check(code in (250, 251), "smtp_recipient_refused")
@@ -682,7 +685,7 @@ def safe_zip(binary: Path, env: dict[str, str], target: str, archive: Path, dest
         check(entry.resolve() == dest or dest in entry.resolve().parents, "archive_path_escape")
 
 
-def verify_fixture(row: dict, oracle: dict, address: str, target: str) -> None:
+def verify_fixture(row: dict, oracle: dict, address: str, target: str, realm: AcceptanceRealm = STAGING) -> None:
     """Authorize acceptance or deletion only against the original SMTP receipt."""
 
     receipt = oracle.get("provider_message_id")
@@ -694,17 +697,17 @@ def verify_fixture(row: dict, oracle: dict, address: str, target: str) -> None:
     rich = oracle["subject"].endswith("-Signal")
     check(row.get("id") == target and row.get("mailbox") == address
           and row.get("direction") == "inbound" and row.get("subject") == oracle["subject"]
-          and row.get("from") == SENDER and row.get("to") == [address]
+          and row.get("from") == realm.sender and row.get("to") == [address]
           and row.get("has_text") is True and row.get("has_html") is rich
           and row.get("has_attachments") is rich
           and row.get("attachment_count") == (2 if rich else 0)
           and isinstance(row.get("received_at"), str), "fixture_get_mismatch")
 
 
-def verify_archive(dest: Path, oracle: dict, address: str, target: str, row: dict) -> None:
+def verify_archive(dest: Path, oracle: dict, address: str, target: str, row: dict, realm: AcceptanceRealm = STAGING) -> None:
     """Compare the entire immutable ZIP manifest and independent MIME provenance."""
 
-    verify_fixture(row, oracle, address, target)
+    verify_fixture(row, oracle, address, target, realm=realm)
     try:
         manifest = tomllib.loads((dest / "manifest.toml").read_text(encoding="utf-8"))
         body = (dest / "body.txt").read_text(encoding="utf-8")
@@ -718,7 +721,7 @@ def verify_archive(dest: Path, oracle: dict, address: str, target: str, row: dic
          "disposition": "attachment", "filename": "payload.bin"},
     ] if rich else [])
     expected = {
-        "version": 1, "id": target, "direction": "inbound", "from": SENDER,
+        "version": 1, "id": target, "direction": "inbound", "from": realm.sender,
         "to": [address], "subject": oracle["subject"],
         "received_at": row["received_at"], "message_id": oracle["provider_message_id"],
         "assets": assets,
@@ -744,7 +747,7 @@ def verify_archive(dest: Path, oracle: dict, address: str, target: str, row: dic
               "attachment_digest_mismatch")
 
 
-def search_cases(binary: Path, env: dict[str, str], address: str, oracle: dict, row: dict) -> None:
+def search_cases(binary: Path, env: dict[str, str], address: str, oracle: dict, row: dict, realm: AcceptanceRealm = STAGING) -> None:
     """Exercise composed positive and discriminating negative predicates. / 检验组合正例和反例。"""
 
     subject, phrase = oracle["subject"], oracle["phrase"]
@@ -753,12 +756,12 @@ def search_cases(binary: Path, env: dict[str, str], address: str, oracle: dict, 
     before = (received + timedelta(seconds=1)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     common = (
         "--mailbox", address, "--after", after, "--before", before,
-        "--title", subject, "--from", SENDER, "--to", address,
+        "--title", subject, "--from", realm.sender, "--to", address,
         "--body", phrase, "--meta", f"message_id={oracle['provider_message_id']}", "--unread",
     )
     selected(amail(binary, env, "search", *common, failure="search_positive_failed"), subject, 1, "search_positive_count")
     negative = [
-        ("wrong_mailbox", ("--mailbox", "nobody@" + DOMAIN, "--title", subject)),
+        ("wrong_mailbox", ("--mailbox", "nobody@" + realm.domain, "--title", subject)),
         ("wrong_title", ("--title", subject + "-missing")),
         ("wrong_body", ("--body", phrase + "-missing", "--title", subject)),
         ("wrong_metadata", ("--meta", f"message_id={oracle['provider_message_id']}-missing", "--title", subject)),
@@ -880,7 +883,8 @@ def cleanup_inventory(binary: Path, env: dict[str, str], address: str | None,
 
 
 def cleanup_verify(binary: Path, env: dict[str, str], address: str,
-                   found: dict[str, dict], oracles: dict[str, dict]) -> None:
+                   found: dict[str, dict], oracles: dict[str, dict],
+                   realm: AcceptanceRealm = STAGING) -> None:
     """Corroborate each active fixture using its immutable SMTP DATA receipt."""
 
     check(len(found) <= len(oracles), "cleanup_unexpected_message")
@@ -895,12 +899,12 @@ def cleanup_verify(binary: Path, env: dict[str, str], address: str,
         check(len(detail) == 1 and isinstance(detail[0].get("metadata"), dict),
               "cleanup_get_unverified")
         row = detail[0]
-        verify_fixture(row, oracle, address, msg_id)
+        verify_fixture(row, oracle, address, msg_id, realm=realm)
         with tempfile.TemporaryDirectory(prefix="mail-cleanup-", dir=TEMP) as directory:
             archive = Path(directory) / "message.zip"
             unpacked = Path(directory) / "unpacked"
             safe_zip(binary, env, msg_id, archive, unpacked)
-            verify_archive(unpacked, oracle, address, msg_id, row)
+            verify_archive(unpacked, oracle, address, msg_id, row, realm=realm)
 
 
 def cleanup_delete_once(binary: Path, env: dict[str, str], msg_id: str) -> bool:
@@ -915,7 +919,8 @@ def cleanup_delete_once(binary: Path, env: dict[str, str], msg_id: str) -> bool:
 
 
 def cleanup_messages(binary: Path, env: dict[str, str], address: str,
-                     oracles: dict[str, dict] | None, smtp_attempted: bool) -> None:
+                     oracles: dict[str, dict] | None, smtp_attempted: bool,
+                     realm: AcceptanceRealm = STAGING) -> None:
     """Delete only current-run verified fixtures; never retry an ambiguous mutation."""
 
     deadline = time.monotonic() + 12 * 60
@@ -924,7 +929,7 @@ def cleanup_messages(binary: Path, env: dict[str, str], address: str,
         return
     check(oracles is not None and len(oracles) == 2, "message_cleanup_unverified")
     found = cleanup_inventory(binary, env, address, deadline)
-    cleanup_verify(binary, env, address, found, oracles)
+    cleanup_verify(binary, env, address, found, oracles, realm=realm)
     check(time.monotonic() < deadline, "cleanup_message_deadline")
     check(cleanup_inventory(binary, env, address, deadline) == found, "cleanup_inventory_changed")
     for msg_id in list(found):
@@ -941,7 +946,7 @@ def cleanup_messages(binary: Path, env: dict[str, str], address: str,
 
 
 def cleanup_d1_counts(account: str, token: str, address: str,
-                      oracles: dict[str, dict]) -> tuple[int, int]:
+                      oracles: dict[str, dict], realm: AcceptanceRealm = STAGING) -> tuple[int, int]:
     """Read only aggregate active/deleted counts for the exact run alias."""
 
     sql = ("SELECT COUNT(*) AS total, "
@@ -954,7 +959,7 @@ def cleanup_d1_counts(account: str, token: str, address: str,
            "FROM messages WHERE address=?1")
     subjects = tuple(oracles)
     req = urllib.request.Request(
-        f"{API}/accounts/{account}/d1/database/{ACCOUNT_DB}/query",
+        f"{API}/accounts/{account}/d1/database/{realm.mail_database_id}/query",
         data=json.dumps({"sql": sql, "params": [address, *subjects]}).encode(),
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
         method="POST",
@@ -986,8 +991,7 @@ def cleanup_d1_counts(account: str, token: str, address: str,
 def cleanup_run(
     binary: Path, env: dict[str, str], zone: str, token: str, address: str, nonce: str,
     oracles: dict[str, dict] | None = None, smtp_attempted: bool = False,
-    delivery_confirmed: bool = False, account: str = "", api_token: str = "",
-) -> None:
+    delivery_confirmed: bool = False, account: str = "", api_token: str = "", realm: AcceptanceRealm = STAGING) -> None:
     """Retire the alias first, then verify only known run mail and D1 state.
 
     中文：消息清理失败仍须尝试退役地址；以独立规则回读确认没有孤儿路由。
@@ -1018,7 +1022,7 @@ def cleanup_run(
         except Exception:
             address_absent = False
         if route_absent and address_absent:
-            state, rule_id, reconcile = row_snapshot(account, api_token, address)
+            state, rule_id, reconcile = row_snapshot(account, api_token, address, realm=realm)
             row_reconciled = (state, rule_id, reconcile) in (
                 ("retired", "null", "reconcile_0"), ("row_absent", "absent", "absent"),
             )
@@ -1029,7 +1033,7 @@ def cleanup_run(
           "address_or_route_cleanup_failed")
     message_error = False
     try:
-        cleanup_messages(binary, env, address, oracles, smtp_attempted)
+        cleanup_messages(binary, env, address, oracles, smtp_attempted, realm=realm)
     except Exception:
         message_error = True
     if smtp_attempted:
@@ -1037,7 +1041,7 @@ def cleanup_run(
         # ingress route; require a settled independent D1 read, not an empty page.
         time.sleep(30)
         check(oracles is not None, "message_cleanup_unverified")
-        total, active = cleanup_d1_counts(account, api_token, address, oracles)
+        total, active = cleanup_d1_counts(account, api_token, address, oracles, realm=realm)
         check(active == 0 and (delivery_confirmed or total == 2),
               "message_cleanup_unverified")
     check(not message_error, "message_cleanup_failed")
