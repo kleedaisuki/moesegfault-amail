@@ -181,6 +181,8 @@ class ResumeTests(unittest.TestCase):
             for name in ("serving", "queue_graph", "surfaces"):
                 stack.enter_context(patch.object(resume.readback, name))
             stack.enter_context(patch.object(resume, "held_empty"))
+            # This caller test retains paused live versions while source now desires active maintenance.
+            stack.enter_context(patch.object(resume.readback.maintenance, "expected_bindings", return_value={}))
             correction = stack.enter_context(patch.object(resume.readback, "capture_off", return_value="applied"))
             stack.enter_context(patch.object(resume, "verify", return_value={"state": "paused"}))
             persist = stack.enter_context(patch.object(resume, "persist", return_value={"state": "paused"}))

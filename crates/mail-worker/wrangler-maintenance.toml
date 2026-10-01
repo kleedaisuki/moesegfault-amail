@@ -1,4 +1,4 @@
-# Paused scheduled-only Mail: merge is not provider deployment or activation authority.
+# Scheduled-only Mail: source adoption is not provider deployment or activation authority.
 # Same Rust/Wasm artifact as the API; no migrations, routes, HTTP, RPC or send binding.
 name = "amail-mail-maintenance"
 main = "entry/maintenance.mjs"
@@ -16,12 +16,12 @@ OPENROUTER_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
 
 [[d1_databases]]
 binding = "MAIL_DB"
-database_name = "moesegfault-mail-production"
-database_id = "ad06f7f3-8897-4150-b9a9-7a46a8e55b30"
+database_name = "moesegfault-mail-production-708b6d6c734779d657f5abb3"
+database_id = "d9be9bb4-5a73-4223-85d6-b04763e6f03b"
 
 [[r2_buckets]]
 binding = "MAIL_BODIES"
-bucket_name = "moesegfault-mail-raw-production"
+bucket_name = "moesegfault-mail-raw-production-708b6d6c734779d657f5abb3"
 
 [[queues.producers]]
 binding = "TRACE_EVENTS"
@@ -31,8 +31,8 @@ queue = "amail-trace-events"
 binding = "VERSION_METADATA"
 
 [triggers]
-# Activation requires reviewed source cadence and separate realm authorization.
-crons = []
+# The protected fresh-online executor separately authorizes this owned scope's activation.
+crons = ["*/5 * * * *"]
 
 [observability]
 enabled = false

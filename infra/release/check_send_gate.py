@@ -15,7 +15,7 @@ import urllib.request
 
 API = "https://api.cloudflare.com/client/v4"
 MAIL_HEALTH = "https://mail.moesegfault.dev/health"
-PRODUCTION_D1_ID = "ad06f7f3-8897-4150-b9a9-7a46a8e55b30"
+PRODUCTION_D1_ID = "d9be9bb4-5a73-4223-85d6-b04763e6f03b"
 MAX_REPLY = 65536
 READINESS_SQL = """
 SELECT

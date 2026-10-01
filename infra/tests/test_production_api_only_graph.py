@@ -178,10 +178,10 @@ class PreparationTests(unittest.TestCase):
 class ResourceConfigTests(unittest.TestCase):
     """Reviewed Mail resource names, not array positions, establish binding identity."""
 
-    def test_single_mail_d1_preserves_each_established_database_identity(self):
-        """Both realm pins succeed with one D1 and retain the pre-transition Mail IDs."""
+    def test_single_mail_d1_uses_adopted_production_and_unchanged_staging_identity(self):
+        """Production points to the actual owned scope; staging remains untouched."""
         identities = {
-            "production": "ad06f7f3-8897-4150-b9a9-7a46a8e55b30",
+            "production": "d9be9bb4-5a73-4223-85d6-b04763e6f03b",
             "staging": "74f35f95-42ce-482c-86e6-dffbdd35cbbe",
         }
         for realm, database in identities.items():

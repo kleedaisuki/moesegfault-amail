@@ -7,7 +7,7 @@ a paused observation only after exact readback. Unknown external old work is
 not relabelled as drained. Recovery observes owned coordinates without replay.
 """
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 import os
@@ -21,7 +21,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/ci"))
 sys.path.insert(0, str(ROOT / "crates/mail-worker"))
-from fresh_bootstrap_contract import Epoch, Scope, REPO
+from fresh_bootstrap_contract import Epoch, Scope, REPO, ORIGINAL_DATABASE, ORIGINAL_BUCKET
 from fresh_bootstrap_scope import FreshProvider, create_scope, render_configs, reconcile_scope
 from fresh_bootstrap_readback import verify, verify_sink_reader, held_empty
 from fresh_bootstrap_receipt import persist
@@ -93,7 +93,9 @@ def inspect_old_scope(provider, s3, *, owned_scripts: frozenset[str] = frozenset
     account storage is a different product and is neither queried nor migrated.
     Routing/sending history remains unknown, so this lane never activates work.
     """
-    resources = old.configured_resources(os.environ["GITHUB_SHA"])
+    # Source adoption must not retarget the original-retention inspection.
+    resources = replace(old.configured_resources(os.environ["GITHUB_SHA"]),
+                        database=ORIGINAL_DATABASE, bucket=ORIGINAL_BUCKET)
     reader = old.Provider(provider.account, provider.token, resources)
     zone = os.getenv("CLOUDFLARE_ZONE_ID", "")
     first_forward = forward_snapshot(provider.account)

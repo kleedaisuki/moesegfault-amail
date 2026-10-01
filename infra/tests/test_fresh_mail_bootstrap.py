@@ -186,7 +186,8 @@ class FreshBootstrapColdStoreTests(unittest.TestCase):
             with self.assertRaises(sqlite3.OperationalError):
                 database.execute("SELECT name FROM d1_migrations ORDER BY id")
             provider = Mock(account="a" * 32, token="synthetic-private-token")
-            reader = Mock(resources=controller.old.configured_resources("a" * 40))
+            reader = Mock(resources=replace(controller.old.configured_resources("a" * 40),
+                                            database=ORIGINAL_DATABASE, bucket=ORIGINAL_BUCKET))
             queries = []
 
             def read(sql):
@@ -199,7 +200,7 @@ class FreshBootstrapColdStoreTests(unittest.TestCase):
             empty = {"Name": ORIGINAL_BUCKET, "IsTruncated": False, "KeyCount": 0, "Contents": []}
             s3.list_objects_v2.return_value = empty
             stack.enter_context(patch.dict(controller.os.environ, {"GITHUB_SHA": "a" * 40}))
-            stack.enter_context(patch.object(controller.old, "Provider", return_value=reader))
+            original_reader = stack.enter_context(patch.object(controller.old, "Provider", return_value=reader))
             scripts = stack.enter_context(patch.object(controller.old, "script_inventory", return_value={}))
             routes = stack.enter_context(patch.object(controller.old, "unattached_route", return_value={}))
             stack.enter_context(patch.object(controller, "forward_snapshot", return_value={}))
@@ -208,6 +209,9 @@ class FreshBootstrapColdStoreTests(unittest.TestCase):
 
             result = controller.inspect_old_scope(provider, s3)
             self.assertEqual(result["original_stores"], "RETAINED")
+            self.assertEqual(original_reader.call_args.args[2].database, ORIGINAL_DATABASE)
+            self.assertEqual(original_reader.call_args.args[2].bucket, ORIGINAL_BUCKET)
+            self.assertEqual(s3.list_objects_v2.call_args.kwargs["Bucket"], ORIGINAL_BUCKET)
             self.assertEqual(result["external_activation"], "NOT_GRANTED")
             self.assertEqual(queries, [controller.old.INITIAL_SCHEMA] * 2)
             self.assertEqual(scripts.call_count, 2)
