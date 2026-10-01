@@ -4,6 +4,36 @@ Date: 2026-10-02 Asia/Singapore. Reviewer: integration_contract_review.
 
 ## Scope and interim source assessment
 
+Revised-source dispatch verdict: **GO** for frozen head
+`280092dc8bb954186156626ce825ce2aea8c4911`. Independently confirmed published
+head, full revision delta, clean diff-check and successful scoped infrastructure/
+syntax checks. Actual revised diagnostic execution is pending; no provider or
+promotion acceptance is asserted.
+
+The standalone PR workflow is removed and packaging becomes an explicitly
+mutually exclusive job in `native-fixture.yml`. Existing workflow identity,
+required `build_run_id`/`fixture` inputs, lock, read-only permissions and ordinary
+replay helper/command strings remain. All existing fixture names take their
+unchanged lane; only the new reserved `packaging` value takes the new job.
+Shared source tests remain credential-free, while the old no-Wrangler assertion
+is correctly limited to the replay job. Neither path introduces Secrets,
+protected environment, write permission, provider capability or Rust rebuild.
+
+Explicit build-run selection replaces the initial unique push-run discovery.
+The existing full successful main identity accepts push/manual source runs;
+selected SHA must be an ancestor and the full checkout diff must contain only
+enumerated probe/workflow/test files or public Markdown. Artifact ID and original
+source/run/attempt/compiler verification remain unchanged. No ordinary release/
+deployment admission helper was edited. The actual emitted-only Node runtime
+fixture is byte-unchanged from the inspected initial source.
+
+Proposed original build run 36888295197 independently resolves to successful
+`ci.yml` main push, attempt 1, SHA
+`bfb02765c622bced2ad2b8a10f6717cce79c6199`. Revised source scoped CI and syntax
+were successful before dispatch review. The owner/root were notified of GO for
+this credential-free diagnostic only; initial manual-discovery mismatch is now
+resolved by explicit run selection, not waived or hidden.
+
 Inspected published initial PR head `b301847cded5231c9da17dd875a7db9d727180bb`
 and existing module-validation knowledge in the packaging task worktree. The
 owner is revising the diagnostic to an explicit packaging job in the supported
