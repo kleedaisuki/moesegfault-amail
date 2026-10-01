@@ -68,7 +68,7 @@ References: [ADR](mail-cron-budget-architecture-decision-2026-10-01.md),
 [whole-Cron review](mail-cron-budget-review-2026-10-01.md),
 [D1 limits](https://developers.cloudflare.com/d1/platform/limits/),
 [D1 batch](https://developers.cloudflare.com/d1/worker-api/d1-database/),
-[workers-rs D1 v0.8.3](https://github.com/cloudflare/workers-rs/blob/v0.8.3/worker/src/d1/mod.rs),
+[workers-rs locked D1 v0.8.7](https://github.com/cloudflare/workers-rs/blob/v0.8.7/worker/src/d1/mod.rs),
 [Workers production practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/).
 
 ## Second atomic slice: accepted due fairness
@@ -136,7 +136,13 @@ or hosted result is claimed here.
 
 Additional primary references:
 [R2 Worker API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/),
-[workers-rs R2 object body](https://github.com/cloudflare/workers-rs/blob/v0.8.3/worker/src/r2/mod.rs).
+[workers-rs locked R2 object body](https://github.com/cloudflare/workers-rs/blob/v0.8.7/worker/src/r2/mod.rs).
+
+The Cargo manifest's `0.8.3` requirement is a semver range, not the resolved SDK
+version: Cargo.lock resolves worker 0.8.7. Both adapter method signatures and the
+native R2 read interface were rechecked against that exact locked source; the
+accounting wrapper intentionally exposes only the executor methods used here,
+not SDK IntoFuture/raw/session escape hatches.
 
 The independent R2 source review's nonblocking acquisition-error note is resolved:
 workers-rs response-body acquisition is also mapped to the fixed
