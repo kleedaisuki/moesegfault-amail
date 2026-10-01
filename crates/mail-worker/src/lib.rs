@@ -551,6 +551,7 @@ async fn reconcile_outbound(env: &Env) -> Result<()> {
         message_id: String,
         provider_id: String,
         created_at: i64,
+        deleted_bytes: Option<i64>,
     }
     let database = env.d1("MAIL_DB")?;
     database
@@ -560,9 +561,32 @@ async fn reconcile_outbound(env: &Env) -> Result<()> {
         .bind(&[bind_num(now() - 10 * 60_000)])?
         .run()
         .await?;
-    let rows = database.prepare("SELECT owner_iss,owner_sub,idem_key,payload_hash,message_id,provider_id,created_at FROM send_requests WHERE state='accepted' AND message_id IS NOT NULL AND provider_id IS NOT NULL LIMIT 20")
+    let rows = database.prepare("SELECT s.owner_iss,s.owner_sub,s.idem_key,s.payload_hash,s.message_id,s.provider_id,s.created_at,
+        (SELECT m.storage_bytes FROM messages m WHERE m.id=s.message_id
+         AND m.owner_iss=s.owner_iss AND m.owner_sub=s.owner_sub
+         AND m.direction='outbound' AND m.deleted_at IS NOT NULL
+         AND m.r2_key='messages/'||s.message_id||'.zip'
+         AND COALESCE(json_extract(m.metadata_json,'$.message_id'),'')=s.provider_id) AS deleted_bytes
+        FROM send_requests s WHERE s.state='accepted' AND s.message_id IS NOT NULL AND s.provider_id IS NOT NULL LIMIT 20")
         .all().await?.results::<Pending>()?;
     for row in rows {
+        if let Some(bytes) = row.deleted_bytes.filter(|bytes| *bytes >= 0) {
+            accepted::finish_deleted(
+                &database,
+                &accepted::Projection {
+                    id: &row.message_id,
+                    issuer: &row.owner_iss,
+                    subject: &row.owner_sub,
+                    idem: &row.idem_key,
+                    hash: &row.payload_hash,
+                    provider: &row.provider_id,
+                    created_at: row.created_at,
+                    bytes: bytes as usize,
+                },
+            )
+            .await?;
+            continue;
+        }
         let key = format!("messages/{}.zip", row.message_id);
         let Some(object) = env.bucket("MAIL_BODIES")?.get(&key).execute().await? else {
             continue;

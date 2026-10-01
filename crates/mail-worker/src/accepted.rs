@@ -114,11 +114,9 @@ async fn stage(
         if !result.success() {
             return Err(pending());
         }
-        if result.meta()?.and_then(|meta| meta.changes) != Some(1) {
-            // A tombstone may still be safely terminalized by the final batch;
-            // a lost journal/owner/storage fence will make that batch a no-op.
-            break;
-        }
+        // Equal-value UPSERT change counts are not an authority to stop a
+        // retry. This loop is bounded by the service-valid text-piece count;
+        // final completeness and journal fencing decide publication.
     }
     Ok(())
 }
@@ -182,9 +180,26 @@ pub(crate) async fn publish(
 ) -> Result<()> {
     let key = format!("messages/{}.zip", projection.id);
     let token = uuid::Uuid::new_v4().to_string();
-    let mut values = projection.bindings(&key, &token);
+    if !claim(db, projection, &key, &token).await? {
+        return finished(db, projection, &key, &token).await;
+    }
+    let result = publish_leased(db, projection, draft, &key, &token).await;
+    if result.is_err() {
+        release(db, projection, &key, &token).await;
+    }
+    result
+}
+
+/// Acquire exactly one accepted projection; never steal a still-live token.
+async fn claim(
+    db: &D1Database,
+    projection: &Projection<'_>,
+    key: &str,
+    token: &str,
+) -> Result<bool> {
+    let mut values = projection.bindings(key, token);
     values.push(bind_num(crate::now() + LEASE_MS));
-    let claim = db
+    let result = db
         .prepare(format!(
             "UPDATE send_requests
         SET index_projection_token=?9,index_projection_lease_until=?11
@@ -195,30 +210,84 @@ pub(crate) async fn publish(
         .bind(&values)?
         .run()
         .await?;
-    if !claim.success() {
+    if !result.success() {
         return Err(pending());
     }
-    if claim.meta()?.and_then(|meta| meta.changes) != Some(1) {
+    Ok(result.meta()?.and_then(|meta| meta.changes) == Some(1))
+}
+
+/// Release only this attempt's token after a caught error. An in-flight stale
+/// statement subsequently sees a missing/replaced token; release never resends.
+/// A failed release or terminated isolate leaves safe recovery through expiry.
+async fn release(db: &D1Database, projection: &Projection<'_>, key: &str, token: &str) {
+    let prepared = db
+        .prepare(
+            "UPDATE send_requests
+        SET index_projection_token=NULL,index_projection_lease_until=0
+        WHERE message_id=?1 AND owner_iss=?2 AND owner_sub=?3 AND idem_key=?4
+          AND payload_hash=?5 AND provider_id=?6 AND state='accepted'
+          AND index_projection_token=?9",
+        )
+        .bind(&projection.bindings(key, token)[..9]);
+    if let Ok(statement) = prepared {
+        let _ = statement.run().await;
+    }
+}
+
+/// Terminalize only a surviving owned legacy tombstone. Old GC could remove
+/// its R2 ZIP before failing the database cleanup, so no content reconstruction
+/// is required or allowed on this path. Mere missing ZIPs are not deletion proof.
+pub(crate) async fn finish_deleted(db: &D1Database, projection: &Projection<'_>) -> Result<()> {
+    let key = format!("messages/{}.zip", projection.id);
+    let token = uuid::Uuid::new_v4().to_string();
+    if !claim(db, projection, &key, &token).await? {
         return finished(db, projection, &key, &token).await;
     }
-    let result = publish_leased(db, projection, draft, &key, &token).await;
+    let result = finish_deleted_leased(db, projection, &key, &token).await;
     if result.is_err() {
-        // Release only our own token. Any in-flight stale statement subsequently
-        // observes a missing/replaced token, so an uncertain error is not a resend.
-        // If release itself fails, expiry retains safe bounded crash recovery.
-        let _ = db
-            .prepare(
-                "UPDATE send_requests
-            SET index_projection_token=NULL,index_projection_lease_until=0
-            WHERE message_id=?1 AND owner_iss=?2 AND owner_sub=?3 AND idem_key=?4
-              AND payload_hash=?5 AND provider_id=?6 AND state='accepted'
-              AND index_projection_token=?9",
-            )
-            .bind(&projection.bindings(&key, &token)[..9])?
-            .run()
-            .await;
+        release(db, projection, &key, &token).await;
     }
     result
+}
+
+/// Atomically finish the already-deleted delivery's ledger and exact journal.
+/// Every predicate rechecks the surviving tombstone under the same lease snapshot.
+async fn finish_deleted_leased(
+    db: &D1Database,
+    projection: &Projection<'_>,
+    key: &str,
+    token: &str,
+) -> Result<()> {
+    let values = projection.bindings(key, token);
+    let completed = format!(
+        "{} AND EXISTS (
+        SELECT 1 FROM messages WHERE id=?1 AND deleted_at IS NOT NULL)",
+        guard()
+    );
+    let ledger = db
+        .prepare(format!(
+            "UPDATE storage_reservations SET state='indexed'
+        WHERE id=?1 AND {completed}"
+        ))
+        .bind(&values)?;
+    let sent = db
+        .prepare(format!(
+            "UPDATE send_requests
+        SET state='sent',index_projection_token=NULL,index_projection_lease_until=0
+        WHERE message_id=?1 AND owner_iss=?2 AND owner_sub=?3 AND idem_key=?4
+          AND payload_hash=?5 AND provider_id=?6 AND state='accepted'
+          AND {completed} AND EXISTS (SELECT 1 FROM storage_reservations
+              WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND bytes=?7 AND state='indexed')"
+        ))
+        .bind(&values)?;
+    let results = db.batch(vec![ledger, sent]).await?;
+    if results.len() != 2 || results.iter().any(|result| !result.success()) {
+        return Err(pending());
+    }
+    if results[1].meta()?.and_then(|meta| meta.changes) == Some(1) {
+        return Ok(());
+    }
+    finished(db, projection, key, token).await
 }
 
 /// Finish one active lease without voluntarily exiting between batch statements.
