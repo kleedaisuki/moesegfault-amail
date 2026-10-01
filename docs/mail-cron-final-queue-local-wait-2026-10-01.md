@@ -26,8 +26,13 @@ accepted-staging workstream and are not edited: the existing
 
 After all eight business phases return/defer, the scheduled handler captures
 `MaintenanceTurn::diagnostic_deadline()` once on the same clamped invocation clock.
-Its cutoff is `observed_final_elapsed + 10000ms`. Serialization, whole-buffer
-validation and binding lookup consume this allowance; they do not restart it.
+Its cutoff is `observed_final_elapsed + 10000ms`. Application serialization,
+whole-buffer validation and binding lookup are checked against that same observed
+cutoff; they do not grant a fresh per-call allowance. This is not strict charging
+of every synchronous instruction: deployed Date.now advances after I/O, and the
+pinned workers-rs native serializer executes in the send future's first poll
+before `select` polls/arms Delay. That fixed synchronous cost can extend actual
+wall time beyond the computed timer duration; the cooperative limit below applies.
 The deadline is intentionally independent of the expired 115-second business
 admission cutoff. An already admitted complete projection may finish much later;
 granting diagnostics a short tail must not reopen business admission.
@@ -60,6 +65,14 @@ Promise, service request, persistence or delivery. A remote write may already
 have committed; its response may resolve later or be discarded by runtime
 termination. Do not replay this batch or claim a timeout proves non-delivery.
 No consumer deduplication/transactionality change is made.
+
+`JsFuture` installs JavaScript response callbacks and Rust waker state. Dropping
+the waiting Rust future does not necessarily unregister those callbacks; they
+may remain live until Promise settlement or runtime teardown, and a late result
+may wake an already-completed task. No bounded lifetime or elimination of that
+native callback state is claimed. The consuming collector is not retained or
+replayed by application continuation code; the hosted late-acknowledgement probe
+checks that completion cannot produce a second batch or contaminate new turns.
 
 This is a cooperative **local waiting policy**, not a literal real-time ten-second
 guarantee under event-loop/CPU starvation. Timer scheduling, finite synchronous
@@ -130,6 +143,8 @@ are not deployment, Cron activation or send-unhold authorization.
   native typed batch serialization, `WorkerQueue` binding identity and awaited JsFuture.
 - [Pinned workers-rs Delay](https://github.com/cloudflare/workers-rs/blob/v0.8.7/worker/src/delay.rs):
   native setTimeout-backed future and timer clearing on early drop.
+- [Workers timers/performance](https://developers.cloudflare.com/workers/runtime-apis/performance/):
+  deployed observed clocks advance after I/O; local workerd clocks differ.
 
 This narrow change adopts the mature platform's existing local timer/Promise
 ownership mechanisms. It needs native failure/lifetime discrimination, not a
