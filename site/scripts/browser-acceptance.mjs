@@ -127,6 +127,46 @@ async function tables(page, stem) {
   }
 }
 
+/** Require mobile table columns to be discoverable without horizontal scrolling. */
+async function mobileTableColumns(page, stem, result) {
+  const tables = page.locator('.manual-prose table');
+  assert.ok(await tables.count() > 0);
+  result.mobileTableGeometry = [];
+  const failures = [];
+  for (let index = 0; index < await tables.count(); index++) {
+    const table = tables.nth(index);
+    await table.scrollIntoViewIfNeeded();
+    await table.evaluate((el) => {
+      // Measure the initial horizontal presentation, not the previous reachability probe.
+      for (let parent = el; parent; parent = parent.parentElement) parent.scrollLeft = 0;
+    });
+    const geometry = await table.evaluate((el) => {
+      const headers = [...el.querySelectorAll('th')];
+      const lastCells = [...el.querySelectorAll('tr')].map((row) =>
+        [...row.children].filter((cell) => cell.matches('th, td')).at(-1)).filter(Boolean);
+      return { headers: headers.length, cells: [...new Set([...headers, ...lastCells])].map((cell) => {
+        const rect = cell.getBoundingClientRect();
+        const style = getComputedStyle(cell);
+        let visible = rect.width > 0 && rect.height > 0 && style.visibility === 'visible' &&
+          rect.left >= -1 && rect.right <= innerWidth + 1;
+        for (let parent = cell.parentElement; parent; parent = parent.parentElement) {
+          if (!['hidden', 'clip', 'auto', 'scroll'].includes(getComputedStyle(parent).overflowX)) continue;
+          const bounds = parent.getBoundingClientRect();
+          const left = bounds.left + parent.clientLeft;
+          visible &&= rect.left >= left - 1 && rect.right <= left + parent.clientWidth + 1;
+        }
+        return { text: cell.textContent.trim().slice(0, 80), left: rect.left, right: rect.right, visible };
+      }) };
+    });
+    result.mobileTableGeometry.push({ index, ...geometry });
+    await page.screenshot({ path: `${output}/${stem}-table-${index}-initial-columns.png` });
+    if (!geometry.headers || geometry.cells.some((cell) => !cell.visible)) {
+      failures.push(`table ${index}: initial header/last-column clipping: ${JSON.stringify(geometry)}`);
+    }
+  }
+  assert.equal(failures.length, 0, failures.join('\n'));
+}
+
 const browser = await chromium.launch();
 try {
   for (const width of [320, 390, 768, 1440]) {
@@ -205,6 +245,8 @@ try {
         assert.ok(!(await page.locator('.manual-prose').innerText()).includes(`**${label}**`),
           'privacy introduction must not expose literal Markdown markers');
       });
+      if (route === '/manual/' && width <= 390) await check(result,
+        'mobile table columns visible without horizontal scrolling', () => mobileTableColumns(page, stem, result));
       if (route === '/manual/') await check(result, 'manual table readability and reachability', () => tables(page, stem));
       await check(result, 'review screenshots', async () => {
         await page.goto(`${base}${route}`);
