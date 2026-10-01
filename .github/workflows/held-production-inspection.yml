@@ -60,7 +60,8 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install pinned platform S3 client without production credentials
-        run: python -m pip install --only-binary=:all: -r infra/deploy/production_inspection_requirements.txt
+        run: |
+          python -m pip install --only-binary=:all: -r infra/deploy/production_inspection_requirements.txt
       - name: Inspect twice and persist only source-bound aggregate evidence
         env:
           PYTHONDONTWRITEBYTECODE: '1'
