@@ -15,3 +15,14 @@
 .manual-prose pre {
 	box-shadow: 0 12px 24px color-mix(in srgb, var(--moe-heading) 8%, transparent);
 }
+@media (max-width: 580px) {
+	/* Keep both columns visible without a swipe; long archive names wrap unchanged. */
+	.manual-prose table {
+		table-layout: fixed;
+	}
+	.manual-prose th,
+	.manual-prose td {
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+}
