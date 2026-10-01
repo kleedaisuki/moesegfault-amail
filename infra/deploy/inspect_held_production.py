@@ -82,7 +82,7 @@ def failure_reason(error: Exception) -> str:
         "production_unexpected_store_or_service_caller", "production_zone_unverified",
         "production_zone_ownership_unverified", "production_routes_completeness_unverified",
         "production_route_shape_unverified", "production_route_already_attached",
-        "production_domain_already_attached", "production_r2_inventory_unverified",
+        "production_domain_already_attached", "production_domain_hostname_unverified", "production_r2_inventory_unverified",
         "production_r2_inventory_incomplete", "production_d1_read_unverified",
         "bootstrap_schema_prefix_unverified", "schema_objects_unverified", "schema_object_drift",
         "schema_columns_unverified", "schema_indexes_unverified", "schema_index_columns_unverified",
@@ -306,8 +306,18 @@ def unattached_route(provider: Provider, zone: str, *, progress: Progress | None
     import check_trace_sink_isolation as isolation
     progress.stage = Stage.DOMAINS
     domains = isolation.worker_domain_rows(provider.envelope(f"/accounts/{provider.account}/workers/domains"))
-    if any(row.get("hostname") == provider.resources.domain or row.get("service") == provider.resources.api
-           for row in domains):
+    # DNS presentation normalizes only for host comparison, never for provider IDs.
+    hosts = []
+    for row in domains:
+        hostname = row.get("hostname")
+        if (not isinstance(hostname, str) or not 1 <= len(hostname) <= 254
+                or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.?", hostname)
+                or any(not 1 <= len(label) <= 63 or label.startswith("-") or label.endswith("-")
+                       for label in hostname.removesuffix(".").split("."))):
+            raise ValueError("production_domain_hostname_unverified")
+        hosts.append(hostname.lower().removesuffix("."))
+    if any(host == provider.resources.domain or row.get("service") == provider.resources.api
+           for host, row in zip(hosts, domains)):
         raise ValueError("production_domain_already_attached")
     return {"routes": routes, "domains": domains}
 
