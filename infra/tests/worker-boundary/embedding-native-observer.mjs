@@ -58,9 +58,49 @@ AbortController.prototype.abort = function(...args) {
   return result;
 };
 
+/** Logical late-claim policy exists only in this synthetic observer module. */
+const nativeNow = Date.now;
+let offset = 0;
+let claimJumpMs = 0;
+Date.now = () => nativeNow() + offset;
+
+/** Preserve actual D1 calls; shift the clock only after the fenced active-row read. */
+function cronDatabase(native) {
+  return new Proxy(native, {
+    get(target, field) {
+      if (field === "constructor") return target.constructor;
+      if (field === "prepare") return sql => {
+        const statement = target.prepare(sql);
+        const wrap = current => new Proxy(current, {
+          get(inner, name) {
+            if (name === "constructor") return inner.constructor;
+            if (name === "bind") return (...args) => wrap(inner.bind(...args));
+            if (name === "first") return async (...args) => {
+              const result = await inner.first(...args);
+              if (sql.includes("SELECT m.subject,m.body_text,w.attempts")) offset += claimJumpMs;
+              return result;
+            };
+            const value = Reflect.get(inner, name, inner);
+            return typeof value === "function" ? value.bind(inner) : value;
+          },
+        });
+        return wrap(statement);
+      };
+      const value = Reflect.get(target, field, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 /** Subclass the generated WorkerEntrypoint, retaining its environment and context. */
 export default class EmbeddingNativeObserver extends RustWorker {
+  constructor(ctx, env) { super(ctx, { ...env, MAIL_DB: cronDatabase(env.MAIL_DB) }); }
   async fetch(request) {
+    if (request.url === "https://synthetic.invalid/cron-policy") {
+      ({ claimJumpMs = 0 } = await request.json());
+      return new Response(null, { status: 204 });
+    }
+    if (request.url === "https://synthetic.invalid/embedding-stats") return Response.json(stats);
     const response = await super.fetch(request);
     const headers = new Headers(response.headers);
     for (const [name, value] of Object.entries(stats)) {

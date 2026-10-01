@@ -706,6 +706,7 @@ async fn reconcile_outbound(
         .all()
         .await?
         .results::<AcceptedDue>()?;
+    let deadline = turn.archive_deadline();
     let mut failed = false;
     for row in rows {
         let permit = turn.admit()?;
@@ -715,8 +716,10 @@ async fn reconcile_outbound(
         if !advance_accepted_due(database, &row, scan_at).await? {
             continue;
         }
-        match repair_accepted(permit, env, database, &row).await {
-            Err(error) if database::is_deferred(&error) => return Err(error),
+        match repair_accepted(permit, env, database, &row, deadline).await {
+            Err(error) if database::is_deferred(&error) || maintenance::is_deferred(&error) => {
+                return Err(error)
+            }
             Err(_) => failed = true,
             Ok(()) => {}
         }
@@ -766,6 +769,7 @@ async fn repair_accepted(
     env: &Env,
     database: &Database,
     row: &AcceptedDue,
+    deadline: maintenance::ExternalDeadline<'_>,
 ) -> Result<()> {
     if let Some(bytes) = row.deleted_bytes.filter(|bytes| *bytes >= 0) {
         accepted::finish_deleted(
@@ -784,11 +788,16 @@ async fn repair_accepted(
         .await?;
         return Ok(());
     }
+    // Bound our read-only GET waiter and body under one immutable cutoff.
+    // Dropping the waiter does not claim native/remote cancellation.
+    let deadline = deadline.clipped(std::time::Duration::from_secs(30));
+    deadline.remaining()?;
     let key = format!("messages/{}.zip", row.message_id);
-    let Some(object) = env.bucket("MAIL_BODIES")?.get(&key).execute().await? else {
+    let bucket = env.bucket("MAIL_BODIES")?;
+    let Some(object) = archive_read::get(&bucket, &key, deadline).await? else {
         return Ok(());
     };
-    let Some(bytes) = archive_read::read(&object).await? else {
+    let Some(bytes) = archive_read::read(&object, deadline).await? else {
         return Ok(());
     };
     if format!("{:x}", Sha256::digest(&bytes)) != row.payload_hash {
@@ -909,6 +918,7 @@ async fn reindex(env: &Env, database: &Database, turn: &mut PhaseTurn<'_>) -> Re
         return Ok(());
     }
     let due = embedding_due(database, current).await?;
+    let deadline = turn.embedding_deadline();
     let mut invalid_requests = 0;
     for item in due {
         let _permit = turn.admit()?;
@@ -918,7 +928,7 @@ async fn reindex(env: &Env, database: &Database, turn: &mut PhaseTurn<'_>) -> Re
         let Some(row) = read_leased_embedding(database, &lease).await? else {
             continue;
         };
-        if process_embedding(env, &database, &lease, row, &mut invalid_requests).await? {
+        if process_embedding(env, &database, &lease, row, &mut invalid_requests, deadline).await? {
             break;
         }
     }
@@ -1004,16 +1014,24 @@ async fn process_embedding(
     lease: &EmbeddingLease<'_>,
     row: EmbeddingPending,
     invalid_requests: &mut i32,
+    deadline: maintenance::ExternalDeadline<'_>,
 ) -> Result<bool> {
     let source = format!("{}\n{}", row.subject, row.body_text);
     let input = embedding_prefix(&source);
-    match platform::embed_classified(env, input, "search_document").await {
+    match platform::embed_cron(env, input, "search_document", deadline).await {
         Ok(vector) => {
             persist_embedding_success(env, database, lease, &vector, input.len() < source.len())
                 .await?;
             Ok(false)
         }
-        Err(error) => {
+        Err(platform::CronEmbeddingFailure::Deferred) => {
+            // This is policy deferral, not an attempted provider defect. Release
+            // only our token; keep attempts, next due time and cooldown unchanged.
+            database.prepare("UPDATE embedding_work SET lease_until=0,lease_token=NULL WHERE message_id=?1 AND lease_token=?2")
+                .bind(&[bind_str(lease.message_id), bind_str(&lease.token)])?.run().await?;
+            Err(maintenance::deferred())
+        }
+        Err(platform::CronEmbeddingFailure::Provider(error)) => {
             persist_embedding_failure(env, database, lease, row.attempts, error, invalid_requests)
                 .await
         }
