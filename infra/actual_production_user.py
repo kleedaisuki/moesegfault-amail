@@ -121,11 +121,12 @@ def cli(environment: dict[str, str], *args: str, allow_failure: bool = False) ->
     """Execute the public CLI and retain its JSONL response only in memory."""
     result = subprocess.run([str(BINARY), *args], env=environment, capture_output=True,
                             text=True, encoding="utf-8", timeout=950, check=False)
+    if allow_failure:
+        require(result.returncode != 0 and not result.stdout.strip()
+                and "HTTP 404" in result.stderr and "code=not_found" in result.stderr,
+                "cross_account_denial_not_404")
+        return []
     if result.returncode:
-        if allow_failure:
-            require("HTTP 404" in result.stderr and "code=not_found" in result.stderr,
-                    "cross_account_denial_not_404")
-            return []
         code = re.search(r"code=([a-z_]+)", result.stderr)
         request = re.search(r"request_id=([a-f0-9-]{1,64})", result.stderr)
         label = "amail_" + args[0] + "_failed"
