@@ -4,6 +4,8 @@ mod api;
 mod archive;
 mod auth;
 mod config;
+mod local_store;
+mod send_state;
 mod telemetry;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -565,7 +567,10 @@ fn run_search(api: &api::Api<'_>, args: &SearchArgs, human: bool) -> Result<()> 
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let cfg = config::Runtime::load()?;
-    telemetry::init(&cfg)?;
+    // Diagnostics are best effort; command state initializes in its owning API.
+    if let Err(error) = telemetry::init(&cfg) {
+        telemetry::report_loss("initialize", &error);
+    }
     match cli.command {
         Command::Config => emit(
             &json!({"api_base":cfg.api_base,"issuer":cfg.issuer,"client_id":cfg.client_id,
@@ -623,10 +628,10 @@ fn run() -> Result<()> {
                 key
             } else {
                 let random = uuid::Uuid::new_v4().to_string();
-                telemetry::send_key(&cfg, &hash, &random)?
+                send_state::send_key(&cfg, &hash, &random)?
             };
             let result = api::Api::new(&cfg)?.send(&bytes, &key)?;
-            telemetry::accepted(&cfg, &hash)?;
+            send_state::accepted(&cfg, &hash)?;
             emit(&result, cli.human)?;
         }
         command => {

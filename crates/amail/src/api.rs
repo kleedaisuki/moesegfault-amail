@@ -2,17 +2,13 @@
 
 use crate::{auth, config::Runtime, telemetry};
 use anyhow::{bail, Context, Result};
-use rand::RngCore;
 use reqwest::{
     blocking::{Client, RequestBuilder},
     header::{HeaderMap, CONTENT_TYPE},
     Method, StatusCode,
 };
 use serde_json::Value;
-use std::{
-    fmt,
-    time::{Duration, Instant},
-};
+use std::{fmt, time::Duration};
 
 /// Preserve the public CLI error text while retaining a typed retry discriminator.
 #[derive(Debug)]
@@ -104,12 +100,6 @@ fn parse_search_reply(status: StatusCode, bytes: &[u8]) -> Result<SearchReply> {
         }
         _ => bail!("unexpected successful search HTTP status {status}"),
     }
-}
-
-fn hex_random(size: usize) -> String {
-    let mut bytes = vec![0u8; size];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn segment(value: &str) -> String {
@@ -258,6 +248,14 @@ fn address_problem_code(problem: &Value) -> &'static str {
 fn transport_kind(error: &reqwest::Error) -> &'static str {
     if error.is_timeout() {
         "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_request() {
+        "request"
     } else {
         "other"
     }
@@ -283,15 +281,25 @@ impl<'a> Api<'a> {
         zip: Option<&[u8]>,
         idempotency: Option<&str>,
     ) -> Result<(StatusCode, Vec<u8>)> {
-        let token = auth::access_token(self.cfg)?;
-        let trace_id = hex_random(16);
-        let span_id = hex_random(8);
-        let traceparent = format!("00-{trace_id}-{span_id}-01");
+        let journal = telemetry::RequestSpan::new(self.cfg, operation);
+        let token = match auth::access_token(self.cfg) {
+            Ok(token) => token,
+            Err(err) => {
+                journal.finish(
+                    0,
+                    0,
+                    None,
+                    telemetry::Phase::Auth,
+                    Some("credential_unavailable"),
+                );
+                return Err(err);
+            }
+        };
         let mut request: RequestBuilder = self
             .http
             .request(method, format!("{}{}", self.cfg.api_base, path))
             .bearer_auth(&token)
-            .header("traceparent", traceparent);
+            .header("traceparent", journal.traceparent());
         if let Some(value) = json {
             request = request.json(value);
         }
@@ -303,20 +311,26 @@ impl<'a> Api<'a> {
         if let Some(key) = idempotency {
             request = request.header("Idempotency-Key", key);
         }
-        let start = Instant::now();
+        self.execute_request(request, operation, journal)
+    }
+
+    /// Journal every HTTP completion boundary, including a truncated response.
+    fn execute_request(
+        &self,
+        request: RequestBuilder,
+        operation: &str,
+        journal: telemetry::RequestSpan<'_>,
+    ) -> Result<(StatusCode, Vec<u8>)> {
         let response = request.send();
         let response = match response {
             Ok(value) => value,
             Err(err) => {
-                telemetry::record(
-                    self.cfg,
-                    operation,
+                journal.finish(
                     0,
-                    start.elapsed().as_millis() as u64,
                     0,
-                    &trace_id,
-                    &span_id,
                     None,
+                    telemetry::Phase::Transport,
+                    Some(transport_kind(&err)),
                 );
                 bail!(
                     "mail API {operation} transport failed: kind={}",
@@ -332,8 +346,19 @@ impl<'a> Api<'a> {
             .map(str::to_owned);
         let cf_error = (operation == "addresses.add" && status.is_server_error())
             .then(|| cf_error_type(response.headers()));
-        let body = response
-            .bytes()
+        let body = response.bytes();
+        let (phase, error_kind) = match &body {
+            Ok(_) => (telemetry::Phase::Complete, None),
+            Err(err) => (telemetry::Phase::ResponseBody, Some(transport_kind(err))),
+        };
+        journal.finish(
+            status.as_u16(),
+            body.as_ref().map_or(0, |bytes| bytes.len()),
+            correlation.as_deref(),
+            phase,
+            error_kind,
+        );
+        let body = body
             .map_err(|err| {
                 anyhow::anyhow!(
                     "mail API {operation} body read failed: kind={}",
@@ -341,16 +366,6 @@ impl<'a> Api<'a> {
                 )
             })?
             .to_vec();
-        telemetry::record(
-            self.cfg,
-            operation,
-            status.as_u16(),
-            start.elapsed().as_millis() as u64,
-            body.len(),
-            &trace_id,
-            &span_id,
-            correlation.as_deref(),
-        );
         if !status.is_success() {
             let problem: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
             let raw_code = problem
@@ -551,6 +566,145 @@ impl<'a> Api<'a> {
 mod tests {
     use super::*;
     use reqwest::header::{HeaderMap, HeaderValue};
+
+    /// Exercise real HTTP reads, not a mock of the boundary that lost diagnostics.
+    #[test]
+    fn journals_complete_error_and_truncated_http_responses_once() {
+        use rusqlite::Connection;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir_in(root).unwrap();
+        let cfg = telemetry::tests::config(temp.path());
+        telemetry::init(&cfg).unwrap();
+        let conn = Connection::open(cfg.home.join("telemetry.sqlite3")).unwrap();
+        // Do not launch a detached uploader/credential lookup from unit tests.
+        conn.execute(
+            "INSERT INTO journal_state(key,value) VALUES('last_flush',?1)",
+            [i64::MAX],
+        )
+        .unwrap();
+        let api = Api::new(&cfg).unwrap();
+        let correlation = "123e4567-e89b-42d3-a456-426614174000";
+        for (status, body, declared, expected_phase) in [
+            (200, "ok", 2, "complete"),
+            (503, "{}", 2, "complete"),
+            (200, "cut", 100, "response_body"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut received = Vec::new();
+                let mut buffer = [0u8; 1024];
+                while !received.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    assert!(read > 0 && received.len() < 8192);
+                    received.extend_from_slice(&buffer[..read]);
+                }
+                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Length: {declared}\r\nX-Amail-Request-Id: {correlation}\r\nConnection: close\r\n\r\n{body}").unwrap();
+            });
+            let journal = telemetry::RequestSpan::new(&cfg, "messages.list");
+            let traceparent = journal.traceparent();
+            let result = api.execute_request(
+                api.http
+                    .get(format!(
+                        "http://{address}/private-path?search=private-query"
+                    ))
+                    .header("traceparent", &traceparent),
+                "messages.list",
+                journal,
+            );
+            server.join().unwrap();
+            assert_eq!(result.is_ok(), status == 200 && declared == body.len());
+            let row: (u16, String, Option<String>, String, String, String, i64) = conn.query_row(
+                "SELECT status,phase,error_kind,correlation_id,trace_id,span_id,started_at_ms FROM events ORDER BY id DESC LIMIT 1",
+                [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))
+            ).unwrap();
+            assert_eq!(row.0, status);
+            assert_eq!(row.1, expected_phase);
+            assert_eq!(row.2.is_some(), expected_phase == "response_body");
+            assert_eq!(row.3, correlation);
+            assert_eq!(traceparent, format!("00-{}-{}-01", row.4, row.5));
+            assert!(row.6 > 0);
+            if let Err(error) = result {
+                assert!(!error.to_string().contains("private-"));
+            }
+        }
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
+        // A request-construction failure is recorded without inventing HTTP status.
+        let journal = telemetry::RequestSpan::new(&cfg, "messages.list");
+        let result = api.execute_request(
+            api.http
+                .get("http://127.0.0.1/")
+                .header("invalid", "bad\nprivate-value"),
+            "messages.list",
+            journal,
+        );
+        assert!(result.is_err());
+        let row: (u16, String, Option<String>) = conn
+            .query_row(
+                "SELECT status,phase,error_kind FROM events ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, 0);
+        assert_eq!(row.1, "transport");
+        assert!(row.2.is_some());
+        let values: Vec<String> = conn
+            .prepare(
+                "SELECT operation || COALESCE(error_kind,'') || trace_id || span_id FROM events",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(values.iter().all(|value| !value.contains("private-")));
+    }
+
+    /// Auth acquisition failure belongs to the same attempted operation's journal.
+    #[test]
+    fn journals_auth_failure_before_any_request_is_sent() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir_in(root).unwrap();
+        let mut cfg = telemetry::tests::config(temp.path());
+        cfg.client_id.clear(); // Fails before keyring, token refresh or network use.
+        telemetry::init(&cfg).unwrap();
+        let conn = rusqlite::Connection::open(cfg.home.join("telemetry.sqlite3")).unwrap();
+        conn.execute(
+            "INSERT INTO journal_state(key,value) VALUES('last_flush',?1)",
+            [i64::MAX],
+        )
+        .unwrap();
+        assert!(Api::new(&cfg).unwrap().addresses().is_err());
+        let row: (String, u16, String, String) = conn
+            .query_row(
+                "SELECT operation,status,phase,error_kind FROM events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "addresses.list".into(),
+                0,
+                "auth".into(),
+                "credential_unavailable".into()
+            )
+        );
+    }
 
     fn failure(status: StatusCode, code: &str) -> anyhow::Error {
         ApiFailure {

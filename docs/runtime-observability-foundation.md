@@ -95,3 +95,36 @@ Keep project Secret management and the existing send hold unchanged.
   — native trace and log views are distinct; preserve source/version/time scope.
 * docs/mail-trace-privacy-decision.md — historical path-enrichment evidence and
   the current safe-event isolation boundary, not a universal future API verdict.
+
+## Local journal repair (source under hosted validation)
+
+The first bounded implementation retains the legacy upload JSON unchanged:
+old Mail servers use deny_unknown_fields, so blindly uploading new attributes
+would reject whole batches. New local nullable columns started_at_ms (Unix UTC
+milliseconds), elapsed_ms (monotonic), phase and error_kind record the attempt's
+actual boundary. Historical rows keep NULL rather than an invented time. The
+legacy duration_ms clamp remains only for compatibility; elapsed_ms is exact.
+Timestamps/phases are **not yet available remotely**; enriched reader-first wire
+rollout and queued producer timestamps are separate remaining work.
+
+Each HTTP attempt starts before credentials, propagates its own traceparent and
+consumes one RequestSpan at auth, transport, response-body or full-response
+completion. Response-body failures retain the received HTTP status/correlation;
+zero status denotes no headers. HTTP error responses are complete exchanges,
+not transport failures. JSON interpretation and local command spans remain
+outside this attempt span and need their own coverage.
+
+send_state owns legacy send_attempts; auth owns refresh_state; local_store owns
+only physical access and private file mode. Keep telemetry.sqlite3 unchanged
+for existing processes and saved keys. Journal lock waits are 250 ms, versus
+30 seconds for durable state. Diagnostic initialization/record failure reports
+safe SQLite codes or I/O kinds on stderr and does not change command results;
+normal machine-readable stdout remains unchanged. Explicit telemetry opt-out
+skips diagnostic initialization as well as collection/upload. This is diagnostic
+ownership isolation, not separate physical storage or crash-state redesign.
+
+Hosted regressions exercise real HTTP complete/error/truncated responses,
+request-construction and pre-network auth failures, timestamp/identity equality,
+legacy and concurrent additive migrations, unresolved key reuse and concurrent
+writers, plus actual CLI process behavior with an unavailable journal and opt-out.
+No local project tests/builds and no provider/mail changes accompany this patch.
