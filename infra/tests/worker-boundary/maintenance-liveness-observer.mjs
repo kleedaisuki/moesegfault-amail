@@ -1,5 +1,5 @@
 /** Test-only native binding observer; production code receives no test policy knobs. */
-import BuiltWorker from "../../../crates/mail-worker/build/worker/shim.mjs";
+import MailMaintenance from "../../../crates/mail-worker/entry/maintenance.mjs";
 
 const nativeStatements = new WeakMap();
 let policy = {}, stats, offset = 0;
@@ -98,7 +98,7 @@ function bucket(native) {
 }
 
 /** Invocation-local fake clock is restored even when production work fails. */
-export default class MaintenanceLivenessObserver extends BuiltWorker {
+export default class MaintenanceLivenessObserver extends MailMaintenance {
   constructor(ctx, env) { super(ctx, { ...env, MAIL_DB: database(env.MAIL_DB), MAIL_BODIES: bucket(env.MAIL_BODIES) }); }
   async scheduled(event) {
     reset();

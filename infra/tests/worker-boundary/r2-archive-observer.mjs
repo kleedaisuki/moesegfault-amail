@@ -1,5 +1,5 @@
 /** Test-only native R2 observer: production Rust/shim is imported unchanged. */
-import BuiltWorker from "../../../crates/mail-worker/build/worker/shim.mjs";
+import MailMaintenance from "../../../crates/mail-worker/entry/maintenance.mjs";
 
 const cap = 5 * 1024 * 1024;
 const nativeNow = Date.now;
@@ -78,10 +78,10 @@ function bucket(native) {
 }
 
 /** Isolated fixture hook; no production env flags, endpoints or service are added. */
-export default class R2ArchiveObserver extends BuiltWorker {
+export default class R2ArchiveObserver extends MailMaintenance {
   constructor(ctx, env) { super(ctx, { ...env, MAIL_BODIES: bucket(env.MAIL_BODIES) }); }
   async fetch(request) {
     if (request.url === "https://synthetic.invalid/r2-stats") return Response.json(stats);
-    return super.fetch(request);
+    throw new Error("no application HTTP surface in maintenance observer");
   }
 }

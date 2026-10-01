@@ -1,5 +1,5 @@
 /** Test-only native Routing and SQL observations; never supplies production policy. */
-import BuiltWorker from "../../../crates/mail-worker/build/worker/shim.mjs";
+import MailMaintenance from "../../../crates/mail-worker/entry/maintenance.mjs";
 
 const endpoint = "https://api.cloudflare.com/client/v4/zones/synthetic-zone/email/routing/rules";
 const signals = new WeakMap(), streams = new WeakMap(), readers = new WeakMap();
@@ -112,7 +112,7 @@ function database(native) {
 }
 
 /** Forward unchanged built Wasm; the only HTTP surface returns synthetic counters. */
-export default class RoutingDeadlineObserver extends BuiltWorker {
+export default class RoutingDeadlineObserver extends MailMaintenance {
   constructor(ctx, env) { super(ctx, { ...env, MAIL_DB: database(env.MAIL_DB) }); }
   async scheduled(event) { reset(); return super.scheduled(event); }
   async fetch(request) {

@@ -1,5 +1,6 @@
 /** Test-only WorkerEntrypoint adapter; import the actual built Rust shim unchanged. */
-import BuiltWorker from "./shim.mjs";
+import MailApi from "../../../crates/mail-worker/entry/api.mjs";
+import MailMaintenance from "../../../crates/mail-worker/entry/maintenance.mjs";
 
 const acceptedSql = "UPDATE send_requests SET state='accepted',provider_id=?1,sender=?2,envelope_json=?3,request_id=?4 WHERE owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND state='submitting'";
 
@@ -47,21 +48,29 @@ function database(native, control, pauseClaim) {
   });
 }
 
-/** Replace external provider send and one await boundary; no production hooks. */
-export default class AcceptedRaceWorker extends BuiltWorker {
-  constructor(ctx, env) {
-    super(ctx, {
-      ...env,
-      MAIL_DB: database(env.MAIL_DB, env.TEST_CONTROL, env.RACE_CLAIM_BARRIER === "1"),
-      EMAIL: {
-        /** The real Rust SendEmailBuilder still crosses the JS binding boundary. */
-        async send(builder) {
-          if (!builder || typeof builder.subject !== "string") throw new Error("synthetic builder contract");
-          const response = await env.TEST_CONTROL.fetch("https://test.invalid/send", { method: "POST" });
-          if (!response.ok) throw new Error("synthetic provider failure");
-          return response.json();
-        },
+/** Wrap bindings identically for HTTP and Cron; native stores remain shared. */
+function bindings(env) {
+  return {
+    ...env,
+    MAIL_DB: database(env.MAIL_DB, env.TEST_CONTROL, env.RACE_CLAIM_BARRIER === "1"),
+    EMAIL: {
+      /** The real Rust SendEmailBuilder still crosses the JS binding boundary. */
+      async send(builder) {
+        if (!builder || typeof builder.subject !== "string") throw new Error("synthetic builder contract");
+        const response = await env.TEST_CONTROL.fetch("https://test.invalid/send", { method: "POST" });
+        if (!response.ok) throw new Error("synthetic provider failure");
+        return response.json();
       },
-    });
-  }
+    },
+  };
+}
+
+/** HTTP barriers around the actual fetch-only production adapter. */
+export default class AcceptedRaceWorker extends MailApi {
+  constructor(ctx, env) { super(ctx, bindings(env)); }
+}
+
+/** Scheduled barriers around the actual scheduled-only production adapter. */
+export class AcceptedRaceMaintenance extends MailMaintenance {
+  constructor(ctx, env) { super(ctx, bindings(env)); }
 }

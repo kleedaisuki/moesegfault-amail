@@ -4,7 +4,6 @@
  */
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { copyFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -51,19 +50,18 @@ async function barrierArrived(arrived, pending) {
 
 /** Exercise native HTTP admission, then Cron and optional public delete/real GC. */
 async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork = false, hiddenAccepted = false } = {}) {
-  const entry = path.join(worker, "build/worker/accepted-race-test.mjs");
-  await copyFile(path.join(here, "accepted-race-entry.mjs"), entry);
+  const entry = path.join(here, "accepted-race-entry.mjs");
   const arrived = deferred(), release = deferred();
   let sends = 0, barriers = 0, claims = 0, unexpected = 0, pending;
   const jwk = publicKey.export({ format: "jwk" });
-  const mf = new Miniflare({ cf: false, workers: [{
+  const options = { cf: false, workers: [{
     name: "amail-accepted-race", modules: true, scriptPath: entry,
-    modulesRoot: path.join(worker, "build"), modulesRules: workerModuleRules,
+    modulesRoot: path.resolve(here, "../../.."), modulesRules: workerModuleRules,
     compatibilityDate: "2026-08-06",
     bindings: { RACE_CLAIM_BARRIER: expireClaim ? "1" : "0", IDENTITY_ISSUER: issuer, OIDC_CLIENT_ID: "amail-cli-staging",
       CF_ZONE_ID: "synthetic-zone", CF_EMAIL_ROUTING_TOKEN: "synthetic-token",
       MAIL_DOMAIN: "mail-staging.moesegfault.dev", EMAIL_INGRESS_WORKER_NAME: "synthetic-ingress" },
-    d1Databases: ["MAIL_DB"], r2Buckets: ["MAIL_BODIES"],
+    d1Databases: { MAIL_DB: "race-shared-db" }, r2Buckets: { MAIL_BODIES: "race-shared-r2" },
     serviceBindings: { TEST_CONTROL: async request => {
       if (request.method !== "POST" || !["https://test.invalid/send", "https://test.invalid/after-accepted", "https://test.invalid/after-claim"].includes(request.url)) {
         unexpected++;
@@ -102,7 +100,10 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
       unexpected++;
       throw new Error("unexpected synthetic external request");
     },
-  }] });
+  }] };
+  options.workers.push({ ...options.workers[0], name: "amail-accepted-maintenance",
+    scriptPath: path.join(here, "accepted-race-maintenance-entry.mjs") });
+  const mf = new Miniflare(options);
   try {
     const { MAIL_DB: db, MAIL_BODIES: bucket } = await mf.getBindings();
     await applyMigrations(db, path.join(worker, "migrations"));
@@ -127,7 +128,7 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
       assert.equal(claims, 1, "first HTTP lease acquisition committed before pause");
       assert.ok(journal.index_projection_token);
       assert.ok(journal.index_projection_lease_until > Date.now());
-      await (await mf.getWorker()).scheduled();
+      await (await mf.getWorker("amail-accepted-maintenance")).scheduled();
       const stillOwned = await db.prepare("SELECT state,index_projection_token FROM send_requests WHERE idem_key=?1").bind(idem).first();
       assert.equal(stillOwned.state, "accepted");
       assert.equal(stillOwned.index_projection_token, journal.index_projection_token);
@@ -135,7 +136,7 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
       assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM messages").first()).n, 0);
       await db.prepare("UPDATE send_requests SET index_projection_lease_until=0 WHERE idem_key=?1").bind(idem).run();
     }
-    await (await mf.getWorker()).scheduled();
+    await (await mf.getWorker("amail-accepted-maintenance")).scheduled();
     if (expireClaim) assert.equal(claims, 2, "Cron takes a fresh lease only after explicit expiry");
     assert.equal((await db.prepare("SELECT state FROM send_requests WHERE idem_key=?1").bind(idem).first()).state, "sent");
     assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM messages WHERE id=?1 AND deleted_at IS NULL").bind(journal.message_id).first()).n, 1);
@@ -169,7 +170,7 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
         // and source until the due projector can terminalize that deletion.
         const due = await db.prepare("SELECT index_next_attempt_at FROM send_requests WHERE idem_key=?1").bind(idem).first();
         assert.ok(due.index_next_attempt_at > Date.now(), "the existing retry slot is still in the future");
-        await (await mf.getWorker()).scheduled();
+        await (await mf.getWorker("amail-accepted-maintenance")).scheduled();
         assert.equal((await db.prepare("SELECT state FROM send_requests WHERE idem_key=?1").bind(idem).first()).state, "accepted");
         assert.equal((await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first()).deleted_at, tombstone.deleted_at);
         assert.ok(await bucket.get(`messages/${journal.message_id}.zip`), "accepted deletion retains its archive until due terminalization");
@@ -181,12 +182,12 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
         // in this turn; a following real GC turn performs physical reclamation.
         const deletedFirstSlot = new Date(1_680_001_200_000);
         assert.equal(Math.floor(deletedFirstSlot.getTime() / 300_000) % 8, 4);
-        await (await mf.getWorker()).scheduled({ scheduledTime: deletedFirstSlot });
+        await (await mf.getWorker("amail-accepted-maintenance")).scheduled({ scheduledTime: deletedFirstSlot });
         assert.equal((await db.prepare("SELECT state FROM send_requests WHERE idem_key=?1").bind(idem).first()).state, "sent", "outbound terminalizes deletion after the earlier GC phase");
         assert.equal((await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first()).deleted_at, tombstone.deleted_at);
         assert.ok(await bucket.get(`messages/${journal.message_id}.zip`), "GC preceding terminalization preserves the accepted archive");
       }
-      await (await mf.getWorker()).scheduled();
+      await (await mf.getWorker("amail-accepted-maintenance")).scheduled();
       assert.equal(await bucket.get(`messages/${journal.message_id}.zip`), null, "real GC removed the immutable archive");
       assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM messages").first()).n, 0);
     }
@@ -203,7 +204,7 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
     assert.equal((await replay.json()).id, journal.message_id);
     assert.equal(sends, 1, "neither resumed projection nor replay sends again");
     assert.equal(barriers, 1);
-    await (await mf.getWorker()).scheduled();
+    await (await mf.getWorker("amail-accepted-maintenance")).scheduled();
     assert.deepEqual((await db.prepare("SELECT id,owner_iss,owner_sub,bytes,state FROM storage_reservations ORDER BY id").all()).results, reservationBefore);
     assert.deepEqual((await db.prepare("SELECT owner_iss,owner_sub,used_bytes FROM storage_usage ORDER BY owner_iss,owner_sub").all()).results, usageBefore);
     if (deleteBeforeResume) {
@@ -223,7 +224,6 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
     release.resolve();
     if (pending) await pending.catch(() => {});
     await mf.dispose();
-    await unlink(entry);
   }
 }
 

@@ -98,13 +98,13 @@ function fakeNetwork(createResponse, listedRuleIds = [], runCron = false, cronRu
 /** Build a fresh local database and dispatch one real address-add invocation. */
 async function exercise(createResponse, { failActivation = false, listedRuleIds = [], runCron = false, cronRuleIds = listedRuleIds, stalePending = false, markDeleting = false, oldProvisioning = false, flagActive = false, backlogCount = 0 } = {}) {
   const mock = fakeNetwork(createResponse, listedRuleIds, runCron, cronRuleIds, backlogCount);
-  const mf = new Miniflare({
+  const options = {
     cf: false,
     workers: [{
       name: "amail-synthetic",
       modules: true,
-      scriptPath: path.join(worker, "build/worker/shim.mjs"),
-      modulesRoot: path.join(worker, "build"),
+      scriptPath: path.join(worker, "entry/api.mjs"),
+      modulesRoot: worker,
       modulesRules: workerModuleRules,
       // Stable v4's workerd supports dates only through 2026-08-06.
       compatibilityDate: "2026-08-06",
@@ -117,10 +117,13 @@ async function exercise(createResponse, { failActivation = false, listedRuleIds 
         EMAIL_INGRESS_WORKER_NAME: "synthetic-ingress",
         ADDRESS_DIAGNOSTICS: "v1",
       },
-      d1Databases: ["MAIL_DB"],
+      d1Databases: { MAIL_DB: "address-shared" },
       outboundService: mock.outboundService,
     }],
-  });
+  };
+  options.workers.push({ ...options.workers[0], name: "amail-maintenance-synthetic",
+    scriptPath: path.join(worker, "entry/maintenance.mjs") });
+  const mf = new Miniflare(options);
   try {
     const { MAIL_DB: db } = await mf.getBindings();
     await applyMigrations(db, path.join(worker, "migrations"));
@@ -156,7 +159,7 @@ async function exercise(createResponse, { failActivation = false, listedRuleIds 
       await db.prepare("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES(?1,?2,'synthetic-issuer',?3,0,'provisioning',0)")
         .bind(recipient, `backlog-${n}`, `backlog-subject-${n}`).run();
     }
-    if (runCron) await (await mf.getWorker()).scheduled();
+    if (runCron) await (await mf.getWorker("amail-maintenance-synthetic")).scheduled();
     const rows = await db.prepare("SELECT state, cf_rule_id, needs_reconcile FROM addresses WHERE address=?1")
       .bind(address).all();
     const backlogScheduled = backlogCount === 0 ? null :
@@ -381,12 +384,12 @@ async function withProvider({ rules = [], listPage, getRule, beforeDelete, creat
     unexpected++;
     throw new Error("unmatched synthetic provider egress");
   };
-  const mf = new Miniflare({
+  const options = {
     cf: false,
     workers: [{
       name: "amail-synthetic", modules: true,
-      scriptPath: path.join(worker, "build/worker/shim.mjs"),
-      modulesRoot: path.join(worker, "build"), modulesRules: workerModuleRules,
+      scriptPath: path.join(worker, "entry/api.mjs"),
+      modulesRoot: worker, modulesRules: workerModuleRules,
       compatibilityDate: "2026-08-06",
       bindings: {
         IDENTITY_ISSUER: issuer, OIDC_CLIENT_ID: "amail-cli-staging",
@@ -398,9 +401,12 @@ async function withProvider({ rules = [], listPage, getRule, beforeDelete, creat
           OPENROUTER_EMBEDDING_MODEL: "qwen/qwen3-embedding-8b",
         } : {}),
       },
-      d1Databases: ["MAIL_DB"], outboundService,
+      d1Databases: { MAIL_DB: "address-shared" }, outboundService,
     }],
-  });
+  };
+  options.workers.push({ ...options.workers[0], name: "amail-maintenance-synthetic",
+    scriptPath: path.join(worker, "entry/maintenance.mjs") });
+  const mf = new Miniflare(options);
   try {
     const { MAIL_DB: db } = await mf.getBindings();
     await applyMigrations(db, path.join(worker, "migrations"));
@@ -414,7 +420,7 @@ async function withProvider({ rules = [], listPage, getRule, beforeDelete, creat
     ).bind(recipient).first();
     const tick = async () => {
       const start = calls.length;
-      await (await mf.getWorker()).scheduled();
+      await (await mf.getWorker("amail-maintenance-synthetic")).scheduled();
       const current = calls.slice(start).filter((call) => call.path.startsWith(rulePath));
       assert.ok(current.length <= 20, "all inventory, scoped GET and DELETE share twenty address calls");
       assert.equal(unexpected, 0, "no fixture forwards unmatched requests to real services");
