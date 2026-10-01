@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 API = "https://api.cloudflare.com/client/v4"
 RETENTION = 86400
 LIMIT = 262144
-TOPOLOGIES = ("api-only", "api-role")
+TOPOLOGIES = ("api-only", "api-role", "api-scheduled")
 
 
 def request(account: str, token: str, path: str, body: dict | None = None, *, method: str | None = None):
@@ -101,7 +101,9 @@ def validate_detail(detail: object, name: str, queue_id: str, suffix: str, phase
 
     Provision/recovery retains its historical empty-producer allowance. A strict
     readback never does: phase one has the sole API producer and phase two has
-    exactly API plus role, with no duplicate, unknown, or cross-realm script.
+    exactly the selected API plus role/maintenance pair, with no duplicate,
+    unknown, or cross-realm script. Split ownership is readback-only, never an
+    allowance to provision resources or silently adopt a second producer.
     """
     if topology not in TOPOLOGIES or (topology != "api-only" and phase != "readback"):
         raise ValueError("topology_unreviewed")
@@ -137,6 +139,8 @@ def validate_detail(detail: object, name: str, queue_id: str, suffix: str, phase
     expected = {f"amail-mail{suffix}"}
     if topology == "api-role":
         expected.add(f"amail-role-monitor{suffix}")
+    if topology == "api-scheduled":
+        expected.add(f"amail-mail-maintenance{suffix}")
     if (len(producers) != len(expected)
             or not all(isinstance(item, dict) and item.get("type") == "worker"
                        and isinstance(item.get("script"), str) for item in producers)

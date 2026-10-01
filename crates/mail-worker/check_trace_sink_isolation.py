@@ -195,7 +195,7 @@ def queue_trigger_exact(account: str, token: str, realm: str, script: str) -> bo
             name=main_name if queue_id == expected else dlq_name
             # Initial sink installation may precede the sole API producer. The
             # explicit role phase never inherits that empty-producer allowance.
-            phase="readback" if topology == "api-role" else "queues"
+            phase="readback" if topology != "api-only" else "queues"
             queues.validate_detail(detail,name,queue_id,suffix,phase,topology)
             if queue_id == expected and len(consumers) != 1:
                 return False

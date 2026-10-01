@@ -1,6 +1,6 @@
 # Production mail API with a Cloudflare Worker Custom Domain. / 生产邮件 API 使用 Worker 自定义域名。
 name = "amail-mail"
-main = "build/worker/shim.mjs"
+main = "entry/api.mjs"
 compatibility_date = "2026-09-25"
 workers_dev = false
 routes = [{ pattern = "mail.moesegfault.dev", custom_domain = true }]
@@ -58,7 +58,8 @@ binding = "TRACE_EVENTS"
 queue = "amail-trace-events"
 
 [triggers]
-crons = ["*/5 * * * *"]
+# Permanent API invariant: normal replacement or rollback must never restore Cron.
+crons = []
 
 [env.staging]
 name = "amail-mail-staging"
@@ -95,7 +96,8 @@ binding = "TRACE_EVENTS"
 queue = "amail-trace-events-staging"
 
 [env.staging.triggers]
-crons = ["*/5 * * * *"]
+# Maintenance owns dispatch only after independently admitted cutover and drain.
+crons = []
 
 # Staging does not inherit the production privacy boundary.
 [env.staging.observability]

@@ -245,6 +245,12 @@ def run(account: str, token: str, expected: str, *, phase: str = "pre-queue",
         return "privacy_unverified"
     if not bindings_match(version, expected, phase=phase, queue_id=queue_id):
         return "bindings_mismatch"
+    from check_mail_maintenance import api_config, entry_surface_match, schedules_match
+    api_config("staging")
+    if not entry_surface_match(version, expected, "fetch"):
+        return "entry_surface_mismatch"
+    if not schedules_match(fetch(account, token, "schedules")):
+        return "schedule_mismatch"
     second = serving_deployment(fetch(account, token, "deployments?per_page=1&page=1"))
     return "match" if second == first else "deployment_changed"
 

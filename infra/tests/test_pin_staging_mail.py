@@ -78,17 +78,17 @@ class PinTests(unittest.TestCase):
     def test_binding_targets_and_secrets(self) -> None:
         """Production resource drift and unexpected bindings fail closed."""
 
-        good = {"id": VERSION, "resources": {"bindings": bindings()}}
+        good = {"id": VERSION, "resources": {"bindings": bindings(), "script": {"handlers": ["fetch"], "named_handlers": []}}}
         self.assertTrue(pin.bindings_match(good, VERSION))
         wrapped = {"id": VERSION, "resources": {"bindings": {"result": bindings()}}}
         self.assertTrue(pin.bindings_match(wrapped, VERSION))
-        wrong = {"id": VERSION, "resources": {"bindings": bindings()}}
+        wrong = {"id": VERSION, "resources": {"bindings": bindings(), "script": {"handlers": ["fetch"], "named_handlers": []}}}
         next(item for item in wrong["resources"]["bindings"] if item["name"] == "MAIL_DB")["database_id"] = OTHER
         self.assertFalse(pin.bindings_match(wrong, VERSION))
-        wrong = {"id": VERSION, "resources": {"bindings": bindings()}}
+        wrong = {"id": VERSION, "resources": {"bindings": bindings(), "script": {"handlers": ["fetch"], "named_handlers": []}}}
         next(item for item in wrong["resources"]["bindings"] if item["name"] == "INGRESS_SECRET")["type"] = "plain_text"
         self.assertFalse(pin.bindings_match(wrong, VERSION))
-        wrong = {"id": VERSION, "resources": {"bindings": bindings()}}
+        wrong = {"id": VERSION, "resources": {"bindings": bindings(), "script": {"handlers": ["fetch"], "named_handlers": []}}}
         wrong["resources"]["bindings"].append({"name": "UNREVIEWED", "type": "secret_text"})
         self.assertFalse(pin.bindings_match(wrong, VERSION))
         self.assertFalse(pin.bindings_match({"id": VERSION, "resources": {"bindings": {}}}, VERSION))
@@ -100,13 +100,13 @@ class PinTests(unittest.TestCase):
         """A rollout between initial and final GET cannot yield a match."""
 
         safe = settings()
-        version = {"id": VERSION, "resources": {"bindings": bindings()}}
-        fetch.side_effect = [deployment(), version, safe, safe, deployment()]
+        version = {"id": VERSION, "resources": {"bindings": bindings(), "script": {"handlers": ["fetch"], "named_handlers": []}}}
+        fetch.side_effect = [deployment(), version, safe, safe, {"schedules": []}, deployment()]
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "match")
-        self.assertEqual(fetch.call_count, 5)
-        fetch.side_effect = [deployment(), version, safe, safe, deployment(OTHER)]
+        self.assertEqual(fetch.call_count, 6)
+        fetch.side_effect = [deployment(), version, safe, safe, {"schedules": []}, deployment(OTHER)]
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "deployment_changed")
-        fetch.side_effect = [deployment(), version, safe, safe,
+        fetch.side_effect = [deployment(), version, safe, safe, {"schedules": []},
                              deployment(deployment_id=VERSION)]
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "deployment_changed")
         fetch.side_effect = [deployment(OTHER)]
@@ -117,14 +117,14 @@ class PinTests(unittest.TestCase):
         """A guarded job may call run without this script's __main__ path setup."""
 
         safe = settings()
-        version = {"id": VERSION, "resources": {"bindings": bindings()}}
-        fetch.side_effect = [deployment(), version, safe, safe, deployment()]
+        version = {"id": VERSION, "resources": {"bindings": bindings(), "script": {"handlers": ["fetch"], "named_handlers": []}}}
+        fetch.side_effect = [deployment(), version, safe, safe, {"schedules": []}, deployment()]
         module_dir = pin.CONFIG.parent.resolve()
         without_sibling = [path for path in sys.path if Path(path).resolve() != module_dir]
         with patch.object(sys, "path", without_sibling), patch.dict(sys.modules):
             sys.modules.pop("check_observability", None)
             self.assertEqual(pin.run("a" * 32, "private", VERSION), "match")
-        self.assertEqual(fetch.call_count, 5)
+        self.assertEqual(fetch.call_count, 6)
 
     @patch.object(pin, "fetch")
     def test_privacy_precedes_binding_claim(self, fetch) -> None:
@@ -132,14 +132,14 @@ class PinTests(unittest.TestCase):
 
         bad = settings()
         bad["observability"]["traces"]["enabled"] = True
-        version = {"id": VERSION, "resources": {"bindings": bindings()}}
+        version = {"id": VERSION, "resources": {"bindings": bindings(), "script": {"handlers": ["fetch"], "named_handlers": []}}}
         fetch.side_effect = [deployment(), version, bad, settings()]
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "privacy_unverified")
 
     @patch.object(pin, "fetch")
     def test_current_resource_issues_required(self, fetch) -> None:
         """Legacy intent cannot mask missing independent Issues capture evidence."""
-        version = {"id": VERSION, "resources": {"bindings": bindings()}}
+        version = {"id": VERSION, "resources": {"bindings": bindings(), "script": {"handlers": ["fetch"], "named_handlers": []}}}
         del self.worker.return_value["observability"]["issues"]
         fetch.side_effect = [deployment(), version, {}, {"observability": None}]
         self.assertEqual(pin.run("a" * 32, "private", VERSION), "privacy_unverified")

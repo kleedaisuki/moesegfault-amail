@@ -23,6 +23,8 @@ def require(actual: object, expected: object, label: str) -> None:
 def check() -> None:
     """验证 API、入口和持久化绑定都属于预发。 / Check staging API, ingress, and storage."""
 
+    from check_mail_maintenance import check_source_configs
+    check_source_configs()
     with (ROOT / "crates/mail-worker/wrangler.toml").open("rb") as file:
         config = tomllib.load(file)
     if "ADDRESS_DIAGNOSTICS" in config.get("vars", {}):
