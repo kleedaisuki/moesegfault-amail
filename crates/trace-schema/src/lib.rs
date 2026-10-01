@@ -140,6 +140,8 @@ pub enum DiagnosticCode {
     StorageLedgerStateDeferred,
     /// A maintenance phase retained its journal when its SQL grant ran out.
     MaintenanceBudgetDeferred,
+    /// Maintenance retained its journal when its admission deadline elapsed.
+    MaintenanceDeadlineDeferred,
 }
 
 /// Flat allowlisted JSON. Validation additionally enforces service-specific field sets.
@@ -275,7 +277,10 @@ impl Event {
             && self.request_id.is_some()
             && self.outcome == Outcome::PhaseFailure
             && match self.diagnostic_code {
-                Some(DiagnosticCode::MaintenanceBudgetDeferred) => {
+                Some(
+                    DiagnosticCode::MaintenanceBudgetDeferred
+                    | DiagnosticCode::MaintenanceDeadlineDeferred,
+                ) => {
                     self.operation == Operation::Maintenance
                         && self.error_code == Some(ErrorCode::ResourceDeferred)
                 }
@@ -438,7 +443,7 @@ mod tests {
         assert!(Event::from_value(value).is_some());
     }
 
-    /// Only the fixed standalone maintenance pair may report resource deferral.
+    /// Only the fixed standalone maintenance pairs may report resource deferral.
     #[test]
     fn resource_deferral_is_not_a_dependency_failure_or_request_event() {
         let mut value = fixture();
@@ -448,18 +453,28 @@ mod tests {
         value["phase"] = json!("maintenance");
         value["outcome"] = json!("phase_failure");
         value["error_code"] = json!("resource_deferred");
-        value["diagnostic_code"] = json!("maintenance_budget_deferred");
-        assert!(Event::from_value(value.clone()).is_some());
-        for (field, bad) in [
-            ("error_code", json!("dependency_failure")),
-            ("diagnostic_code", json!("outbound_reconciliation_failed")),
-            ("operation", json!("messages_send")),
-            ("phase", json!("request_exit")),
-            ("outcome", json!("success")),
+        for code in [
+            "maintenance_budget_deferred",
+            "maintenance_deadline_deferred",
         ] {
-            let mut bad_value = value.clone();
-            bad_value[field] = bad;
-            assert!(Event::from_value(bad_value).is_none());
+            value["diagnostic_code"] = json!(code);
+            assert!(Event::from_value(value.clone()).is_some());
+            for (field, bad) in [
+                ("error_code", json!("dependency_failure")),
+                ("diagnostic_code", json!("outbound_reconciliation_failed")),
+                ("operation", json!("messages_send")),
+                ("parent_span_id", json!("abcdef0123456789")),
+                ("phase", json!("request_exit")),
+                ("outcome", json!("success")),
+            ] {
+                let mut bad_value = value.clone();
+                bad_value[field] = bad;
+                assert!(Event::from_value(bad_value).is_none());
+            }
+            let mut request_child = value.clone();
+            request_child["operation"] = json!("messages_send");
+            request_child["parent_span_id"] = json!("abcdef0123456789");
+            assert!(Event::from_value(request_child).is_none());
         }
     }
 
