@@ -57,11 +57,11 @@ class WorkflowTests(unittest.TestCase):
     def test_same_manifest_recovery_and_generation_survive_cancellation(self):
         """Recovery is explicit and never automatically resends ambiguous deletes."""
         recovery = self.job[self.job.index("id: recovery"):]
-        self.assertIn("if: inputs.mode == 'recover'", recovery)
-        self.assertIn("'recover', '--source-run'", recovery)
+        self.assertIn("if: inputs.mode == 'recover' || inputs.mode == 'recover-escrow'", recovery)
+        self.assertIn("{ 'recover-escrow' } else { 'recover' }", recovery)
         self.assertIn("'--prior-run', $env:PUBLIC_PRIOR_RUN", recovery)
         self.assertIn("'--artifact-id', $env:PUBLIC_ARTIFACT_ID", recovery)
-        self.assertIn("if: always() && inputs.mode == 'accept'", self.job)
+        self.assertIn("if: always() && (inputs.mode == 'accept' || inputs.mode == 'supervised-escrow')", self.job)
         self.assertIn("ten_address_immutable_recovery_artifact_retained", self.job)
         self.assertEqual(self.job.count("AMAIL_TEN_ADDRESS_KEY_GENERATION: ten-address-v1"), 3)
         self.assertEqual(self.job.count("secrets.AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1"), 3)
@@ -87,6 +87,43 @@ class WorkflowTests(unittest.TestCase):
         """Only pass --queue-id when it has a validated nonempty value."""
         self.assertEqual(self.job.count("if ($env:PUBLIC_QUEUE_ID) { $arguments += @('--queue-id', $env:PUBLIC_QUEUE_ID) }"), 3)
         self.assertEqual(self.job.count("python infra/tests/staging_ten_address_acceptance.py @arguments"), 3)
+
+    def test_supervised_escrow_is_explicit_actor_bound_not_automatic_fallback(self):
+        """Machine admission binds the operator, not their continuous supervision."""
+        self.assertIn("options: [accept, recover, supervised-escrow, recover-escrow]", self.source)
+        self.assertIn("default: accept", self.source)
+        self.assertIn("RUN_SUPERVISED_STAGING_TEN_ADDRESSES", self.job)
+        self.assertIn("RECOVER_STAGING_TEN_ADDRESS_ESCROW", self.job)
+        actor = self.job.index("Bind explicit supervised escrow decision")
+        self.assertLess(actor, self.job.index("secrets."))
+        self.assertIn("$env:PUBLIC_SUPERVISED_BY -cne $env:GITHUB_ACTOR", self.job)
+        self.assertIn("$env:PUBLIC_PRIOR_RUN -ceq $env:GITHUB_RUN_ID", self.job)
+        self.assertIn("{ 'prepare-escrow' } else { 'prepare' }", self.job)
+        self.assertIn("{ 'campaign-escrow' } else { 'campaign' }", self.job)
+        self.assertIn("{ 'recover-escrow' } else { 'recover' }", self.job)
+        recovery = self.job[self.job.index("id: recovery"):]
+        self.assertIn("if ($env:PUBLIC_QUOTA_MODE -ceq 'recover') { $arguments += @('--artifact-id', $env:PUBLIC_ARTIFACT_ID) }", recovery)
+        self.assertNotIn("continue-on-error", self.source)
+        self.assertNotIn("workflow_run:", self.source)
+        self.assertNotIn("quota_escrow_supervision_unverified", self.source)
+        self.assertNotIn("secrets.SUPERV", self.source)
+        self.assertNotIn("vars.", self.source)
+        inputs = self.source.split("    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertLessEqual(len(re.findall(r"(?m)^      [a-z_]+:$", inputs)), 25)
+
+    def test_campaign_requires_successful_prepare_upload_and_digest(self):
+        """An upload ID alone cannot authorize arm after failed preparation."""
+        campaign = self.job[self.job.index("id: campaign"):self.job.index("id: recovery")]
+        self.assertIn("steps.prepare.outcome == 'success'", campaign)
+        self.assertIn("steps.recovery_artifact.outcome == 'success'", campaign)
+        self.assertIn("ORIGINAL_ARTIFACT_DIGEST: ${{ steps.recovery_artifact.outputs.artifact-digest }}", campaign)
+        self.assertIn("quota_artifact_digest_unverified", campaign)
+        self.assertIn('$artifact.digest -cne "sha256:$expectedDigest"', campaign)
+        self.assertIn("$artifact.workflow_run.head_sha -cne $env:GITHUB_SHA", campaign)
+        self.assertIn("([string]$artifact.workflow_run.id) -cne $env:GITHUB_RUN_ID", campaign)
+        self.assertIn("quota_artifact_receipt_mismatch", campaign)
+        self.assertIn("-TimeoutSec 30", campaign)
+        self.assertLess(campaign.index("quota_artifact_digest_unverified"), campaign.index("python infra/tests/staging_ten_address_acceptance.py"))
 
     def test_key_creation_is_source_only_non_overwriting_private_stdin(self):
         """One project-scoped versioned key is generated only by an explicit administrator."""
