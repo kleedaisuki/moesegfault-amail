@@ -107,6 +107,17 @@ def failure_reason(error: Exception) -> str:
     if isinstance(error, ImportError):
         return "domain_reader_dependency_missing"
     if isinstance(error, ValueError) and len(error.args) == 1 and isinstance(error.args[0], str):
+        # Only reviewed enum values become structural bins. Never interpolate a
+        # provider value or an arbitrary exception attribute into diagnostics.
+        domain_reason = getattr(error, "domain_reason", None)
+        allowed = {
+            "envelope", "rows", "row", "id_type", "id_uuid_format", "id_format", "id_duplicate",
+            "service", "info", "count_type", "count_mismatch", "total_count_type", "total_count_mismatch",
+            "page_type", "page_mismatch", "pages_type", "pages_mismatch", "per_page_type", "per_page_mismatch",
+        }
+        if (error.args[0] == "sink_domains_unverified" and isinstance(domain_reason, str)
+                and domain_reason in allowed):
+            return "custom_domain_" + domain_reason
         legacy = {
             "sink_readback_unavailable": "custom_domain_read_unavailable",
             "sink_domains_unverified": "custom_domain_inventory_unverified",
@@ -268,13 +279,14 @@ def unattached_route(provider: Provider, zone: str, *, progress: Progress | None
         if fnmatch.fnmatchcase(provider.resources.domain, host) or route.get("script") in {
                 provider.resources.api, "amail-role-monitor", "amail-mail-maintenance"}:
             raise ValueError("production_route_already_attached")
-    # Reuse the existing bounded paginated account-wide custom-domain reader.
+    # Reuse the strict single-response validator with this invocation's bounded
+    # no-redirect transport. The response stays in memory; no extra read occurs.
     progress = progress or Progress()
     progress.stage = Stage.DOMAIN_IMPORT
     sys.path.insert(0, str(ROOT / "crates/mail-worker"))
     import check_trace_sink_isolation as isolation
     progress.stage = Stage.DOMAINS
-    domains = isolation.worker_domains(provider.account, provider.token)
+    domains = isolation.worker_domain_rows(provider.envelope(f"/accounts/{provider.account}/workers/domains"))
     if any(row.get("hostname") == provider.resources.domain or row.get("service") == provider.resources.api
            for row in domains):
         raise ValueError("production_domain_already_attached")

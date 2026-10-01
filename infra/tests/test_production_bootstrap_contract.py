@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/deploy"))
 import production_bootstrap_contract as contract
 import inspect_held_production as inspect
+sys.path.insert(0, str(ROOT / "crates/mail-worker"))
+import check_trace_sink_isolation as isolation
 
 SHA = "a" * 40
 DATABASE = "00000000-0000-0000-0000-000000000001"
@@ -180,6 +182,53 @@ class BootstrapInspectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "^production_provider_http_403$") as result:
             provider.envelope("/accounts/" + "a" * 32 + "/workers/scripts")
         self.assertEqual(inspect.failure_reason(result.exception), "production_provider_http_403")
+
+    def test_domain_structural_bins_preserve_strict_acceptance(self):
+        """Distinguish failed schema rules without admitting incomplete domain lists."""
+        row = {"id": "a" * 32, "service": "fixture", "hostname": "private.invalid"}
+        valid = {"success": True, "result": [row], "result_info": {"count": 1, "page": 1, "total_pages": 1}}
+        self.assertEqual(isolation.worker_domain_rows(valid), [row])
+        cases = (
+            ({**valid, "result": None}, "rows"),
+            ({**valid, "result": [None]}, "row"),
+            ({**valid, "result": [{**row, "id": None}]}, "id_type"),
+            ({**valid, "result": [{**row, "id": "00000000-0000-0000-0000-000000000001"}]}, "id_uuid_format"),
+            ({**valid, "result": [{**row, "id": "private-token"}]}, "id_format"),
+            ({**valid, "result": [row, row]}, "id_duplicate"),
+            ({**valid, "result": [{**row, "service": None}]}, "service"),
+            ({**valid, "result_info": {"count": None}}, "count_type"),
+            ({**valid, "result_info": {"count": 2}}, "count_mismatch"),
+            ({**valid, "result_info": {"total_count": False}}, "total_count_type"),
+            ({**valid, "result_info": {"total_count": 2}}, "total_count_mismatch"),
+            ({**valid, "result_info": {"page": "private"}}, "page_type"),
+            ({**valid, "result_info": {"page": 2}}, "page_mismatch"),
+            ({**valid, "result_info": {"total_pages": None}}, "pages_type"),
+            ({**valid, "result_info": {"total_pages": 2}}, "pages_mismatch"),
+            ({**valid, "result_info": {"per_page": None}}, "per_page_type"),
+            ({**valid, "result_info": {"per_page": 0}}, "per_page_mismatch"),
+            ({**valid, "result_info": {"unexpected": "private"}}, "info"),
+            ({**valid, "unexpected": "private"}, "envelope"),
+        )
+        for value, reason in cases:
+            with self.subTest(reason=reason), self.assertRaises(isolation.DomainInventoryError) as result:
+                isolation.worker_domain_rows(value)
+            self.assertEqual(str(result.exception), "sink_domains_unverified")
+            self.assertEqual(inspect.failure_reason(result.exception), "custom_domain_" + reason)
+        error = ValueError("sink_domains_unverified")
+        error.domain_reason = "private-address@example.invalid"
+        self.assertEqual(inspect.failure_reason(error), "custom_domain_inventory_unverified")
+
+    def test_domain_read_uses_one_no_redirect_provider_envelope(self):
+        """Reuse validation, not a second transport or a raw provider artifact."""
+        provider = Mock(account="a" * 32, resources=resources())
+        provider.get.return_value = {"name": "moesegfault.dev", "account": {"id": provider.account}}
+        provider.envelope.side_effect = [{"success": True, "result": []}, {"success": True, "result": []}]
+        with patch.object(isolation, "worker_domains") as old_transport:
+            result = inspect.unattached_route(provider, "b" * 32)
+        self.assertEqual(result, {"routes": [], "domains": []})
+        self.assertEqual(provider.envelope.call_count, 2)
+        self.assertEqual(provider.envelope.call_args.args[0], f"/accounts/{provider.account}/workers/domains")
+        old_transport.assert_not_called()
 
     def test_summary_excludes_raw_provider_configs(self):
         """Persist only approved aggregate facts and canonical digests, not arbitrary settings."""
