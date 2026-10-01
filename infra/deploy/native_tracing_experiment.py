@@ -70,6 +70,18 @@ class Provider:
             started = time.monotonic()
             self.last_request = {"endpoint": endpoint, "method": method,
                                  "started_at": datetime.now(timezone.utc).isoformat()}
+            # Keep the specific preread boundary even when tracing groups several
+            # resources as existing_tls; never copy the input suffix/query itself.
+            resources = {ingress.ZONE: "zone",
+                         ingress.ZONE + "/ssl/universal/settings": "universal_ssl_settings",
+                         ingress.ZONE + "/ssl/certificate_packs": "certificate_inventory",
+                         ingress.ZONE + "/dns_records": "dns_inventory",
+                         ingress.ZONE + "/workers/routes": "route_inventory",
+                         f"/accounts/{self.account}/workers/domains": "domain_inventory"}
+            resources.update({self.script(name): "probe_settings" if name == PROBE else "caller_settings"
+                              for name in NAMES})
+            if path in resources:
+                self.last_request["resource"] = resources[path]
             headers = {"Authorization": "Bearer " + (token or self.token), "Content-Type": "application/json"}
             request = Request(API + suffix, method=method, headers=headers,
                               data=None if data is None else json.dumps(data).encode())

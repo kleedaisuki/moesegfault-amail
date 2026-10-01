@@ -180,6 +180,7 @@ class NativeTracingExperimentTests(unittest.TestCase):
                 provider.request("GET", experiment.ingress.ZONE + "/ssl/universal/settings")
         facts = provider.last_request
         self.assertEqual(facts["endpoint"], "workers.canary.existing_tls")
+        self.assertEqual(facts["resource"], "universal_ssl_settings")
         self.assertEqual(facts["method"], "GET")
         self.assertEqual(facts["http_status"], 403)
         self.assertEqual(facts["provider_error_codes"], [9109])

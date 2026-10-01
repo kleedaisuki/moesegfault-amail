@@ -93,6 +93,9 @@ The root approved the bounded receipt repair after reviewing the actual refusal.
 `preflight_state.phase=attempted, mutation_admitted=false` before provider prereads.
 Any ordinary preread/configuration/schema exception persists `refused`, timestamp,
 allowlisted error type and the provider transport's typed last-request facts.
+The source-owned resource enum distinguishes Universal SSL settings from the
+certificate inventory even though existing control-plane logs group both as TLS;
+no arbitrary path or query is retained.
 Only successful full admission records `verified, mutation_admitted=true` before
 the existing DNS/script mutation paths. The full TLS/absence gates are unchanged.
 
