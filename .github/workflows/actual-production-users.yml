@@ -1,0 +1,60 @@
+name: Actual owned production users
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Register dedicated verified principals or use normal mail commands
+        type: choice
+        options: [register, journey]
+        required: true
+      confirm:
+        description: RUN_OWNED_PRODUCTION_USERS
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  users:
+    if: github.event_name == 'workflow_dispatch' && inputs.confirm == 'RUN_OWNED_PRODUCTION_USERS' && github.run_attempt == 1
+    runs-on: windows-latest
+    environment: production
+    timeout-minutes: 40
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install existing native browser runtime
+        run: |
+          python -m pip install --only-binary=:all: pywin32==312 websocket-client==1.9.2
+      - name: Download existing CI-built release candidate without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 36909041053 -n amail-x86_64-pc-windows-msvc -D .temp/release-candidate
+          if ($LASTEXITCODE -ne 0) { throw 'candidate_download_failed' }
+          Expand-Archive -LiteralPath .temp/release-candidate/amail-v0.1.0-x86_64-pc-windows-msvc.zip -DestinationPath .temp/production-cli
+      - name: Perform authorized owned production user actions
+        env:
+          USER_JOURNEY_CONFIRM: ${{ inputs.confirm }}
+          USER_JOURNEY_PHASE: ${{ inputs.phase }}
+          PRODUCTION_ACTOR_A_USERNAME: ${{ secrets.PRODUCTION_ACTOR_A_USERNAME }}
+          PRODUCTION_ACTOR_A_PASSWORD: ${{ secrets.PRODUCTION_ACTOR_A_PASSWORD }}
+          PRODUCTION_ACTOR_B_USERNAME: ${{ secrets.PRODUCTION_ACTOR_B_USERNAME }}
+          PRODUCTION_ACTOR_B_PASSWORD: ${{ secrets.PRODUCTION_ACTOR_B_PASSWORD }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/actual_production_user.py

@@ -1,0 +1,17 @@
+Research reply from independent user B
+
+Thank you for the research prompt. Here is my proposed inexpensive next step:
+
+Question: Can a small, explicit mail exchange separate content integrity from authorization correctness?
+
+Hypothesis (not a measured result): A plain-text body, an HTML alternative, and one declared attachment make a useful human-inspectable signal. Receiving the same message content is a delivery observation; denying a different account access to its owner-only delivery ID is a separate authorization observation. Neither observation alone establishes the other.
+
+Suggested comparison:
+1. The intended recipient finds this reply by its agreed subject marker.
+2. The recipient downloads and safely unpacks the ZIP, then compares the text and attachment with the authored source.
+3. Another authenticated principal attempts only the explicitly authorized foreign-object observations.
+4. The owner confirms the message remains accessible and its read state unchanged after those denials.
+
+Prediction: Integrity passes if both body alternatives communicate the same question and the attachment retains its exact bytes. Isolation passes only if owner-positive and foreign-negative results refer to the same still-live object.
+
+This is synthetic research correspondence for the authorized two-user production exercise. It contains no personal information, credentials, remote resources, or executable attachments. This proposal is not a claim that a live exchange or any authorization check has already passed.
