@@ -96,5 +96,74 @@ class FreshBootstrapWorkflowTests(unittest.TestCase):
             self.assertNotIn(forbidden, source)
 
 
+class FreshOnlineWorkflowTests(unittest.TestCase):
+    """Online completion admits held storage without repeating its bootstrap writer."""
+
+    def setUp(self):
+        """Select the one protected online consumer from the existing CI workflow."""
+        self.source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.block = job_block(self.source, "production-fresh-online")
+
+    def test_dispatch_limit_full_gates_and_exclusive_first_attempt_admission(self):
+        """The twenty-fifth input preserves dispatch validity and all same-run gates."""
+        prefix = self.source.split("\npermissions:", 1)[0]
+        inputs = re.findall(r"^      [a-z][a-z0-9_]*:$", prefix, re.MULTILINE)
+        self.assertEqual(len(inputs), 25)
+        self.assertIn("      fresh_bootstrap_run:", prefix)
+        header = self.block.split("    steps:", 1)[0]
+        for required in ("name: Fresh production online deployment",
+                         "inputs.target == 'production-fresh-online'",
+                         "github.ref == 'refs/heads/main'", "github.run_attempt == 1",
+                         "RUN_FRESH_PRODUCTION_ONLINE", "FREEZE_PRODUCTION_GRAPH_WRITERS",
+                         "needs: [cli, worker, worker-build, site, dns]",
+                         "environment: production", "actions: read"):
+            self.assertIn(required, header)
+        self.assertNotIn("always()", header)
+        for name in ("cli", "worker-build", "worker", "site", "dns"):
+            self.assertIn("production-fresh-online",
+                          job_block(self.source, name).split("    steps:", 1)[0])
+        self.assertIn("needs: worker-build", job_block(self.source, "worker-native"))
+        self.assertIn("worker-native", job_block(self.source, "worker"))
+        bootstrap = job_block(self.source, "production-fresh-bootstrap")
+        self.assertNotIn("production-fresh-online", bootstrap)
+        lock = self.source.split("\nconcurrency:", 1)[1].split("\njobs:", 1)[0]
+        self.assertIn("production-fresh-online", lock)
+        self.assertIn("amail-production-graph-writer", lock)
+        self.assertNotIn("    concurrency:", self.block)
+
+    def test_same_run_restore_precedes_credentials_and_completion(self):
+        """No original bootstrap artifacts may replace the current tested compiler bytes."""
+        self.assertEqual(self.block.count(
+            "artifact-ids: ${{ needs.worker-build.outputs.artifact_id }}"), 1)
+        self.assertIn("path: .temp/ci/worker-built", self.block)
+        restore = self.block.index("python infra/ci/worker_artifact.py restore")
+        for secret in re.finditer(r"\$\{\{\s*secrets\.", self.block):
+            self.assertLess(restore, secret.start())
+        self.assertLess(restore, self.block.index("python infra/deploy/complete_fresh_mail.py"))
+        for required in ("wrangler@4.142.0", "production_inspection_requirements.txt",
+                         "AMAIL_FRESH_BOOTSTRAP_RUN_ID: ${{ inputs.fresh_bootstrap_run }}",
+                         "AMAIL_WORKER_ARTIFACT_ID: ${{ needs.worker-build.outputs.artifact_id }}",
+                         "AMAIL_PRODUCTION_ONLINE_CONFIRM: ${{ inputs.confirm }}",
+                         "AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}",
+                         "AMAIL_PRODUCTION_ENVIRONMENT: production", "GH_TOKEN: ${{ github.token }}"):
+            self.assertIn(required, self.block)
+        for forbidden in ("fresh_mail_bootstrap.py", "worker-build --release",
+                          "continue-on-error: true", "overwrite: true", "gh workflow run"):
+            self.assertNotIn(forbidden, self.block)
+
+    def test_receipt_and_recovery_artifacts_have_separate_success_contracts(self):
+        """Failures retain bounded recovery but never manufacture an online receipt."""
+        receipt, recovery = self.block.split("      - name: Preserve bounded owned recovery", 1)
+        self.assertIn("if: success()", receipt)
+        self.assertIn("mail-fresh-online-${{ github.run_id }}-1", receipt)
+        self.assertIn("path: .temp/fresh-online/receipt.json", receipt)
+        self.assertIn("if-no-files-found: error", receipt)
+        self.assertIn("if: always()", recovery)
+        self.assertIn("mail-fresh-online-recovery-${{ github.run_id }}-1", recovery)
+        self.assertIn("path: .temp/fresh-online/recovery", recovery)
+        self.assertIn("include-hidden-files: true", recovery)
+        self.assertIn("if-no-files-found: ignore", recovery)
+
+
 if __name__ == "__main__":
     unittest.main()
