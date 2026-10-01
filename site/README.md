@@ -1,15 +1,13 @@
-# amail candidate site
+# amail release site
 
 Standalone Astro/TypeScript static product candidate at
 `https://amail.moesegfault.dev/`, served by Cloudflare Workers Static Assets.
 Expected routes: `/`, `/manual/`, `/changelog/`, with heading-derived manual
 navigation and stable version-based changelog navigation.
 
-The site documents intended CLI workflows. **This checkout does not contain
-the CLI, Mail/Identity backend, Agent Skill, release packaging, or published
-deployment workflow.** Hosting a candidate does not release those artifacts,
-launch Mail, or authorize public sending. Before a later release, reconcile the
-guide with the independently reviewed CLI/ZIP contract and release matrix.
+The repository contains the CLI, Mail backend, versioned Agent Skill and release
+pipeline. The site itself remains a static public guide, not a web inbox.
+Hosting its candidate mode does not publish the CLI or authorize public sending.
 
 ## Hosted checks and guarded deployment
 
@@ -23,9 +21,10 @@ credentials. Node 22 and pnpm 12.4.1 are pinned by workflow; site package versio
 and lockfile remain those imported from reviewed source.
 
 `AMAIL_RELEASE_STATE` is typed and fail-closed: unset or `candidate` renders
-pre-release copy; `published` renders future public-release copy, **only for a
-non-deploying compatibility test here**. Unknown values fail the build. No
-workflow in this bootstrap deploys published state.
+pre-release copy; `published` renders public-release copy and the seven exact
+Release downloads. Unknown values fail the build. Source checks exercise both
+states without deploying. The tag release workflow deploys published state only
+after the existing production gate, Release publication and published-byte check.
 
 `Production candidate site` is manual-only, defaults to checks, reuses same-commit
 source workflow without inheriting provider secrets, and can deploy only from
@@ -50,13 +49,29 @@ Candidate live smoke validates exact routes, local status, service-availability
 disclaimer, real links, working TOCs, MIME and HTTP/source/indexing headers.
 Green build checks are not live acceptance.
 
-## Future release compatibility
+## Publication and release compatibility
+
+`.github/workflows/release.yml` is the actual publication path. A manual main run
+only prepares candidate bundles. After authorized production acceptance and all
+genuine send attestations, a `v0.1.0` tag on the final accepted main source starts
+five platform builds/tests, the Skill bundle and checksums. The existing production
+gate must pass before GitHub Release creation. Its published assets are then
+downloaded and compared with the same-run trusted checksum manifest before the
+site is built with `AMAIL_RELEASE_STATE=published` and deployed. The public smoke
+checks home/manual/changelog state and indexing. This does not run merely by
+setting the build variable locally or copying candidate artifacts into a Release.
+
+The published manual provides direct links for five native archives, Agent Skill
+and `SHA256SUMS`, all at the same version. Candidate pages expose no versioned
+downloads. Both CLI and Skill installation require matching checksums. The
+changelog's stored date is a version record date; the linked GitHub Release
+provides the actual publication timestamp. Do not guess a future release date.
 
 Append one Markdown file under `src/content/releases/` per version. The collection
 validates versions and orders entries newest-first. Release dates, claims, five
-intended platform filenames, Agent Skill and checksums need separate release
-review; candidate record dates are not public release dates. Do not set published
-mode for production upload without that future gate.
+platform filenames, Agent Skill and checksums must match that version's public
+assets; record dates are not publication dates. Do not bypass the release workflow
+by setting published mode in the candidate deployment lane.
 
 ## MoeSegfault Style integration
 
