@@ -36,10 +36,13 @@ class NativeFixtureTests(unittest.TestCase):
 
     def test_workflow_is_read_only_and_not_a_promotion_or_build_gate(self):
         source = (ROOT / ".github/workflows/native-fixture.yml").read_text()
+        # Packaging is a disjoint credential-free job, not an extension of replay admission.
+        replay_job = source.split("  packaging:", 1)[0]
         self.assertNotIn("secrets.", source)
         self.assertNotIn("worker-build", source)
         self.assertNotIn("rustup", source)
-        self.assertNotIn("wrangler", source)
+        self.assertNotIn("wrangler", replay_job)
+        self.assertIn("if: inputs.fixture != 'packaging'", replay_job)
         self.assertIn("persist-credentials: false", source)
         self.assertIn("not release evidence", source)
         self.assertIn("native_fixture.py restore", source)

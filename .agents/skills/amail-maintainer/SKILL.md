@@ -34,6 +34,11 @@ do not retire the standalone Identity inbox or active native-tracing experiment.
   for the hosted diagnostic lane: unchanged compilation inputs and
   original artifact provenance are required. Diagnostic replay is not full CI,
   deployment or release evidence.
+  For the final Wrangler packaging boundary, use the same diagnostic workflow
+  with explicit `fixture=packaging` and an original fully successful main CI
+  `build_run_id`. This is a separate credential-free dry-run job, not ordinary
+  fixture replay or provider-upload acceptance. See
+  `docs/worker-packaging-boundary-probe.md` for scope and evidence limits.
 * **Runtime tracing/privacy:** `docs/runtime-observability-foundation.md` and
   `crates/trace-schema`. Separate implemented correlation from actual observed
   native tracing. Retain timestamps, status, source/version and request/trace IDs;
