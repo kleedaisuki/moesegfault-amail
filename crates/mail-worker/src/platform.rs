@@ -1,6 +1,8 @@
 //! Cloudflare and OpenRouter boundary clients. / Cloudflare 与 OpenRouter 平台边界客户端。
 
+use futures_util::StreamExt;
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use wasm_bindgen::JsValue;
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Result};
 
@@ -76,10 +78,15 @@ struct CfRuleList {
 #[derive(Deserialize)]
 struct CfResultInfo {
     total_pages: Option<usize>,
+    page: Option<usize>,
+    per_page: Option<usize>,
+    count: Option<usize>,
+    total_count: Option<usize>,
 }
 #[derive(Deserialize)]
 struct CfListedRule {
     id: String,
+    source: Option<String>,
     enabled: Option<bool>,
     name: Option<String>,
     actions: Vec<CfAction>,
@@ -141,7 +148,8 @@ impl OwnedRules {
     }
 }
 
-/// Reject negative or incomplete list envelopes without retaining provider text.
+/// Reject negative and over-cap envelopes without retaining provider text.
+#[cfg(test)]
 fn checked_rule_list(
     data: CfRuleList,
     status: u16,
@@ -151,18 +159,10 @@ fn checked_rule_list(
     }
     let result = data.result.ok_or(RuleListFailure::Decode { status })?;
     let total_pages = data.result_info.and_then(|info| info.total_pages);
-    if total_pages.is_some_and(|total| total > 200) {
+    if total_pages.is_some_and(|total| total > 10) {
         return Err(RuleListFailure::Decode { status });
     }
     Ok((result, total_pages))
-}
-
-/// Find all provider rules for one exact address, including orphan rules after partial failure. / 查找一个地址的全部供应商规则，包括局部失败留下的孤儿规则。
-pub async fn rules_for_address(env: &Env, address: &str) -> Result<Vec<String>> {
-    rules_for_address_typed(env, address)
-        .await
-        .map(OwnedRules::into_ids)
-        .map_err(|_| worker::Error::RustError("routing_list_failed".into()))
 }
 
 /// Preserve only the first observable Rules GET failure boundary and numeric HTTP status.
@@ -190,70 +190,255 @@ impl RuleListFailure {
     }
 }
 
-/// Typed variant for the authenticated address-add diagnostic; other callers keep the old API.
-pub(crate) async fn rules_for_address_typed(
+/// Shared address-phase egress allowance. Redirects are never followed.
+/// Inventory, fresh absence checks, current-ID reads and DELETEs all debit it.
+pub(crate) struct RoutingBudget {
+    remaining: usize,
+}
+
+impl RoutingBudget {
+    /// Reserve at most twenty external calls for one address invocation.
+    pub(crate) fn new() -> Self {
+        Self { remaining: 20 }
+    }
+
+    /// Admit a worst-case complete inventory before an absence recheck starts.
+    pub(crate) fn can_inventory(&self) -> bool {
+        self.remaining >= 10
+    }
+
+    /// Reserve GET plus DELETE before destructive work, avoiding partial admission.
+    pub(crate) fn can_delete(&self) -> bool {
+        self.remaining >= 2
+    }
+
+    /// Debit before submission, including failures whose remote effect is unknown.
+    fn take(&mut self) -> Result<()> {
+        if self.remaining == 0 {
+            return Err(worker::Error::RustError("routing_budget_exhausted".into()));
+        }
+        self.remaining -= 1;
+        Ok(())
+    }
+}
+
+/// Only a fully validated, terminal paginated inventory can establish absence.
+/// Provider rule data stays invocation-local and is never diagnostic material.
+pub(crate) struct CompleteRuleInventory(Vec<CfListedRule>);
+
+impl CfListedRule {
+    /// Conjunctive destructive authority, under exclusive managed-namespace ownership.
+    fn owns(&self, address: &str, ingress: &str) -> bool {
+        self.source.as_deref() == Some("api")
+            && self.name.as_deref() == Some(format!("amail {address}").as_str())
+            && self.matchers.len() == 1
+            && self.matchers[0].r#type == "literal"
+            && self.matchers[0].field.as_deref() == Some("to")
+            && self.matchers[0].value.as_deref() == Some(address)
+            && self.actions.len() == 1
+            && self.actions[0].r#type == "worker"
+            && self.actions[0]
+                .value
+                .as_ref()
+                .is_some_and(|values| values.len() == 1 && values[0] == ingress)
+    }
+
+    /// Near matches block settlement rather than licensing deletion of foreign IDs.
+    fn touches(&self, address: &str) -> bool {
+        self.name.as_deref() == Some(format!("amail {address}").as_str())
+            || self.matchers.iter().any(|matcher| {
+                matcher.field.as_deref() == Some("to") && matcher.value.as_deref() == Some(address)
+            })
+    }
+}
+
+impl CompleteRuleInventory {
+    /// Preserve provider ordering; any near-match/saved-ID drift fails closed.
+    pub(crate) fn for_address(
+        &self,
+        address: &str,
+        ingress: &str,
+        saved: Option<&str>,
+    ) -> Result<OwnedRules> {
+        let mut owned = Vec::new();
+        for rule in &self.0 {
+            if !rule.touches(address) && saved != Some(rule.id.as_str()) {
+                continue;
+            }
+            if !rule.owns(address, ingress) {
+                return Err(worker::Error::RustError("routing_scope_conflict".into()));
+            }
+            owned.push(OwnedRule {
+                id: rule.id.clone(),
+                enabled: rule.enabled,
+            });
+        }
+        Ok(OwnedRules(owned))
+    }
+
+    /// Positive provider keys only: no all-tombstone scan or unknown-row deletion.
+    pub(crate) fn retired_candidates(&self, domain: &str) -> Vec<String> {
+        let suffix = format!("@{domain}");
+        self.0
+            .iter()
+            .filter_map(|rule| {
+                let address = rule.name.as_deref()?.strip_prefix("amail ")?;
+                let part = address.strip_suffix(&suffix)?;
+                if !crate::valid_address(address) || crate::RESERVED.contains(&part) {
+                    return None;
+                }
+                Some(address.to_owned())
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+}
+
+/// Read a bounded body incrementally: Content-Length is not trusted admission.
+async fn rule_body(response: &mut worker::Response) -> Result<Vec<u8>> {
+    const MAX_BYTES: usize = 256 * 1024;
+    match response.body() {
+        worker::ResponseBody::Empty => return Ok(Vec::new()),
+        worker::ResponseBody::Body(bytes) if bytes.len() <= MAX_BYTES => return Ok(bytes.clone()),
+        worker::ResponseBody::Body(_) => {
+            return Err(worker::Error::RustError("routing_body_limit".into()))
+        }
+        worker::ResponseBody::Stream(_) => {}
+    }
+    let mut stream = response.stream()?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if chunk.len() > MAX_BYTES.saturating_sub(bytes.len()) {
+            return Err(worker::Error::RustError("routing_body_limit".into()));
+        }
+        bytes.extend(chunk);
+    }
+    Ok(bytes)
+}
+
+/// One budget debit per nonredirecting provider exchange.
+async fn routing_fetch(
     env: &Env,
-    address: &str,
-) -> std::result::Result<OwnedRules, RuleListFailure> {
+    url: &str,
+    method: Method,
+    budget: &mut RoutingBudget,
+) -> Result<worker::Response> {
+    budget.take()?;
+    let mut init = RequestInit::new();
+    init.with_method(method)
+        .with_headers(cf_headers(env)?)
+        .with_redirect(worker::RequestRedirect::Manual);
+    Fetch::Request(Request::new_with_init(url, &init)?)
+        .send()
+        .await
+}
+
+/// Bound the zone to ten pages / five hundred unique rules, requiring terminal proof.
+pub(crate) async fn rule_inventory(
+    env: &Env,
+    budget: &mut RoutingBudget,
+) -> std::result::Result<CompleteRuleInventory, RuleListFailure> {
     let zone = env
         .var("CF_ZONE_ID")
         .map_err(|_| RuleListFailure::Request)?
         .to_string();
-    let ingress = env
-        .var("EMAIL_INGRESS_WORKER_NAME")
-        .map_err(|_| RuleListFailure::Request)?
-        .to_string();
-    let expected_name = format!("amail {address}");
     let mut rules = Vec::new();
-    // The API permits at most 50 per page. A zone can include several mail domains.
-    for page in 1..=200 {
+    let mut ids = BTreeSet::new();
+    let mut known_pages = None;
+    let mut known_count = None;
+    for page in 1..=10 {
         let url = format!("https://api.cloudflare.com/client/v4/zones/{zone}/email/routing/rules?per_page=50&page={page}");
-        let mut init = RequestInit::new();
-        init.with_method(Method::Get)
-            .with_headers(cf_headers(env).map_err(|_| RuleListFailure::Request)?);
-        let request = Request::new_with_init(&url, &init).map_err(|_| RuleListFailure::Request)?;
-        let mut response = Fetch::Request(request)
-            .send()
+        let mut response = routing_fetch(env, &url, Method::Get, budget)
             .await
             .map_err(|_| RuleListFailure::Request)?;
         let status = response.status_code();
         if status != 200 {
             return Err(RuleListFailure::Http { status });
         }
-        let data: CfRuleList = response
-            .json()
+        let bytes = rule_body(&mut response)
             .await
             .map_err(|_| RuleListFailure::Decode { status })?;
-        let (result, total_pages) = checked_rule_list(data, status)?;
+        let data: CfRuleList =
+            serde_json::from_slice(&bytes).map_err(|_| RuleListFailure::Decode { status })?;
+        if !data.success {
+            return Err(RuleListFailure::Provider { status });
+        }
+        let result = data.result.ok_or(RuleListFailure::Decode { status })?;
         let count = result.len();
-        for rule in result {
-            if rule.name.as_deref() == Some(expected_name.as_str())
-                && rule.actions.iter().any(|a| {
-                    a.r#type == "worker"
-                        && a.value
-                            .as_ref()
-                            .is_some_and(|values| values.iter().any(|v| v == &ingress))
-                })
-                && rule.matchers.iter().any(|m| {
-                    m.r#type == "literal"
-                        && m.field.as_deref() == Some("to")
-                        && m.value.as_deref() == Some(address)
-                })
-            {
-                rules.push(OwnedRule {
-                    id: rule.id,
-                    enabled: rule.enabled,
-                });
-            }
-        }
-        if count < 50 || total_pages.is_some_and(|total| page >= total) {
-            break;
-        }
-        if page == 200 {
+        if count > 50 {
             return Err(RuleListFailure::Decode { status });
         }
+        let mut terminal = count < 50;
+        if let Some(info) = data.result_info {
+            if info.page.is_some_and(|n| n != page)
+                || info.per_page.is_some_and(|n| n != 50)
+                || info.count.is_some_and(|n| n != count)
+                || info.total_count.is_some_and(|n| n > 500)
+            {
+                return Err(RuleListFailure::Decode { status });
+            }
+            if let Some(total) = info.total_pages {
+                if total > 10
+                    || (total < page && !(total == 0 && page == 1 && count == 0))
+                    || known_pages.is_some_and(|n| n != total)
+                {
+                    return Err(RuleListFailure::Decode { status });
+                }
+                known_pages = Some(total);
+            }
+            if let Some(total) = info.total_count {
+                if known_count.is_some_and(|n| n != total) {
+                    return Err(RuleListFailure::Decode { status });
+                }
+                known_count = Some(total);
+            }
+        }
+        if let Some(total) = known_pages {
+            terminal = page == total || (total == 0 && page == 1 && count == 0);
+            if !terminal && count != 50 {
+                return Err(RuleListFailure::Decode { status });
+            }
+        }
+        for rule in result {
+            if !valid_rule_id(&rule.id) || !ids.insert(rule.id.clone()) {
+                return Err(RuleListFailure::Decode { status });
+            }
+            rules.push(rule);
+        }
+        if terminal {
+            if known_count.is_some_and(|n| n != rules.len()) {
+                return Err(RuleListFailure::Decode { status });
+            }
+            return Ok(CompleteRuleInventory(rules));
+        }
     }
-    Ok(OwnedRules(rules))
+    Err(RuleListFailure::Decode { status: 200 })
+}
+
+/// IDs are path components, never arbitrary URLs or separator-bearing strings.
+fn valid_rule_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
+/// Request-path add uses the same complete and strict inventory contract.
+pub(crate) async fn rules_for_address_typed(
+    env: &Env,
+    address: &str,
+) -> std::result::Result<OwnedRules, RuleListFailure> {
+    let ingress = env
+        .var("EMAIL_INGRESS_WORKER_NAME")
+        .map_err(|_| RuleListFailure::Request)?
+        .to_string();
+    rule_inventory(env, &mut RoutingBudget::new())
+        .await?
+        .for_address(address, &ingress, None)
+        .map_err(|_| RuleListFailure::Decode { status: 200 })
 }
 
 /// Provision one literal subdomain routing rule; no catch-all exists.
@@ -280,11 +465,12 @@ pub async fn create_rule(
         .await
         .map_err(|_| RuleCreateFailure::Request)?;
     let status = response.status_code();
-    let body = response
-        .text()
+    let bytes = rule_body(&mut response)
         .await
         .map_err(|_| RuleCreateFailure::UnexpectedResponse { status })?;
-    classify_create_response(status, &body)
+    let body = std::str::from_utf8(&bytes)
+        .map_err(|_| RuleCreateFailure::UnexpectedResponse { status })?;
+    classify_create_response(status, body)
 }
 
 /// Decode the provider response without returning or recording arbitrary text.
@@ -299,7 +485,7 @@ fn classify_create_response(
         if data.success {
             return data
                 .result
-                .filter(|rule| rule.enabled == Some(true))
+                .filter(|rule| rule.enabled == Some(true) && valid_rule_id(&rule.id))
                 .map(|rule| rule.id)
                 .ok_or(RuleCreateFailure::UnexpectedResponse { status });
         }
@@ -324,20 +510,80 @@ fn classify_create_response(
     })
 }
 
-/// Disable a literal routing rule before retiring an address. / 注销地址之前先禁用精确路由规则。
-pub async fn delete_rule(env: &Env, rule_id: &str) -> Result<()> {
+/// Revalidate the full current provider rule before any state-aware DELETE.
+/// A known-ID 404 is explicit absence; arbitrary failure envelopes are not.
+pub(crate) async fn delete_owned_rule(
+    env: &Env,
+    address: &str,
+    ingress: &str,
+    rule_id: &str,
+    budget: &mut RoutingBudget,
+) -> Result<()> {
+    if !valid_rule_id(rule_id) || !budget.can_delete() {
+        return Err(worker::Error::RustError("routing_delete_unverified".into()));
+    }
     let zone = env.var("CF_ZONE_ID")?.to_string();
     let url =
         format!("https://api.cloudflare.com/client/v4/zones/{zone}/email/routing/rules/{rule_id}");
-    let headers = cf_headers(env)?;
-    let mut init = RequestInit::new();
-    init.with_method(Method::Delete).with_headers(headers);
-    let req = Request::new_with_init(&url, &init)?;
-    let response = Fetch::Request(req).send().await?;
-    if !matches!(response.status_code(), 200 | 204 | 404) {
-        return Err(worker::Error::RustError("routing_delete_failed".into()));
+    let mut current = routing_fetch(env, &url, Method::Get, budget).await?;
+    if current.status_code() == 404 {
+        return Ok(());
     }
-    Ok(())
+    if current.status_code() != 200 {
+        return Err(worker::Error::RustError("routing_read_failed".into()));
+    }
+    #[derive(Deserialize)]
+    struct Current {
+        success: bool,
+        result: Option<CfListedRule>,
+    }
+    let current: Current = serde_json::from_slice(&rule_body(&mut current).await?)
+        .map_err(|_| worker::Error::RustError("routing_read_failed".into()))?;
+    let rule = current
+        .result
+        .filter(|rule| current.success && rule.id == rule_id && rule.owns(address, ingress))
+        .ok_or_else(|| worker::Error::RustError("routing_scope_conflict".into()))?;
+    // Read the permanent desired state after provider GET. Active duplicate
+    // pruning can never delete whichever route is now committed by another actor.
+    #[derive(Deserialize)]
+    struct State {
+        state: String,
+        cf_rule_id: Option<String>,
+    }
+    let state = env
+        .d1("MAIL_DB")?
+        .prepare("SELECT state,cf_rule_id FROM addresses WHERE address=?1")
+        .bind(&[JsValue::from_str(address)])?
+        .first::<State>(None)
+        .await?
+        .ok_or_else(|| worker::Error::RustError("routing_state_unknown".into()))?;
+    let allowed = matches!(state.state.as_str(), "deleting" | "retired")
+        || (state.state == "active"
+            && state
+                .cf_rule_id
+                .as_deref()
+                .is_some_and(|saved| saved != rule.id));
+    if !allowed {
+        return Err(worker::Error::RustError("routing_state_changed".into()));
+    }
+    let mut response = routing_fetch(env, &url, Method::Delete, budget).await?;
+    match response.status_code() {
+        204 | 404 => Ok(()),
+        200 => {
+            #[derive(Deserialize)]
+            struct Deleted {
+                success: bool,
+            }
+            let deleted: Deleted = serde_json::from_slice(&rule_body(&mut response).await?)
+                .map_err(|_| worker::Error::RustError("routing_delete_failed".into()))?;
+            if deleted.success {
+                Ok(())
+            } else {
+                Err(worker::Error::RustError("routing_delete_failed".into()))
+            }
+        }
+        _ => Err(worker::Error::RustError("routing_delete_failed".into())),
+    }
 }
 
 fn cf_headers(env: &Env) -> Result<Headers> {
@@ -361,6 +607,7 @@ async fn fetch_json(
 ) -> Result<worker::Response> {
     let mut init = RequestInit::new();
     init.with_method(method)
+        .with_redirect(worker::RequestRedirect::Manual)
         .with_headers(cf_headers(env)?)
         .with_body(Some(JsValue::from_str(&body.to_string())));
     Fetch::Request(Request::new_with_init(url, &init)?)
@@ -554,6 +801,58 @@ pub async fn send(env: &Env, draft: &Draft) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One shared allowance counts failure attempts and refuses excess work.
+    #[test]
+    fn routing_budget_is_hard_and_shared() {
+        let mut budget = RoutingBudget::new();
+        for _ in 0..10 {
+            budget.take().unwrap();
+        }
+        assert!(budget.can_inventory());
+        budget.take().unwrap();
+        assert!(!budget.can_inventory());
+        for _ in 0..8 {
+            budget.take().unwrap();
+        }
+        assert!(!budget.can_delete());
+        budget.take().unwrap();
+        assert!(budget.take().is_err());
+    }
+
+    /// A saved ID or near match is never independent destructive authority.
+    #[test]
+    fn strict_inventory_rejects_scope_drift() {
+        let address = "synthetic@mail.example.test";
+        let raw = serde_json::json!({
+            "id": "synthetic-rule", "enabled": false, "source": "api",
+            "name": format!("amail {address}"),
+            "matchers": [{"type":"literal","field":"to","value":address}],
+            "actions": [{"type":"worker","value":["synthetic-ingress"]}]
+        });
+        let inventory = CompleteRuleInventory(vec![serde_json::from_value(raw.clone()).unwrap()]);
+        let owned = inventory
+            .for_address(address, "synthetic-ingress", None)
+            .unwrap();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned.first_enabled(), None);
+        let mut drift = raw.clone();
+        drift["actions"] = serde_json::json!([
+            {"type":"worker","value":["synthetic-ingress"]}, {"type":"drop"}
+        ]);
+        let inventory = CompleteRuleInventory(vec![serde_json::from_value(drift).unwrap()]);
+        assert!(inventory
+            .for_address(address, "synthetic-ingress", None)
+            .is_err());
+        let inventory = CompleteRuleInventory(vec![serde_json::from_value(raw).unwrap()]);
+        assert!(inventory
+            .for_address(
+                "foreign@mail.example.test",
+                "synthetic-ingress",
+                Some("synthetic-rule")
+            )
+            .is_err());
+    }
 
     /// Negative, missing, and oversized list envelopes remain distinct fixed outcomes.
     #[test]
