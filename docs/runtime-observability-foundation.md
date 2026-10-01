@@ -183,3 +183,13 @@ patch. This avoids a false-positive poison check or an empty positive-control lo
 Primary inspected source (the exact pinned SDK/runtime, not an archived example):
 https://github.com/cloudflare/workers-sdk/blob/miniflare%404.20260730.0/packages/miniflare/src/runtime/index.ts
 and workerd QueueResponse in https://github.com/cloudflare/workerd/blob/main/src/workerd/api/queue.h.
+
+Third source check 36852863632 accepted the updated Queue response fields and
+reached Rust, but the fixture awaited finished() on Miniflare's startup/restart
+Transform streams: these are not closed by disposal as assumed. Node correctly
+cancelled pending tests rather than silently passing. Replace that guessed stream
+lifetime with a test-only subclass of the unchanged SDK bridge: after Rust queue
+returns, write a static same-console barrier. Await its actual captured arrival
+with a missing-barrier timeout, then inspect the preceding console stream. No
+sleep, raw exception, global monkey patch or production-handler change is added.
+This is still pending complete hosted acceptance, not a platform privacy claim.

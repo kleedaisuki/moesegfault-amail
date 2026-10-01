@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { finished } from "node:stream/promises";
 import { Log, LogLevel, Miniflare } from "miniflare";
 import { workerModuleRules } from "./worker-module-rules.mjs";
 
@@ -23,15 +22,22 @@ function legacy() {
 }
 /** Dispatch a native batch and await the handler's actual result/acknowledgements. */
 async function consume(bodies) {
-  const logs = [], drains = [];
+  const logs = [];
+  let arrived;
+  const barrier = new Promise(resolve => { arrived = resolve; });
+  const marker = "SYNTHETIC_QUEUE_CONSOLE_BARRIER";
   const mf = new Miniflare({ cf: false, log: new CapturedLog(logs), modules: true,
-    scriptPath: path.join(root, "workers/trace-sink/build/worker/shim.mjs"),
+    scriptPath: path.join(root, "infra/tests/worker-boundary/trace-sink-entry.mjs"),
     modulesRoot: root, modulesRules: workerModuleRules, compatibilityDate: "2026-07-30",
     handleRuntimeStdio(stdout, stderr) {
       for (const stream of [stdout, stderr]) {
-        const chunks = [];
-        stream.on("data", chunk => chunks.push(Buffer.from(chunk)));
-        drains.push(finished(stream).then(() => logs.push(Buffer.concat(chunks).toString("utf8"))));
+        stream.setEncoding("utf8");
+        let captured = "";
+        stream.on("data", chunk => {
+          captured += chunk;
+          logs.push(chunk);
+          if (captured.includes(marker)) arrived();
+        });
       }
     },
     outboundService() { throw new Error("trace sink must not contact any external service"); } });
@@ -43,15 +49,20 @@ async function consume(bodies) {
     assert.equal(result.retryBatch.retry, false);
     assert.deepEqual(result.retryMessages, []);
     assert.deepEqual(result.explicitAcks.sort(), messages.map(message => message.id).sort());
+    let timer;
+    try {
+      await Promise.race([barrier, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("native console completion barrier missing")), 5_000);
+      })]);
+    } finally { clearTimeout(timer); }
   } finally {
     await mf.dispose();
-    await Promise.all(drains); // Drain both native pipes; no guessed observation sleep.
   }
-  const records = logs.join("\n").split("\n").flatMap(line => {
+  const records = logs.join("").split("\n").flatMap(line => {
       const match = line.match(/(\{"schema_version".*\})/);
       return match ? [JSON.parse(match[1])] : [];
     });
-  return { logs: logs.join("\n"), records };
+  return { logs: logs.join(""), records };
 }
 
 test("native sink retains legacy and enriched causal measurements exactly", async () => {
