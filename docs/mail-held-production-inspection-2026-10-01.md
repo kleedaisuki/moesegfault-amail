@@ -100,3 +100,22 @@ The next identical bounded inspection is warranted only after hosted source chec
 accept this diagnostic patch; no blind permission request or repeated full test
 campaign is appropriate. Its Python-only stacked PR also exercises the new
 conservative CI scope before main integration; main full checks remain required.
+
+### Second actual inspection narrows the unresolved boundary
+
+Run36830581802 (main201c9fa,07:29UTC) passed6schema+13inventory contracts.
+The actual read reached route_inventory, then failed with reason=unexpected.
+It therefore passed SDK/R2/current-Worker inventory boundaries, but it does not
+prove route/domain absence, schema or held-state acceptance. The reused custom-
+domain checker has its own closed ValueError codes and preserves chained HTTP
+statuses; the initial classifier did not recognize those codes. Add separate
+reader-import/custom-domain stages, map only those two known legacy codes and
+bounded numeric HTTP causes, and distinguish missing local dependencies without
+returning module names. One mock covers private/cyclic causes and malformed status.
+No extra remote read, mutation, broad permission request or admission is introduced.
+
+Official domain endpoint remains account-wide GET /workers/domains with Workers
+Scripts Read/Write authorization and optional generic result_info:
+https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/list/ .
+Its documentation does not establish this actual failure's cause; the next fixed
+bin must decide whether the problem is transport, protocol or local dependency.
