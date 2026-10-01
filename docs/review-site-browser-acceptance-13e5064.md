@@ -143,3 +143,34 @@ defines animation-frame polling and explicit timeout, matching the amendment.
 No local browser/build/test/provider action was performed. Source inspection,
 downloaded JSON inspection and diff-whitespace checking only; production and
 implementer source were not modified.
+
+## Initially visible mobile columns: `31f772b`
+
+Reviewed exact test-only commit
+`31f772b4fd9b2f7d48976a6c835dbfb529181653` (42 added lines, one harness file).
+**GO for integration with separately reviewed forthcoming table CSS and hosted
+rerun.** No substantive blocking issue found; this does not approve CSS not yet
+reviewed or establish actual responsive acceptance.
+
+The new check runs only for the manual at 320 and 390 px. It resets scrollLeft
+on the table and every ancestor before collecting geometry, preventing the
+existing right-edge reachability probe from manufacturing initially visible
+columns. All headers plus the final cell of every row must have nonzero boxes,
+visible CSS visibility and horizontal bounds within the viewport and each
+overflow-clipping ancestor's client area. Current source tables have ordinary
+Markdown headers and no spans; headers cover every column, and every final
+body cell is additionally measured. There is no requirement that every row be
+inside the vertical viewport simultaneously, so tall tables are not falsely
+rejected merely because some rows require vertical scrolling.
+
+The original minimum-font-size and horizontally-scrollable rightmost-cell
+reachability implementation is unchanged and still called separately. New
+failure collection preserves evidence across tables and ultimately asserts
+zero failures. Screenshots and truncated cell text concern the current public
+manual only; no request/session/storage/credential source is introduced.
+This check measures cell-box geometry, not text comprehension, opacity/contrast
+or screen-reader accessibility. Those existing visual-review boundaries remain.
+
+Inspected current Markdown table structure and exact diff; performed
+`git diff --check`. No local browser/build/test, hosted dispatch, dependency
+installation, provider action or implementer-worktree modification occurred.
