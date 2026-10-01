@@ -86,6 +86,29 @@ requires root approval and hosted regression evidence. It must cover early GET
 403, failed/malformed inventories, no provider cleanup for preflight refusal and
 unchanged unknown-write recovery. This note is evidence, not authorization.
 
+## Approved source repair (hosted verification pending)
+
+The root approved the bounded receipt repair after reviewing the actual refusal.
+`deploy()` now writes the original build/orchestration identity and
+`preflight_state.phase=attempted, mutation_admitted=false` before provider prereads.
+Any ordinary preread/configuration/schema exception persists `refused`, timestamp,
+allowlisted error type and the provider transport's typed last-request facts.
+Only successful full admission records `verified, mutation_admitted=true` before
+the existing DNS/script mutation paths. The full TLS/absence gates are unchanged.
+
+Cleanup recognizes only an attempted/refused no-mutation boundary with empty
+versions and no DNS/Route/write/invocation coordinates. It performs no provider
+operation, explicitly records `not_needed_no_mutation_admitted` and
+`resource_absence_verified=false`, and never sets the existing `cleaned_at` field.
+Contradictory ownership/write coordinates refuse rather than suppress recovery.
+Historical receipts without the new state continue through the existing cleanup.
+
+Hosted fixtures cover 403/timeout at every Route preread, TLS/schema/conflict
+refusals, actual typed SSL 403/9109 transport extraction, missing configuration,
+historical workers.dev preread refusal and contradictory no-write receipts. The
+existing first-DNS-write ordering and unknown-write lifecycle tests remain active.
+No local runtime test was executed. Hosted results belong below once observed.
+
 ## Sources and reproduction
 
 Read-only GitHub observations used:
