@@ -675,13 +675,14 @@ pub(crate) async fn embed_classified(
     let signal = controller.signal();
     let exchange = Box::pin(embedding_exchange(env, input, input_type, &signal));
     let deadline = Box::pin(worker::Delay::from(std::time::Duration::from_secs(30)));
-    match futures_util::future::select(exchange, deadline).await {
+    let result = match futures_util::future::select(exchange, deadline).await {
         futures_util::future::Either::Left((result, _)) => result,
         futures_util::future::Either::Right((_, _)) => {
             controller.abort();
             Err(EmbeddingFailure::Transient)
         }
-    }
+    };
+    result
 }
 
 /// One 30-second deadline covers connection, headers, and body consumption.
