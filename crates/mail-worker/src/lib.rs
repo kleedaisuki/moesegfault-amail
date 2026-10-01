@@ -4,6 +4,7 @@ mod accepted;
 mod address_diag;
 mod archive;
 mod auth;
+mod database;
 mod platform;
 mod search_jobs;
 mod trace;
@@ -18,6 +19,7 @@ use worker::*;
 use crate::address_diag::{AddressDiag, Kind as AddressDiagKind, Stage as AddressDiagStage};
 use crate::archive::{parse_draft, Draft};
 use crate::auth::Principal;
+use crate::database::{Database, MaintenanceBudget, MaintenancePhase};
 use crate::trace::{Operation, Phase, Trace};
 
 /// Bound one synchronous search below D1's request query cap and Worker memory. / 将同步搜索限制在 D1 单次请求查询上限与 Worker 内存以内。
@@ -162,33 +164,50 @@ pub async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
 /// Retry missing semantic projections outside SMTP and user send critical paths. / 在 SMTP 与用户发送关键路径之外重试缺失的语义投影。
 #[event(scheduled)]
 pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
-    if let Err(_) = reconcile_addresses(&env).await {
-        trace::diagnostic(&env, trace::DiagnosticCode::RoutingReconciliationFailed).await;
+    let budget = MaintenanceBudget::new();
+    for phase in MaintenancePhase::ALL {
+        let result = maintain_phase(&env, &budget, phase).await;
+        let Err(error) = result else { continue };
+        let code = if database::is_deferred(&error) {
+            trace::DiagnosticCode::MaintenanceBudgetDeferred
+        } else {
+            maintenance_failure(phase)
+        };
+        trace::diagnostic(&env, code).await;
     }
-    if let Err(_) = reconcile_outbound(&env).await {
-        trace::diagnostic(&env, trace::DiagnosticCode::OutboundReconciliationFailed).await;
+}
+
+/// The only scheduled dispatch obtains a phase handle; nested helpers cannot
+/// reacquire raw D1 or borrow another phase's statement allowance.
+async fn maintain_phase(
+    env: &Env,
+    budget: &MaintenanceBudget,
+    phase: MaintenancePhase,
+) -> Result<()> {
+    let database = budget.database(env, phase)?;
+    match phase {
+        MaintenancePhase::Addresses => reconcile_addresses(env, &database).await,
+        MaintenancePhase::Outbound => reconcile_outbound(env, &database).await,
+        MaintenancePhase::Embeddings => reindex(env, &database).await,
+        MaintenancePhase::Storage => reconcile_storage(&database).await,
+        MaintenancePhase::Deleted => garbage_collect(env, &database).await,
+        MaintenancePhase::Orphans => clean_orphans(env, &database).await,
+        MaintenancePhase::Search => search_jobs::cleanup(&database).await,
+        MaintenancePhase::Abuse => expire_abuse_data(&database).await,
     }
-    if let Err(_) = reindex(&env).await {
-        trace::diagnostic(&env, trace::DiagnosticCode::SemanticIndexRetryFailed).await;
-    }
-    if let Err(_) = reconcile_storage(&env).await {
-        trace::diagnostic(
-            &env,
-            trace::DiagnosticCode::StorageLedgerReconciliationFailed,
-        )
-        .await;
-    }
-    if let Err(_) = garbage_collect(&env).await {
-        trace::diagnostic(&env, trace::DiagnosticCode::DeletedMessageCleanupFailed).await;
-    }
-    if let Err(_) = clean_orphans(&env).await {
-        trace::diagnostic(&env, trace::DiagnosticCode::OrphanObjectCleanupFailed).await;
-    }
-    if let Err(_) = search_jobs::cleanup(&env).await {
-        trace::diagnostic(&env, trace::DiagnosticCode::SearchJobCleanupFailed).await;
-    }
-    if let Err(_) = expire_abuse_data(&env).await {
-        trace::diagnostic(&env, trace::DiagnosticCode::AbuseDataCleanupFailed).await;
+}
+
+/// Deliberate admission deferral has a distinct schema code, not provider failure.
+fn maintenance_failure(phase: MaintenancePhase) -> trace::DiagnosticCode {
+    match phase {
+        MaintenancePhase::Addresses => trace::DiagnosticCode::RoutingReconciliationFailed,
+        MaintenancePhase::Outbound => trace::DiagnosticCode::OutboundReconciliationFailed,
+        MaintenancePhase::Embeddings => trace::DiagnosticCode::SemanticIndexRetryFailed,
+        MaintenancePhase::Storage => trace::DiagnosticCode::StorageLedgerReconciliationFailed,
+        MaintenancePhase::Deleted => trace::DiagnosticCode::DeletedMessageCleanupFailed,
+        MaintenancePhase::Orphans => trace::DiagnosticCode::OrphanObjectCleanupFailed,
+        MaintenancePhase::Search => trace::DiagnosticCode::SearchJobCleanupFailed,
+        MaintenancePhase::Abuse => trace::DiagnosticCode::AbuseDataCleanupFailed,
     }
 }
 
@@ -197,10 +216,9 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) 
 /// the responsible sender; complaint blocks and audit decisions are separate.
 /// 受限信封自提交起仅保留 90 天；有意晚于用户归档删除，以处理迟到投诉；
 /// 投诉封锁及审计决策另行保存。
-async fn expire_abuse_data(env: &Env) -> Result<()> {
+async fn expire_abuse_data(database: &Database) -> Result<()> {
     let cutoff_ms = now() - 90 * 86_400_000;
     let cutoff_sec = cutoff_ms / 1000;
-    let database = env.d1("MAIL_DB")?;
     database.prepare("UPDATE send_requests SET sender=NULL,envelope_json=NULL WHERE rowid IN (SELECT rowid FROM send_requests WHERE created_at<?1 AND (sender IS NOT NULL OR envelope_json IS NOT NULL) ORDER BY created_at LIMIT 100)")
         .bind(&[bind_num(cutoff_ms)])?.run().await?;
     database.prepare("DELETE FROM provider_events WHERE rowid IN (SELECT rowid FROM provider_events WHERE received_at<?1 ORDER BY received_at LIMIT 100)")
@@ -211,20 +229,19 @@ async fn expire_abuse_data(env: &Env) -> Result<()> {
 }
 
 /// Finish ledger state changes after an indexed message survived an uncertain D1 response. / 在邮件索引已落盘但 D1 响应不确定时完成账本状态变更。
-async fn reconcile_storage(env: &Env) -> Result<()> {
-    env.d1("MAIL_DB")?.prepare("UPDATE storage_reservations SET state='indexed' WHERE state='reserved' AND EXISTS(SELECT 1 FROM messages WHERE messages.id=storage_reservations.id)")
+async fn reconcile_storage(database: &Database) -> Result<()> {
+    database.prepare("UPDATE storage_reservations SET state='indexed' WHERE state='reserved' AND EXISTS(SELECT 1 FROM messages WHERE messages.id=storage_reservations.id)")
         .run().await?;
     Ok(())
 }
 
 /// Reclaim deleted per-delivery content after D1 tombstones hide it from readers. / D1 墓碑阻止读取后，回收已删除投递的内容。
-async fn garbage_collect(env: &Env) -> Result<()> {
+async fn garbage_collect(env: &Env, database: &Database) -> Result<()> {
     #[derive(Deserialize)]
     struct Deleted {
         id: String,
         r2_key: String,
     }
-    let database = env.d1("MAIL_DB")?;
     let rows = database
         .prepare("SELECT id,r2_key FROM messages WHERE deleted_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.state='accepted') LIMIT 20")
         .all()
@@ -254,7 +271,7 @@ async fn garbage_collect(env: &Env) -> Result<()> {
 }
 
 /// Remove old R2 objects whose pre-write ledger never reached a visible message row. / 清除预写入账本未转为可见邮件的陈旧 R2 对象。
-async fn clean_orphans(env: &Env) -> Result<()> {
+async fn clean_orphans(env: &Env, database: &Database) -> Result<()> {
     #[derive(Deserialize)]
     struct Orphan {
         id: String,
@@ -263,7 +280,6 @@ async fn clean_orphans(env: &Env) -> Result<()> {
     struct SendState {
         state: String,
     }
-    let database = env.d1("MAIL_DB")?;
     let rows=database.prepare("SELECT r.id FROM storage_reservations r LEFT JOIN messages m ON m.id=r.id WHERE m.id IS NULL AND r.created_at<?1 LIMIT 20")
         .bind(&[bind_num(now()-60*60_000)])?.all().await?.results::<Orphan>()?;
     let bucket = env.bucket("MAIL_BODIES")?;
@@ -309,7 +325,7 @@ struct AddressRepairRow {
 
 /// Rotate claims before external work so failures cannot pin the oldest batch.
 async fn claim_address_repairs(
-    database: &D1Database,
+    database: &Database,
     scan_at: i64,
     limit: usize,
 ) -> Result<Vec<AddressRepairRow>> {
@@ -336,6 +352,7 @@ async fn discover_retired_routes(
     env: &Env,
     inventory: &platform::CompleteRuleInventory,
     ingress: &str,
+    database: &Database,
 ) -> Result<bool> {
     #[derive(Deserialize)]
     struct Lifetime {
@@ -344,7 +361,6 @@ async fn discover_retired_routes(
     }
     let domain = env.var("MAIL_DOMAIN")?.to_string();
     let candidates = inventory.retired_candidates(&domain);
-    let database = env.d1("MAIL_DB")?;
     let mut anomaly = false;
     for keys in candidates.chunks(50) {
         let placeholders = (1..=keys.len())
@@ -386,18 +402,17 @@ async fn discover_retired_routes(
 
 /// Audit actual provider state every tick, including when no journal row is due.
 /// The twenty-call allowance includes every list page, current GET and DELETE.
-async fn reconcile_addresses(env: &Env) -> Result<()> {
-    let database = env.d1("MAIL_DB")?;
+async fn reconcile_addresses(env: &Env, database: &Database) -> Result<()> {
     let scan_at = now();
-    let mut rows = claim_address_repairs(&database, scan_at, 30).await?;
+    let mut rows = claim_address_repairs(database, scan_at, 30).await?;
     let mut budget = platform::RoutingBudget::new();
     let ingress = env.var("EMAIL_INGRESS_WORKER_NAME")?.to_string();
     let inventory = platform::rule_inventory(env, &mut budget)
         .await
         .map_err(|_| worker::Error::RustError("routing_list_failed".into()))?;
-    let mut failed = discover_retired_routes(env, &inventory, &ingress).await?;
+    let mut failed = discover_retired_routes(env, &inventory, &ingress, database).await?;
     if rows.len() < 30 {
-        rows.extend(claim_address_repairs(&database, scan_at, 30 - rows.len()).await?);
+        rows.extend(claim_address_repairs(database, scan_at, 30 - rows.len()).await?);
     }
     if rows.len() == 30 {
         trace::diagnostic(env, trace::DiagnosticCode::AddressReconciliationBatchFull).await;
@@ -406,12 +421,13 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
         // Crash safety comes from the pre-I/O claim. Distinguish a denied
         // external turn from an attempted failure: identical retry slots would
         // let a permanently failing prefix consume every future call budget.
-        match repair_address(env, &row, &inventory, &ingress, &mut budget).await {
+        match repair_address(env, &row, &inventory, &ingress, &mut budget, database).await {
             Ok(RepairTurn::Deferred) => {
                 database.prepare("UPDATE addresses SET next_reconcile_at=?1 WHERE address=?2 AND state=?3 AND next_reconcile_at=?4 AND (state IN ('provisioning','deleting') OR needs_reconcile=1)")
                     .bind(&[bind_num(scan_at - 1),bind_str(&row.address),bind_str(&row.state),bind_num(scan_at + 5 * 60_000)])?.run().await?;
                 failed = true;
             }
+            Err(error) if database::is_deferred(&error) => return Err(error),
             Err(_) => failed = true,
             Ok(RepairTurn::Attempted) => {}
         }
@@ -438,8 +454,8 @@ async fn repair_address(
     inventory: &platform::CompleteRuleInventory,
     ingress: &str,
     budget: &mut platform::RoutingBudget,
+    database: &Database,
 ) -> Result<RepairTurn> {
-    let database = env.d1("MAIL_DB")?;
     let rules = inventory.for_address(&row.address, ingress, row.cf_rule_id.as_deref())?;
     let enabled_id = rules.first_enabled().map(str::to_owned);
     let saved_enabled = row
@@ -461,7 +477,8 @@ async fn repair_address(
             if !budget.can_delete() {
                 return Ok(RepairTurn::Deferred);
             }
-            platform::delete_owned_rule(env, &row.address, ingress, extra, budget).await?;
+            platform::delete_owned_rule(env, &row.address, ingress, extra, budget, database)
+                .await?;
         }
         database.prepare("UPDATE addresses SET needs_reconcile=0 WHERE address=?1 AND state='active' AND cf_rule_id=?2")
             .bind(&[bind_str(&row.address), bind_str(saved)])?.run().await?;
@@ -524,7 +541,7 @@ async fn repair_address(
         if !budget.can_delete() {
             return Ok(RepairTurn::Deferred);
         }
-        platform::delete_owned_rule(env, &row.address, ingress, &id, budget).await?;
+        platform::delete_owned_rule(env, &row.address, ingress, &id, budget, database).await?;
     }
     if row.state == "deleting" {
         database.prepare("UPDATE addresses SET state='retired',cf_rule_id=NULL,needs_reconcile=1,next_reconcile_at=-1 WHERE address=?1 AND state='deleting'")
@@ -541,7 +558,7 @@ async fn repair_address(
 
 /// Recover only provider-positive sends from their exact immutable ZIP; HTTP
 /// and Cron share one journal-fenced projection and atomic publication path.
-async fn reconcile_outbound(env: &Env) -> Result<()> {
+async fn reconcile_outbound(env: &Env, database: &Database) -> Result<()> {
     #[derive(Deserialize)]
     struct Pending {
         owner_iss: String,
@@ -553,7 +570,6 @@ async fn reconcile_outbound(env: &Env) -> Result<()> {
         created_at: i64,
         deleted_bytes: Option<i64>,
     }
-    let database = env.d1("MAIL_DB")?;
     database
         .prepare(
             "UPDATE send_requests SET state='preparing',reservation_started_at=NULL WHERE state='reserving' AND reservation_started_at<?1",
@@ -570,9 +586,12 @@ async fn reconcile_outbound(env: &Env) -> Result<()> {
         FROM send_requests s WHERE s.state='accepted' AND s.message_id IS NOT NULL AND s.provider_id IS NOT NULL LIMIT 20")
         .all().await?.results::<Pending>()?;
     for row in rows {
+        // A serial item must have enough room for its maximum valid projection,
+        // including failure resolution/release, before R2 or compilation starts.
+        database.ensure_remaining(74)?;
         if let Some(bytes) = row.deleted_bytes.filter(|bytes| *bytes >= 0) {
             accepted::finish_deleted(
-                &database,
+                database,
                 &accepted::Projection {
                     id: &row.message_id,
                     issuer: &row.owner_iss,
@@ -616,7 +635,7 @@ async fn reconcile_outbound(env: &Env) -> Result<()> {
                 .bind(&[bind_str(&m.from),bind_str(&envelope),bind_str(&row.message_id),bind_str(&row.provider_id),bind_str(&row.owner_iss),bind_str(&row.owner_sub),bind_str(&row.idem_key),bind_str(&row.payload_hash)])?.run().await?;
         }
         accepted::publish(
-            &database,
+            database,
             &accepted::Projection {
                 id: &row.message_id,
                 issuer: &row.owner_iss,
@@ -709,8 +728,7 @@ struct EmbeddingLease<'a> {
 }
 
 /// Sweep a bounded, owner-fair set of due IDs until a provider cooldown begins.
-async fn reindex(env: &Env) -> Result<()> {
-    let database = env.d1("MAIL_DB")?;
+async fn reindex(env: &Env, database: &Database) -> Result<()> {
     let current = now();
     let dependency = database
         .prepare("SELECT blocked_until FROM embedding_dependency WHERE id=1")
@@ -719,13 +737,13 @@ async fn reindex(env: &Env) -> Result<()> {
     if dependency.is_some_and(|row| row.blocked_until > current) {
         return Ok(());
     }
-    let due = embedding_due(&database, current).await?;
+    let due = embedding_due(database, current).await?;
     let mut invalid_requests = 0;
     for item in due {
-        let Some(lease) = claim_embedding(&database, &item.message_id).await? else {
+        let Some(lease) = claim_embedding(database, &item.message_id).await? else {
             continue;
         };
-        let Some(row) = read_leased_embedding(&database, &lease).await? else {
+        let Some(row) = read_leased_embedding(database, &lease).await? else {
             continue;
         };
         if process_embedding(env, &database, &lease, row, &mut invalid_requests).await? {
@@ -736,7 +754,7 @@ async fn reindex(env: &Env) -> Result<()> {
 }
 
 /// Read only due work IDs, preserving the SQL's per-owner and global caps.
-async fn embedding_due(database: &D1Database, current: i64) -> Result<Vec<EmbeddingDue>> {
+async fn embedding_due(database: &Database, current: i64) -> Result<Vec<EmbeddingDue>> {
     database
         .prepare(EMBEDDING_DUE_SQL)
         .bind(&[bind_num(current)])?
@@ -747,7 +765,7 @@ async fn embedding_due(database: &D1Database, current: i64) -> Result<Vec<Embedd
 
 /// Claim one still-eligible item and account for its owner's service time.
 async fn claim_embedding<'a>(
-    database: &D1Database,
+    database: &Database,
     message_id: &'a str,
 ) -> Result<Option<EmbeddingLease<'a>>> {
     let token = uuid::Uuid::new_v4().to_string();
@@ -787,7 +805,7 @@ async fn claim_embedding<'a>(
 
 /// Recheck active, unindexed content under the live lease before transfer.
 async fn read_leased_embedding(
-    database: &D1Database,
+    database: &Database,
     lease: &EmbeddingLease<'_>,
 ) -> Result<Option<EmbeddingPending>> {
     database
@@ -810,7 +828,7 @@ async fn read_leased_embedding(
 /// Return true when a provider-wide cooldown ends the current sweep.
 async fn process_embedding(
     env: &Env,
-    database: &D1Database,
+    database: &Database,
     lease: &EmbeddingLease<'_>,
     row: EmbeddingPending,
     invalid_requests: &mut i32,
@@ -833,7 +851,7 @@ async fn process_embedding(
 /// Commit only if the message remains active, unindexed, and leased to us.
 async fn persist_embedding_success(
     env: &Env,
-    database: &D1Database,
+    database: &Database,
     lease: &EmbeddingLease<'_>,
     vector: &[f32],
     truncated: bool,
@@ -866,7 +884,7 @@ async fn persist_embedding_success(
 /// Persist bounded retry or quarantine, and stop on the established cooldown rule.
 async fn persist_embedding_failure(
     env: &Env,
-    database: &D1Database,
+    database: &Database,
     lease: &EmbeddingLease<'_>,
     previous_attempts: i64,
     error: platform::EmbeddingFailure,
@@ -1066,8 +1084,8 @@ fn problem(request_id: &str, err: AppError) -> Result<Response> {
     Ok(response)
 }
 
-fn db(env: &Env) -> AppResult<D1Database> {
-    Ok(env.d1("MAIL_DB")?)
+fn db(env: &Env) -> AppResult<Database> {
+    Ok(Database::foreground(env)?)
 }
 fn bind_str(value: &str) -> JsValue {
     JsValue::from_str(value)
@@ -1111,7 +1129,7 @@ fn text_parts(text: &str) -> Vec<&str> {
     parts
 }
 
-async fn store_text(database: &D1Database, id: &str, text: &str) -> AppResult<String> {
+async fn store_text(database: &Database, id: &str, text: &str) -> AppResult<String> {
     if text.len() > 25 * 1024 * 1024 {
         return Err(AppError::bad("body_too_large"));
     }
@@ -1125,7 +1143,7 @@ async fn store_text(database: &D1Database, id: &str, text: &str) -> AppResult<St
 
 /// Reassemble exact text in small D1 pages, charging each query and byte. / 以小页重建精确正文，并计入每次查询及字节预算。
 async fn full_text(
-    database: &D1Database,
+    database: &Database,
     row: &MessageRow,
     sql_calls: &mut usize,
     prior_body_bytes: usize,
@@ -1179,7 +1197,7 @@ async fn full_text(
 
 /// Reserve daily budget atomically, counting failed submissions conservatively. / 原子预留每日额度；失败提交也保守计入。
 async fn reserve_quota(
-    database: &D1Database,
+    database: &Database,
     kind: &str,
     user: &Principal,
     units: i64,
@@ -1191,7 +1209,7 @@ async fn reserve_quota(
 /// A separate hourly bucket bounds bursts without weakening daily recipient accounting.
 /// 独立小时桶限制突发量，同时不削弱每日收件人数核算。
 async fn reserve_window_quota(
-    database: &D1Database,
+    database: &Database,
     kind: &str,
     user: &Principal,
     units: i64,
@@ -1219,7 +1237,7 @@ async fn reserve_window_quota(
 /// Require the adopted direct-forward contract, its human attestation, and a
 /// fresh configuration observation in MAIL_DB. Query/binding/schema errors
 /// deny public sends; a provider GET never manufactures a role-Worker lease.
-async fn direct_role_contact_ready(database: &D1Database) -> bool {
+async fn direct_role_contact_ready(database: &Database) -> bool {
     let result = database
         .prepare("SELECT contract_id FROM direct_role_contact_ready LIMIT 1")
         .first::<serde_json::Value>(None)
@@ -1238,7 +1256,7 @@ fn canary_fallback_available(global_state: &str) -> bool {
 /// is when the SQL admission trigger atomically consumes its idempotency key.
 async fn check_send_policy(
     _env: &Env,
-    database: &D1Database,
+    database: &Database,
     user: &Principal,
     draft: &Draft,
     idem: &str,
@@ -1344,7 +1362,7 @@ fn canary_matches(draft: &Draft, idem: &str, recipient_hash: &str, used_by: Opti
 
 /// Atomically reserve retained bytes before any R2 write; repeat IDs never double-charge. / 在任何 R2 写入前原子预留保留字节；重复 ID 不会重复计费。
 async fn reserve_storage(
-    database: &D1Database,
+    database: &Database,
     id: &str,
     user: &Principal,
     bytes: i64,
@@ -1388,7 +1406,7 @@ async fn reserve_storage(
     Ok(())
 }
 
-async fn mark_storage_indexed(database: &D1Database, id: &str) -> Result<()> {
+async fn mark_storage_indexed(database: &Database, id: &str) -> Result<()> {
     database
         .prepare("UPDATE storage_reservations SET state='indexed' WHERE id=?1")
         .bind(&[bind_str(id)])?
@@ -1433,7 +1451,7 @@ struct AddressRow {
 /// Schedule state-aware duplicate pruning when a provider side effect may have
 /// raced with activation. The caller must not treat a failed mark as a license
 /// to delete any provider rule.
-async fn flag_active_address(database: &D1Database, address: &str, user: &Principal) -> Result<()> {
+async fn flag_active_address(database: &Database, address: &str, user: &Principal) -> Result<()> {
     database.prepare("UPDATE addresses SET needs_reconcile=1,next_reconcile_at=0 WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='active'")
         .bind(&[bind_str(address), bind_str(&user.iss), bind_str(&user.sub)])?.run().await?;
     Ok(())
@@ -1731,7 +1749,8 @@ async fn delete_address(
                 complete = false;
                 break;
             }
-            platform::delete_owned_rule(env, &address, &ingress, &rule_id, &mut budget).await?;
+            platform::delete_owned_rule(env, &address, &ingress, &rule_id, &mut budget, &database)
+                .await?;
         }
         if !complete {
             return Ok(Response::from_json(
@@ -2308,7 +2327,7 @@ fn valid_message_id(id: &str) -> bool {
 /// conservatively charged if a later bucket fails; no provider call occurs.
 /// 提交前预留所有风险维度；后续额度失败时前序桶保守计费，但不调用提供商。
 async fn charge_outbound_quotas(
-    database: &D1Database,
+    database: &Database,
     user: &Principal,
     draft: &Draft,
 ) -> AppResult<()> {
@@ -2337,7 +2356,7 @@ async fn charge_outbound_quotas(
 /// and removes a never-submitted newly created key to prevent D1 growth.
 /// 单个 CAS 胜者预留额度；额度失败时释放本地占有，并清除从未提交的新键以防 D1 膨胀。
 async fn reserve_outbound_budget(
-    database: &D1Database,
+    database: &Database,
     user: &Principal,
     draft: &Draft,
     idem: &str,

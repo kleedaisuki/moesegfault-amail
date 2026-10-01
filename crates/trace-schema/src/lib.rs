@@ -102,6 +102,8 @@ pub enum ErrorCode {
     OtherClient,
     OtherServer,
     DependencyFailure,
+    /// Deliberate maintenance admission deferral, never a provider failure.
+    ResourceDeferred,
 }
 
 /// Fixed operational conditions; no mail, aliases, provider errors or request context.
@@ -136,6 +138,8 @@ pub enum DiagnosticCode {
     SemanticProviderCooldown,
     /// A storage reservation update must be reconciled.
     StorageLedgerStateDeferred,
+    /// A maintenance phase retained its journal when its SQL grant ran out.
+    MaintenanceBudgetDeferred,
 }
 
 /// Flat allowlisted JSON. Validation additionally enforces service-specific field sets.
@@ -270,8 +274,14 @@ impl Event {
             && self.span_id.is_some()
             && self.request_id.is_some()
             && self.outcome == Outcome::PhaseFailure
-            && self.error_code == Some(ErrorCode::DependencyFailure)
-            && self.diagnostic_code.is_some()
+            && match self.diagnostic_code {
+                Some(DiagnosticCode::MaintenanceBudgetDeferred) => {
+                    self.operation == Operation::Maintenance
+                        && self.error_code == Some(ErrorCode::ResourceDeferred)
+                }
+                Some(_) => self.error_code == Some(ErrorCode::DependencyFailure),
+                None => false,
+            }
             && self.http_status_class.is_none()
             && self.request_bytes_bucket.is_none()
             && self.response_bytes_bucket.is_none()
@@ -426,6 +436,31 @@ mod tests {
             "trace_id":"0123456789abcdef0123456789abcdef","outcome":"server_error",
             "http_status_class":0,"duration_ms_bucket":0,"response_bytes_bucket":0});
         assert!(Event::from_value(value).is_some());
+    }
+
+    /// Only the fixed standalone maintenance pair may report resource deferral.
+    #[test]
+    fn resource_deferral_is_not_a_dependency_failure_or_request_event() {
+        let mut value = fixture();
+        value.as_object_mut().unwrap().remove("http_status_class");
+        value.as_object_mut().unwrap().remove("parent_span_id");
+        value["operation"] = json!("maintenance");
+        value["phase"] = json!("maintenance");
+        value["outcome"] = json!("phase_failure");
+        value["error_code"] = json!("resource_deferred");
+        value["diagnostic_code"] = json!("maintenance_budget_deferred");
+        assert!(Event::from_value(value.clone()).is_some());
+        for (field, bad) in [
+            ("error_code", json!("dependency_failure")),
+            ("diagnostic_code", json!("outbound_reconciliation_failed")),
+            ("operation", json!("messages_send")),
+            ("phase", json!("request_exit")),
+            ("outcome", json!("success")),
+        ] {
+            let mut bad_value = value.clone();
+            bad_value[field] = bad;
+            assert!(Event::from_value(bad_value).is_none());
+        }
     }
 
     /// Numeric dependency status is restricted to a routing-create child phase.

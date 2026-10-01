@@ -2,8 +2,9 @@
 //! A journal lease fences every write, including overlapping compiler revisions.
 //! Publication and the terminal transition are one D1 transaction.
 
+use crate::database::{Database, Statement};
 use wasm_bindgen::JsValue;
-use worker::{D1Database, D1PreparedStatement, Error, Result};
+use worker::{Error, Result};
 
 use crate::{archive::Draft, bind_num, bind_str, outbound_metadata, text_parts};
 
@@ -80,7 +81,7 @@ impl Projection<'_> {
 /// conditional no-op once another projector commits sent or deletion intervenes.
 /// Chunks without a published message are invisible to every public reader.
 async fn stage(
-    db: &D1Database,
+    db: &Database,
     projection: &Projection<'_>,
     key: &str,
     token: &str,
@@ -134,14 +135,14 @@ fn ready() -> &'static str {
 /// Prepare the message publication without changing an existing tombstone or
 /// mutable read state. Legacy accepted rows stay hidden until this transaction.
 fn message_statement(
-    db: &D1Database,
+    db: &Database,
     projection: &Projection<'_>,
     draft: &Draft,
     key: &str,
     token: &str,
     parts: &[&str],
     current: i64,
-) -> Result<D1PreparedStatement> {
+) -> Result<Statement> {
     let mut values = projection.bindings_at(key, token, current);
     values.extend([
         bind_num(parts.len() as i64 - 1),
@@ -175,7 +176,7 @@ fn message_statement(
 /// D1 batch is transactional: failure of any statement rolls back all three.
 /// A successful all-no-op batch is not evidence of publication or completion.
 pub(crate) async fn publish(
-    db: &D1Database,
+    db: &Database,
     projection: &Projection<'_>,
     draft: &Draft,
 ) -> Result<()> {
@@ -192,12 +193,7 @@ pub(crate) async fn publish(
 }
 
 /// Acquire exactly one accepted projection; never steal a still-live token.
-async fn claim(
-    db: &D1Database,
-    projection: &Projection<'_>,
-    key: &str,
-    token: &str,
-) -> Result<bool> {
+async fn claim(db: &Database, projection: &Projection<'_>, key: &str, token: &str) -> Result<bool> {
     let mut values = projection.bindings(key, token);
     values.push(bind_num(crate::now() + LEASE_MS));
     let result = db
@@ -220,7 +216,7 @@ async fn claim(
 /// Release only this attempt's token after a caught error. An in-flight stale
 /// statement subsequently sees a missing/replaced token; release never resends.
 /// A failed release or terminated isolate leaves safe recovery through expiry.
-async fn release(db: &D1Database, projection: &Projection<'_>, key: &str, token: &str) {
+async fn release(db: &Database, projection: &Projection<'_>, key: &str, token: &str) {
     let prepared = db
         .prepare(
             "UPDATE send_requests
@@ -238,7 +234,7 @@ async fn release(db: &D1Database, projection: &Projection<'_>, key: &str, token:
 /// Terminalize only a surviving owned legacy tombstone. Old GC could remove
 /// its R2 ZIP before failing the database cleanup, so no content reconstruction
 /// is required or allowed on this path. Mere missing ZIPs are not deletion proof.
-pub(crate) async fn finish_deleted(db: &D1Database, projection: &Projection<'_>) -> Result<()> {
+pub(crate) async fn finish_deleted(db: &Database, projection: &Projection<'_>) -> Result<()> {
     let key = format!("messages/{}.zip", projection.id);
     let token = uuid::Uuid::new_v4().to_string();
     if !claim(db, projection, &key, &token).await? {
@@ -254,7 +250,7 @@ pub(crate) async fn finish_deleted(db: &D1Database, projection: &Projection<'_>)
 /// Atomically finish the already-deleted delivery's ledger and exact journal.
 /// Every predicate rechecks the surviving tombstone under the same lease snapshot.
 async fn finish_deleted_leased(
-    db: &D1Database,
+    db: &Database,
     projection: &Projection<'_>,
     key: &str,
     token: &str,
@@ -293,7 +289,7 @@ async fn finish_deleted_leased(
 
 /// Finish one active lease without voluntarily exiting between batch statements.
 async fn publish_leased(
-    db: &D1Database,
+    db: &Database,
     projection: &Projection<'_>,
     draft: &Draft,
     key: &str,
@@ -341,7 +337,7 @@ async fn publish_leased(
 /// Journal authority resolves a failed claim or an all-no-op final batch. GC may
 /// have removed the user's tombstone, but sent can never authorize fresh writes.
 async fn finished(
-    db: &D1Database,
+    db: &Database,
     projection: &Projection<'_>,
     key: &str,
     token: &str,

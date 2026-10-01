@@ -518,6 +518,7 @@ pub(crate) async fn delete_owned_rule(
     ingress: &str,
     rule_id: &str,
     budget: &mut RoutingBudget,
+    database: &crate::database::Database,
 ) -> Result<()> {
     if !valid_rule_id(rule_id) || !budget.can_delete() {
         return Err(worker::Error::RustError("routing_delete_unverified".into()));
@@ -550,8 +551,7 @@ pub(crate) async fn delete_owned_rule(
         state: String,
         cf_rule_id: Option<String>,
     }
-    let state = env
-        .d1("MAIL_DB")?
+    let state = database
         .prepare("SELECT state,cf_rule_id FROM addresses WHERE address=?1")
         .bind(&[JsValue::from_str(address)])?
         .first::<State>(None)
