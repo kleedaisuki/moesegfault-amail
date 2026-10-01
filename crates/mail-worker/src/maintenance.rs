@@ -8,6 +8,137 @@ use std::cell::Cell;
 use worker::{Error, Result};
 
 use crate::database::MaintenancePhase;
+use crate::trace::DiagnosticCode;
+
+/// One phase's terminal result; successful no-ops retain a slot without wire data.
+#[derive(Clone, Copy)]
+enum PhaseOutcome {
+    Complete,
+    BudgetDeferred,
+    DeadlineDeferred,
+    Failed,
+}
+
+/// Reviewed nested conditions, retaining presence rather than item identity/count.
+#[derive(Clone, Copy)]
+pub(crate) enum DeepCondition {
+    AddressBatchFull,
+    CommittedRouteDisabled,
+    ProvisioningRouteDisabled,
+    DocumentQuarantined,
+    ProviderCooldown,
+}
+
+impl DeepCondition {
+    /// Stable private slots and existing wire vocabulary are deliberately explicit.
+    fn entry(self) -> (usize, DiagnosticCode) {
+        match self {
+            Self::AddressBatchFull => (0, DiagnosticCode::AddressReconciliationBatchFull),
+            Self::CommittedRouteDisabled => (1, DiagnosticCode::NonEnabledCommittedRoutingRule),
+            Self::ProvisioningRouteDisabled => {
+                (2, DiagnosticCode::NonEnabledProvisioningRoutingRule)
+            }
+            Self::DocumentQuarantined => (3, DiagnosticCode::SemanticDocumentQuarantined),
+            Self::ProviderCooldown => (4, DiagnosticCode::SemanticProviderCooldown),
+        }
+    }
+}
+
+/// Invocation-owned fixed facts; no dependency access, private data or public fields.
+///
+/// Finish each phase once, note reviewed nested conditions after their original
+/// durable boundary, then consume this value once at scheduled invocation exit.
+pub(crate) struct MaintenanceDiagnostics {
+    /// Unfinished phases are neither successes nor invented failures.
+    phases: [Option<PhaseOutcome>; 8],
+    /// Repetition never retains frequency or grows the buffer.
+    deep: [bool; 5],
+}
+
+impl MaintenanceDiagnostics {
+    /// Create eight terminal slots and five presence bits without binding access.
+    pub(crate) fn new() -> Self {
+        Self {
+            phases: [None; 8],
+            deep: [false; 5],
+        }
+    }
+
+    /// Retain only the first result and classify exact application-owned markers.
+    pub(crate) fn finish(&mut self, phase: MaintenancePhase, result: &Result<()>) {
+        let slot = &mut self.phases[phase_slot(phase)];
+        debug_assert!(slot.is_none(), "maintenance phase finished twice");
+        if slot.is_some() {
+            return;
+        }
+        *slot = Some(match result {
+            Ok(()) => PhaseOutcome::Complete,
+            Err(error) if crate::database::is_deferred(error) => PhaseOutcome::BudgetDeferred,
+            Err(error) if is_deferred(error) => PhaseOutcome::DeadlineDeferred,
+            Err(_) => PhaseOutcome::Failed,
+        });
+    }
+
+    /// Note a closed deep condition synchronously; never await or spend SQL grants.
+    pub(crate) fn note(&mut self, condition: DeepCondition) {
+        self.deep[condition.entry().0] = true;
+    }
+
+    /// Consume once into at most eight terminal failures and five deep conditions.
+    pub(crate) fn into_codes(self) -> Vec<DiagnosticCode> {
+        let mut codes = Vec::with_capacity(13);
+        for phase in MaintenancePhase::ALL {
+            let code = match self.phases[phase_slot(phase)] {
+                None | Some(PhaseOutcome::Complete) => continue,
+                Some(PhaseOutcome::BudgetDeferred) => DiagnosticCode::MaintenanceBudgetDeferred,
+                Some(PhaseOutcome::DeadlineDeferred) => DiagnosticCode::MaintenanceDeadlineDeferred,
+                Some(PhaseOutcome::Failed) => phase_failure(phase),
+            };
+            codes.push(code);
+        }
+        for condition in [
+            DeepCondition::AddressBatchFull,
+            DeepCondition::CommittedRouteDisabled,
+            DeepCondition::ProvisioningRouteDisabled,
+            DeepCondition::DocumentQuarantined,
+            DeepCondition::ProviderCooldown,
+        ] {
+            let (slot, code) = condition.entry();
+            if self.deep[slot] {
+                codes.push(code);
+            }
+        }
+        codes
+    }
+}
+
+/// Identity indices never depend on enum discriminants or rotated dispatch order.
+fn phase_slot(phase: MaintenancePhase) -> usize {
+    match phase {
+        MaintenancePhase::Addresses => 0,
+        MaintenancePhase::Outbound => 1,
+        MaintenancePhase::Embeddings => 2,
+        MaintenancePhase::Storage => 3,
+        MaintenancePhase::Deleted => 4,
+        MaintenancePhase::Orphans => 5,
+        MaintenancePhase::Search => 6,
+        MaintenancePhase::Abuse => 7,
+    }
+}
+
+/// Preserve existing failure vocabulary; phase identity remains internal only.
+fn phase_failure(phase: MaintenancePhase) -> DiagnosticCode {
+    match phase {
+        MaintenancePhase::Addresses => DiagnosticCode::RoutingReconciliationFailed,
+        MaintenancePhase::Outbound => DiagnosticCode::OutboundReconciliationFailed,
+        MaintenancePhase::Embeddings => DiagnosticCode::SemanticIndexRetryFailed,
+        MaintenancePhase::Storage => DiagnosticCode::StorageLedgerReconciliationFailed,
+        MaintenancePhase::Deleted => DiagnosticCode::DeletedMessageCleanupFailed,
+        MaintenancePhase::Orphans => DiagnosticCode::OrphanObjectCleanupFailed,
+        MaintenancePhase::Search => DiagnosticCode::SearchJobCleanupFailed,
+        MaintenancePhase::Abuse => DiagnosticCode::AbuseDataCleanupFailed,
+    }
+}
 
 /// Five-minute schedule slots; changing the Cron schedule requires policy review.
 const SLOT_MS: f64 = 300_000.0;
@@ -240,6 +371,80 @@ pub(crate) fn is_deferred(error: &Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Eight phase failures and repeated deep facts have exactly thirteen codes.
+    #[test]
+    fn diagnostics_are_fixed_presence_only_and_rotation_independent() {
+        let mut diagnostics = MaintenanceDiagnostics::new();
+        for phase in phase_order(3.0 * SLOT_MS) {
+            diagnostics.finish(phase, &Err(Error::RustError("synthetic failure".into())));
+        }
+        for _ in 0..30 {
+            for condition in [
+                DeepCondition::AddressBatchFull,
+                DeepCondition::CommittedRouteDisabled,
+                DeepCondition::ProvisioningRouteDisabled,
+                DeepCondition::DocumentQuarantined,
+                DeepCondition::ProviderCooldown,
+            ] {
+                diagnostics.note(condition);
+            }
+        }
+        let codes = diagnostics.into_codes();
+        assert_eq!(codes.len(), 13);
+        assert_eq!(&codes[..8], &MaintenancePhase::ALL.map(phase_failure));
+        assert_eq!(
+            codes
+                .iter()
+                .filter(|code| **code == DiagnosticCode::SemanticProviderCooldown)
+                .count(),
+            1
+        );
+    }
+
+    /// Success and unvisited slots emit nothing; exact deferrals are not prose.
+    #[test]
+    fn diagnostics_preserve_closed_classification_and_separate_phase_deferrals() {
+        let mut empty = MaintenanceDiagnostics::new();
+        for phase in MaintenancePhase::ALL {
+            empty.finish(phase, &Ok(()));
+        }
+        assert!(empty.into_codes().is_empty());
+        assert!(MaintenanceDiagnostics::new().into_codes().is_empty());
+        let mut diagnostics = MaintenanceDiagnostics::new();
+        for phase in [MaintenancePhase::Addresses, MaintenancePhase::Outbound] {
+            diagnostics.finish(
+                phase,
+                &Err(Error::RustError(
+                    "maintenance_statement_budget_deferred".into(),
+                )),
+            );
+        }
+        diagnostics.finish(MaintenancePhase::Embeddings, &Err(deferred()));
+        diagnostics.finish(
+            MaintenancePhase::Storage,
+            &Err(Error::RustError("dependency timeout".into())),
+        );
+        assert_eq!(
+            diagnostics.into_codes(),
+            vec![
+                DiagnosticCode::MaintenanceBudgetDeferred,
+                DiagnosticCode::MaintenanceBudgetDeferred,
+                DiagnosticCode::MaintenanceDeadlineDeferred,
+                DiagnosticCode::StorageLedgerReconciliationFailed
+            ]
+        );
+    }
+
+    /// Duplicate phase completion is a programming error, not a second event.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "maintenance phase finished twice")]
+    fn diagnostics_expose_duplicate_finish() {
+        let mut diagnostics = MaintenanceDiagnostics::new();
+        diagnostics.finish(MaintenancePhase::Abuse, &Ok(()));
+        diagnostics.finish(MaintenancePhase::Abuse, &Err(deferred()));
+    }
 
     /// Supply deterministic entry times without any production clock override.
     fn new_turn(entered_ms: f64) -> MaintenanceTurn {
