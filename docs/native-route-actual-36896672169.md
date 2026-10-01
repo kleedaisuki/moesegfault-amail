@@ -86,7 +86,7 @@ requires root approval and hosted regression evidence. It must cover early GET
 403, failed/malformed inventories, no provider cleanup for preflight refusal and
 unchanged unknown-write recovery. This note is evidence, not authorization.
 
-## Approved source repair (hosted verification pending)
+## Approved source repair (hosted source verification passed)
 
 The root approved the bounded receipt repair after reviewing the actual refusal.
 `deploy()` now writes the original build/orchestration identity and
@@ -107,7 +107,15 @@ Hosted fixtures cover 403/timeout at every Route preread, TLS/schema/conflict
 refusals, actual typed SSL 403/9109 transport extraction, missing configuration,
 historical workers.dev preread refusal and contradictory no-write receipts. The
 existing first-DNS-write ordering and unknown-write lifecycle tests remain active.
-No local runtime test was executed. Hosted results belong below once observed.
+No local runtime test was executed.
+
+[PR 77 hosted CI 36897898735](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36897898735)
+passed on exact implementation head `d7ef738dcc6ccd77a32cdc274ea8c0a286c6d9b2`.
+The infrastructure job ran 17:14:23--17:14:44 UTC on 2026-10-01; the run completed
+successfully at 17:14:59 UTC. Conservative source-scope selection and the separate
+workflow syntax guard `36897898144` also passed. No product Rust/compiler inputs
+changed or needed rebuilding. These are synthetic source-contract results, not
+an execution of the repaired receipt on Cloudflare or proof of SSL access.
 
 ## Sources and reproduction
 
