@@ -20,6 +20,7 @@ import tomllib
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from control_plane_trace import endpoint, response_facts, span
 from mail_schema_contract import ROOT, verify_recorded_schema
 from production_bootstrap_contract import ProductionResources, held_state, stable_digest
 from pin_staging_mail import mail_resources
@@ -155,24 +156,42 @@ class Provider:
 
     def envelope(self, suffix: str, data: dict | None = None) -> dict:
         """Read one bounded successful response, suppressing raw envelopes/errors."""
-        request = Request(API + suffix, data=None if data is None else json.dumps(data).encode(),
-                          headers={"Authorization": "Bearer " + self.token,
-                                   "Accept": "application/json", "Content-Type": "application/json"})
-        try:
-            with self.opener.open(request, timeout=30) as response:
-                raw = response.read(LIMIT + 1)
-            if len(raw) > LIMIT:
-                raise ValueError()
-            value = json.loads(raw)
-            if not isinstance(value, dict) or value.get("success") is not True:
-                raise ValueError()
-            return value
-        except HTTPError as error:
-            raise ValueError(http_reason(error.code)) from None
-        except (URLError, TimeoutError):
-            raise ValueError("production_provider_transport_unverified") from None
-        except Exception:
-            raise ValueError("production_provider_read_unverified") from None
+        with span("cloudflare.request", "response", method="GET" if data is None else "POST",
+                  **endpoint(suffix)) as facts:
+            request = Request(API + suffix, data=None if data is None else json.dumps(data).encode(),
+                              headers={"Authorization": "Bearer " + self.token,
+                                       "Accept": "application/json", "Content-Type": "application/json"})
+            try:
+                with self.opener.open(request, timeout=30) as response:
+                    response_facts(facts, getattr(response, "status", None), getattr(response, "headers", None))
+                    raw = response.read(LIMIT + 1)
+                if len(raw) > LIMIT:
+                    facts.reason = "body_limit"
+                    raise ValueError()
+                value = json.loads(raw)
+                if not isinstance(value, dict):
+                    facts.reason, facts.schema_expected = "schema_type", "object"
+                    facts.schema_actual_type = type(value).__name__
+                    raise ValueError()
+                if value.get("success") is not True:
+                    facts.reason, facts.schema_field, facts.schema_expected = "provider_unsuccessful", "success", "true"
+                    facts.schema_actual_type = type(value.get("success")).__name__
+                    errors = value.get("errors")
+                    if isinstance(errors, list):
+                        facts.provider_error_codes = [item["code"] for item in errors[:10]
+                            if isinstance(item, dict) and type(item.get("code")) is int and 0 <= item["code"] <= 2**31-1]
+                    raise ValueError()
+                return value
+            except HTTPError as error:
+                response_facts(facts, error.code, error.headers)
+                facts.error_type = type(error).__name__
+                raise ValueError(http_reason(error.code)) from None
+            except (URLError, TimeoutError) as error:
+                facts.error_type = type(error).__name__
+                raise ValueError("production_provider_transport_unverified") from None
+            except Exception as error:
+                facts.error_type = type(error).__name__
+                raise ValueError("production_provider_read_unverified") from None
 
     def get(self, suffix: str):
         """Return exact result; inventory callers must separately prove completeness."""

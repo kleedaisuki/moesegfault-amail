@@ -6,6 +6,8 @@ import re
 import subprocess
 import sys
 
+from control_plane_trace import span
+
 UUID = r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
 
 
@@ -14,13 +16,22 @@ def deploy(target: str) -> str:
     command = ["wrangler", "deploy"]
     if target == "staging":
         command.extend(["--env", "staging"])
-    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=600)
-    if result.returncode or len(result.stdout) + len(result.stderr) > 1_048_576:
-        raise ValueError("deployment_unverified")
-    versions = re.findall(r"Current Version ID:\s*(" + UUID + r")(?=\s|$)", result.stdout + result.stderr)
-    if len(versions) != 1:
-        raise ValueError("deployment_unverified")
-    return versions[0]
+    with span("workers.deploy", "submit", realm=target, component="trace_sink") as facts:
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=600)
+        facts.process_exit_code = result.returncode
+        if result.returncode:
+            facts.reason = "process_exit"
+            raise ValueError("deployment_unverified")
+        if len(result.stdout) + len(result.stderr) > 1_048_576:
+            facts.reason = "output_limit"
+            raise ValueError("deployment_unverified")
+        versions = re.findall(r"Current Version ID:\s*(" + UUID + r")(?=\s|$)", result.stdout + result.stderr)
+        facts.version_count = len(versions)
+        if len(versions) != 1:
+            facts.reason = "version_count"
+            raise ValueError("deployment_unverified")
+        facts.version = versions[0]
+        return versions[0]
 
 
 def main() -> int:

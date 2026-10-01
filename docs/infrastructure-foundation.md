@@ -51,9 +51,9 @@ control-plane call merely because the mail application has spans.
 
 | Work package | Exit condition | State |
 | --- | --- | --- |
-| CI dependency graph and caches | Build once; all native files assigned; parallel suites; stable fail-closed aggregate; dependency caches without credentials/workspace binaries; observed hosted durations and cache outcomes | Hosted source accepted; trusted dependency-cache seeding/warm observation remains |
+| CI dependency graph and caches | Build once; all native files assigned; parallel suites; stable fail-closed aggregate; dependency caches without credentials/workspace binaries; observed hosted durations and cache outcomes | Hosted source accepted; three CLI platforms observed exact warm dependency hits; Worker warm observation remains |
 | Artifact and compiler provenance | Source/run/compiler/bundler/file hashes verified before consumption; wrong-source, modified/missing/extra file refused; promotion consumes tested artifacts rather than rebuilding silently | Source checks accepted; deploy/release wiring pending |
-| CI and deployment diagnostics | Machine-readable timing/outcome summaries; source/run/stage/request correlation; useful safe provider failures; no repeated opaque probes | Pending |
+| CI and deployment diagnostics | Machine-readable timing/outcome summaries; source/run/stage/request correlation; useful safe provider failures; no repeated opaque probes | CI cache/native receipts accepted; [control-plane integration](control-plane-observability.md) under hosted validation |
 | Runtime observability | Field-level schemas; CLI/API/maintenance/lifecycle coverage and diagnostics for loss; Cloudflare configuration and a synthetic correlation/privacy canary accepted | [Coverage repair and native-span validation plan](runtime-observability-foundation.md) |
 | Deployment lifecycle | Explicit paused/active state; consistent source/toolchain/artifact; writer lock, readback, rollback and bounded recovery; project Secrets remain unchanged | Pending |
 | Maintenance knowledge and cleanup | Current runbook and maintainer skill; legacy research probes isolated from normal product paths; canonical status ledger; no dangling test/active workflow | Maintainer skill added; legacy lane cleanup pending |
@@ -139,3 +139,20 @@ Merged main 677fc1fdc92daca9c23f361ec99fb264b6f26882 has the accepted tree.
 Its full run 36843081448 also completed successfully. No provider inspection,
 mailbox mutation, deployment, sending grant or release accompanied these checks.
 The remaining foundation work is still required before resuming business debug.
+
+## Accepted CLI journal foundation
+
+PR 44 source 46a6cbe9e7dc79242358521d73ab7273aa514095 passed scoped CI
+36849720707 and syntax 36849720535. Linux/Windows/macOS each passed 33 unit
+and 2 real CLI subprocess tests; all three dependency cache receipts were
+exact_hit. Observed scoped workflow duration 2m01s includes platform jobs of
+33s, 105s and 45s including setup. These are observed samples, not a performance
+SLA. Main a0626aae5f79edab85755670902d1df358d91826 preserves the tested tree.
+
+The compatible SQLite journal now records UTC start, exact monotonic duration,
+auth/transport/body/completion phase and matching propagated IDs. Historical
+rows retain NULL clocks. Durable send table/API ownership is separate without
+moving the historical file or losing keys. Telemetry opt-out skips initialization;
+diagnostic failure does not break successful commands or contaminate stdout.
+Remote clock/error-phase enrichment is not yet rolled out. See the runtime ledger
+for reader-first Queue schema, native sink tests and platform tracing acceptance.
