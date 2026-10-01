@@ -265,7 +265,7 @@ jobs:
       - name: Install pinned deployment tools without provider capabilities
         run: |
           npm install --global wrangler@4.142.0
-          python -m pip install --only-binary=:all: -r infra/deploy/production_inspection_requirements.txt
+          python -m pip install --only-binary=:all: -r infra/deploy/production_inspection_requirements.txt -r infra/dns/requirements.txt
       - name: Complete the verified held production scope and persist the online receipt
         env:
           PYTHONDONTWRITEBYTECODE: '1'
