@@ -65,6 +65,7 @@ ERROR_REASONS = {
     "fresh_graph_changed", "process_exit", "version_count", "output_limit",
     "fresh_capture_coordinates_unreviewed", "fresh_capture_capabilities_unverified",
     "fresh_capture_serving_changed", "fresh_capture_patch_unverified", "fresh_capture_readback_unverified",
+    "fresh_capture_projection_unverified",
 }
 
 

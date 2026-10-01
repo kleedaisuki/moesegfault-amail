@@ -206,10 +206,14 @@ class OnlineContractsTests(unittest.TestCase):
         """Activated maintenance metadata correction never substitutes an older database."""
         version = "00000000-0000-0000-0000-000000000005"
         provider, record = Mock(), Mock()
-        with patch.object(online.readback, "capture_off", return_value="unchanged") as correction:
-            self.assertEqual(online.correct_maintenance_capture(
-                provider, scope(), "c" * 32, version, record), "unchanged")
-        expected = online.maintenance.expected_bindings("production", "c" * 32, active=True)
+        reference = {"TRACE_EVENTS": ("queue", "c" * 32),
+                     "MAIL_DB": ("d1", "prior-database"), "MAIL_BODIES": ("r2_bucket", "prior-bucket")}
+        with patch.object(online.maintenance, "expected_bindings", return_value=dict(reference)) as bindings:
+            with patch.object(online.readback, "capture_off", return_value="unchanged") as correction:
+                self.assertEqual(online.correct_maintenance_capture(
+                    provider, scope(), "c" * 32, version, record), "unchanged")
+        bindings.assert_called_once_with("production", "c" * 32, active=True)
+        expected = dict(reference)
         expected.update({"MAIL_DB": ("d1", scope().database), "MAIL_BODIES": ("r2_bucket", scope().bucket)})
         self.assertEqual(correction.call_args.args, (provider, "amail-mail-maintenance", version))
         self.assertEqual(correction.call_args.kwargs["expected_bindings"], expected)
