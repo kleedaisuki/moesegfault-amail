@@ -119,3 +119,24 @@ Scripts Read/Write authorization and optional generic result_info:
 https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/list/ .
 Its documentation does not establish this actual failure's cause; the next fixed
 bin must decide whether the problem is transport, protocol or local dependency.
+
+### Third actual inspection: custom-domain protocol rejection
+
+Run 36832211353 (main bed07c395cf81ecb6b80dc217a9a0564f95c7d03,
+07:46 UTC) passed 6 schema + 14 inventory contracts. The actual read failed at
+custom_domain_inventory with custom_domain_inventory_unverified, not an HTTP
+permission refusal. SDK, whole-bucket R2, current Worker inventory, zone ownership
+and Workers routes progressed before that boundary. Domain absence, D1 schema,
+held empty state and deployment admission remain unverified; no mutation occurred.
+Main full CI 36832207613 subsequently completed successfully.
+
+Extract the existing complete-list validator without loosening its acceptance
+rules. Its ValueError subclass preserves sink_domains_unverified for existing
+callers, while one closed enum identifies the rejected structural rule. The
+inspector uses its own bounded no-redirect transport and the extracted validator,
+so there is still exactly one domain request and no raw response artifact. Hosted
+tests cover every structural bin, malformed/partial lists, private attributes and
+the single-read transport. The next actual inspection can discriminate identifier
+format from generic pagination metadata without printing hostnames, IDs, values or
+provider prose. Documentation alone does not yet identify which rule is wrong;
+do not request a Token change or permissively accept a partial inventory.

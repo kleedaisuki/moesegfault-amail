@@ -7,6 +7,7 @@ The account-wide inventories require complete bounded pagination and readable zo
 from __future__ import annotations
 
 import json
+from enum import Enum
 import os
 import re
 import sys
@@ -76,40 +77,98 @@ def inventory(token: str, path: str) -> list[dict]:
     raise ValueError("sink_inventory_unverified")
 
 
-def worker_domains(account: str, token: str) -> list[dict]:
-    """Read the documented unfiltered SinglePage endpoint without invented pagination.
+class DomainFailure(str, Enum):
+    """Closed structural bins; never retain domain identifiers or provider values."""
+
+    ENVELOPE = "envelope"
+    ROWS = "rows"
+    ROW = "row"
+    ID_TYPE = "id_type"
+    ID_UUID = "id_uuid_format"
+    ID_FORMAT = "id_format"
+    ID_DUPLICATE = "id_duplicate"
+    SERVICE = "service"
+    INFO = "info"
+    COUNT_TYPE = "count_type"
+    COUNT_MISMATCH = "count_mismatch"
+    TOTAL_COUNT_TYPE = "total_count_type"
+    TOTAL_COUNT_MISMATCH = "total_count_mismatch"
+    PAGE_TYPE = "page_type"
+    PAGE_MISMATCH = "page_mismatch"
+    PAGES_TYPE = "pages_type"
+    PAGES_MISMATCH = "pages_mismatch"
+    PER_PAGE_TYPE = "per_page_type"
+    PER_PAGE_MISMATCH = "per_page_mismatch"
+
+
+class DomainInventoryError(ValueError):
+    """Preserve the existing public failure code while carrying one safe enum."""
+
+    def __init__(self, reason: DomainFailure):
+        """Do not capture a row, exception cause, hostname or raw field value."""
+        super().__init__("sink_domains_unverified")
+        self.domain_reason = reason
+
+
+def worker_domain_rows(value: object) -> list[dict]:
+    """Validate the complete unfiltered endpoint response without another read.
 
     Generic result_info is optional. Any supplied metadata must explicitly agree
     with the complete array and cannot claim another page or missing rows.
+    This extraction preserves the original acceptance rules; typed failures only
+    identify which rule rejected the response, without retaining its contents.
     """
-    value = envelope(token, f"/accounts/{account}/workers/domains")
-    if not isinstance(value, dict) or set(value) - ENVELOPE_FIELDS:
-        raise ValueError("sink_domains_unverified")
+    if (not isinstance(value, dict) or value.get("success") is not True
+            or set(value) - ENVELOPE_FIELDS):
+        raise DomainInventoryError(DomainFailure.ENVELOPE)
     rows, info = value.get("result"), value.get("result_info")
     if not isinstance(rows, list) or len(rows) > 1000:
-        raise ValueError("sink_domains_unverified")
+        raise DomainInventoryError(DomainFailure.ROWS)
     seen = set()
     for row in rows:
-        if (not isinstance(row, dict) or not isinstance(row.get("id"), str)
-                or not ID.fullmatch(row["id"]) or row["id"] in seen
-                or not isinstance(row.get("service"), str) or not row["service"]):
-            raise ValueError("sink_domains_unverified")
+        if not isinstance(row, dict):
+            raise DomainInventoryError(DomainFailure.ROW)
+        if not isinstance(row.get("id"), str):
+            raise DomainInventoryError(DomainFailure.ID_TYPE)
+        if not ID.fullmatch(row["id"]):
+            reason = DomainFailure.ID_UUID if UUID.fullmatch(row["id"]) else DomainFailure.ID_FORMAT
+            raise DomainInventoryError(reason)
+        if row["id"] in seen:
+            raise DomainInventoryError(DomainFailure.ID_DUPLICATE)
+        if not isinstance(row.get("service"), str) or not row["service"]:
+            raise DomainInventoryError(DomainFailure.SERVICE)
         seen.add(row["id"])
     if info is not None:
         if not isinstance(info, dict) or set(info) - {"count", "page", "per_page", "total_count", "total_pages"}:
-            raise ValueError("sink_domains_unverified")
+            raise DomainInventoryError(DomainFailure.INFO)
         for key in ("count", "total_count"):
-            if key in info and (type(info[key]) is not int or info[key] != len(rows)):
-                raise ValueError("sink_domains_unverified")
-        if "page" in info and (type(info["page"]) is not int or info["page"] != 1):
-            raise ValueError("sink_domains_unverified")
-        if "total_pages" in info and (type(info["total_pages"]) is not int
-                or info["total_pages"] not in ((0,1) if not rows else (1,))):
-            raise ValueError("sink_domains_unverified")
-        if "per_page" in info and (type(info["per_page"]) is not int
-                or info["per_page"] <= 0 or info["per_page"] < len(rows)):
-            raise ValueError("sink_domains_unverified")
+            if key not in info:
+                continue
+            if type(info[key]) is not int:
+                reason = DomainFailure.COUNT_TYPE if key == "count" else DomainFailure.TOTAL_COUNT_TYPE
+                raise DomainInventoryError(reason)
+            if info[key] != len(rows):
+                reason = DomainFailure.COUNT_MISMATCH if key == "count" else DomainFailure.TOTAL_COUNT_MISMATCH
+                raise DomainInventoryError(reason)
+        checks = (("page", DomainFailure.PAGE_TYPE, DomainFailure.PAGE_MISMATCH,
+                   lambda n: n == 1),
+                  ("total_pages", DomainFailure.PAGES_TYPE, DomainFailure.PAGES_MISMATCH,
+                   lambda n: n in ((0, 1) if not rows else (1,))),
+                  ("per_page", DomainFailure.PER_PAGE_TYPE, DomainFailure.PER_PAGE_MISMATCH,
+                   lambda n: n > 0 and n >= len(rows)))
+        for key, wrong_type, wrong_value, accepts in checks:
+            if key not in info:
+                continue
+            if type(info[key]) is not int:
+                raise DomainInventoryError(wrong_type)
+            if not accepts(info[key]):
+                raise DomainInventoryError(wrong_value)
     return rows
+
+
+def worker_domains(account: str, token: str) -> list[dict]:
+    """Read one bounded unfiltered endpoint; never invent pagination or truncate."""
+    return worker_domain_rows(envelope(token, f"/accounts/{account}/workers/domains"))
 
 
 def version_isolated(value: dict, expected: str) -> bool:
