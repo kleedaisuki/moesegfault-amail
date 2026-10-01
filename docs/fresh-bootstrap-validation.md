@@ -77,3 +77,8 @@ Local authoring checks: Python standard-library AST parsing of the two test file
 (no production imports, test execution, dependencies or provider access), plus
 `git diff --check`. AST parsing succeeded. Runtime verdict remains **unverified**
 until credential-free GitHub Actions executes the integrated source.
+
+The revised controller protocol records every source-controlled phase as
+`intent → observed`, with a terminal failure permitted only for the outstanding
+intent. The positive failed-sink fixture follows that complete prefix and uses
+distinct 32-hex Queue identities. Recovery must leave the journal bytes unchanged.

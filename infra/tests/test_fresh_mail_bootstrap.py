@@ -197,13 +197,14 @@ class FreshBootstrapControllerTests(unittest.TestCase):
 
     def valid_failed_sink_journal(self):
         """An ambiguous one-attempt sink submit occurs after owned creation and queues."""
-        return [self.record("admission", "intent"),
+        return [self.record("admission", "intent"), self.record("admission", "observed"),
+                self.record("old_scope", "intent"), self.record("old_scope", "observed"),
                 self.record("create_scope", "intent"),
                 self.record("create_scope", "observed", scope=asdict(self.scope)),
-                self.record("migrate", "intent"), self.record("queues", "intent"),
-                self.record("queues", "observed",
-                            queue="00000000-0000-0000-0000-000000000003",
-                            dlq="00000000-0000-0000-0000-000000000004"),
+                self.record("render", "intent"), self.record("render", "observed"),
+                self.record("migrate", "intent"), self.record("migrate", "observed"),
+                self.record("queues", "intent"),
+                self.record("queues", "observed", queue="3" * 32, dlq="4" * 32),
                 self.record("sink", "intent"),
                 self.record("sink", "failed", error_type="DeploymentFailure",
                             version="00000000-0000-0000-0000-000000000005")]
@@ -211,6 +212,7 @@ class FreshBootstrapControllerTests(unittest.TestCase):
     def test_failed_write_recovery_observes_owned_coordinates_without_replay(self):
         """Captured failure versions permit readback, never success receipts or writes."""
         self.journal(self.valid_failed_sink_journal())
+        original = self.recovery.read_bytes()
         observed = {"id": "00000000-0000-0000-0000-000000000006",
                     "versions": [{"version_id": "00000000-0000-0000-0000-000000000005", "percentage": 100}]}
         with patch.object(controller, "reconcile_scope", return_value={"status": "observed"}) as reconcile, \
@@ -225,6 +227,7 @@ class FreshBootstrapControllerTests(unittest.TestCase):
         for name in ("create_scope", "migrate_and_hold_new_scope", "provision_trace_graph", "submit_once", "persist"):
             self.adapters[name].assert_not_called()
         self.assertFalse(self.receipt.exists())
+        self.assertEqual(self.recovery.read_bytes(), original, "recovery must not append or rewrite intent")
 
     def test_forged_phase_or_scope_journal_is_rejected_before_provider_reads(self):
         """Well-typed fields cannot forge the phase protocol or creator-owned scope."""
@@ -232,7 +235,9 @@ class FreshBootstrapControllerTests(unittest.TestCase):
         cases = [
             [self.record("admission", "intent"), self.record("api", "observed",
                 version="00000000-0000-0000-0000-000000000005")],
-            [self.record("admission", "intent"), self.record("create_scope", "intent"),
+            [self.record("admission", "intent"), self.record("admission", "observed"),
+                self.record("old_scope", "intent"), self.record("old_scope", "observed"),
+                self.record("create_scope", "intent"),
                 self.record("create_scope", "observed", scope=forged_scope)],
             [self.record("admission", "intent"), self.record("create_scope", "intent"),
                 self.record("create_scope", "observed", scope=asdict(self.scope)),
