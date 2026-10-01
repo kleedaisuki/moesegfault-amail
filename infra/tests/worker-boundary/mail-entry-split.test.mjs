@@ -19,10 +19,53 @@ class FixtureLog extends Log {
   logWithLevel(_level, message) { this.records.push(String(message)); }
 }
 
+/** Node owns both sides of each independent native service barrier. */
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+/** A missing hook or event completion fails instead of hanging the hosted job. */
+async function bounded(promise, label, milliseconds = 5_000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`synthetic ${label} timed out`)), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+/** Pending is measured only while the independently owned release is held. */
+async function assertPending(promise) {
+  let timer;
+  try {
+    const result = await Promise.race([
+      promise.then(() => "settled"),
+      new Promise(resolve => { timer = setTimeout(() => resolve("held"), 100); }),
+    ]);
+    assert.equal(result, "held", "registered background work must keep scheduled dispatch pending");
+  } finally { clearTimeout(timer); }
+}
+
 /** Fresh local stores and closed egress; no provider or deployed Worker is used. */
 async function fixture(run) {
   const records = [];
   let unexpected = 0;
+  const gates = Object.fromEntries(["registered", "unregistered"].map(mode =>
+    [mode, { arrived: deferred(), release: deferred(), calls: 0 }]));
+  const control = async request => {
+    const mode = request.url.slice("https://synthetic.invalid/background/".length);
+    if (request.method !== "POST" || request.url !== `https://synthetic.invalid/background/${mode}` || !gates[mode]) {
+      unexpected++;
+      throw new Error("unmatched synthetic lifetime control request");
+    }
+    const gate = gates[mode];
+    assert.equal(++gate.calls, 1, "one detached background operation per armed event");
+    gate.arrived.resolve();
+    await gate.release.promise;
+    return new Response(null, { status: 204 });
+  };
   await mkdir(path.join(root, ".temp"), { recursive: true });
   const temp = await mkdtemp(path.join(root, ".temp/mail-entry-split-"));
   // (module (func (export "trap") unreachable)): deliberately independent of Mail.
@@ -55,13 +98,19 @@ export default Observer;
     mf = new Miniflare({ cf: false, log: new FixtureLog(records), workers: [
       { ...common, name: "api", scriptPath: path.join(worker, "entry/api.mjs") },
       { ...common, name: "maintenance", scriptPath: path.join(worker, "entry/maintenance.mjs") },
-      { ...common, name: "observer", scriptPath: path.join(temp, "observer.mjs") },
+      { ...common, name: "observer", scriptPath: path.join(temp, "observer.mjs"),
+        bindings: { ...common.bindings, TEST_WAIT_UNTIL_MODE: "registered" },
+        serviceBindings: { TEST_CONTROL: control } },
+      { ...common, name: "unregistered", scriptPath: path.join(temp, "observer.mjs"),
+        bindings: { ...common.bindings, TEST_WAIT_UNTIL_MODE: "unregistered" },
+        serviceBindings: { TEST_CONTROL: control } },
     ] });
     const { MAIL_DB: db } = await mf.getBindings("maintenance");
     await applyMigrations(db, path.join(worker, "migrations"));
-    await run({ mf, db, records });
+    await run({ mf, db, records, gates });
     assert.equal(unexpected, 0, "only local fixture Routing GET is allowed");
   } finally {
+    for (const gate of Object.values(gates)) gate.release.resolve();
     if (mf) await mf.dispose();
     await rm(temp, { recursive: true, force: true });
   }
@@ -108,14 +157,48 @@ test("maintenance completes real Rust work repeatedly without foreground capabil
 }));
 
 /** Native controller/Env/context identity survives both adapter and SDK layers. */
-test("real shim receives original invocation and retains returned/background completion", async () => fixture(async ({ mf }) => {
+test("real shim receives original invocation and retains returned completion", async () => fixture(async ({ mf }) => {
   const observer = await mf.getWorker("observer");
   for (let turn = 0; turn < 2; turn++) {
     const result = await observer.scheduled({ cron, scheduledTime: new Date(slot + turn * 300_000) });
     assert.equal(result.outcome, "ok");
     const lifecycle = await (await observer.fetch("https://synthetic.invalid/lifecycle")).json();
     assert.deepEqual(lifecycle, { sameEvent: true, sameEnv: true, sameContext: true,
-      returnsOriginal: true, promise: true, backgroundCompleted: true, cron, scheduledTime: slot + turn * 300_000 });
+      returnsOriginal: true, promise: true, cron, scheduledTime: slot + turn * 300_000 });
+  }
+}));
+
+/** Omitting waitUntil must change completion while identical background work is held. */
+test("native SDK context waitUntil owns detached background lifetime with negative control", async () => fixture(async ({ mf, gates }) => {
+  const observer = await mf.getWorker("observer");
+  const unregistered = await mf.getWorker("unregistered");
+  await observer.fetch("https://synthetic.invalid/arm-background");
+  await unregistered.fetch("https://synthetic.invalid/arm-background");
+  const positive = observer.scheduled({ cron, scheduledTime: new Date(slot) });
+  const negative = unregistered.scheduled({ cron, scheduledTime: new Date(slot) });
+  // Keep early event errors observed while acquiring the independent barriers.
+  positive.catch(() => {});
+  negative.catch(() => {});
+  try {
+    await bounded(Promise.all(Object.values(gates).map(gate => gate.arrived.promise)), "background arrival");
+    const omitted = await bounded(negative, "unregistered completion");
+    assert.equal(omitted.outcome, "ok", "unregistered promise cannot extend event lifetime");
+    const negativeStats = await (await unregistered.fetch("https://synthetic.invalid/lifecycle")).json();
+    assert.equal(negativeStats.backgroundRegistered, false);
+    assert.equal(negativeStats.backgroundCompleted, false, "negative control release is still held");
+    await assertPending(positive);
+    const held = await (await observer.fetch("https://synthetic.invalid/lifecycle")).json();
+    assert.equal(held.sameContext, true, "registration occurs on the generated SDK's adapter-provided native context");
+    assert.equal(held.backgroundRegistered, true);
+    assert.equal(held.backgroundCompleted, false, "registered promise outlives returned Rust completion");
+    gates.registered.release.resolve();
+    assert.equal((await bounded(positive, "registered completion")).outcome, "ok");
+    const finished = await (await observer.fetch("https://synthetic.invalid/lifecycle")).json();
+    assert.equal(finished.backgroundCompleted, true, "native dispatch waits for independently released background work");
+    assert.equal(finished.backgroundCancelled, false);
+  } finally {
+    for (const gate of Object.values(gates)) gate.release.resolve();
+    await bounded(Promise.allSettled([positive, negative]), "event cleanup");
   }
 }));
 

@@ -28,7 +28,7 @@ runtime graph, not as an object with copied methods.
 | Closed uploaded application surface | `mail-entry-split.test.mjs` loads both actual entries as separate native Workers; observer imports their ESM namespaces and checks only default export, exact own prototype methods, direct platform base. Maintenance cannot inherit generated app fetch/RPC. Native attempted HTTP cannot return a business response; API scheduled invocation cannot succeed. |
 | Actual shared build artifact | Both source adapters import the same generated alias; module-mode alias must resolve to `../index.js`; the single `index_bg.wasm` byte digest remains identical. This is shared input evidence, not provider-upload digest evidence. |
 | Initialization and lifetime | Real Rust cleanup finishes on eight successive scheduled slots with D1/R2 and only reviewed background capability names, without OIDC/ingress/send/Mail-domain bindings. |
-| Event/Env/context preservation | Local observer forwards the original generated scheduled function and records exact controller, Env and context identity, cron/time and unchanged returned Promise identity. A registered native `ctx.waitUntil` sentinel must complete before scheduled dispatch returns. |
+| Event/Env/context preservation | Local observer forwards the original generated scheduled function and records exact controller, Env and context identity, cron/time and unchanged returned Promise identity. Independent Node-owned service barriers keep fixture background work pending after Rust completion; registered work must hold native dispatch, while an otherwise identical unregistered negative control must not. |
 | SDK critical reset branch | A local Wasm module executes `unreachable` inside a temporary synchronous handler-method substitution on the **actual generated SDK prototype**. SDK Proxy must record the critical error; restoration precedes a subsequent actual Rust event. Exactly one SDK reinitialization log and completed post-reset D1 cleanup are required. |
 | Eight rotations and complete-item semantics | Existing liveness fixture now subclasses the actual maintenance adapter and retains all eight/delayed/duplicate/missed-slot phase-order, item admission and complete-publication assertions. |
 | Statement accounting and deadlines | Existing native counter, Routing, R2, embedding and final-diagnostics observers route through maintenance; assertions/budgets/deadline logic are not loosened or copied into a new implementation. |
@@ -54,8 +54,11 @@ or a separately built test crate, preserve the actual generator and distinguish
 its global-error recovery path. Never describe this synthetic Wasm trap as an
 observed Mail business panic, and do not add production panic hooks to pass it.
 
-The waitUntil sentinel is fixture-owned registered background work attached to
-the actual scheduled Promise and native context; it does not claim Mail's
+The waitUntil sentinel is fixture-owned background work launched after the
+actual scheduled Promise completes, then held behind an independent service
+barrier. Registered and unregistered controls differ only in native context
+registration; their release barriers are always discharged during cleanup.
+This does not claim Mail's
 scheduled business function currently creates its own background tasks. The
 API's genuine foreground and trace `ctx.waitUntil` contract continues to run in
 its existing boundary/embedding/race paths through the API adapter. Production
@@ -88,3 +91,20 @@ Before commit: static `node --check` on every changed/new `.mjs` and
 provider access, credentials, push, PR or deploy. Hosted outcomes, provider
 surface/privacy pins, natural adaptive population inclusion, resource admission
 and public-send gates remain **unverified/unchanged** until separately evidenced.
+
+## Corrected lifetime discriminator after independent review
+
+Independent review `fb7b6bb` found candidate `c4439f3` unsuitable for complete
+lifecycle acceptance: its marker resolved from the same returned Promise and
+could pass without `waitUntil`. The corrective fixture uses separately owned,
+bounded arrival/release barriers and a negative control that omits registration.
+While both background operations remain blocked, native unregistered dispatch
+must finish and native registered dispatch must remain pending. Only releasing
+the positive barrier may complete its background marker and dispatch. Failure
+cleanup releases both barriers and awaits bounded event settlement.
+
+Root reviewed the pending correction after the interrupted task was resumed.
+Static Node parsing and whitespace checks are the only local verification;
+actual lifetime/cancellation behavior still requires the integrated hosted
+workerd build. The original reviewer limitation on asynchronous Rust panic
+recovery is unchanged.

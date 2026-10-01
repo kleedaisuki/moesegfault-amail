@@ -8,7 +8,7 @@ import * as MaintenanceModule from "../../../crates/mail-worker/entry/maintenanc
 import BuiltMail from "../../../crates/mail-worker/build/worker/shim.mjs";
 
 let trap, armed = false, traps = 0;
-let lifecycle = null;
+let lifecycle = null, backgroundArmed = false;
 /** Supply a native Wasm unreachable trap from the generated local fixture module. */
 export function setTrap(value) { trap = value; }
 
@@ -27,6 +27,10 @@ export default class MailEntrySplitObserver extends WorkerEntrypoint {
   fetch(request) {
     if (request.url === "https://synthetic.invalid/arm-trap") {
       armed = true;
+      return new Response(null, { status: 204 });
+    }
+    if (request.url === "https://synthetic.invalid/arm-background") {
+      backgroundArmed = true;
       return new Response(null, { status: 204 });
     }
     if (request.url === "https://synthetic.invalid/lifecycle") return Response.json(lifecycle);
@@ -64,8 +68,11 @@ export default class MailEntrySplitObserver extends WorkerEntrypoint {
     const original = Object.getOwnPropertyDescriptor(prototype, "scheduled");
     const expectedContext = this.ctx, expectedEnv = this.env;
     let originalResult;
+    const observeBackground = backgroundArmed;
+    backgroundArmed = false;
     lifecycle = { sameEvent: false, sameEnv: false, sameContext: false,
-      returnsOriginal: false, promise: false, backgroundCompleted: false, cron: null, scheduledTime: null };
+      returnsOriginal: false, promise: false, cron: null, scheduledTime: null };
+    const invocation = lifecycle;
     Object.defineProperty(prototype, "scheduled", { ...original, value: function(arg) {
       lifecycle.sameEvent = arg === event;
       lifecycle.cron = arg.cron;
@@ -73,14 +80,30 @@ export default class MailEntrySplitObserver extends WorkerEntrypoint {
       lifecycle.sameEnv = this.env === expectedEnv;
       lifecycle.sameContext = this.ctx === expectedContext;
       originalResult = original.value.call(this, arg);
+      if (observeBackground) {
+        const mode = expectedEnv.TEST_WAIT_UNTIL_MODE;
+        if (!["registered", "unregistered"].includes(mode)) throw new Error("unknown fixture lifetime mode");
+        invocation.backgroundRegistered = mode === "registered";
+        invocation.backgroundCompleted = false;
+        invocation.backgroundCancelled = false;
+        // Unlike the returned Rust Promise, this remains pending behind an
+        // independent Node-owned service barrier after Rust has completed.
+        const background = originalResult.then(async () => {
+          const response = await expectedEnv.TEST_CONTROL.fetch(`https://synthetic.invalid/background/${mode}`, { method: "POST" });
+          if (!response.ok) throw new Error("synthetic lifetime barrier failed");
+          invocation.backgroundCompleted = true;
+        });
+        // Negative control intentionally omits registration but retains exactly
+        // the same promise. Observe cancellation without an unhandled rejection.
+        background.catch(() => { invocation.backgroundCancelled = true; });
+        if (mode === "registered") this.ctx.waitUntil(background);
+      }
       return originalResult;
     } });
     try {
       const result = new MaintenanceModule.default(this.ctx, this.env).scheduled(event);
       lifecycle.returnsOriginal = result === originalResult;
       lifecycle.promise = typeof result?.then === "function";
-      // Native scheduled completion includes this registered background promise.
-      this.ctx.waitUntil(result.then(() => { lifecycle.backgroundCompleted = true; }));
       return result;
     } finally {
       Object.defineProperty(prototype, "scheduled", original);
