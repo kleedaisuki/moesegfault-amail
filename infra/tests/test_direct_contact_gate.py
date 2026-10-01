@@ -274,10 +274,10 @@ class DirectContactProviderTest(unittest.TestCase):
         self.assertEqual(row, policy())
 
     def test_discovery_rejects_ambiguous_or_nonstandard_inventory(self):
-        """Never select the first duplicate, infer wildcard scope, or repair routes."""
+        """Never select duplicates, accept malformed reserved roles, or repair routes."""
         mutations = ("missing_destination", "duplicate_destination", "duplicate_destination_id",
             "unverified", "bad_id", "missing_role", "duplicate_role", "duplicate_rule_id",
-            "wrong_domain", "disabled", "wrong_action", "wrong_source", "wrong_type", "mixed", "wildcard", "catchall")
+            "wrong_domain", "disabled", "wrong_action", "wrong_source", "wrong_type", "mixed")
         for mutation in mutations:
             client = FakeRouting()
             if mutation == "missing_destination":
@@ -306,15 +306,23 @@ class DirectContactProviderTest(unittest.TestCase):
                 client.rules[0]["source"] = "dashboard"
             elif mutation == "wrong_type":
                 client.rules[0]["matchers"][0]["type"] = "all"
-            elif mutation == "mixed":
-                client.rules[0]["matchers"].append({"type": "all"})
             else:
-                client.rules.append({"id": "extra", "enabled": True,
-                    "matchers": [{"type": "all"}] if mutation == "catchall" else
-                        [{"type": "literal", "field": "to", "value": "*@moesegfault.dev"}],
-                    "actions": [{"type": "forward", "value": [DESTINATION]}]})
+                client.rules[0]["matchers"].append({"type": "all"})
             with self.subTest(mutation=mutation), self.assertRaises(Exception):
                 adoption.discover_pins(client, "a" * 32, policy(), DESTINATION)
+
+    def test_discovery_accepts_unrelated_rules_under_existing_health_contract(self):
+        """Discovery and pinned health agree without a global matcher-shape gate."""
+        for matchers in ([], [{"type": "all"}],
+            [{"type": "literal", "field": "to", "value": "*@moesegfault.dev"}]):
+            client = FakeRouting()
+            client.rules.append({"id": "extra", "enabled": True, "matchers": matchers,
+                "actions": [{"type": "worker", "value": ["unrelated_worker"]}]})
+            with self.subTest(matchers=matchers):
+                row = policy()
+                adoption.discover_pins(client, "a" * 32, row, DESTINATION)
+                self.assertEqual(row, policy())
+                self.assertEqual(health.snapshot(client, "a" * 32, row, DESTINATION)[0], "destination")
 
     def test_discovery_rejects_pinned_readback_drift_and_truncated_inventory(self):
         """No exact stable inventory means no policy write is eligible."""
