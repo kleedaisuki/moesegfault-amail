@@ -116,7 +116,7 @@ on:
         type: string
 
       fresh_bootstrap_run:
-        description: Successful original first-attempt held production bootstrap run ID; online completion only
+        description: Protected bootstrap run ID; failed owned checkpoint for resume, successful paused receipt for online
         required: false
         type: string
 

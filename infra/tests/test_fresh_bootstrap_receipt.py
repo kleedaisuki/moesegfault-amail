@@ -74,6 +74,23 @@ class FreshReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fresh_receipt_scope_mismatch"):
             record.validate(changed)
 
+    def test_retained_sink_has_its_actual_source_and_exact_observed_version(self):
+        """A known completed sink is not attributed to the new maintenance/API deployment."""
+        value = fixture()
+        creation = deepcopy(value["source_epoch"])
+        value.update(schema=record.RESUMED_SCHEMA, creation_epoch=creation,
+                     source_epoch={**creation, "source_sha": "d" * 40, "run_id": "789", "artifact_id": 44},
+                     retained_sink={"source_epoch": {**creation, "source_sha": "e" * 40, "run_id": "456", "artifact_id": 43},
+                                    "version": VERSION})
+        self.assertEqual(record.validate(value), value)
+        for retained in ({"source_epoch": creation, "version": VERSION},
+                         {"source_epoch": value["source_epoch"], "version": VERSION},
+                         {"source_epoch": value["retained_sink"]["source_epoch"], "version": "00000000-0000-0000-0000-000000000099"}):
+            with self.subTest(retained=retained), self.assertRaises(ValueError):
+                record.validate({**value, "retained_sink": retained})
+        with self.assertRaises(ValueError):
+            record.validate({**fixture(), "retained_sink": value["retained_sink"]})
+
     def test_closed_first_paused_schema_rejects_every_missing_or_extra_field(self):
         """Stored claims are fixed, including adoption-required and old-work unknown."""
         value = fixture()

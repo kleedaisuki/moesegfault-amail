@@ -317,6 +317,27 @@ class FreshTransportTests(unittest.TestCase):
         self.assertEqual(request.full_url, fresh.API + "/" + self.path)
         self.assertNotIn("private-dummy", self.output.getvalue())
 
+    def test_queue_optional_errors_do_not_weaken_explicit_success_or_other_providers(self):
+        """Reproduce the successful Queue shape while preserving negative envelope guards."""
+        queue = f"accounts/{self.provider.account}/queues"
+        for errors in ("missing", None, []):
+            value = {"success": True, "result": []}
+            if errors != "missing":
+                value["errors"] = errors
+            self.response(json.dumps(value).encode())
+            self.assertEqual(self.provider.envelope("GET", queue), envelope([]))
+        invalid = ({"success": True, "result": [], "errors": [{"code": 1234, "message": "private"}]},
+                   {"success": False, "result": []}, {"success": True},
+                   {"success": True, "result": [], "errors": {}})
+        for value in invalid:
+            self.response(json.dumps(value).encode())
+            with self.assertRaisesRegex(fresh.FreshError, "fresh_provider_envelope_unverified"):
+                self.provider.envelope("GET", queue)
+        self.response(b'{"success":true,"result":[]}')
+        with self.assertRaisesRegex(fresh.FreshError, "fresh_provider_envelope_unverified"):
+            self.provider.envelope("GET", self.path)
+        self.assertNotIn("private", self.output.getvalue())
+
     def test_off_authority_methods_and_arbitrary_creates_refused(self):
         """No generic resource-name, account, delete, redirect or SQL mutation exists."""
         for method, path, body in (("GET", "https://evil.test/", None),

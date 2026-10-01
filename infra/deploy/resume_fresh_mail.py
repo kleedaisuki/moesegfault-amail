@@ -1,6 +1,6 @@
 """Complete the actually owned, still-empty first Mail scope without recreating it.
 
-Only a protected bootstrap that stopped at migration is supported. Immutable
+Only the actual migration-stop and observed-sink checkpoints are supported. Immutable
 successful create/readback records establish storage ownership; current positive
 schema and whole-bucket reads determine remaining migration work. No old run is
 relabeled successful and no resource creation or ambiguous deploy replay exists.
@@ -13,7 +13,7 @@ from pathlib import Path
 import sqlite3
 
 from fresh_bootstrap_contract import Epoch, Scope
-from fresh_bootstrap_recovery import load
+from fresh_bootstrap_recovery import load, load_sink_checkpoint
 from fresh_bootstrap_scope import reconcile_scope, render_configs
 from fresh_bootstrap_receipt import persist
 from fresh_bootstrap_readback import held_empty, verify, verify_sink_reader
@@ -93,44 +93,68 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
     recovery.mkdir(parents=True, exist_ok=True)
     journal = recovery / "resume.jsonl"
     phase = "ownership"
+    creation_run = prior_run
     with journal.open("x", encoding="utf-8") as output:
         def record(state: str, **facts) -> None:
             """Flush closed stage facts before every potential write; no tool output."""
             value = {"schema": "mail-fresh-resume/v1", "phase": phase, "state": state,
-                     "deployment_epoch": asdict(deployment_epoch), "creation_run": prior_run, **facts}
+                     "deployment_epoch": asdict(deployment_epoch), "creation_run": creation_run, **facts}
             output.write(json.dumps(value, sort_keys=True, allow_nan=False) + "\n")
             output.flush()
             os.fsync(output.fileno())
 
         try:
+            checkpoint = load_sink_checkpoint(prior_run, folder / "checkpoint")
+            if checkpoint is not None:
+                creation_run, sink_epoch, sink_version, queue, dlq = checkpoint
             record("intent")
-            scope = owned_scope(provider, prior_run, folder)
+            scope = owned_scope(provider, creation_run, folder)
+            if checkpoint is not None:
+                observed = json.loads((folder / "checkpoint/resume.jsonl").read_text(encoding="utf-8").splitlines()[1])
+                if observed["scope"] != asdict(scope) or observed["creation_epoch"] != asdict(scope.epoch):
+                    raise ValueError("fresh_resume_checkpoint_scope_mismatch")
             old_scope = bootstrap.inspect_old_scope(provider, s3)
-            if old_scope["sink_present"]:
+            if old_scope["sink_present"] != (checkpoint is not None):
                 raise ValueError("fresh_resume_prior_deployment_requires_reconciliation")
             resources = ProductionResources(scope.database, scope.bucket, deployment_epoch.source_sha)
             reader = old.Provider(provider.account, provider.token, resources)
             if old.r2_count(s3, scope.bucket) != 0:
                 raise ValueError("fresh_resume_bucket_population_unverified")
             prefix = migration_prefix(reader)
+            if checkpoint is not None and prefix != len(expected_schema().migrations):
+                raise ValueError("fresh_resume_completed_migration_required")
             record("observed", creation_epoch=asdict(scope.epoch), scope=asdict(scope), schema_prefix=prefix)
             configs = render_configs(scope, folder / "configs")
             configs["sink"] = bootstrap.sink_config(folder / "configs")
-            phase = "migrate"
-            record("intent")
-            if prefix < len(expected_schema().migrations):
-                bootstrap.migrate_and_hold_new_scope(provider, s3, scope, configs["api"])
-            else:
-                held_empty(provider, f"accounts/{provider.account}", scope)
-            record("observed")
-            phase = "queues"
-            record("intent")
-            queue, dlq = bootstrap.provision_trace_graph(provider)
-            record("observed", queue=queue, dlq=dlq)
             provider.r2_empty = lambda bucket: old.r2_count(s3, bucket) == 0
             provider.forward_snapshot = bootstrap.forward_snapshot
             pins = {}
-            for role in ("sink", "maintenance", "api"):
+            retained = {}
+            roles = ("sink", "maintenance", "api")
+            if checkpoint is None:
+                phase = "migrate"
+                record("intent")
+                if prefix < len(expected_schema().migrations):
+                    bootstrap.migrate_and_hold_new_scope(provider, s3, scope, configs["api"])
+                else:
+                    held_empty(provider, f"accounts/{provider.account}", scope)
+                record("observed")
+                phase = "queues"
+                record("intent")
+                queue, dlq = bootstrap.provision_trace_graph(provider)
+                record("observed", queue=queue, dlq=dlq)
+            else:
+                # These writes already completed in the admitted failed attempt.
+                # Re-observe their exact identities before any remaining deployment.
+                phase = "retained_sink"
+                record("intent")
+                held_empty(provider, f"accounts/{provider.account}", scope)
+                verify_sink_reader(scope, sink_version, queue, dlq, provider)
+                retained = {"source_epoch": asdict(sink_epoch), "version": sink_version}
+                record("observed", **retained, queue=queue, dlq=dlq)
+                pins[bootstrap.SCRIPTS["sink"]] = sink_version
+                roles = ("maintenance", "api")
+            for role in roles:
                 phase = role
                 record("intent")
                 version = bootstrap.submit_once(role, configs[role], scope)
@@ -144,7 +168,9 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
             phase = "receipt"
             record("intent")
             graph = verify(scope, pins, queue, dlq, provider)
-            value = persist(scope, graph, queue, dlq, folder / "receipt.json", deployment_epoch=deployment_epoch)
+            provenance = {"retained_sink": retained} if retained else {}
+            value = persist(scope, graph, queue, dlq, folder / "receipt.json",
+                            deployment_epoch=deployment_epoch, **provenance)
             record("observed")
             return value
         except Exception as error:

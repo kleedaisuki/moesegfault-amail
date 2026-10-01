@@ -56,6 +56,7 @@ class ResumeTests(unittest.TestCase):
             path = Path(folder)
             provider, s3 = Mock(account="a" * 32), Mock()
             graph = {"state": "paused"}
+            stack.enter_context(patch.object(resume, "load_sink_checkpoint", return_value=None))
             stack.enter_context(patch.object(resume, "owned_scope", return_value=scope))
             stack.enter_context(patch.object(resume.bootstrap, "inspect_old_scope", return_value={"sink_present": False}))
             stack.enter_context(patch.object(resume.old, "Provider"))
@@ -79,6 +80,64 @@ class ResumeTests(unittest.TestCase):
             records = [json.loads(line) for line in (path / "recovery/resume.jsonl").read_text().splitlines()]
             self.assertEqual(records[1]["creation_epoch"], asdict(creation))
             self.assertEqual(records[1]["deployment_epoch"], asdict(current))
+
+    def test_observed_sink_checkpoint_preserves_completed_writes_and_source(self):
+        """The actual sink-readback stop continues only maintenance/API after exact reads."""
+        creation = Epoch("a" * 40, "123", 42, "b" * 64, "1.98.1")
+        sink = Epoch("c" * 40, "456", 43, "d" * 64, "1.98.1")
+        current = Epoch("e" * 40, "789", 44, "f" * 64, "1.98.1")
+        version = "c56c8062-ef7f-48ed-b91f-91394b03cd69"
+        scope = Scope(creation, "d9be9bb4-5a73-4223-85d6-b04763e6f03b",
+                      "2026-10-01T19:20:25Z", "2026-10-01T19:20:26Z")
+        temp = ROOT / ".temp"
+        temp.mkdir(exist_ok=True)
+        for failure in (None, "partial_schema", "changed_sink"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(
+                    dir=temp, prefix="resume-sink-") as folder, ExitStack() as stack:
+                path = Path(folder)
+                (path / "checkpoint").mkdir()
+                (path / "checkpoint/resume.jsonl").write_text(
+                    "{}\n" + json.dumps({"scope": asdict(scope), "creation_epoch": asdict(creation)}), encoding="utf-8")
+                provider, s3 = Mock(account="a" * 32), Mock()
+                stack.enter_context(patch.object(resume, "load_sink_checkpoint",
+                                                return_value=("123", sink, version, "3" * 32, "4" * 32)))
+                owned = stack.enter_context(patch.object(resume, "owned_scope", return_value=scope))
+                stack.enter_context(patch.object(resume.bootstrap, "inspect_old_scope", return_value={"sink_present": True}))
+                stack.enter_context(patch.object(resume.old, "Provider"))
+                stack.enter_context(patch.object(resume.old, "r2_count", return_value=0))
+                prefix = len(resume.expected_schema().migrations) - (failure == "partial_schema")
+                stack.enter_context(patch.object(resume, "migration_prefix", return_value=prefix))
+                stack.enter_context(patch.object(resume, "render_configs", return_value={"api": path / "api", "maintenance": path / "maintenance"}))
+                stack.enter_context(patch.object(resume.bootstrap, "sink_config", return_value=path / "sink"))
+                migrate = stack.enter_context(patch.object(resume.bootstrap, "migrate_and_hold_new_scope"))
+                queues = stack.enter_context(patch.object(resume.bootstrap, "provision_trace_graph"))
+                submits = stack.enter_context(patch.object(resume.bootstrap, "submit_once", return_value="00000000-0000-0000-0000-000000000005"))
+                stack.enter_context(patch.object(resume, "held_empty"))
+                read = stack.enter_context(patch.object(resume, "verify_sink_reader"))
+                graph = stack.enter_context(patch.object(resume, "verify", return_value={"state": "paused"}))
+                persist = stack.enter_context(patch.object(resume, "persist", return_value={"state": "paused"}))
+                if failure == "changed_sink":
+                    read.side_effect = ValueError("fresh_serving_unverified")
+                if failure:
+                    with self.assertRaises(ValueError):
+                        resume.run(provider, s3, current, "456", path)
+                    submits.assert_not_called()
+                    persist.assert_not_called()
+                else:
+                    self.assertEqual(resume.run(provider, s3, current, "456", path), {"state": "paused"})
+                    read.assert_called_once_with(scope, version, "3" * 32, "4" * 32, provider)
+                    self.assertEqual([call.args[0] for call in submits.call_args_list], ["maintenance", "api"])
+                    self.assertEqual(graph.call_args.args[1]["amail-trace-sink"], version)
+                    self.assertEqual(persist.call_args.kwargs,
+                                     {"deployment_epoch": current,
+                                      "retained_sink": {"source_epoch": asdict(sink), "version": version}})
+                    records = [json.loads(line) for line in (path / "recovery/resume.jsonl").read_text().splitlines()]
+                    self.assertTrue(all(row["creation_run"] == "123" for row in records))
+                    self.assertFalse(any(row["phase"] in ("migrate", "queues", "sink") for row in records))
+                owned.assert_called_once_with(provider, "123", path)
+                migrate.assert_not_called()
+                queues.assert_not_called()
+                provider.post.assert_not_called()
 
     def test_incomplete_or_changed_owned_creation_does_not_bind_writer_scope(self):
         """A create intent or failed exact GET cannot become owned storage authority."""
