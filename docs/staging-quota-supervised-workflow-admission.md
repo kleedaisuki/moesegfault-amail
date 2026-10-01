@@ -101,3 +101,17 @@ legacy default and lack of automatic retry/fallback. Hosted existing composition
 and real-cipher checks remain required; no hosted result or live success is
 claimed by this document. Source wiring does not enable public Mail sending,
 prove autonomous operations, release v0.1.0 or bypass privacy admission.
+
+## Nonsecret zone coordinate and outstanding key admission
+
+The quota workflow pins the same public Cloudflare zone ID already used by
+`ci.yml` and `staging-worker-r2-capability.yml`. A zone ID is an identifier, not
+an authentication credential; it does not require a repository or Environment
+Secret, and the workflow does not print it as a secret. Account/token/native
+credentials and the versioned recovery key remain protected capabilities.
+
+The read-only secret-name audit preceding this correction found
+`AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1` still absent. This change does not create or
+set it, relax generation checks, or admit any live mode. The named key and all
+other external supervision/privacy prerequisites must be resolved separately
+before a real preparation or recovery dispatch.

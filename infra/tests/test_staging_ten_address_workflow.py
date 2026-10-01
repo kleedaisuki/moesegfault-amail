@@ -145,6 +145,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("Test-Path", stopped)
         self.assertIn("ten_address_escrow_prepare_only_rehearsal_verified", stopped)
 
+    def test_public_zone_coordinate_matches_existing_hosted_workflows(self):
+        """A zone identifier is a fixed coordinate, not an absent private capability."""
+        zone = "6edff81c6ed02f412e70868076411a5e"
+        self.assertEqual(self.job.count(f"CLOUDFLARE_ZONE_ID: {zone}"), 3)
+        self.assertNotIn("secrets.CLOUDFLARE_ZONE_ID", self.source)
+        for workflow in ("ci.yml", "staging-worker-r2-capability.yml"):
+            source = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8-sig")
+            values = re.findall(r"(?m)^\s+CLOUDFLARE_ZONE_ID: ([a-f0-9]{32})$", source)
+            self.assertTrue(values)
+            self.assertEqual(set(values), {zone})
+        self.assertEqual(self.job.count("secrets.AMAIL_TEN_ADDRESS_RECOVERY_KEY_V1"), 3)
+
     def test_key_creation_is_source_only_non_overwriting_private_stdin(self):
         """One project-scoped versioned key is generated only by an explicit administrator."""
         helper = (ROOT / "infra/deploy/create_ten_address_recovery_key.ps1").read_text(encoding="utf-8-sig")
