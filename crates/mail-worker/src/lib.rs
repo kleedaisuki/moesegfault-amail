@@ -297,134 +297,224 @@ async fn clean_orphans(env: &Env) -> Result<()> {
 /// prioritize fresh user deletions without permanently starving other states.
 const ADDRESS_RECONCILE_SQL: &str = "SELECT address,state,cf_rule_id,created_at FROM addresses WHERE (state IN ('provisioning','deleting') OR needs_reconcile=1) AND next_reconcile_at<=?1 ORDER BY next_reconcile_at ASC,created_at ASC,address ASC LIMIT 30";
 
-/// Reconcile non-atomic D1/Email Routing transitions, including orphan provider rules. / 协调非原子的 D1/邮件路由状态，包括供应商孤儿规则。
-async fn reconcile_addresses(env: &Env) -> Result<()> {
-    #[derive(Deserialize)]
-    struct Row {
-        address: String,
-        state: String,
-        cf_rule_id: Option<String>,
-        created_at: i64,
-    }
-    let database = env.d1("MAIL_DB")?;
-    let scan_at = now();
+/// One permanently allocated address lifetime; repair never changes its owner.
+#[derive(Deserialize)]
+struct AddressRepairRow {
+    address: String,
+    state: String,
+    cf_rule_id: Option<String>,
+    created_at: i64,
+}
+
+/// Rotate claims before external work so failures cannot pin the oldest batch.
+async fn claim_address_repairs(
+    database: &D1Database,
+    scan_at: i64,
+    limit: usize,
+) -> Result<Vec<AddressRepairRow>> {
     let rows = database
         .prepare(ADDRESS_RECONCILE_SQL)
         .bind(&[bind_num(scan_at)])?
         .all()
         .await?
-        .results::<Row>()?;
-    if rows.len() == 30 {
-        trace::diagnostic(&env, trace::DiagnosticCode::AddressReconciliationBatchFull).await;
-    }
-    let mut reported_non_enabled = false;
-    for row in rows {
-        // Claim the next scan slot before provider I/O. Even a failed provider
-        // call must not pin the oldest row at the head of every bounded batch.
-        let scheduled = database.prepare("UPDATE addresses SET next_reconcile_at=?1 WHERE address=?2 AND state=?3 AND next_reconcile_at<=?4 AND (state IN ('provisioning','deleting') OR needs_reconcile=1)")
+        .results::<AddressRepairRow>()?;
+    let mut claimed = Vec::new();
+    for row in rows.into_iter().take(limit) {
+        let result = database.prepare("UPDATE addresses SET next_reconcile_at=?1 WHERE address=?2 AND state=?3 AND next_reconcile_at<=?4 AND (state IN ('provisioning','deleting') OR needs_reconcile=1)")
             .bind(&[bind_num(scan_at + 5 * 60_000),bind_str(&row.address),bind_str(&row.state),bind_num(scan_at)])?.run().await?;
-        if scheduled.meta()?.and_then(|meta| meta.changes) != Some(1) {
+        if result.meta()?.and_then(|meta| meta.changes) == Some(1) {
+            claimed.push(row);
+        }
+    }
+    Ok(claimed)
+}
+
+/// Provider-positive discovery is bounded by actual rules, never historical rows.
+/// Conditional rearm preserves the due time of already flagged retired addresses.
+async fn discover_retired_routes(
+    env: &Env,
+    inventory: &platform::CompleteRuleInventory,
+    ingress: &str,
+) -> Result<bool> {
+    #[derive(Deserialize)]
+    struct Lifetime {
+        address: String,
+        state: String,
+    }
+    let domain = env.var("MAIL_DOMAIN")?.to_string();
+    let candidates = inventory.retired_candidates(&domain);
+    let database = env.d1("MAIL_DB")?;
+    let mut anomaly = false;
+    for keys in candidates.chunks(50) {
+        let placeholders = (1..=keys.len())
+            .map(|n| format!("?{n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let query =
+            format!("SELECT address,state FROM addresses WHERE address IN ({placeholders})");
+        let values = keys.iter().map(|key| bind_str(key)).collect::<Vec<_>>();
+        let rows = database
+            .prepare(query)
+            .bind(&values)?
+            .all()
+            .await?
+            .results::<Lifetime>()?;
+        anomaly |= rows.len() != keys.len();
+        let retired = rows
+            .into_iter()
+            .filter(|row| {
+                let owned = inventory.for_address(&row.address, ingress, None).is_ok();
+                anomaly |= !owned;
+                row.state == "retired" && owned
+            })
+            .map(|row| row.address)
+            .collect::<Vec<_>>();
+        if retired.is_empty() {
             continue;
         }
-        let rules = platform::rules_for_address_typed(env, &row.address)
+        let placeholders = (1..=retired.len())
+            .map(|n| format!("?{n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let query = format!("UPDATE addresses SET needs_reconcile=1,next_reconcile_at=-1 WHERE state='retired' AND needs_reconcile=0 AND address IN ({placeholders})");
+        let values = retired.iter().map(|key| bind_str(key)).collect::<Vec<_>>();
+        database.prepare(query).bind(&values)?.run().await?;
+    }
+    Ok(anomaly)
+}
+
+/// Audit actual provider state every tick, including when no journal row is due.
+/// The twenty-call allowance includes every list page, current GET and DELETE.
+async fn reconcile_addresses(env: &Env) -> Result<()> {
+    let database = env.d1("MAIL_DB")?;
+    let scan_at = now();
+    let mut rows = claim_address_repairs(&database, scan_at, 30).await?;
+    let mut budget = platform::RoutingBudget::new();
+    let ingress = env.var("EMAIL_INGRESS_WORKER_NAME")?.to_string();
+    let inventory = platform::rule_inventory(env, &mut budget)
+        .await
+        .map_err(|_| worker::Error::RustError("routing_list_failed".into()))?;
+    let mut failed = discover_retired_routes(env, &inventory, &ingress).await?;
+    if rows.len() < 30 {
+        rows.extend(claim_address_repairs(&database, scan_at, 30 - rows.len()).await?);
+    }
+    if rows.len() == 30 {
+        trace::diagnostic(env, trace::DiagnosticCode::AddressReconciliationBatchFull).await;
+    }
+    for row in rows {
+        // One conflict or exhausted budget must not suppress later state-only
+        // repairs. Every selected row already owns a fair future retry slot.
+        if repair_address(env, &row, &inventory, &ingress, &mut budget)
             .await
-            .map_err(|_| worker::Error::RustError("routing_list_failed".into()))?;
-        let enabled_id = rules.first_enabled().map(str::to_owned);
-        let saved_enabled = row
-            .cf_rule_id
-            .as_deref()
-            .is_some_and(|id| rules.has_enabled(id));
-        let mut ids = rules.into_ids();
-        if row.state == "active" {
-            // A listed but disabled committed rule is not deliverable. Keep
-            // the repair marker and every route for explicit state-aware repair.
-            let Some(saved) = row.cf_rule_id.as_deref() else {
-                continue;
-            };
-            if !saved_enabled {
-                if !reported_non_enabled && ids.iter().any(|id| id == saved) {
-                    trace::diagnostic(&env, trace::DiagnosticCode::NonEnabledCommittedRoutingRule)
-                        .await;
-                    reported_non_enabled = true;
-                }
-                continue;
-            }
-            for extra in ids.iter().filter(|id| id.as_str() != saved) {
-                platform::delete_rule(env, extra).await?;
-            }
-            database.prepare("UPDATE addresses SET needs_reconcile=0 WHERE address=?1 AND state='active' AND cf_rule_id=?2")
-                .bind(&[bind_str(&row.address), bind_str(saved)])?.run().await?;
-            continue;
+            .is_err()
+        {
+            failed = true;
         }
-        if let Some(saved) = row.cf_rule_id.clone() {
-            if !ids.contains(&saved) {
-                ids.push(saved);
+    }
+    if failed {
+        return Err(worker::Error::RustError("routing_repair_incomplete".into()));
+    }
+    Ok(())
+}
+
+/// Execute existing desired-state transitions against strict owned rules only.
+async fn repair_address(
+    env: &Env,
+    row: &AddressRepairRow,
+    inventory: &platform::CompleteRuleInventory,
+    ingress: &str,
+    budget: &mut platform::RoutingBudget,
+) -> Result<()> {
+    let database = env.d1("MAIL_DB")?;
+    let rules = inventory.for_address(&row.address, ingress, row.cf_rule_id.as_deref())?;
+    let enabled_id = rules.first_enabled().map(str::to_owned);
+    let saved_enabled = row
+        .cf_rule_id
+        .as_deref()
+        .is_some_and(|id| rules.has_enabled(id));
+    let ids = rules.into_ids();
+    if row.state == "active" {
+        let Some(saved) = row.cf_rule_id.as_deref() else {
+            return Ok(());
+        };
+        if !saved_enabled {
+            if ids.iter().any(|id| id == saved) {
+                trace::diagnostic(env, trace::DiagnosticCode::NonEnabledCommittedRoutingRule).await;
             }
+            return Ok(());
         }
-        if row.state == "provisioning" {
-            if let Some(first) = enabled_id.as_deref() {
-                if ids.len() > 1 {
-                    // Record duplicate evidence before a racing add can choose
-                    // a different rule from a later, narrower provider view.
-                    database.prepare("UPDATE addresses SET needs_reconcile=1 WHERE address=?1 AND state='provisioning'")
-                        .bind(&[bind_str(&row.address)])?.run().await?;
-                }
-                let result = database.prepare("UPDATE addresses SET state='active',cf_rule_id=?1,needs_reconcile=MAX(needs_reconcile,?2) WHERE address=?3 AND state='provisioning'")
-                    .bind(&[bind_str(first),bind_num((ids.len() > 1) as i64),bind_str(&row.address)])?.run().await?;
-                if result.meta()?.and_then(|meta| meta.changes) == Some(0) && ids.len() > 1 {
-                    // Another actor may have activated a different rule. Mark
-                    // the active row for state-aware pruning, never delete here.
-                    database.prepare("UPDATE addresses SET needs_reconcile=1 WHERE address=?1 AND state='active'")
-                        .bind(&[bind_str(&row.address)])?.run().await?;
-                }
-            } else if ids.is_empty() && row.created_at < now() - 10 * 60_000 {
-                // A disabled or status-unknown exact rule blocks retrying POST:
-                // the provider may still count it and first-match it.
+        for extra in ids.iter().filter(|id| id.as_str() != saved) {
+            platform::delete_owned_rule(env, &row.address, ingress, extra, budget).await?;
+        }
+        database.prepare("UPDATE addresses SET needs_reconcile=0 WHERE address=?1 AND state='active' AND cf_rule_id=?2")
+            .bind(&[bind_str(&row.address), bind_str(saved)])?.run().await?;
+        return Ok(());
+    }
+    if row.state == "provisioning" {
+        if let Some(first) = enabled_id.as_deref() {
+            if ids.len() > 1 {
+                database.prepare("UPDATE addresses SET needs_reconcile=1 WHERE address=?1 AND state='provisioning'")
+                    .bind(&[bind_str(&row.address)])?.run().await?;
+            }
+            let result = database.prepare("UPDATE addresses SET state='active',cf_rule_id=?1,needs_reconcile=MAX(needs_reconcile,?2) WHERE address=?3 AND state='provisioning'")
+                .bind(&[bind_str(first),bind_num((ids.len() > 1) as i64),bind_str(&row.address)])?.run().await?;
+            if result.meta()?.and_then(|meta| meta.changes) == Some(0) && ids.len() > 1 {
+                database.prepare("UPDATE addresses SET needs_reconcile=1 WHERE address=?1 AND state='active'")
+                    .bind(&[bind_str(&row.address)])?.run().await?;
+            }
+        } else if ids.is_empty() && row.created_at < now() - 10 * 60_000 {
+            // Never promote an early shared snapshot into a fresh absence proof.
+            // Reserve the full list cap first; inability to pay leaves the lease.
+            if !budget.can_inventory() {
+                return Err(worker::Error::RustError("routing_budget_exhausted".into()));
+            }
+            let fresh = platform::rule_inventory(env, budget)
+                .await
+                .map_err(|_| worker::Error::RustError("routing_list_failed".into()))?;
+            if fresh
+                .for_address(&row.address, ingress, row.cf_rule_id.as_deref())?
+                .is_empty()
+            {
                 database.prepare("UPDATE addresses SET state='pending',needs_reconcile=0 WHERE address=?1 AND state='provisioning'")
                     .bind(&[bind_str(&row.address)])?.run().await?;
-            } else if !ids.is_empty() && !reported_non_enabled {
-                trace::diagnostic(
-                    &env,
-                    trace::DiagnosticCode::NonEnabledProvisioningRoutingRule,
-                )
-                .await;
-                reported_non_enabled = true;
             }
-            continue;
+        } else if !ids.is_empty() {
+            trace::diagnostic(
+                env,
+                trace::DiagnosticCode::NonEnabledProvisioningRoutingRule,
+            )
+            .await;
         }
-        if row.state == "pending" {
-            // A stale duplicate marker must never send pending through the
-            // deletion path. If a route exists, restore the repair journal.
-            let query = if ids.is_empty() {
-                "UPDATE addresses SET needs_reconcile=0 WHERE address=?1 AND state='pending'"
-            } else {
-                "UPDATE addresses SET state='provisioning',next_reconcile_at=0 WHERE address=?1 AND state='pending'"
-            };
-            database
-                .prepare(query)
-                .bind(&[bind_str(&row.address)])?
-                .run()
-                .await?;
-            continue;
-        }
-        if !matches!(row.state.as_str(), "deleting" | "retired") {
-            continue;
-        }
-        for id in ids {
-            platform::delete_rule(env, &id).await?;
-        }
-        if row.state == "deleting" {
-            database.prepare("UPDATE addresses SET state='retired',cf_rule_id=NULL,needs_reconcile=1,next_reconcile_at=-1 WHERE address=?1 AND state='deleting'")
-                .bind(&[bind_str(&row.address)])?.run().await?;
+        return Ok(());
+    }
+    if row.state == "pending" {
+        let query = if ids.is_empty() {
+            "UPDATE addresses SET needs_reconcile=0 WHERE address=?1 AND state='pending'"
         } else {
-            database
-                .prepare(
-                    "UPDATE addresses SET needs_reconcile=0 WHERE address=?1 AND state='retired'",
-                )
-                .bind(&[bind_str(&row.address)])?
-                .run()
-                .await?;
-        }
+            "UPDATE addresses SET state='provisioning',next_reconcile_at=0 WHERE address=?1 AND state='pending'"
+        };
+        database
+            .prepare(query)
+            .bind(&[bind_str(&row.address)])?
+            .run()
+            .await?;
+        return Ok(());
+    }
+    if !matches!(row.state.as_str(), "deleting" | "retired") {
+        return Ok(());
+    }
+    for id in ids {
+        platform::delete_owned_rule(env, &row.address, ingress, &id, budget).await?;
+    }
+    if row.state == "deleting" {
+        database.prepare("UPDATE addresses SET state='retired',cf_rule_id=NULL,needs_reconcile=1,next_reconcile_at=-1 WHERE address=?1 AND state='deleting'")
+            .bind(&[bind_str(&row.address)])?.run().await?;
+    } else {
+        database
+            .prepare("UPDATE addresses SET needs_reconcile=0 WHERE address=?1 AND state='retired'")
+            .bind(&[bind_str(&row.address)])?
+            .run()
+            .await?;
     }
     Ok(())
 }
@@ -1567,14 +1657,25 @@ async fn delete_address(
         .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.first::<AddressRow>(None).await?.ok_or_else(AppError::not_found)?;
     // A provisioning lease may still be creating a rule. Leave deleting until its owner or cron reconciles.
     if current.cf_rule_id.is_some() || row.state != "provisioning" {
-        let mut rules = platform::rules_for_address(env, &address).await?;
-        if let Some(saved) = current.cf_rule_id {
-            if !rules.contains(&saved) {
-                rules.push(saved);
+        let mut budget = platform::RoutingBudget::new();
+        let ingress = env.var("EMAIL_INGRESS_WORKER_NAME")?.to_string();
+        let inventory = platform::rule_inventory(env, &mut budget)
+            .await
+            .map_err(|_| worker::Error::RustError("routing_list_failed".into()))?;
+        let rules = inventory.for_address(&address, &ingress, current.cf_rule_id.as_deref())?;
+        let mut complete = true;
+        for rule_id in rules.into_ids() {
+            if !budget.can_delete() {
+                complete = false;
+                break;
             }
+            platform::delete_owned_rule(env, &address, &ingress, &rule_id, &mut budget).await?;
         }
-        for rule_id in rules {
-            platform::delete_rule(env, &rule_id).await?;
+        if !complete {
+            return Ok(Response::from_json(
+                &serde_json::json!({"state":"deleting","request_id":request_id}),
+            )?
+            .with_status(202));
         }
         database.prepare("UPDATE addresses SET state='retired',cf_rule_id=NULL,needs_reconcile=1,next_reconcile_at=-1 WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='deleting'")
             .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.run().await?;

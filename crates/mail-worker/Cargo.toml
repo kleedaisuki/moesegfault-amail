@@ -9,6 +9,7 @@ license = "GPL-3.0-only"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+futures-util = "0.3"
 amail-trace-schema = { path = "../trace-schema" }
 worker = { version = "0.8.3", features = ["d1", "queue"] }
 serde = { version = "1", features = ["derive"] }

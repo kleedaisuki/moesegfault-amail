@@ -2,7 +2,13 @@
 
 Status: design and static workload model, 2026-09-29. No account subscription or deployed latency measurement has been obtained; the Workers plan is **unknown**. This note does not identify the historical staging address-add HTTP 500. It complements [disabled-rule adoption](disabled-routing-rule-adoption.md) and the address repair scheduler, and designs the **external-fetch portion** for Workers Free's 50-call ceiling. That alone does not establish that every other Free-plan resource limit is met.
 
-## Actual workload and bottleneck
+## Current source correction (2026-10-01)
+
+The late-provider orphan implementation replaces the per-row list model below with one complete provider-first inventory on **every** maintenance tick, including zero due rows. Address work now shares a hard twenty-exchange budget, counting list pages, fresh provisioning absence rechecks, current scoped ID GETs and DELETEs. Ten full pages without terminal metadata are not complete. Strict names/source/single matcher/single action and current D1 state are required before destructive work. Remaining work keeps its journal and fair future retry slot.
+
+See [implementation contract](address-late-provider-orphan-implementation-2026-10-01.md). These are source bounds, not hosted/deployed acceptance or proof of the unknown account plan. The old no-due early exit and unvalidated saved-ID append below are superseded; the whole-Cron D1 concern remains unresolved and is a deployment gate.
+
+## Historical workload and bottleneck
 
 `scheduled()` runs every five minutes. It can select 30 due address rows, and `rules_for_address_typed` presently performs a **zone-wide, paginated** Email Routing Rules GET separately for each row. The API supports only `enabled`, `page`, and `per_page` filters, not an exact recipient filter; `per_page` is at most 50. A selected address therefore costs the number of *all zone* rule pages, not one rule. The published Email Routing ceiling is 200 rules **per domain**, while production and staging mail domains share the same Cloudflare zone. At the planned 198 user aliases plus two operator rules on each mail domain, plus four apex role routes, the zone has up to about 404 rules: nine pages at 50/page. One full 30-row address batch would issue up to **270 Rules GETs** before any DELETE. Even one full 200-rule domain would cause 120 GETs. These are analytical counts from the current loop, not measured network timings.
 
@@ -25,7 +31,7 @@ The following are code-derived **call counts**, not observed latency or D1 `rows
 
 Therefore batching provider inventory removes a real external-fetch failure mode but **does not** make this combined Cron safe at 50 D1 queries and cannot by itself guarantee the 1,000-query Paid bound under a backlog of large outbound recovery items. Two actionable paths are: (a) verify Workers Paid, give the combined invocation a conservative D1 call budget, and stop each phase before its next row would cross it, leaving durable work for another tick; or (b) if Free is required, split address repair, outbound recovery, semantic retry, and storage cleanup into separate invocations (for example, dedicated scheduled Workers or Queue consumers), each with a much smaller row/chunk budget and durable continuation. Merely changing the address `LIMIT 30` to five is insufficient if the same invocation still runs all remaining phases. For outbound recovery, estimate the chunk count **before writing**, and permit only work that fits the remaining query budget; otherwise a large item can be retried forever without progress. A continuation cursor or another per-item invocation boundary is needed if a single valid item exceeds the budget.
 
-## Small, safe batching model
+## Historical batching proposal (superseded by provider-first audit)
 
 1. Select the same bounded due rows in the same fair due-time order. If none exist, do not list Rules.
 2. Conditionally claim/rotate the selected due rows **before** provider I/O, preserving the existing cross-state fairness when a Rules GET fails. Then fetch **one complete zone Rules inventory before any provider DELETE or address state transition**. Keep the existing `success`, response-shape, page-count, and 200-page safety checks; add a Cron-specific cap of ten pages. At most 500 zone rules fit, covering the planned roughly 404-rule two-mail-domain topology with slack. Exceeding ten pages, malformed pagination, or a provider failure aborts address reconciliation without treating a partial inventory as absence. The already claimed rows merely wait for their next due slot. This is a deliberate operational capacity alarm, not a claim that all 30 Cloudflare email domains can share the same zone indefinitely on Free.
