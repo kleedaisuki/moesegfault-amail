@@ -6,13 +6,21 @@ Date: 2026-10-01. Status: source candidate, not deployed or release approved.
 
 Isolated worktree: root `.temp/cron-final-diagnostics`, branch
 `feat/cron-final-diagnostics`. Initial baseline was main `13b2c284`; the complete
-implementation was rebased onto PR #27 merge `59ab7a55f38c4646e08cdf2539176fff2ab4a46d`.
-The previously reviewed design is commit
+implementation was first rebased onto PR #27 merge `59ab7a55f38c4646e08cdf2539176fff2ab4a46d`,
+then integrated onto corrected PR #29 merge `6d149ee1ffdda89c2d08f1279ff2b0b8b974f4cf`.
+The original diagnostic source review covers exact commit
+`0fe53325207fca7635394718f5ed0c670f22e0e1`; its independent artifact is
+[retained separately](review-cron-final-diagnostics-0fe5332-2026-10-01.md) and does
+not claim to approve unseen integration conflict resolutions. The previously reviewed design is commit
 `f525c7aa6a9267c857c63262a11931cbc90a57b0`,
 `docs/mail-cron-final-diagnostic-flush-plan-2026-10-01.md` in sibling
-`.temp/cron-diagnostic-flush-design`. This slice leaves the independent embedding
-HTTP/R2 deadline work to its own PR; collector parameter overlap must be reconciled
-there without changing durable failure/deadline cleanup semantics.
+`.temp/cron-diagnostic-flush-design`. The independent embedding HTTP/R2 deadline
+work landed in PR #29 before this slice. Integration retains its captured
+`ExternalDeadline` in `process_embedding(..., invalid_requests, deadline, diagnostics)`;
+the Deferred match arm and conditional token release SQL are unchanged, and the
+Provider match arm passes only the fixed collector into the existing durable
+failure helper. No R2 GET waiter, reader, abort, deadline policy or projection
+semantics were changed. CI retains both deadline suites and adds diagnostics.
 
 ## Contract and implementation
 
