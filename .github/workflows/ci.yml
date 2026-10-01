@@ -1619,6 +1619,9 @@ jobs:
       - name: Verify Cron complete-item liveness in native workerd (non-deploying)
         working-directory: infra/tests/worker-boundary
         run: pnpm test:maintenance-liveness
+      - name: Verify accepted projection native staging batches (non-deploying)
+        working-directory: infra/tests/worker-boundary
+        run: pnpm test:accepted-stage
       - name: Verify Cron Routing deadlines and useful repair in native workerd (non-deploying)
         working-directory: infra/tests/worker-boundary
         run: pnpm test:routing-deadline

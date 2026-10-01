@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:accepted-stage": "node --test accepted-stage-batch.test.mjs",
     "test:embedding-deadline": "node --test embedding-cron-deadline.test.mjs",
     "test:routing-deadline": "node --test routing-deadline.test.mjs",
     "test:maintenance-diagnostics": "node --test maintenance-diagnostics.test.mjs",
