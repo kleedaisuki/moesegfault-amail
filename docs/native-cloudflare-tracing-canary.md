@@ -256,3 +256,23 @@ four native cases, complete retained-window collection and owned-script cleanup
 remain necessary. The normal trigger is deliberately unchanged until this
 inexpensive discriminator is observed. No mail/storage/identity/send operation or
 general production security exception is admitted by either diagnostic.
+
+### Ordinary CLI implication (source inspection, not a live failure)
+
+`crates/amail/src/api.rs` constructs its reqwest client without `user_agent()`;
+the request path adds bearer/traceparent/body/idempotency headers, not User-Agent.
+The separate login/refresh/logout and telemetry clients likewise have no explicit
+client identity. Cargo.lock pins reqwest0.12.28; its [exact ClientBuilder source](https://github.com/seanmonstar/reqwest/blob/v0.12.28/src/async_impl/client.rs)
+initializes Accept but no default User-Agent. Therefore the ordinary CLI sends no
+application User-Agent unless a later transport intermediary inserts one.
+
+The configured defaults are **mail.moesegfault.dev** and
+**identity.moesegfault.dev**, not the failing workers.dev hostname. Missing-UA
+compatibility with Browser Integrity Check on an owned custom domain deserves a
+separate interoperability check, but this workers.dev1010 does not prove those
+domains currently deny the CLI. A future ordinary-client fix should use one
+truthful stable application identity (the [reqwest API example](https://docs.rs/reqwest/latest/reqwest/struct.ClientBuilder.html#method.user_agent)
+uses app name/version), cover all relevant clients and retain existing auth/data
+contracts. Do not copy the experimental compatibility profile into business
+clients automatically or add a broad WAF exception. No CLI Rust file is changed
+by this diagnostic work.
