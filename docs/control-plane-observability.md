@@ -1,6 +1,6 @@
 # Control-plane observability
 
-Status: source implementation under hosted synthetic validation. No provider
+Status: initial integration accepted by hosted synthetic validation. No provider
 probe/deployment or application tracing acceptance is implied. Infrastructure
 foundation takes priority over further mailbox/debug campaigns.
 
@@ -51,3 +51,13 @@ exit and recovery coordinates; full raw output is not a substitute. Top-level
 precondition/schema diagnostics need their own source-owned expected/actual
 context. Native Mail/maintenance/CLI causality and the platform-enrichment canary
 remain separate in runtime-observability-foundation.md.
+
+## Hosted acceptance
+
+PR 46 source a68c743 passed scoped CI 36852119210 (27s), syntax 36852118204
+and bootstrap synthetic contracts 36852117921; its actual inspection job was
+skipped. Merged main c75c24b retains the accepted source. Subsequent full
+source/native CI 36853948436 included this integration and also passed. No
+provider read/write/deployment was performed for this infrastructure validation.
+Future real lifecycle operations must observe these emitted records as well;
+synthetic source acceptance alone does not establish their deployed coverage.

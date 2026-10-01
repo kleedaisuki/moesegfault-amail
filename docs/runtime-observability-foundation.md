@@ -136,7 +136,7 @@ Observed scoped workflow duration was 2m01s; platform job durations including
 setup were 33s, 105s and 45s. This is not a controlled performance benchmark.
 Merged main a0626aae5f79edab85755670902d1df358d91826 preserves the tested tree.
 
-## Queue clock reader upgrade (source under hosted validation)
+## Queue clock reader upgrade (hosted source accepted)
 
 Mail Event schema v1 gains optional occurred_at_ms, duration_ms and http_status.
 The first is the producer's UTC event time, not Queue receipt time. Exact elapsed
@@ -193,3 +193,13 @@ returns, write a static same-console barrier. Await its actual captured arrival
 with a missing-barrier timeout, then inspect the preceding console stream. No
 sleep, raw exception, global monkey patch or production-handler change is added.
 This is still pending complete hosted acceptance, not a platform privacy claim.
+
+Final reader acceptance: full CI 36853948436, source head
+42509113de044fc013a1c51a359286f9859c7812 / merge checkout
+7770b4cb0acac48b9145d24813414d53de063eea, passed all 154 native tests, all
+CLI platforms, Astro, Rust/Wasm/units and infrastructure/syntax checks. Core's
+three sink tests passed with actual acknowledgements, exact legacy/enriched
+records, and captured post-Rust console barrier. Merged main
+cec8ac2451516e6be6228673176a4048f248976b has the accepted tree. Reader rollout,
+producer clocks/remote client failure semantics and the deployed native platform
+canary are still pending; do not confuse this acceptance with their completion.

@@ -51,9 +51,9 @@ control-plane call merely because the mail application has spans.
 
 | Work package | Exit condition | State |
 | --- | --- | --- |
-| CI dependency graph and caches | Build once; all native files assigned; parallel suites; stable fail-closed aggregate; dependency caches without credentials/workspace binaries; observed hosted durations and cache outcomes | Hosted source accepted; three CLI platforms observed exact warm dependency hits; Worker warm observation remains |
+| CI dependency graph and caches | Build once; all native files assigned; parallel suites; stable fail-closed aggregate; dependency caches without credentials/workspace binaries; observed hosted durations and cache outcomes | Hosted source accepted; three CLI platforms and Worker observed exact warm dependency hits |
 | Artifact and compiler provenance | Source/run/compiler/bundler/file hashes verified before consumption; wrong-source, modified/missing/extra file refused; promotion consumes tested artifacts rather than rebuilding silently | Source checks accepted; deploy/release wiring pending |
-| CI and deployment diagnostics | Machine-readable timing/outcome summaries; source/run/stage/request correlation; useful safe provider failures; no repeated opaque probes | CI cache/native receipts accepted; [control-plane integration](control-plane-observability.md) under hosted validation |
+| CI and deployment diagnostics | Machine-readable timing/outcome summaries; source/run/stage/request correlation; useful safe provider failures; no repeated opaque probes | CI cache/native receipts and initial [control-plane integration](control-plane-observability.md) source accepted; lifecycle consumers pending |
 | Runtime observability | Field-level schemas; CLI/API/maintenance/lifecycle coverage and diagnostics for loss; Cloudflare configuration and a synthetic correlation/privacy canary accepted | [Coverage repair and native-span validation plan](runtime-observability-foundation.md) |
 | Deployment lifecycle | Explicit paused/active state; consistent source/toolchain/artifact; writer lock, readback, rollback and bounded recovery; project Secrets remain unchanged | Pending |
 | Maintenance knowledge and cleanup | Current runbook and maintainer skill; legacy research probes isolated from normal product paths; canonical status ledger; no dangling test/active workflow | Maintainer skill added; legacy lane cleanup pending |
@@ -156,3 +156,39 @@ moving the historical file or losing keys. Telemetry opt-out skips initializatio
 diagnostic failure does not break successful commands or contaminate stdout.
 Remote clock/error-phase enrichment is not yet rolled out. See the runtime ledger
 for reader-first Queue schema, native sink tests and platform tracing acceptance.
+
+## Accepted Queue reader and initial control-plane foundation
+
+PR 46 source a68c743 passed scoped CI 36852119210 (27s), syntax 36852118204
+and bootstrap synthetic contracts 36852117921. The actual provider-inspection job
+was skipped. Main c75c24b accepted the structured status/CF-Ray, source/run/time,
+process exit and schema-type diagnostics without any provider operation.
+
+PR 45 source 42509113de044fc013a1c51a359286f9859c7812 passed full CI
+36853948436 and syntax 36853947806. Actual checkout was merge commit
+7770b4cb0acac48b9145d24813414d53de063eea, including accepted PR 46. Its tree
+matches merged main cec8ac2451516e6be6228673176a4048f248976b. All three CLI
+platforms, Astro, Rust/Wasm/unit checks and all eight native suites passed:
+105 core plus 49 other tests = **154 passed, zero failed/cancelled/skipped/todo**.
+One 30-file artifact was verified independently by all native runners.
+
+The real compiled Rust Queue handler preserved old/enriched source clocks and
+causal identity, acknowledged rejected poisoned/malformed records without replay,
+and was observed through native console capture plus an actual post-Rust console
+barrier. Prior failed fixture iterations are retained in the runtime ledger;
+none were accepted as partial success. This is hosted runtime/source acceptance,
+not deployed Cloudflare enrichment/native-span privacy acceptance. Producers are
+still unchanged; reader deployment must precede enriched producer rollout.
+
+Both Worker dependency and bundler receipts were exact_hit. Observed whole full
+workflow was 5m02s (11:12:49–11:17:51 UTC), build 1m40s (11:13:01–11:14:41),
+core job 2m58s including setup (11:14:45–11:17:43). The earlier observed full
+workflow was 8m29s; these are uncontrolled samples, not an SLA or sole-cause
+performance benchmark. A dedicated verified-artifact native fixture diagnostic
+lane is under validation to avoid unrelated rebuild/tests during fixture repair;
+it cannot substitute for current-source CI or promotion.
+
+Next priorities: accept that narrow replay with an actual hosted run; complete
+reader-first remote application clocks/error semantics and the synthetic native
+Cloudflare canary; then tested-artifact deployment/release wiring, lifecycle
+readback/recovery and historical-lane cleanup. Business debug remains deferred.
