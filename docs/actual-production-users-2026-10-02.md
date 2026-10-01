@@ -147,6 +147,21 @@ A's original ZIP, key and ID stay unchanged. B's still-unsent ordinary authored
 reply declares its attachment `application/octet-stream` to exercise genuine
 opaque byte fidelity. There is no new message fixture or production-code change.
 
+Continuation **36941596438** then actually received and verified both messages:
+A remained its original accepted send; B sent only its originally authorized
+research reply. B's `application/octet-stream` attachment arrived as the same
+367 bytes with an exact SHA-256 match. Both body alternatives, unchanged retrieval
+read state and owner-positive/foreign-404 access passed. B's composed filters,
+regex/case, explicit read/unread and archive export also passed. The first semantic
+query encountered precisely `semantic_index_incomplete` immediately after the new
+reply, before the five-minute background index schedule could complete. That
+typed asynchronous state must not be treated as empty results or a reason to
+change the Worker. The existing bounded 420-second observer now waits 30 seconds
+and retries only that exact typed state; all other failures remain fatal. The
+next normal continuation inherits both original accepted IDs, keys, authored-run
+identities, ZIP digests and observed inbound IDs: neither sender gets a second
+submission/grant, and B's accepted binary-media draft stays unchanged.
+
 Google recommends [Chrome for Testing for browser automation](https://developer.chrome.com/blog/remote-debugging-port)
 and a non-default `--user-data-dir`; the owned profile already satisfied the
 latter condition. [Chrome Headless documentation](https://developer.chrome.com/docs/automation-and-testing/headless)

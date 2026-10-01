@@ -280,7 +280,17 @@ def explore(actor: str, environment: dict[str, str], address: str, message: dict
     marker(f"actor_{actor.lower()}_combined_filters_regex_case_readstate_export_verified")
     deadline = time.monotonic() + 420
     while time.monotonic() < deadline:
-        rows = cli(environment, "search", "--semantic", "reproducible delivery through simple invariants")
+        try:
+            rows = cli(environment, "search", "--semantic", "reproducible delivery through simple invariants")
+        except identity.ProbeError as error:
+            # Automatic indexing is asynchronous. Only this exact typed state
+            # permits a bounded wait; never turn unrelated 503/auth errors into
+            # empty successful results or force indexing through an admin path.
+            if str(error) != "amail_search_failed:semantic_index_incomplete":
+                raise
+            marker(f"actor_{actor.lower()}_automatic_index_pending_bounded_wait")
+            time.sleep(30)
+            continue
         if any(row.get("id") == ident for row in rows):
             marker(f"actor_{actor.lower()}_automatic_index_and_semantic_search_verified")
             return
@@ -380,6 +390,7 @@ def journey_receipt() -> dict:
         require(bool(re.fullmatch(r"[a-f0-9]{64}", sent.get("archive_sha256", ""))), "prior_send_digest_invalid")
         receipt["sends"][actor] = {**sent, "authored_run_id": sent.get("authored_run_id", prior)}
     receipt["received_archive_verified"] = previous.get("received_archive_verified", {})
+    receipt["received"] = previous.get("received", {})
     receipt["previous_run_id"] = prior
     return receipt
 
