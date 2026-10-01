@@ -136,11 +136,15 @@ class FreshScopeTests(unittest.TestCase):
 
     def test_r2_optional_metadata_and_server_page_limit_follow_documented_cursor_contract(self):
         """Successful explicit bucket rows remain complete after every cursor terminates."""
-        for index, info in enumerate((None, {}, {"cursor": ""}, {"per_page": 20})):
-            with self.subTest(info=info):
+        buckets = {"buckets": [{"name": "unrelated"}]}
+        pages = (envelope(buckets), {**envelope(buckets), "result_info": None},
+                 envelope(buckets, {"cursor": None, "per_page": None}),
+                 envelope(buckets, {"per_page": 20}))
+        for index, value in enumerate(pages):
+            with self.subTest(index=index):
                 journal = self.folder / f"r2-optional-{index}.jsonl"
                 provider = FakeProvider(journal)
-                provider.r2_inventory = envelope({"buckets": [{"name": "unrelated"}]}, info)
+                provider.r2_inventory = value
                 fresh.create_scope(provider, EPOCH, journal)
                 self.assertEqual(sum(method == "POST" for method, _ in provider.calls), 2)
 
