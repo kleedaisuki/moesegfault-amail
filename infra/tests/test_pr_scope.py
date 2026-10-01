@@ -45,6 +45,53 @@ class PrScopeTests(unittest.TestCase):
         self.assertEqual(scope.select(["crates/amail/src/main.rs","site/src/layout.astro"]),
                          {"cli":True,"worker":False,"site":True})
 
+    def test_exact_diagnostic_consumers_keep_source_checks(self):
+        """Only audited non-build consumers skip PR compilation, not their contracts."""
+        diagnostics = {".github/workflows/native-fixture.yml",
+                       ".github/workflows/native-tracing-canary.yml",
+                       "infra/ci/native_fixture.py"}
+        for path in diagnostics:
+            with self.subTest(path=path):
+                self.assertEqual(scope.select([path]), dict.fromkeys(scope.COMPONENTS, False))
+        # Reproduce PR 57's exact dependency shape: orchestration + its synthetic
+        # tests/docs does not change any of the seven compiled module products.
+        self.assertEqual(scope.select([".github/workflows/native-tracing-canary.yml",
+                                       "infra/deploy/native_tracing_experiment.py",
+                                       "infra/tests/test_native_tracing_experiment.py",
+                                       "docs/native-cloudflare-tracing-canary.md"]),
+                         dict.fromkeys(scope.COMPONENTS, False))
+        from workflow_source import job_block
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        mandatory = job_block(source, "dns")
+        self.assertNotIn("needs.changes", mandatory)
+        self.assertIn("unittest discover -s infra/tests -v", mandatory)
+        syntax = (ROOT / ".github/workflows/workflow-lint.yml").read_text(encoding="utf-8")
+        self.assertIn("pull_request:", syntax)
+        self.assertIn("python infra/workflow_lint/check.py", syntax)
+        self.assertNotIn("paths-ignore", syntax)
+
+    def test_diagnostic_exemptions_do_not_hide_real_consumers(self):
+        """Mixed edits union consumers; nearby unknown/admission/build paths fail full."""
+        diagnostic = ".github/workflows/native-tracing-canary.yml"
+        for path in ("Cargo.lock", "rust-toolchain.toml", ".github/workflows/ci.yml",
+                     ".github/workflows/release.yml", ".github/workflows/deploy-identity-test-inbox.yml",
+                     ".github/workflows/native-new.yml", "infra/ci/pr_scope.py",
+                     "infra/ci/validated_worker_build.py", "infra/ci/worker_artifact.py",
+                     "infra/ci/native_suite.py", "infra/ci/cache_event.py", "infra/ci/new.py",
+                     "infra/tests/workflow_source.py"):
+            with self.subTest(path=path):
+                self.assertEqual(scope.select([diagnostic, path]), dict.fromkeys(scope.COMPONENTS, True))
+        for path in ("workers/native-trace-canary/src/lib.rs",
+                     "workers/native-trace-canary/wrangler.toml",
+                     "infra/tests/worker-boundary/native-trace-canary.test.mjs",
+                     "infra/tests/worker-boundary/package.json",
+                     "infra/tests/worker-boundary/pnpm-lock.yaml"):
+            with self.subTest(path=path):
+                self.assertEqual(scope.select([diagnostic, path]),
+                                 {"cli": False, "worker": True, "site": False})
+        self.assertEqual(scope.select([diagnostic, "crates/amail/src/main.rs", "site/src/pages/index.astro"]),
+                         {"cli": True, "worker": False, "site": True})
+
     def test_exact_deployment_validator_is_not_a_compilation_input(self):
         """Only the audited file skips compilation; nearby inputs and mixed edits do not."""
         path = "crates/mail-worker/check_trace_sink_isolation.py"

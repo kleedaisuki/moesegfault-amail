@@ -12,10 +12,16 @@ import re
 import subprocess
 
 COMPONENTS = ("cli", "worker", "site")
-# This exact deployment-only Python module is covered by the mandatory hosted
-# infrastructure/observability tests and is not an input to Rust/Wasm bundling.
-# Do not generalize to *.py: future build generators may change runtime artifacts.
-INFRASTRUCTURE_ONLY = {"crates/mail-worker/check_trace_sink_isolation.py"}
+# Exact infrastructure/diagnostic consumers covered by mandatory hosted Python
+# contracts and the independent workflow syntax guard, not build/native inputs.
+# Do not generalize to *.py or workflows: build generators and source/release
+# admission policy must continue to request full checks.
+INFRASTRUCTURE_ONLY = {
+    "crates/mail-worker/check_trace_sink_isolation.py",
+    ".github/workflows/native-fixture.yml",
+    ".github/workflows/native-tracing-canary.yml",
+    "infra/ci/native_fixture.py",
+}
 
 
 def select(paths: list[str]) -> dict[str, bool]:
