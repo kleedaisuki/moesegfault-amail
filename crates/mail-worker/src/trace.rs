@@ -22,6 +22,7 @@ pub(crate) fn operation_from_cli(raw: &str) -> Option<Operation> {
         "addresses.delete" => Operation::AddressesDelete,
         "messages.list" => Operation::MessagesList,
         "messages.search" => Operation::MessagesSearch,
+        "messages.search.poll" => Operation::SearchPoll,
         "messages.get" => Operation::MessagesGet,
         "messages.archive" => Operation::MessagesArchive,
         "messages.mark" => Operation::MessagesMark,
@@ -473,6 +474,17 @@ mod tests {
         let failure = diagnostic_record(DiagnosticCode::OutboundReconciliationFailed);
         assert!(failure.valid());
         assert_eq!(failure.error_code, Some(ErrorCode::DependencyFailure));
+    }
+
+    /// Resumable search polls cannot poison the entire legacy upload batch.
+    #[test]
+    fn cli_search_poll_is_a_reviewed_operation() {
+        assert_eq!(
+            operation_from_cli("messages.search.poll"),
+            Some(Operation::SearchPoll)
+        );
+        assert!(operation_from_cli("messages.search.poll/private-input").is_none());
+        assert!(operation_from_cli("messages.search.poll.extra").is_none());
     }
 
     /// Valid context retains causal identity without copying arbitrary headers.
