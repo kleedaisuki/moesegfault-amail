@@ -1,6 +1,6 @@
 //! Invocation-local, cooperative admission of complete maintenance work units.
 //!
-//! Deadlines never cancel submitted dependencies or interrupt an admitted item's
+//! Unit admission never interrupts an admitted item's
 //! projection. Statement accounting and durable journal authority remain separate.
 
 use std::cell::Cell;
@@ -110,7 +110,16 @@ pub(crate) struct PhaseTurn<'a> {
     first: bool,
 }
 
-impl PhaseTurn<'_> {
+impl<'a> PhaseTurn<'a> {
+    /// Borrow only the invocation, so subsequent mutable unit admission is valid.
+    /// Routing setup plus first repair shares a sixty-second absolute allowance.
+    pub(crate) fn routing_deadline(&self) -> ExternalDeadline<'a> {
+        ExternalDeadline {
+            turn: self.turn,
+            cutoff_ms: (self.entered_ms + COMPLETE_HEADROOM_MS).min(CUTOFF_MS),
+        }
+    }
+
     /// Admit a whole item before its due/claim/write boundary.
     ///
     /// The first unit was entitled at phase entry; setup cannot consume that
@@ -130,6 +139,54 @@ impl PhaseTurn<'_> {
         }
         self.first = false;
         Ok(WorkPermit { _private: () })
+    }
+}
+
+/// Immutable external-operation cutoff on the invocation's clamped clock.
+/// Copies retain the same origin and cutoff; they never restart an allowance.
+#[derive(Clone, Copy)]
+pub(crate) struct ExternalDeadline<'a> {
+    /// The invocation outlives every serial routing exchange.
+    turn: &'a MaintenanceTurn,
+    /// Absolute elapsed milliseconds since handler entry.
+    cutoff_ms: f64,
+}
+
+impl ExternalDeadline<'_> {
+    /// Return remaining time; invalid or expired observations fail closed.
+    pub(crate) fn remaining(&self) -> Result<std::time::Duration> {
+        self.remaining_at(js_sys::Date::now())
+    }
+
+    /// Pure observation entry for deterministic cutoff and backward-clock tests.
+    fn remaining_at(&self, now_ms: f64) -> Result<std::time::Duration> {
+        let elapsed = self.turn.observe(now_ms);
+        let remaining = self.cutoff_ms - elapsed;
+        if !remaining.is_finite() || remaining <= 0.0 {
+            return Err(deferred());
+        }
+        Ok(std::time::Duration::from_secs_f64(remaining / 1000.0))
+    }
+
+    /// Create one child absolute deadline, never a fresh clock or per-page reset.
+    pub(crate) fn clipped(&self, allowance: std::time::Duration) -> Self {
+        self.clipped_at(allowance, js_sys::Date::now())
+    }
+
+    /// Clip against one observation without introducing another timing origin.
+    fn clipped_at(&self, allowance: std::time::Duration, now_ms: f64) -> Self {
+        let elapsed = self.turn.observe(now_ms);
+        Self {
+            turn: self.turn,
+            cutoff_ms: self
+                .cutoff_ms
+                .min(elapsed + allowance.as_secs_f64() * 1000.0),
+        }
+    }
+
+    /// Clip one complete native exchange to ten seconds and all parent cutoffs.
+    pub(crate) fn exchange_duration(&self) -> Result<std::time::Duration> {
+        Ok(self.remaining()?.min(std::time::Duration::from_secs(10)))
     }
 }
 
@@ -155,7 +212,7 @@ fn has_headroom(phase: MaintenancePhase, elapsed_ms: f64) -> bool {
 }
 
 /// Encode only the explicit application-owned admission denial.
-fn deferred() -> Error {
+pub(crate) fn deferred() -> Error {
     Error::RustError(DEFERRED.into())
 }
 
@@ -277,5 +334,32 @@ mod tests {
         assert!(turn.enter_at(MaintenancePhase::Deleted, f64::NAN).is_err());
         assert!(turn.enter_at(MaintenancePhase::Deleted, 0.0).is_err());
         assert_eq!(turn.observe(0.0), f64::INFINITY);
+    }
+
+    #[test]
+    fn routing_deadline_borrows_invocation_not_mutable_phase() {
+        let turn = new_turn(0.0);
+        let mut phase = turn
+            .enter_at(MaintenancePhase::Addresses, 55_000.0)
+            .unwrap();
+        let deadline = phase.routing_deadline();
+        let _first = phase.admit_at(85_000.0).unwrap();
+        assert_eq!(deadline.remaining_at(85_000.0).unwrap().as_secs(), 30);
+        assert!(deadline.remaining_at(115_000.0).is_err());
+        assert!(deadline.remaining_at(55_000.0).is_err());
+    }
+
+    #[test]
+    fn inventory_child_cutoff_is_absolute_and_clipped_to_parent() {
+        let turn = new_turn(0.0);
+        let phase = turn.enter_at(MaintenancePhase::Addresses, 0.0).unwrap();
+        let deadline = phase.routing_deadline();
+        let inventory = deadline.clipped_at(std::time::Duration::from_secs(30), 5_000.0);
+        assert_eq!(inventory.remaining_at(25_000.0).unwrap().as_secs(), 10);
+        assert!(inventory.remaining_at(35_000.0).is_err());
+        let last = deadline.clipped_at(std::time::Duration::from_secs(30), 50_000.0);
+        assert_eq!(last.remaining_at(50_000.0).unwrap().as_secs(), 10);
+        assert!(last.remaining_at(60_000.0).is_err());
+        assert!(deadline.remaining_at(f64::NAN).is_err());
     }
 }
