@@ -103,6 +103,27 @@ No credential/browser trace, probe workflow or alternative auth path is added.
 The next actual registration remains root-dispatched only after its bootstrap
 writer has terminated.
 
+### Actual delivery and lifecycle receipts
+
+The root authorized retaining the two existing send responses' opaque local IDs,
+request IDs, idempotency keys, archive digests and public timing/state data in a
+small `receipt.json`. The existing workflow uploads only that named metadata
+file, including on failure: never auth homes, browser profiles, drafts or ZIPs.
+This preserves the original operation identity after uncertain submission rather
+than suggesting a blind resend. The actual source/run and candidate build run
+are recorded separately; workflow source is not misrepresented as binary source.
+
+The public `get_message` contract in `crates/mail-worker/src/lib.rs` exposes
+content/thread/attachment metadata but no lifecycle delivery projection. After
+both actual recipient ZIPs pass, a root-authorized bounded read therefore joins
+only the two returned outbound IDs through the adopted production database's
+`send_requests`, `provider_events(kind='delivered')` and matching
+`recipient_outcomes(kind='delivered')`. Counts and provider/consumer timestamps
+are retained, not addresses, envelopes, headers, subjects or Identity subjects.
+No extra mail, fixture, broad mailbox search or feedback-probe workflow is added.
+Provider acceptance (202), actual received content and actual consumer feedback
+remain distinct observations; configuration alone is not feedback evidence.
+
 Google recommends [Chrome for Testing for browser automation](https://developer.chrome.com/blog/remote-debugging-port)
 and a non-default `--user-data-dir`; the owned profile already satisfied the
 latter condition. [Chrome Headless documentation](https://developer.chrome.com/docs/automation-and-testing/headless)

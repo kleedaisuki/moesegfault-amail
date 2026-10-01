@@ -323,6 +323,64 @@ def owned_send_grant(actor: str, sender: str, recipient: str) -> None:
     marker(f"actor_{actor.lower()}_existing_operator_single_send_grant_verified_global_held")
 
 
+def save_receipt(receipt: dict) -> None:
+    """Keep only opaque operation identities and named observations for this run."""
+    (RUN / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+
+
+def delivered_feedback(sent: dict[str, dict]) -> dict:
+    """Observe provider-to-consumer feedback for only the two actual sent IDs.
+
+    Public CLI get metadata exposes content/thread metadata, not lifecycle rows.
+    Therefore this root-authorized read joins only the two returned opaque IDs
+    through send_requests, provider_events and recipient_outcomes. It returns
+    counts, kind and timestamps, never envelopes, addresses or Identity subjects.
+    """
+    sys.path.insert(0, str(ROOT / "infra" / "operator"))
+    from send_control import DATABASES
+
+    database, issuer = DATABASES["production"]
+    require(issuer == REALM.issuer, "feedback_operator_issuer_mismatch")
+    ids = [sent[actor]["id"] for actor in ("A", "B")]
+    require(len(set(ids)) == 2, "actual_sent_ids_not_distinct")
+    sql = (
+        "SELECT s.message_id,s.state,COUNT(DISTINCT e.event_id) AS delivered_events,"
+        "COUNT(DISTINCT o.event_id) AS delivered_outcomes,"
+        "MAX(e.occurred_at) AS provider_occurred_at,MAX(e.received_at) AS consumer_received_at "
+        "FROM send_requests s LEFT JOIN provider_events e "
+        "ON e.provider_id=s.provider_id AND e.local_message_id=s.message_id "
+        "AND e.owner_iss=s.owner_iss AND e.owner_sub=s.owner_sub AND e.kind='delivered' "
+        "LEFT JOIN recipient_outcomes o ON o.local_message_id=s.message_id "
+        "AND o.owner_iss=s.owner_iss AND o.owner_sub=s.owner_sub "
+        "AND o.recipient=e.recipient AND o.event_id=e.event_id AND o.kind='delivered' "
+        "WHERE s.message_id IN (?1,?2) AND s.owner_iss=?3 GROUP BY s.message_id,s.state"
+    )
+    account, token = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
+    body = json.dumps({"sql": sql, "params": [*ids, issuer]}).encode()
+    deadline = time.monotonic() + 240
+    while time.monotonic() < deadline:
+        value = inbox.json_result(inbox.request(
+            "POST", f"/accounts/{account}/d1/database/{database}/query", token, body))
+        batches = value.get("result")
+        require(isinstance(batches, list) and len(batches) == 1 and batches[0].get("success") is True,
+                "actual_feedback_readback_failed")
+        rows = batches[0].get("results")
+        require(isinstance(rows, list) and len(rows) <= 2
+                and all(row.get("message_id") in ids for row in rows), "actual_feedback_shape_invalid")
+        ready = len(rows) == 2 and all(
+            row.get("state") in ("accepted", "sent") and row.get("delivered_events", 0) >= 1
+            and row.get("delivered_outcomes", 0) == 1
+            and isinstance(row.get("provider_occurred_at"), int)
+            and isinstance(row.get("consumer_received_at"), int) for row in rows)
+        if ready:
+            by_id = {row["message_id"]: row for row in rows}
+            result = {actor: {**by_id[sent[actor]["id"]], "kind": "delivered"} for actor in ("A", "B")}
+            marker("two_actual_sends_provider_consumer_delivered_feedback_verified")
+            return result
+        time.sleep(10)
+    raise identity.ProbeError("actual_delivered_feedback_not_observed")
+
+
 def main() -> int:
     """Run exactly the dispatched normal-user phase, without implicit retries."""
     try:
@@ -338,19 +396,36 @@ def main() -> int:
             return 0
         sessions = {actor: login(actor, material) for actor, material in materials.items()}
         time.sleep(60)
+        receipt = {"workflow_source_sha": os.environ["GITHUB_SHA"],
+                   "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+                   "candidate_run_id": "36909041053", "sends": {}, "received_archive_verified": {}}
+        save_receipt(receipt)
         delivered = {}
         for sender, recipient in (("A", "B"), ("B", "A")):
             environment, address = sessions[sender]
             other_environment, other_address = sessions[recipient]
             archive, subject, attachment, filename, phrase = draft(sender, address, other_address, environment)
             owned_send_grant(sender, address, other_address)
-            cli(environment, "send", str(archive), "--idempotency-key", str(uuid.uuid4()))
+            key = str(uuid.uuid4())
+            receipt["sends"][sender] = {"idempotency_key": key,
+                                       "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
+            save_receipt(receipt)
+            submitted = cli(environment, "send", str(archive), "--idempotency-key", key)
+            require(len(submitted) == 1 and submitted[0].get("state") == "accepted", "actual_send_response_invalid")
+            result = submitted[0]
+            uuid.UUID(result["id"])
+            uuid.UUID(result["request_id"])
+            receipt["sends"][sender].update({name: result[name] for name in ("id", "state", "request_id")})
+            receipt["sends"][sender]["accepted_at"] = datetime.now(timezone.utc).isoformat()
+            save_receipt(receipt)
             marker(f"actor_{sender.lower()}_normal_send_accepted")
             received = receive(recipient, other_environment, subject, attachment, filename, phrase)
             cli(environment, "get", received["id"], allow_failure=True)
             require(cli(other_environment, "get", received["id"])[0]["id"] == received["id"],
                     "owner_message_disappeared_after_foreign_denial")
             marker(f"actor_{sender.lower()}_cross_account_get_denied")
+            receipt["received_archive_verified"][recipient] = True
+            save_receipt(receipt)
             delivered[recipient] = received, filename, phrase
         for actor, (message, filename, phrase) in delivered.items():
             environment, address = sessions[actor]
@@ -358,7 +433,15 @@ def main() -> int:
             cli(environment, "delete", message["id"])
             cli(environment, "get", message["id"], allow_failure=True)
             marker(f"actor_{actor.lower()}_owned_delivery_deleted_and_absence_verified")
+        receipt["normal_user_commands_complete"] = True
+        save_receipt(receipt)
+        # Finish the ordinary user commands before observing lifecycle feedback.
+        # A feedback lag must not prevent search, export or owned-state usage.
+        receipt["delivered_feedback"] = delivered_feedback(receipt["sends"])
+        save_receipt(receipt)
         marker("actual_production_two_user_journey_complete")
+        receipt["normal_journey_complete"] = True
+        save_receipt(receipt)
         return 0
     except (identity.ProbeError, inbox.ProvisionFailure) as error:
         label = str(error)
