@@ -39,7 +39,7 @@ submission count must equal strict-stub request count and remain at most twenty.
 | Ten valid 50-rule pages, each delayed 2 s | 10 | 7 | First row becomes active after a complete real >20 s inventory; second remains provisioning and priority due |
 | Fast following invocation | 1 | 5 | Only second row is claimed/promoted; first is not replayed |
 | Headers hang | 1 | 5 | Exact attached native signal aborted once around 10 s; both unattempted rows priority released |
-| Headers take 3 s, then body prefix + hang | 1 | 5 | Same overall 10 s timer, native reader acquired, prefix read, next read pending, cancel and release observed; both rows released |
+| Headers take 7 s, then body prefix + hang | 1 | 5 | Same overall 10 s timer (<16 s including overhead); an incorrect restarted 10 s body timer needs >=17 s and fails; native prefix/read/cancel/release plus both row releases |
 | Ten pages delayed 3.2 s each | 10 | 5 | Original inventory deadline aborts last exchange around 30 s; neither row promoted or treated as absent |
 | DELETE accepted, acknowledgement body hangs | 3 | 5 | List + owned GET + one DELETE; journal stays deleting with its finite future slot |
 | Immediate tick after unknown DELETE | 1 | 2 | Inventory only; current lease is not claimed/retried |

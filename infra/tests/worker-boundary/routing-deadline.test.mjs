@@ -155,8 +155,9 @@ for (const kind of ["headers", "body"]) {
     await seed();
     const result = await tick(async () => {
       if (kind === "headers") return new Promise(resolve => cleanups.push(() => resolve(inventory([]))));
-      // Headers consume three seconds of the SAME ten-second complete-fetch timer.
-      await sleep(3_000);
+      // A wrongly restarted ten-second body timer would take >=17 seconds and
+      // fail the existing <16-second bound, unlike a three-second header delay.
+      await sleep(7_000);
       return new Response(new ReadableStream({ start(controller) {
         controller.enqueue(new TextEncoder().encode('{"success":true,"result":['));
         cleanups.push(() => controller.close());
