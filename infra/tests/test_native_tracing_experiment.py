@@ -90,9 +90,10 @@ class NativeTracingExperimentTests(unittest.TestCase):
 
     def test_standard_public_provider_error_code_is_retained_without_prose(self):
         headers = Message()
-        result = experiment.trigger_facts(SimpleNamespace(code=403, headers=headers), b"error code: 1020\n")
-        self.assertEqual(result["provider_error_code"], 1020)
-        self.assertEqual(result["body_class"], "cloudflare_error_code")
+        for code in (1010, 1020):
+            result = experiment.trigger_facts(SimpleNamespace(code=403, headers=headers), f"error code: {code}\n".encode())
+            self.assertEqual(result["provider_error_code"], code)
+            self.assertEqual(result["body_class"], "cloudflare_error_code")
         self.assertNotIn("provider_error_code", experiment.trigger_facts(
             SimpleNamespace(code=403, headers=headers), b"error code: private-address"))
 
@@ -120,6 +121,56 @@ class NativeTracingExperimentTests(unittest.TestCase):
         with patch.object(experiment, "Provider", return_value=provider), patch.object(experiment, "build_opener", return_value=opener):
             with self.assertRaises(ValueError): experiment.diagnose_endpoint()
         opener.open.assert_not_called()
+
+    def test_client_signature_diagnostic_changes_only_one_public_header(self):
+        """The fixed variant stays credential-free and cannot invoke an existing pair."""
+        for client_signature in (False, True):
+            provider = Mock(account="a" * 32)
+            provider.script.side_effect = lambda name: "/scripts/" + name + "/settings"
+            provider.request.side_effect = [HTTPError("https://api.synthetic.invalid", 404, "missing", {}, None),
+                HTTPError("https://api.synthetic.invalid", 404, "missing", {}, None), {"subdomain": "synthetic"}]
+            opener = Mock()
+            opener.open.side_effect = HTTPError("https://caller.synthetic.invalid", 404, "missing", Message(), io.BytesIO(b""))
+            with patch.object(experiment, "Provider", return_value=provider), \
+                 patch.object(experiment, "build_opener", return_value=opener), \
+                 patch.object(experiment, "write_receipt") as write, \
+                 patch.dict(experiment.os.environ, {"GITHUB_SHA": "b" * 40, "GITHUB_RUN_ID": "123"}), redirect_stdout(io.StringIO()):
+                experiment.diagnose_endpoint(client_signature=client_signature)
+            request = opener.open.call_args.args[0]
+            self.assertEqual(request.header_items(), [("User-agent", experiment.CLIENT_USER_AGENT)] if client_signature else [])
+            self.assertEqual(request.get_method(), "GET")
+            self.assertIsNone(request.data)
+            opener.open.assert_called_once()
+            self.assertEqual(write.call_args.args[0]["client_profile"],
+                             experiment.CLIENT_PROFILE if client_signature else "python_urllib_default")
+            self.assertEqual([call.args[0] for call in provider.request.call_args_list], ["GET"] * 3)
+            provider.request.side_effect = None
+            provider.request.return_value = {}
+            opener.open.reset_mock()
+            with patch.object(experiment, "Provider", return_value=provider), patch.object(experiment, "build_opener", return_value=opener):
+                with self.assertRaises(ValueError): experiment.diagnose_endpoint(client_signature=client_signature)
+            opener.open.assert_not_called()
+
+    def test_client_signature_diagnostic_refuses_failed_provider_read(self):
+        """A denied or failed read never becomes absence, including the new profile."""
+        provider = Mock()
+        provider.request.side_effect = HTTPError("https://api.synthetic.invalid", 403, "denied", {}, None)
+        opener = Mock()
+        with patch.object(experiment, "Provider", return_value=provider), patch.object(experiment, "build_opener", return_value=opener):
+            with self.assertRaises(HTTPError): experiment.diagnose_endpoint(client_signature=True)
+        opener.open.assert_not_called()
+
+    def test_client_signature_operation_requires_its_own_confirmation(self):
+        """An endpoint diagnosis cannot accidentally admit deployment or a live trigger."""
+        context = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ATTEMPT": "1",
+                   "CANARY_CONFIRM": "DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE"}
+        with patch.dict(experiment.os.environ, context), patch.object(experiment, "diagnose_endpoint") as diagnose:
+            with patch.object(experiment.sys, "argv", ["canary", "diagnose-client-signature"]):
+                experiment.main()
+            diagnose.assert_called_once_with(client_signature=True)
+            for operation in ("deploy", "trigger", "collect", "cleanup", "diagnose"):
+                with patch.object(experiment.sys, "argv", ["canary", operation]):
+                    with self.assertRaises(SystemExit): experiment.main()
 
     def _trigger_case(self, kind):
         """Hosted transport fixture: never open a network socket or write outside the repo."""
@@ -183,6 +234,8 @@ class NativeTracingExperimentTests(unittest.TestCase):
         self.assertIn("github.run_attempt == 1",source)
         diagnostic = source.split("\n  diagnose:", 1)[1]
         self.assertIn("DIAGNOSE_NATIVE_TRACING_ENDPOINT", diagnostic)
+        self.assertIn("DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE", diagnostic)
+        self.assertIn("native_tracing_experiment.py diagnose-client-signature", diagnostic)
         self.assertIn("native_tracing_experiment.py diagnose", diagnostic)
         for forbidden in ("native_tracing_experiment.py deploy", "native_tracing_experiment.py trigger",
                           "worker_artifact.py restore", "wrangler", "cargo"):

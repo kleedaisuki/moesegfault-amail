@@ -213,3 +213,66 @@ Official evidence constrains interpretation:
   includes early unstyled403; a bare body alone cannot determine origin/cause.
 No documented fresh-deployment403 guarantee justifies a retry or propagation
 assumption. Next action is the absent-host diagnostic, not business debugging.
+
+## Absent-host 1010 and bounded client-signature test
+
+The same no-write run 36877264235 completed successfully on exact main
+d593d1a20fa2bbf59b997e13343373614aa7fcf7. Hosted infrastructure tests passed,
+both script settings reads positively returned 404, and the single anonymous GET
+to the absent caller returned HTTP403, text/plain, 17 bytes. The complete-body
+numeric classifier retained **1010**, CF-Ray a43c2f468e148537-SJC, Cloudflare server
+and no managed-challenge marker. Artifact 11169737986 contains the public receipt;
+run interval was 2026-10-01T14:33:26Z--14:33:56Z. No Worker was deployed or invoked.
+This directly separates the endpoint refusal from Rust/Span execution. It does
+not retroactively establish the numeric code of previous unclassified POSTs.
+
+Cloudflare's [1010 documentation](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/)
+defines browser-signature-based denial. [Browser Integrity Check documentation](https://developers.cloudflare.com/waf/tools/browser-integrity-check/)
+describes HTTP-header inspection, missing/nonstandard User-Agent treatment and
+selective hostname/path exemptions on a controlled zone. The actual workers.dev
+policy/rule owner has not been identified; these references do not prove that our
+account can edit the shared workers.dev zone. Access-token failure, propagation,
+application failure and a particular editable WAF rule are not established.
+
+The next exact no-write operation is
+`DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE`. It runs current hosted infrastructure
+tests, proves both fixed scripts absent again, then changes **only User-Agent**
+on the same Python transport to the fixed truthful compatibility identity
+`Mozilla/5.0 (compatible; amail-native-tracing-canary/1.0)`. No Chrome identity,
+cookie, challenge solution, new token, arbitrary header/URL input, redirect,
+retry, rule change or new route is introduced. The existing default-urllib
+diagnostic remains separately available; the receipt identifies the chosen
+client profile rather than silently rewriting historical evidence.
+
+| Observed variant result | Interpretation and next bounded action |
+| --- | --- |
+| 404 without1010 | Supports header-sensitive denial for this absent-host GET; review the same client identity for one normal canary only after checked build admission |
+| 1010 remains | Header-only candidate did not remove denial; do not sweep user agents or recreate the pair. Identify workers.dev policy ownership or review a new isolated hostname on an owned zone separately |
+| Redirect/challenge/other error | Preserve typed boundary evidence; no automatic follow or token workaround; reassess from actual response |
+
+Even a404 is not evidence that a live POST will work, that native APIs execute,
+or that caller/root records contain no protected markers. Live version readback,
+four native cases, complete retained-window collection and owned-script cleanup
+remain necessary. The normal trigger is deliberately unchanged until this
+inexpensive discriminator is observed. No mail/storage/identity/send operation or
+general production security exception is admitted by either diagnostic.
+
+### Ordinary CLI implication (source inspection, not a live failure)
+
+`crates/amail/src/api.rs` constructs its reqwest client without `user_agent()`;
+the request path adds bearer/traceparent/body/idempotency headers, not User-Agent.
+The separate login/refresh/logout and telemetry clients likewise have no explicit
+client identity. Cargo.lock pins reqwest0.12.28; its [exact ClientBuilder source](https://github.com/seanmonstar/reqwest/blob/v0.12.28/src/async_impl/client.rs)
+initializes Accept but no default User-Agent. Therefore the ordinary CLI sends no
+application User-Agent unless a later transport intermediary inserts one.
+
+The configured defaults are **mail.moesegfault.dev** and
+**identity.moesegfault.dev**, not the failing workers.dev hostname. Missing-UA
+compatibility with Browser Integrity Check on an owned custom domain deserves a
+separate interoperability check, but this workers.dev1010 does not prove those
+domains currently deny the CLI. A future ordinary-client fix should use one
+truthful stable application identity (the [reqwest API example](https://docs.rs/reqwest/latest/reqwest/struct.ClientBuilder.html#method.user_agent)
+uses app name/version), cover all relevant clients and retain existing auth/data
+contracts. Do not copy the experimental compatibility profile into business
+clients automatically or add a broad WAF exception. No CLI Rust file is changed
+by this diagnostic work.

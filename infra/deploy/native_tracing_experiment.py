@@ -26,6 +26,10 @@ PROBE = "amail-native-trace-probe"
 CALLER = "amail-native-trace-caller"
 NAMES = (PROBE, CALLER)
 API = "https://api.cloudflare.com/client/v4"
+# A fixed, truthful client identity tests the documented browser-signature boundary.
+# This is not a browser impersonation, credential, or security-policy change.
+CLIENT_USER_AGENT = "Mozilla/5.0 (compatible; amail-native-tracing-canary/1.0)"
+CLIENT_PROFILE = "self_identified_compatibility_v1"
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -234,12 +238,13 @@ def trigger_facts(response, raw: bytes) -> dict:
     return result
 
 
-def diagnose_endpoint() -> None:
+def diagnose_endpoint(*, client_signature: bool = False) -> None:
     """Read an absent caller hostname without deploying or invoking a Worker.
 
     Both fixed scripts must be absent before the anonymous GET. The writer lock
     remains held, and the public request never receives provider credentials.
-    This distinguishes a platform endpoint refusal without recreating a pair.
+    The separately admitted client-signature variant changes only User-Agent.
+    It does not sweep headers, retry the default request, or weaken provider rules.
     """
     provider = Provider()
     for name in NAMES:
@@ -254,7 +259,8 @@ def diagnose_endpoint() -> None:
     if not re.fullmatch(r"[a-z0-9-]{1,63}", subdomain):
         raise ValueError("canary_account_subdomain_invalid")
     url = f"https://{CALLER}.{subdomain}.workers.dev"
-    request = Request(url, method="GET")
+    headers = {"User-Agent": CLIENT_USER_AGENT} if client_signature else {}
+    request = Request(url, method="GET", headers=headers)
     try:
         response = build_opener(NoRedirect).open(request, timeout=30)
     except HTTPError as error:
@@ -262,7 +268,9 @@ def diagnose_endpoint() -> None:
     with response:
         facts = trigger_facts(response, response.read(65537))
     write_receipt({"schema": "native-endpoint-diagnostic/v1", "source_sha": os.environ["GITHUB_SHA"],
-                   "run_id": os.environ["GITHUB_RUN_ID"], "scripts_absent": True, "url": url, "response": facts})
+                   "run_id": os.environ["GITHUB_RUN_ID"], "scripts_absent": True, "url": url,
+                   "client_profile": CLIENT_PROFILE if client_signature else "python_urllib_default",
+                   "response": facts})
     print(json.dumps({"event": "absent_canary_endpoint_diagnostic", **facts}, sort_keys=True))
 
 
@@ -465,9 +473,11 @@ def cleanup() -> None:
 def main() -> None:
     """Explicit hosted first-attempt experiment only, no mailbox or generic provider tool."""
     operations = {"deploy": deploy, "trigger": trigger, "collect": collect, "cleanup": cleanup,
-                  "diagnose": diagnose_endpoint}
+                  "diagnose": diagnose_endpoint,
+                  "diagnose-client-signature": lambda: diagnose_endpoint(client_signature=True)}
     operation = sys.argv[1] if len(sys.argv) == 2 else ""
-    expected = "DIAGNOSE_NATIVE_TRACING_ENDPOINT" if operation == "diagnose" else "RUN_NATIVE_TRACING_CANARY"
+    expected = {"diagnose": "DIAGNOSE_NATIVE_TRACING_ENDPOINT",
+                "diagnose-client-signature": "DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE"}.get(operation, "RUN_NATIVE_TRACING_CANARY")
     if (operation not in operations or os.getenv("GITHUB_ACTIONS") != "true" or os.getenv("GITHUB_REF") != "refs/heads/main"
             or os.getenv("GITHUB_RUN_ATTEMPT") != "1" or os.getenv("CANARY_CONFIRM") != expected):
         raise SystemExit("Explicit hosted main first-attempt canary context required.")

@@ -8,7 +8,7 @@ on:
         required: false
         type: string
       confirm:
-        description: RUN_NATIVE_TRACING_CANARY or read-only DIAGNOSE_NATIVE_TRACING_ENDPOINT
+        description: RUN_NATIVE_TRACING_CANARY or read-only DIAGNOSE_NATIVE_TRACING_ENDPOINT / DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE
         required: true
         type: string
 permissions:
@@ -86,7 +86,7 @@ jobs:
           retention-days: 14
 
   diagnose:
-    if: github.ref == 'refs/heads/main' && inputs.confirm == 'DIAGNOSE_NATIVE_TRACING_ENDPOINT' && github.run_attempt == 1
+    if: github.ref == 'refs/heads/main' && (inputs.confirm == 'DIAGNOSE_NATIVE_TRACING_ENDPOINT' || inputs.confirm == 'DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE') && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -106,7 +106,12 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: python infra/deploy/native_tracing_experiment.py diagnose
+        run: |
+          if [ "$CANARY_CONFIRM" = "DIAGNOSE_NATIVE_TRACING_CLIENT_SIGNATURE" ]; then
+            python infra/deploy/native_tracing_experiment.py diagnose-client-signature
+          else
+            python infra/deploy/native_tracing_experiment.py diagnose
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
