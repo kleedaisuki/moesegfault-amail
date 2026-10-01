@@ -35,13 +35,15 @@ class NativeTracingExperimentTests(unittest.TestCase):
                             {"enabled": False, "traces": {}},
                             {"enabled": False, "logs": None}):
             self.assertFalse(experiment.capture_accepted({"observability": observation}, experiment.CALLER))
-        self.assertFalse(experiment.capture_accepted({}, experiment.CALLER))
+        self.assertTrue(experiment.capture_accepted({}, experiment.CALLER))
+        self.assertTrue(experiment.capture_accepted({"observability": None}, experiment.CALLER))
+        self.assertFalse(experiment.capture_accepted({"observability": None}, experiment.PROBE))
         self.assertTrue(experiment.capture_accepted({"observability": {"traces": {"enabled": True}}}, experiment.PROBE))
         self.assertFalse(experiment.capture_accepted({"observability": {"enabled": True}}, experiment.PROBE))
         self.assertEqual(experiment.capture_readback({"observability": {"enabled": False}}),
-                         {"enabled": False, "logs.enabled": "missing", "traces.enabled": "missing"})
+                         {"observability": "dict", "enabled": False, "logs.enabled": "missing", "traces.enabled": "missing"})
         self.assertEqual(experiment.capture_readback({"observability": {"enabled": "private-text", "logs": None}}),
-                         {"enabled": "str", "logs.enabled": "parent_NoneType", "traces.enabled": "missing"})
+                         {"observability": "dict", "enabled": "str", "logs.enabled": "parent_NoneType", "traces.enabled": "missing"})
 
     def test_cleanup_ownership_requires_exact_run_and_role(self):
         settings={"bindings":[{"type":"plain_text","name":"PROBE_ID","text":NONCE},
@@ -68,6 +70,10 @@ class NativeTracingExperimentTests(unittest.TestCase):
         for forbidden in ("worker-build --release","cargo install","INGRESS_SECRET","OPENROUTER_API_KEY","CF_EMAIL_ROUTING_TOKEN"):
             self.assertNotIn(forbidden,source)
         self.assertIn("validated_worker_build.py restore",source)
+        self.assertLess(source.index("python -m unittest discover -s infra/tests -v"),
+                        source.index("validated_worker_build.py prepare"))
+        self.assertLess(source.index("validated_worker_build.py restore"),
+                        source.index("${{ secrets.CLOUDFLARE_API_TOKEN }}"))
         self.assertIn("cancel-in-progress: false",source)
         self.assertIn("if: always()",source)
         self.assertIn("native_tracing_experiment.py cleanup",source)

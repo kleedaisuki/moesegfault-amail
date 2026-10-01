@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: Successful full exact-main source CI run (all platforms/native suites)
+        description: Successful full compiled-main source CI run (all platforms/native suites)
         required: true
         type: string
       confirm:
@@ -30,8 +30,14 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.14'
-      - name: Admit full exact-main checked artifact before provider access
+          python-version: '3.12'
+      - name: Validate current infrastructure orchestration before provider capabilities
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python -m pip install --only-binary=:all: -r infra/dns/requirements.txt -r infra/tests/ten_address_requirements.txt
+          python -m unittest discover -s infra/tests -v
+      - name: Admit fully checked original-main artifact before provider access
         id: build
         env:
           GH_TOKEN: ${{ github.token }}

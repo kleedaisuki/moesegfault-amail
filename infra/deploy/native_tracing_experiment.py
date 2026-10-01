@@ -45,7 +45,9 @@ class Provider:
 
     def request(self, method: str, suffix: str, data=None, *, token=None):
         """No automatic retry, query/SQL/body log or guessed absence on read failure."""
-        with span("cloudflare.canary", method.lower(), component="native_tracing", account_id=self.account) as facts:
+        family = suffix.rsplit("/", 1)[-1]
+        endpoint = "workers.canary." + family if family in ("settings", "deployments", "subdomain", "query") else "workers.canary.script"
+        with span("cloudflare.canary", method.lower(), component="native_tracing", account_id=self.account, endpoint=endpoint) as facts:
             headers = {"Authorization": "Bearer " + (token or self.token), "Content-Type": "application/json"}
             request = Request(API + suffix, method=method, headers=headers,
                               data=None if data is None else json.dumps(data).encode())
@@ -61,6 +63,14 @@ class Provider:
                 return value["result"]
             except HTTPError as error:
                 response_facts(facts, error.code, error.headers)
+                try:
+                    raw = error.read(65537)
+                    envelope = json.loads(raw) if len(raw) <= 65536 else {}
+                    codes = envelope.get("errors", []) if isinstance(envelope, dict) else []
+                    facts.provider_error_codes = [item["code"] for item in codes[:20]
+                        if isinstance(item, dict) and type(item.get("code")) is int] if isinstance(codes, list) else []
+                except (ValueError, OSError):
+                    pass
                 raise
 
     def script(self, name: str, suffix: str = "settings") -> str:
@@ -103,10 +113,10 @@ def capture_readback(settings: dict) -> dict:
 
     The provider may omit optional per-signal objects when observability is
     disabled. Missing is not false: it is recorded separately, and admission
-    still requires the explicit root disable flag and rejects any signal enable.
+    checks the source-owned disabled representation and rejects any signal enable.
     """
     observation = settings.get("observability")
-    result = {}
+    result = {"observability": "missing" if "observability" not in settings else "null" if observation is None else type(observation).__name__}
     for path in (("enabled",), ("logs", "enabled"), ("traces", "enabled")):
         value = observation
         label = None
@@ -127,9 +137,15 @@ def capture_accepted(settings: dict, name: str) -> bool:
 
     Script Settings defines logs/traces as optional. Explicit observability false
     disables capture; optional signal objects may be absent but, when returned,
-    must affirm false. A true/ill-typed override is never treated as disabled.
+    must affirm false. The provider may omit the whole disabled object.
+    A true/ill-typed override is never treated as disabled.
     """
     observation = settings.get("observability")
+    # The freshly deployed, source-owned disabled caller returns no capture
+    # object on the real provider. Ownership/version checks are separate gates;
+    # collection also queries this caller and refuses any retained caller record.
+    if observation is None:
+        return name == CALLER
     if not isinstance(observation, dict):
         return False
     if name == PROBE:
@@ -154,7 +170,8 @@ def deploy() -> None:
         else:
             raise ValueError(f"canary_script_already_exists: {name}")
     receipt = {"schema": "native-tracing-experiment/v1", "source_sha": os.environ["GITHUB_SHA"],
-               "run_id": os.environ["GITHUB_RUN_ID"], "probe_id": uuid.uuid4().hex, "versions": {}}
+               "run_id": os.environ["GITHUB_RUN_ID"], "probe_id": uuid.uuid4().hex, "versions": {},
+               "build_identity": json.loads((ROOT / ".temp/ci/validated-worker-build.json").read_text())}
     write_receipt(receipt)
     for name in NAMES:
         path = FOLDER / f"{name}.json"
@@ -305,8 +322,8 @@ def collect() -> None:
     receipt = json.loads(RECEIPT.read_text())
     body = {"queryId": str(uuid.uuid4()), "timeframe": {"from": receipt["from"], "to": receipt["to"]},
             "dry": True, "limit": 200, "view": "events", "parameters": {"datasets": [],
-            "filterCombination": "and", "filters": [{"key": "$metadata.service", "operation": "eq",
-            "type": "string", "value": PROBE}]}}
+            "filterCombination": "or", "filters": [{"key": "$metadata.service", "operation": "eq",
+            "type": "string", "value": name} for name in NAMES]}}
     deadline = time.monotonic() + 180
     while True:
         result = provider.request("POST", f"/accounts/{provider.account}/workers/observability/telemetry/query",
@@ -315,12 +332,15 @@ def collect() -> None:
         if run.get("status") != "COMPLETED":
             raise ValueError("canary_query_not_completed")
         if (run.get("timeframe") != body["timeframe"] or run.get("dry") is not True
-                or run.get("query", {}).get("parameters", {}).get("filters") != body["parameters"]["filters"]):
+                or run.get("query", {}).get("parameters", {}).get("filters") != body["parameters"]["filters"]
+                or run.get("query", {}).get("parameters", {}).get("filterCombination") != "or"):
             raise ValueError("canary_query_scope_echo_mismatch")
         events = result.get("events", {})
         rows = events.get("events", [])
         if type(events.get("count")) is not int or events["count"] != len(rows) or len(rows) >= 200:
             raise ValueError("canary_window_incomplete_or_too_busy")
+        if any(row.get("$metadata", {}).get("service") == CALLER for row in rows):
+            raise ValueError("disabled_caller_retained_record")
         summary = summarize(rows, receipt["probe_id"])
         if len(summary["spans"]) >= 8 and len(summary["cases"]) == 4 and summary["marker_locations"]["path"]:
             break

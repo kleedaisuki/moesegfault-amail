@@ -120,3 +120,37 @@ configuration and runtime acceptance remain to be verified on the next admitted
 experiment. Do not attribute this failure to token permissions or native Rust API.
 
 Reference: https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/settings/methods/get/
+
+## Disabled settings evidence and bounded artifact reuse
+
+Run 36868563346 used fully successful exact-main CI 36867766344 for
+source dcc4eed6b2dd27120940d79484ae7d9ddc0cb051. Probe capture readback was
+three explicit true booleans. The freshly deployed disabled caller returned no
+object (`parent_NoneType` at the root), not the three false booleans required by
+the guard. Both source-owned scripts were again deleted with absence readback;
+receipt cleaned_at is 2026-10-01T13:25:57.619782+00:00. No trigger occurred.
+Previous diagnostics did not distinguish a missing key from explicit null;
+next readback records that distinction. This is a concrete provider representation
+mismatch, not native API failure. The official Settings shape makes the entire
+observability object optional. Admission recognizes the absent/null disabled
+representation only for this freshly source-owned caller; it still rejects
+explicit enabled/invalid overrides and requires exact serving version and endpoint
+readback. Collection queries both fixed scripts and refuses any caller record,
+rather than equating a normalized setting with an observed no-capture verdict.
+
+Repeating all Rust/native builds for orchestration-only changes adds no new
+compiled-product evidence. The experiment lane now separates two proofs:
+(1) fully successful original-main source CI and fixed original compiled artifact;
+(2) mandatory hosted current-source infrastructure checks in the experiment
+workflow before provider capabilities, plus ancestor and diff
+proof allowing only enumerated experiment orchestration files and Markdown docs.
+Rust/lockfile/compiler/config/native fixtures/artifact helper/CI workflow and
+unknown files cannot borrow old evidence. No second checks-run input or manual Secret ceremony is needed.
+Original compiler/source/run/hash checks
+remain intact and receipt keeps both build and orchestration identities. Fetch
+history is bounded to 100 commits; missing ancestry fails closed. This reuse
+policy admits only this infrastructure experiment, never Mail sending or release.
+
+References:
+- https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/settings/methods/get/
+- https://github.com/cloudflare/workers-sdk/blob/wrangler%404.142.0/packages/deploy-helpers/src/deploy/helpers/create-worker-upload-form.ts
