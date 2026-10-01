@@ -91,6 +91,51 @@ class FreshReceiptTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             record.validate({**fixture(), "retained_sink": value["retained_sink"]})
 
+    def test_retained_workers_preserve_three_exact_sources_without_observer_attribution(self):
+        """Settings-only v3 records all prior Worker sources, never the new observer."""
+        value = fixture()
+        creation = deepcopy(value["source_epoch"])
+        observer = {**creation, "source_sha": "d" * 40, "run_id": "789", "artifact_id": 44}
+        retained = {name: {"source_epoch": {**creation, "source_sha": "e" * 40,
+                                           "run_id": "456", "artifact_id": 43}, "version": VERSION}
+                    for name in scripts("production")}
+        retained["amail-trace-sink"]["source_epoch"].update(source_sha="f" * 40, run_id="455", artifact_id=42)
+        value.update(schema=record.RESUMED_SCHEMA, creation_epoch=creation,
+                     source_epoch=observer, retained_workers=retained)
+        self.assertEqual(record.validate(value), value)
+        changed_values = []
+        for source in (observer, creation, {**creation, "artifact_id": True}):
+            changed = deepcopy(value)
+            changed["retained_workers"]["amail-trace-sink"]["source_epoch"] = source
+            changed_values.append(changed)
+        for key, bad in (("version", "00000000-0000-0000-0000-000000000099"), ("payload", "private")):
+            changed = deepcopy(value)
+            changed["retained_workers"]["amail-trace-sink"][key] = bad
+            changed_values.append(changed)
+        changed = deepcopy(value)
+        del changed["retained_workers"]["amail-trace-sink"]
+        changed_values.extend((changed, {**value, "retained_sink": retained["amail-trace-sink"]},
+                               {**fixture(), "retained_workers": retained}))
+        for changed in changed_values:
+            with self.subTest(value=changed), self.assertRaises(ValueError):
+                record.validate(changed)
+        scope = fixture_scope()
+        observed = VerifiedGraph(value["graph"], scope, QUEUE, DLQ, _witness=_OBSERVED)
+        env = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main", "GITHUB_REPOSITORY": record.REPO,
+               "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_JOB": "production-fresh-bootstrap",
+               "GITHUB_WORKFLOW_REF": f"{record.REPO}/{record.WORKFLOW}@refs/heads/main",
+               "GITHUB_RUN_ATTEMPT": "1", "GITHUB_RUN_ID": observer["run_id"], "GITHUB_SHA": observer["source_sha"]}
+        (ROOT / ".temp").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / ".temp", prefix="retained-workers-") as folder:
+            path = Path(folder) / "receipt.json"
+            with self.assertRaisesRegex(ValueError, "retained_workers_unreviewed"):
+                record.persist(scope, observed, QUEUE, DLQ, path, retained_workers=retained)
+            self.assertFalse(path.exists())
+            with patch.dict(os.environ, env, clear=True):
+                self.assertEqual(record.persist(scope, observed, QUEUE, DLQ, path,
+                                 deployment_epoch=record.Epoch(**observer), retained_workers=retained), value)
+            self.assertEqual(json.loads(path.read_text()), value)
+
     def test_closed_first_paused_schema_rejects_every_missing_or_extra_field(self):
         """Stored claims are fixed, including adoption-required and old-work unknown."""
         value = fixture()

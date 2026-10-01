@@ -16,7 +16,7 @@ import zipfile
 
 from fresh_bootstrap_contract import Epoch, Scope, ORIGINAL_BUCKET, ORIGINAL_DATABASE, REPO, RUN
 from fresh_bootstrap_readback import VerifiedGraph, canonical
-from mail_lifecycle_receipt import LIMIT, checked_graph, github, inventory, unique_object
+from mail_lifecycle_receipt import LIMIT, checked_graph, github, inventory, scripts, unique_object
 from pin_staging_mail import ACCOUNT
 
 WORKFLOW = ".github/workflows/ci.yml"
@@ -36,6 +36,8 @@ def validate(value: object) -> dict:
         fields.add("creation_epoch")
         if "retained_sink" in value:
             fields.add("retained_sink")
+        if "retained_workers" in value:
+            fields.add("retained_workers")
     if (not isinstance(value, dict) or set(value) != fields or value["schema"] not in (SCHEMA, RESUMED_SCHEMA)
             or value["realm"] != "production" or value["state"] != "paused"
             or type(value["run_attempt"]) is not int or value["run_attempt"] != 1
@@ -61,6 +63,8 @@ def validate(value: object) -> dict:
     if stores["database_name"] != scope.database_name or stores["bucket"] != scope.bucket:
         raise ValueError("fresh_receipt_scope_mismatch")
     graph = checked_graph(value["graph"], "production")
+    if "retained_sink" in value and "retained_workers" in value:
+        raise ValueError("fresh_receipt_retained_workers_unreviewed")
     if "retained_sink" in value:
         retained = value["retained_sink"]
         if (not isinstance(retained, dict) or set(retained) != {"source_epoch", "version"}
@@ -71,6 +75,18 @@ def validate(value: object) -> dict:
         sink_epoch = Epoch(**retained["source_epoch"])
         if sink_epoch.run_id in {source["run_id"], epoch.run_id}:
             raise ValueError("fresh_receipt_retained_sink_unreviewed")
+    if "retained_workers" in value:
+        retained = value["retained_workers"]
+        if not isinstance(retained, dict) or set(retained) != scripts("production"):
+            raise ValueError("fresh_receipt_retained_workers_unreviewed")
+        for script, worker in retained.items():
+            if (not isinstance(worker, dict) or set(worker) != {"source_epoch", "version"}
+                    or not isinstance(worker["source_epoch"], dict) or set(worker["source_epoch"]) != set(source)
+                    or worker["version"] != graph["pins"][script]["version"]):
+                raise ValueError("fresh_receipt_retained_workers_unreviewed")
+            worker_epoch = Epoch(**worker["source_epoch"])
+            if worker_epoch.run_id in {source["run_id"], epoch.run_id}:
+                raise ValueError("fresh_receipt_retained_workers_unreviewed")
     if graph["api_crons"] != [] or graph["maintenance_crons"] != []:
         raise ValueError("fresh_receipt_schedule_unreviewed")
     resources = value["resources"]
@@ -103,12 +119,15 @@ class Receipt:
 
 
 def persist(scope: Scope, graph: dict, queue: str, dlq: str, path: Path,
-            *, deployment_epoch: Epoch | None = None, retained_sink: dict | None = None) -> dict:
+            *, deployment_epoch: Epoch | None = None, retained_sink: dict | None = None,
+            retained_workers: dict | None = None) -> dict:
     """Persist once only after exact readback, inside the repository's .temp tree.
 
     Example: ``persist(scope, verify(scope, pins, queue, dlq, provider), queue,
     dlq, ROOT / '.temp/fresh-bootstrap/receipt.json')``. No automatic retry,
     overwrite, activation, old-store deletion or source-resource adoption occurs.
+    ``retained_workers`` records exact prior source/version pairs for all three
+    observed scripts when this run only adjusts settings; it excludes ``retained_sink``.
     """
     if not isinstance(scope, Scope) or type(graph) is not VerifiedGraph:
         raise ValueError("fresh_successful_readback_required")
@@ -120,6 +139,10 @@ def persist(scope: Scope, graph: dict, queue: str, dlq: str, path: Path,
         if deployment_epoch is None:
             raise ValueError("fresh_receipt_retained_sink_unreviewed")
         creation["retained_sink"] = retained_sink
+    if retained_workers is not None:
+        if deployment_epoch is None:
+            raise ValueError("fresh_receipt_retained_workers_unreviewed")
+        creation["retained_workers"] = retained_workers
     value = validate({"schema": RESUMED_SCHEMA if creation else SCHEMA, "realm": "production", "state": "paused",
                       "source_epoch": asdict(source), "run_attempt": 1, **creation,
                       "scope": {"database": scope.database, "database_name": scope.database_name,

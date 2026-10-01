@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/deploy"))
@@ -301,6 +301,133 @@ class FreshReadbackTests(unittest.TestCase):
         self.provider.data[path][0]["hostname"] = "wrong.invalid"
         with self.assertRaisesRegex(ValueError, "fresh_public_domain_unverified"):
             self.verify()
+
+
+class CaptureOffTests(unittest.TestCase):
+    """Guard settings-only writes on exact owned versions; never contact a provider."""
+
+    def setUp(self):
+        """Reuse exact role/immutable fixtures, adding only current writable fields."""
+        self.provider = Provider()
+        self.addCleanup(self.provider.database.close)
+        self.provider.token = "PRIVATE_TOKEN"
+        self.records = []
+        for script in (readback.API, readback.MAINTENANCE):
+            current = self.provider.data[f"{self.provider.base}/workers/workers/{script}"]
+            current.update({"tags": ["PRIVATE_TAG"], "subdomain": {"enabled": False, "previews_enabled": False},
+                            "references": {"PRIVATE": []}, "updated_on": "before"})
+            del current["observability"]["issues"]
+
+    def execute(self, script=readback.API, *, patch_action=None):
+        """Require intent before a synthetic single PATCH, then perform separate GETs."""
+        expected = (readback.expected_bindings("queue-api", QUEUE, realm="production") if script == readback.API
+                    else readback.maintenance.expected_bindings("production", QUEUE))
+        expected.update({"MAIL_DB": ("d1", DATABASE), "MAIL_BODIES": ("r2_bucket", self.provider.scope.bucket)})
+        def record(state, **facts):
+            """Keep closed private journal coordinates in memory for assertions."""
+            self.records.append({"state": state, **facts})
+        def submit(account, token, identity, body):
+            """Simulate only a current-resource PATCH while preserving the response state."""
+            self.assertEqual(len(self.records), 1)
+            self.assertEqual(self.records[0], {"state": "intent", "version": VERSION, "worker_id": "fixture"})
+            self.assertEqual(account, self.provider.account)
+            self.assertEqual(identity, "fixture")
+            self.assertEqual(body["name"], script)
+            if patch_action is not None:
+                return patch_action(body)
+            current = self.provider.data[f"{self.provider.base}/workers/workers/{script}"]
+            current["observability"] = deepcopy(body["observability"])
+            current["updated_on"] = "after"
+            return {"id": identity, "name": script}
+        with patch.object(readback, "patch_worker", side_effect=submit) as writer:
+            result = readback.capture_off(self.provider, script, VERSION, expected_bindings=expected,
+                                         reviewed=settings()["observability"], record=record)
+        return result, writer
+
+    def test_api_and_maintenance_correct_only_issues_with_exact_pins(self):
+        """Both owned roles retain immutable deployment, storage and non-capture state."""
+        for script in (readback.API, readback.MAINTENANCE):
+            self.records.clear()
+            path = f"{self.provider.base}/workers/workers/{script}"
+            snapshot = readback.unaffected(self.provider.data[path])
+            result, writer = self.execute(script)
+            self.assertEqual(result, "applied")
+            self.assertEqual(writer.call_count, 1)
+            self.assertEqual(self.provider.data[path]["observability"]["issues"], {"enabled": False})
+            self.assertEqual(readback.unaffected(self.provider.data[path]), snapshot)
+            self.assertEqual([row["state"] for row in self.records], ["intent", "observed"])
+
+    def test_positive_already_off_skips_patch_and_journal_write(self):
+        """A strict positive no-op still brackets immutable capabilities and serving pin."""
+        path = f"{self.provider.base}/workers/workers/{readback.API}"
+        self.provider.data[path]["observability"]["issues"] = {"enabled": False}
+        result, writer = self.execute()
+        self.assertEqual(result, "unchanged")
+        writer.assert_not_called()
+        self.assertEqual(self.records, [])
+
+    def test_active_other_capture_or_wrong_bindings_refuses_before_write(self):
+        """Missing Issues alone is correctable; active Logs/Traces or drift is not."""
+        path = f"{self.provider.base}/workers/workers/{readback.API}"
+        original = deepcopy(self.provider.data[path])
+        for section in (None, "logs", "traces"):
+            current = self.provider.data[path]
+            target = current["observability"] if section is None else current["observability"][section]
+            target["enabled"] = True
+            with self.subTest(section=section), self.assertRaises(ValueError):
+                self.execute()
+            self.assertEqual(self.records, [])
+            self.provider.data[path] = deepcopy(original)
+        version = self.provider.data[f"{self.provider.base}/workers/scripts/{readback.API}/versions/{VERSION}"]
+        version["resources"]["bindings"].append({"name": "EXTRA", "type": "secret_text"})
+        with self.assertRaisesRegex(ValueError, "fresh_capture_capabilities_unverified"):
+            self.execute()
+        self.assertEqual(self.records, [])
+
+    def test_failed_patch_retains_intent_and_never_retries(self):
+        """An ambiguous transport exception cannot be reinterpreted as capture-off."""
+        action = Mock(side_effect=ValueError("PRIVATE_PROVIDER_BODY"))
+        with self.assertRaises(ValueError):
+            self.execute(patch_action=action)
+        action.assert_called_once()
+        self.assertEqual([row["state"] for row in self.records], ["intent"])
+
+    def test_patch_reply_or_unchanged_current_state_is_not_readback_proof(self):
+        """Identity mismatch and missing Issues after a successful response both fail."""
+        for response in ({"id": "other", "name": readback.API}, {"id": "fixture", "name": readback.API}):
+            self.records.clear()
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                self.execute(patch_action=lambda body: response)
+            self.assertEqual([row["state"] for row in self.records], ["intent"])
+
+    def test_unaffected_state_drift_after_patch_refuses(self):
+        """A valid new Issues flag cannot hide changes to references, tags or previews."""
+        def drift(body):
+            """Model an unrelated provider mutation during the correction."""
+            current = self.provider.data[f"{self.provider.base}/workers/workers/{readback.API}"]
+            current["observability"] = deepcopy(body["observability"])
+            current["tags"] = []
+            return {"id": "fixture", "name": readback.API}
+        with self.assertRaisesRegex(ValueError, "fresh_capture_readback_unverified"):
+            self.execute(patch_action=drift)
+        self.assertEqual([row["state"] for row in self.records], ["intent"])
+
+    def test_same_version_different_deployment_refuses_final_bracket(self):
+        """Serving deployment identity is protected independently of immutable version."""
+        original = self.provider.get
+        count = 0
+        def drift(path):
+            """Keep pre-write pins stable and replace the final deployment only."""
+            nonlocal count
+            value = original(path)
+            if "deployments?" in path:
+                count += 1
+                if count == 3:
+                    value["deployments"][0]["id"] = DATABASE
+            return value
+        with patch.object(self.provider, "get", side_effect=drift), self.assertRaisesRegex(ValueError, "fresh_capture_serving_changed"):
+            self.execute()
+        self.assertEqual([row["state"] for row in self.records], ["intent"])
 
 
 if __name__ == "__main__":

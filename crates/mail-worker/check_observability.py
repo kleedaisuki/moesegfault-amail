@@ -191,7 +191,19 @@ def fetch_result(account: str, token: str, path: str) -> dict:
         envelope = json.loads(payload)
         if envelope.get("success") is not True or not isinstance(envelope.get("result"), dict):
             raise ValueError
-        return envelope["result"]
+        result = envelope["result"]
+        if "/versions/" in path:
+            deploy_dir = str(CONFIG.parents[2] / "infra" / "deploy")
+            if deploy_dir not in sys.path:
+                sys.path.insert(0, deploy_dir)
+            import ensure_trace_queues as queues
+            bindings = result.get("resources", {}).get("bindings")
+            if isinstance(bindings, dict) and set(bindings) == {"result"}:
+                bindings = bindings["result"]
+            if isinstance(bindings, list) and any(isinstance(row, dict) and row.get("type") == "queue"
+                    and "queue_name" in row for row in bindings):
+                queues.normalize_queue_bindings(result, queues.inventory(account, token))
+        return result
     except (TypeError, ValueError, AttributeError) as error:
         raise ValueError("Cloudflare settings readback malformed") from error
 

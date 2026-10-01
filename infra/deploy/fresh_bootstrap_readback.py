@@ -1,9 +1,11 @@
-"""Exact fresh paused graph observation; no provider writer or v1 policy override.
+"""Exact fresh graph observation and guarded source-owned capture-off correction.
 
 Only the two immutable storage targets are replaced with typed Scope identities.
 Every other capability/capture predicate comes from the normal source contracts.
 The protected executor supplies a bounded provider and separately authorized S3
 metadata reader. A successful graph is an observation, never activation/drain.
+The separately authorized capture_off operation changes only current settings,
+with unchanged admitted serving code/bindings; it cannot create or deploy stores.
 """
 
 from copy import deepcopy
@@ -23,11 +25,86 @@ import ensure_role_forwarding as forwards
 import check_observability as capture
 import check_trace_sink_isolation as isolation
 import ensure_trace_queues as queues
+from apply_staging_current_worker_capture_off import projection, patch_worker, unaffected
 
 API = "amail-mail"
 MAINTENANCE = "amail-mail-maintenance"
 SINK = "amail-trace-sink"
 _OBSERVED = object()
+
+
+def capture_off(provider, script: str, version: str, *, expected_bindings: dict,
+                reviewed: dict, record) -> str:
+    """Correct independent Issues capture once on one admitted production role.
+
+    The protected caller supplies the exact source-derived immutable binding and
+    observability contracts, plus a private fsynced journal callback. Roles and
+    platform handlers are fixed; there is no arbitrary script/settings writer.
+    All other capture/export switches must already be positively off. Historical
+    staging correction remains a separate unchanged admission/transaction.
+
+    Usage: ``capture_off(provider, API, owned_version,
+    expected_bindings=source_bindings, reviewed=source_observability,
+    record=lambda state, **facts: journal("capture_off", state, **facts))``.
+    The callback receives only state, version and response-owned worker_id.
+    An ambiguous PATCH or failed readback stops without retry or rollback.
+    """
+    handlers = {API: "fetch", MAINTENANCE: "scheduled", "amail-inbound": "email", "amail-events": "queue"}
+    account, token = getattr(provider, "account", None), getattr(provider, "token", None)
+    if (not isinstance(script, str) or script not in handlers or not isinstance(version, str) or UUID.fullmatch(version) is None
+            or not isinstance(account, str) or ACCOUNT.fullmatch(account) is None
+            or not isinstance(token, str) or not token or not isinstance(expected_bindings, dict)
+            or not expected_bindings or not callable(record)):
+        raise ValueError("fresh_capture_coordinates_unreviewed")
+    base, pins = f"accounts/{account}", {script: version}
+    path = f"{base}/workers/scripts/{script}"
+    expected = deepcopy(expected_bindings)
+    before = serving(provider, base, pins)
+
+    def checked_version() -> None:
+        """Require exact immutable role handler and every source-derived capability."""
+        value = provider.get(f"{path}/versions/{version}")
+        if (not isinstance(value, dict) or not _bindings_match(value, version, expected)
+                or not maintenance.entry_surface_match(value, version, handlers[script])):
+            raise ValueError("fresh_capture_capabilities_unverified")
+        # The shared matcher predates Service bindings and does not compare their
+        # target. Preserve exact ingress delegation rather than merely its type.
+        bindings = value["resources"]["bindings"]
+        bindings = bindings["result"] if isinstance(bindings, dict) else bindings
+        for name, (kind, target) in expected.items():
+            if kind != "service":
+                continue
+            row = next(binding for binding in bindings if binding["name"] == name)
+            if not isinstance(target, str) or not target or row.get("service") != target:
+                raise ValueError("fresh_capture_capabilities_unverified")
+
+    checked_version()
+    current_path = f"{base}/workers/workers/{script}"
+    prior = provider.get(current_path)
+    try:
+        body = projection(prior, script=script, reviewed=reviewed)
+    except ValueError as error:
+        raise ValueError("fresh_capture_projection_unverified") from error
+    snapshot = unaffected(prior)
+    if serving(provider, base, pins) != before:
+        raise ValueError("fresh_capture_serving_changed")
+    mode = "unchanged" if capture.effective_api_settings(prior, script) else "applied"
+    if mode == "applied":
+        record("intent", version=version, worker_id=prior["id"])
+        response = patch_worker(account, token, prior["id"], body)
+        if response.get("id") != prior["id"] or response.get("name") != script:
+            raise ValueError("fresh_capture_patch_unverified")
+    current = provider.get(current_path)
+    wanted_policy = body["observability"] if mode == "applied" else prior["observability"]
+    if (not capture.effective_api_settings(current, script) or current.get("id") != prior["id"]
+            or current.get("observability") != wanted_policy or unaffected(current) != snapshot):
+        raise ValueError("fresh_capture_readback_unverified")
+    checked_version()
+    if serving(provider, base, pins) != before:
+        raise ValueError("fresh_capture_serving_changed")
+    if mode == "applied":
+        record("observed", version=version, worker_id=prior["id"])
+    return mode
 
 
 def canonical(value: object) -> str:

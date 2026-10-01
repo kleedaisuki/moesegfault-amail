@@ -1,6 +1,6 @@
 """Complete the actually owned, still-empty first Mail scope without recreating it.
 
-Only the actual migration-stop and observed-sink checkpoints are supported. Immutable
+Only the observed migration-stop, sink, and completed-three-worker checkpoints are supported. Immutable
 successful create/readback records establish storage ownership; current positive
 schema and whole-bucket reads determine remaining migration work. No old run is
 relabeled successful and no resource creation or ambiguous deploy replay exists.
@@ -11,12 +11,14 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import tomllib
 
 from fresh_bootstrap_contract import Epoch, Scope
 from fresh_bootstrap_recovery import load, load_sink_checkpoint
 from fresh_bootstrap_scope import reconcile_scope, render_configs
 from fresh_bootstrap_receipt import persist
 from fresh_bootstrap_readback import held_empty, verify, verify_sink_reader, verify_sink_replacement
+import fresh_bootstrap_readback as readback
 from mail_schema_contract import MIGRATIONS, SCHEMA_SQL, expected_schema, verify_schema
 from production_bootstrap_contract import ProductionResources
 from worker_deploy_result import DeploymentFailure
@@ -106,14 +108,27 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
         try:
             checkpoint = load_sink_checkpoint(prior_run, folder / "checkpoint")
             if checkpoint is not None:
-                creation_run, sink_epoch, sink_version, queue, dlq, replace_needed = checkpoint
+                creation_run = checkpoint.creation_run
+                sink_epoch, sink_version = checkpoint.sink_epoch, checkpoint.pins["sink"]
+                queue, dlq, replace_needed = checkpoint.queue, checkpoint.dlq, checkpoint.replace_sink
             record("intent")
             scope = owned_scope(provider, creation_run, folder)
             if checkpoint is not None:
                 observed = json.loads((folder / "checkpoint/resume.jsonl").read_text(encoding="utf-8").splitlines()[1])
                 if observed["scope"] != asdict(scope) or observed["creation_epoch"] != asdict(scope.epoch):
                     raise ValueError("fresh_resume_checkpoint_scope_mismatch")
-            old_scope = bootstrap.inspect_old_scope(provider, s3)
+            completed = checkpoint is not None and set(checkpoint.pins) == {"sink", "maintenance", "api"}
+            retained_pins = ({bootstrap.SCRIPTS[role]: version for role, version in checkpoint.pins.items()}
+                             if completed else {})
+            if completed:
+                # Positively identify the retained graph before admitting its two
+                # known script names through original-store caller inventory.
+                base = f"accounts/{provider.account}"
+                readback.serving(provider, base, retained_pins)
+                readback.queue_graph(provider, base, queue, dlq)
+                readback.surfaces(provider, base)
+            old_scope = bootstrap.inspect_old_scope(provider, s3,
+                **({"owned_scripts": frozenset({readback.API, readback.MAINTENANCE})} if completed else {}))
             if old_scope["sink_present"] != (checkpoint is not None):
                 raise ValueError("fresh_resume_prior_deployment_requires_reconciliation")
             resources = ProductionResources(scope.database, scope.bucket, deployment_epoch.source_sha)
@@ -124,10 +139,39 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
             if checkpoint is not None and prefix != len(expected_schema().migrations):
                 raise ValueError("fresh_resume_completed_migration_required")
             record("observed", creation_epoch=asdict(scope.epoch), scope=asdict(scope), schema_prefix=prefix)
-            configs = render_configs(scope, folder / "configs")
-            configs["sink"] = bootstrap.sink_config(folder / "configs")
             provider.r2_empty = lambda bucket: old.r2_count(s3, bucket) == 0
             provider.forward_snapshot = bootstrap.forward_snapshot
+            if completed:
+                phase = "retained_workers"
+                record("intent")
+                held_empty(provider, f"accounts/{provider.account}", scope)
+                retained_workers = {
+                    bootstrap.SCRIPTS[role]: {"source_epoch": asdict(
+                        sink_epoch if role == "sink" else checkpoint.deployment_epoch), "version": version}
+                    for role, version in checkpoint.pins.items()}
+                record("observed", workers=retained_workers, queue=queue, dlq=dlq)
+                for role in ("maintenance", "api"):
+                    script = bootstrap.SCRIPTS[role]
+                    phase = f"{role}_capture_off"
+                    config = bootstrap.ROOT / "crates/mail-worker" / (
+                        "wrangler.toml" if role == "api" else "wrangler-maintenance.toml")
+                    policy = tomllib.loads(config.read_text(encoding="utf-8"))["observability"]
+                    expected = (readback.expected_bindings("queue-api", queue, realm="production") if role == "api"
+                                else readback.maintenance.expected_bindings("production", queue))
+                    expected.update({"MAIL_DB": ("d1", scope.database), "MAIL_BODIES": ("r2_bucket", scope.bucket)})
+                    status = readback.capture_off(provider, script, retained_pins[script],
+                        expected_bindings=expected, reviewed=policy, record=record)
+                    if status == "unchanged":
+                        record("observed", version=retained_pins[script], correction=status)
+                phase = "receipt"
+                record("intent")
+                graph = verify(scope, retained_pins, queue, dlq, provider)
+                value = persist(scope, graph, queue, dlq, folder / "receipt.json",
+                                deployment_epoch=deployment_epoch, retained_workers=retained_workers)
+                record("observed")
+                return value
+            configs = render_configs(scope, folder / "configs")
+            configs["sink"] = bootstrap.sink_config(folder / "configs")
             pins = {}
             retained = {}
             roles = ("sink", "maintenance", "api")

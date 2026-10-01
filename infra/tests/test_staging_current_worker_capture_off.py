@@ -5,6 +5,7 @@ import io
 import json
 import os
 import sys
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -33,6 +34,61 @@ def worker(issues=None):
 
 class CurrentWorkerTests(unittest.TestCase):
     """Reject ambiguous projection, write, readback or concurrency evidence."""
+
+    def test_production_source_projections_keep_exact_name_id_and_unaffected_state(self):
+        """Only explicit Issues-off/source preferences differ; no source or worker mutation."""
+        root = Path(__file__).resolve().parents[2]
+        for script, filename in (("amail-mail", "wrangler.toml"),
+                                 ("amail-mail-maintenance", "wrangler-maintenance.toml")):
+            with self.subTest(script=script):
+                with (root / "crates/mail-worker" / filename).open("rb") as file:
+                    config = tomllib.load(file)
+                self.assertEqual(config["name"], script)
+                reviewed = config["observability"]
+                prior = worker()
+                prior["name"] = script
+                prior["id"] = "exact-owned-production-worker"
+                prior["subdomain"]["enabled"] = False
+                prior["bindings"] = {"PRIVATE_STORAGE": "UNCHANGED"}
+                prior["observability"]["traces"]["propagation_policy"] = None
+                snapshot, source = copy.deepcopy(prior), copy.deepcopy(reviewed)
+                with patch.object(subject, "source_policy") as historical:
+                    body = subject.projection(prior, script=script, reviewed=reviewed)
+                historical.assert_not_called()
+                self.assertEqual(prior, snapshot)
+                self.assertEqual(reviewed, source)
+                self.assertEqual(set(body), {"name", "logpush", "observability", "subdomain", "tags", "tail_consumers"})
+                self.assertEqual(body["name"], script)
+                self.assertEqual(body["observability"]["issues"], {"enabled": False})
+                self.assertIsNone(body["observability"]["traces"]["propagation_policy"])
+                self.assertEqual(body["subdomain"], {"enabled": False, "previews_enabled": False})
+                self.assertEqual(body["tags"], prior["tags"])
+                current = copy.deepcopy(prior)
+                current["observability"] = copy.deepcopy(body["observability"])
+                current["updated_on"] = "after"
+                self.assertTrue(subject.effective_api_settings(current, script))
+                self.assertEqual(subject.unaffected(current), subject.unaffected(prior))
+                with patch.object(subject, "request_result", return_value={"id": prior["id"], "name": script}) as reader:
+                    subject.patch_worker("a" * 32, "PRIVATE_TOKEN", prior["id"], body)
+                request = reader.call_args.args[0]
+                self.assertEqual(request.method, "PATCH")
+                self.assertTrue(request.full_url.endswith("/workers/workers/" + prior["id"]))
+                self.assertEqual(json.loads(request.data), body)
+
+    def test_target_projection_requires_matching_name_and_explicit_safe_source(self):
+        """Production cannot silently reuse staging defaults or accept active capture."""
+        prior = worker()
+        prior["name"] = "amail-mail"
+        for arguments in ({"script": "amail-mail"},
+                          {"script": "amail-mail-maintenance", "reviewed": POLICY},
+                          {"script": "../amail-mail", "reviewed": POLICY}):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                subject.projection(prior, **arguments)
+        for section in ("logs", "traces", "issues"):
+            reviewed = copy.deepcopy(POLICY)
+            reviewed[section]["enabled"] = True
+            with self.subTest(section=section), self.assertRaises(ValueError):
+                subject.projection(prior, script="amail-mail", reviewed=reviewed)
 
     def test_historical_matcher_brackets_correction(self):
         """Both sides explicitly select the same exact historical predecessor."""

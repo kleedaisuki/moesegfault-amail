@@ -91,13 +91,22 @@ def validate_write_policy(policy: dict) -> None:
         raise ValueError("projection")
 
 
-def projection(worker: dict) -> dict:
+def projection(worker: dict, *, script: str = SCRIPT, reviewed: dict | None = None) -> dict:
     """Project six writable required fields; do not copy response-only fields.
 
     All capture mechanisms except the independent Issues switch must already be
     off. Preserve recognized optional preferences, rejecting unknown schema.
+    Defaults retain the historical staging source policy. Another exact script
+    requires its corresponding reviewed source observability object explicitly;
+    this projection does not grant deployment or PATCH authorization. The caller
+    must bracket the unchanged serving version and address PATCH by worker["id"].
+
+    Example: ``projection(current, script="amail-mail-maintenance",
+    reviewed=maintenance_config["observability"])``.
     """
-    if not effective_api_settings(relax_issues(worker), SCRIPT):
+    if (not isinstance(script, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,63}", script) is None
+            or reviewed is None and script != SCRIPT
+            or not effective_api_settings(relax_issues(worker), script)):
         raise ValueError("projection")
     identity = worker["id"]
     if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identity) is None:
@@ -113,7 +122,10 @@ def projection(worker: dict) -> dict:
             or any(not isinstance(tag, str) or len(tag) > 256 for tag in tags)):
         raise ValueError("projection")
     policy = copy.deepcopy(worker["observability"])
-    reviewed = source_policy()
+    reviewed = source_policy() if reviewed is None else copy.deepcopy(reviewed)
+    if not safe_observability(reviewed):
+        raise ValueError("projection")
+    validate_write_policy(reviewed)
     policy.update({key: value for key, value in reviewed.items()
                    if key not in ("logs", "traces", "issues")})
     for section in ("logs", "traces", "issues"):
@@ -123,7 +135,7 @@ def projection(worker: dict) -> dict:
     if not safe_observability(policy):
         raise ValueError("projection")
     validate_write_policy(policy)
-    return {"name": SCRIPT, "logpush": False, "observability": policy,
+    return {"name": script, "logpush": False, "observability": policy,
             "subdomain": {key: subdomain[key] for key in ("enabled", "previews_enabled")},
             "tags": copy.deepcopy(tags), "tail_consumers": []}
 

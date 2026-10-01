@@ -19,14 +19,15 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from control_plane_trace import response_facts, span
 from fresh_bootstrap_contract import Epoch, Scope, ORIGINAL_BUCKET, ORIGINAL_DATABASE, STAGING_DATABASE, utc_timestamp
 from pin_staging_mail import UUID
-from ensure_trace_queues import normalize_worker_consumers
+from ensure_trace_queues import inventory_rows, normalize_queue_bindings, normalize_worker_consumers
 
 ROOT = Path(__file__).resolve().parents[2]
 API = "https://api.cloudflare.com/client/v4"
 LIMIT = 1_048_576
 PAGE_SIZE = 1000
 INVENTORY_LIMIT = 10000
-SCRIPTS = "(?:amail-mail|amail-mail-maintenance|amail-trace-sink)"
+# Fixed production adapters share the same readback-only capture correction.
+SCRIPTS = "(?:amail-mail|amail-mail-maintenance|amail-trace-sink|amail-inbound|amail-events)"
 
 
 class FreshError(ValueError):
@@ -199,7 +200,11 @@ class FreshProvider:
                         facts.schema_actual_type = type(value.get(field)).__name__ if field in value else "missing"
                     raise FreshError("fresh_provider_envelope_unverified")
                 if family in ("queues.inventory", "queues.readback"):
-                    return normalize_worker_consumers(value)
+                    value = normalize_worker_consumers(value)
+                    if family == "queues.inventory":
+                        self.queue_catalog = inventory_rows(value)
+                if family == "workers.version":
+                    normalize_queue_bindings(value["result"], getattr(self, "queue_catalog", []))
                 return value
             except HTTPError as error:
                 response_facts(facts, error.code, error.headers)

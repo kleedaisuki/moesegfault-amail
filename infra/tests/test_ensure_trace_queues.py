@@ -47,6 +47,22 @@ class TraceQueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "consumer_drift"):
             MODULE.validate_detail(foreign, "amail-trace-events", detail["queue_id"], "", "queues")
 
+    def test_live_binding_name_resolves_only_from_complete_unique_account_catalog(self):
+        """Current versions expose Queue names; exact observed identities remain mandatory."""
+        catalog = MODULE.inventory_rows({"success": True, "result": [queue("amail-trace-events")]})
+        version = {"resources": {"bindings": [{"name": "TRACE_EVENTS", "type": "queue",
+                                              "queue_name": "amail-trace-events"}]}}
+        self.assertEqual(MODULE.normalize_queue_bindings(version, catalog)["resources"]["bindings"][0]["queue_id"], "a" * 32)
+        for rows, identity in (([], None), (catalog, "b" * 32)):
+            changed = {"resources": {"bindings": [{"type": "queue", "queue_name": "amail-trace-events"}]}}
+            if identity is not None:
+                changed["resources"]["bindings"][0]["queue_id"] = identity
+            with self.assertRaisesRegex(ValueError, "queue_binding_identity_unverified"):
+                MODULE.normalize_queue_bindings(changed, rows)
+        for payload in ({"result": catalog * 2}, {"result": catalog, "result_info": {"total_count": 2}}):
+            with self.assertRaises(ValueError):
+                MODULE.inventory_rows(payload)
+
     def test_retention_and_paused_drift(self):
         """Existing queue drift fails rather than silently updating settings."""
         row = queue("amail-trace-events-staging")

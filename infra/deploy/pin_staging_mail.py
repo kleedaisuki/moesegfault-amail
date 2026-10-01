@@ -68,6 +68,15 @@ def fetch(account: str, token: str, suffix: str) -> dict:
     result = payload.get("result")
     if not isinstance(result, dict):
         raise ValueError("api_unavailable")
+    if suffix.startswith("versions/"):
+        import ensure_trace_queues as queues
+        resources = result.get("resources")
+        bindings = resources.get("bindings") if isinstance(resources, dict) else None
+        if isinstance(bindings, dict) and set(bindings) == {"result"}:
+            bindings = bindings["result"]
+        if isinstance(bindings, list) and any(isinstance(row, dict) and row.get("type") == "queue"
+                                             and "queue_name" in row for row in bindings):
+            queues.normalize_queue_bindings(result, queues.inventory(account, token))
     return result
 
 

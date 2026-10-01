@@ -128,6 +128,20 @@ class BootstrapInspectionTests(unittest.TestCase):
                 inspect.script_inventory(provider)
         provider.get.assert_not_called()
 
+    def test_retained_fresh_workers_never_admit_original_store_or_service_callers(self):
+        """A known completed checkpoint changes name absence, not original-store protection."""
+        provider = Mock(account="a" * 32, resources=resources())
+        owned = frozenset({"amail-mail", "amail-mail-maintenance"})
+        provider.envelope.return_value = {"success": True, "result": [{"id": name} for name in sorted(owned)]}
+        provider.get.return_value = {"bindings": []}
+        self.assertEqual(set(inspect.script_inventory(provider, owned_scripts=owned)), owned)
+        for binding in ({"name": "DB", "type": "d1", "database_id": DATABASE},
+                        {"name": "BODY", "type": "r2_bucket", "bucket_name": BUCKET},
+                        {"name": "CALL", "type": "service", "service": "amail-mail"}):
+            provider.get.return_value = {"bindings": [binding]}
+            with self.assertRaisesRegex(ValueError, "production_unexpected_store_or_service_caller"):
+                inspect.script_inventory(provider, owned_scripts=owned)
+
     def test_query_rejects_mutations_before_any_transport(self):
         """The inspection D1 method exposes only fixed SELECT and PRAGMA reads."""
         provider = object.__new__(inspect.Provider)

@@ -153,6 +153,14 @@ class OnlineContractsTests(unittest.TestCase):
                 immutable["resources"]["bindings"][-1]["service"] = "amail-mail-staging"
                 with self.assertRaisesRegex(ValueError, "ingress_service"):
                     online.verify_adapters(Mock(), scope(), versions)
+                immutable["resources"]["bindings"][-1]["service"] = "amail-mail"
+                immutable["resources"]["bindings"][-1]["environment"] = "staging"
+                with self.assertRaisesRegex(ValueError, "ingress_service"):
+                    online.verify_adapters(Mock(), scope(), versions)
+                immutable["resources"]["bindings"][-1].pop("environment")
+                immutable["resources"]["script"]["handlers"].append("fetch")
+                with self.assertRaisesRegex(ValueError, "adapter_capabilities"):
+                    online.verify_adapters(Mock(), scope(), versions)
 
     def test_event_queue_requires_actual_consumer_and_unused_dlq(self):
         """A successful deploy cannot stand in for a connected lifecycle consumer."""
@@ -173,6 +181,44 @@ class OnlineContractsTests(unittest.TestCase):
             details["b" * 32].update({"consumers_total_count": 1, "consumers": [{"type": "worker"}]})
             with self.assertRaisesRegex(ValueError, "dlq_consumer"):
                 online.verify_event_consumer(provider)
+
+    def test_adapter_capture_uses_source_contract_and_blocks_changed_service_before_patch(self):
+        """An ingress capability mismatch cannot gain the metadata writer capability."""
+        version = "00000000-0000-0000-0000-000000000005"
+        provider, record = Mock(), Mock()
+        config, expected = online.adapter_contract("mail_ingress", scope())
+        with patch.object(online, "verify_adapter_version") as verify:
+            with patch.object(online.readback, "capture_off", return_value="applied") as correction:
+                self.assertEqual(online.correct_adapter_capture(
+                    provider, scope(), "mail_ingress", version, record), "applied")
+                verify.assert_called_once_with(provider, "mail_ingress", version, expected)
+                correction.assert_called_once_with(provider, "amail-inbound", version,
+                    expected_bindings=expected, reviewed=config["observability"], record=record)
+                verify.side_effect = ValueError("fresh_online_ingress_service_unverified")
+                with self.assertRaisesRegex(ValueError, "ingress_service"):
+                    online.correct_adapter_capture(provider, scope(), "mail_ingress", version, record)
+                self.assertEqual(correction.call_count, 1)
+        self.assertEqual(expected["MAIL_API"], ("service", "amail-mail"))
+        _, events = online.adapter_contract("mail_events", scope())
+        self.assertEqual(events["MAIL_DB"], ("d1", scope().database))
+
+    def test_maintenance_capture_uses_active_source_bindings_and_owned_stores(self):
+        """Activated maintenance metadata correction never substitutes an older database."""
+        version = "00000000-0000-0000-0000-000000000005"
+        provider, record = Mock(), Mock()
+        reference = {"TRACE_EVENTS": ("queue", "c" * 32),
+                     "MAIL_DB": ("d1", "prior-database"), "MAIL_BODIES": ("r2_bucket", "prior-bucket")}
+        with patch.object(online.maintenance, "expected_bindings", return_value=dict(reference)) as bindings:
+            with patch.object(online.readback, "capture_off", return_value="unchanged") as correction:
+                self.assertEqual(online.correct_maintenance_capture(
+                    provider, scope(), "c" * 32, version, record), "unchanged")
+        bindings.assert_called_once_with("production", "c" * 32, active=True)
+        expected = dict(reference)
+        expected.update({"MAIL_DB": ("d1", scope().database), "MAIL_BODIES": ("r2_bucket", scope().bucket)})
+        self.assertEqual(correction.call_args.args, (provider, "amail-mail-maintenance", version))
+        self.assertEqual(correction.call_args.kwargs["expected_bindings"], expected)
+        self.assertIs(correction.call_args.kwargs["record"], record)
+        self.assertIs(correction.call_args.kwargs["reviewed"]["issues"]["enabled"], False)
 
     def exercise(self, folder: Path, *, fail_phase=None, graph_drift=False):
         """Drive mocked operations through the real fsynced controller state machine."""
@@ -204,6 +250,9 @@ class OnlineContractsTests(unittest.TestCase):
                        "captured": lambda *args, **kwargs: call("privacy" if "configure_sending_privacy.py" in str(args) else "dns"),
                        "email_events": lambda phase: call(phase),
                        "deploy_adapter": lambda component: call(component, "00000000-0000-0000-0000-000000000005"),
+                       "correct_adapter_capture": lambda provider, stores, component, version, record:
+                           call(component + "_capture_off", "applied"),
+                       "correct_maintenance_capture": lambda *args: call("maintenance_capture_off", "applied"),
                        "forward_snapshot": lambda account: {"external": "unchanged"},
                        "adapter_pins": lambda *args: {"adapters": "same"},
                        "verify_adapters": lambda *args: {"adapters": "same"}}
@@ -224,7 +273,10 @@ class OnlineContractsTests(unittest.TestCase):
             target = Path(folder)
             result, events = self.exercise(target)
             self.assertIsNotNone(result)
-            self.assertEqual(events, ["admit", "load", "source", "paused", "dns", "privacy", "queues", "mail_ingress", "mail_events", "subscription", "maintenance", "active"])
+            self.assertEqual(events, ["admit", "load", "source", "paused", "dns", "privacy", "queues",
+                                     "mail_ingress", "mail_events", "mail_ingress_capture_off",
+                                     "mail_events_capture_off", "subscription", "maintenance",
+                                     "maintenance_capture_off", "active"])
             self.assertTrue(result["sendHeld"])
             self.assertEqual(result["send_release"], "NOT_GRANTED")
             self.assertEqual(result["creation_epoch"], asdict(scope().epoch))
@@ -253,6 +305,21 @@ class OnlineContractsTests(unittest.TestCase):
             self.assertEqual(records[-1]["error_type"], "DeploymentFailure")
             self.assertEqual(records[-1]["version"], "00000000-0000-0000-0000-000000000005")
             self.assertFalse((Path(folder) / "receipt.json").exists())
+
+    def test_ambiguous_capture_correction_stops_without_redeploy_or_final_readback(self):
+        """Each correction is attempted once and failure cannot publish an online receipt."""
+        for phase in ("mail_ingress_capture_off", "mail_events_capture_off", "maintenance_capture_off"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder:
+                result, events = self.exercise(Path(folder), fail_phase=phase)
+                self.assertIsNone(result)
+                self.assertEqual(events.count(phase), 1)
+                self.assertEqual(events.count("mail_ingress"), 1)
+                self.assertEqual(events.count("mail_events"), 1)
+                self.assertNotIn("active", events)
+                self.assertFalse((Path(folder) / "receipt.json").exists())
+                records = [json.loads(line) for line in
+                           (Path(folder) / "recovery/controller.jsonl").read_text().splitlines()]
+                self.assertEqual(records[-1]["phase"], phase)
 
 
 if __name__ == "__main__":
