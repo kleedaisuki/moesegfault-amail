@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import io
+import json
 from pathlib import Path
 import sqlite3
 import sys
@@ -373,7 +374,83 @@ class DirectContactProviderTest(unittest.TestCase):
             patch.object(adoption.sys, "stderr", new_callable=io.StringIO) as diagnostics:
             self.assertEqual(adoption.main(), 1)
             database_client.assert_not_called()
-            self.assertEqual(diagnostics.getvalue(), "direct_contact_policy=not_committed\n")
+            self.assertEqual(diagnostics.getvalue(), "direct_contact_policy=not_committed\n"
+                "direct_contact_policy_diagnostic phase=discovery reason=destination_drift "
+                "write_attempted=false commit_state=not_attempted\n")
+
+    def test_adoption_diagnostics_are_closed_and_status_is_observed_only(self):
+        """Exception bodies, private addresses and unknown text never reach output."""
+        for error, expected in (
+            (health.HealthError("provider_unavailable", http_status=403), "provider_unavailable"),
+            (health.HealthError(DESTINATION), "unknown"),
+            (health.forwarding.ProvisionError("Cloudflare API pagination invalid"), "pagination_invalid"),
+            (health.forwarding.ProvisionError(DESTINATION), "unknown"),
+            (ValueError(DESTINATION), "unknown"),
+        ):
+            with self.subTest(error=type(error).__name__), patch.object(adoption.sys, "stderr", new_callable=io.StringIO) as output:
+                adoption.failure("discovery", False, error)
+                text = output.getvalue()
+                self.assertIn(f"reason={expected}", text)
+                self.assertIn("write_attempted=false commit_state=not_attempted", text)
+                self.assertNotIn(DESTINATION, text)
+                self.assertEqual("http_status=403" in text, expected == "provider_unavailable")
+
+    def test_adoption_write_ambiguity_always_reads_once_without_retry(self):
+        """Committed lost responses succeed; failed readback remains unknown."""
+        env = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main",
+            "GITHUB_ACTOR": "operator", "INPUT_TARGET": "staging", "INPUT_CASE_REF": "CASE_1",
+            "INPUT_CONFIRM": "ADOPT_DIRECT_CONTACT_HELD", "INPUT_EXPECTED_CONTACT_CONTRACT_ID": "NONE",
+            "CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "synthetic"}
+        env.update({"INPUT_" + key.upper(): policy()[key] for key in ("destination_id", *health.PIN_COLUMNS)})
+        for mode in ("committed_lost_response", "uncommitted", "readback_unavailable"):
+            db = FakeDatabase(adopted=False)
+            original = db.query
+
+            def query(sql, params=None):
+                """Exercise real SQL commit with synthetic ambiguous transport outcomes."""
+                if sql == adoption.ADOPT_SQL:
+                    if mode != "uncommitted":
+                        original(sql, params)
+                    raise health.HealthError("provider_unavailable", http_status=503)
+                if mode == "readback_unavailable":
+                    raise health.HealthError("database_unavailable")
+                return original(sql, params)
+
+            with self.subTest(mode=mode), patch.dict("os.environ", env, clear=True), \
+                patch.object(adoption, "DatabaseClient", return_value=db), \
+                patch.object(db, "query", side_effect=query) as calls, \
+                patch.object(adoption.sys, "stderr", new_callable=io.StringIO) as output:
+                self.assertEqual(adoption.main(), 0 if mode == "committed_lost_response" else 1)
+                self.assertEqual([call.args[0] for call in calls.call_args_list], [adoption.ADOPT_SQL, adoption.READ_SQL])
+                self.assertIn("phase=adopt_write reason=provider_unavailable write_attempted=true commit_state=unknown http_status=503", output.getvalue())
+                if mode != "committed_lost_response":
+                    self.assertIn("phase=adopt_readback", output.getvalue())
+                    self.assertNotIn("commit_state=not_attempted", output.getvalue())
+
+    def test_provider_span_records_only_bounded_observed_http_facts(self):
+        """Reuse trace spans, retaining status/ray/codes but not provider messages."""
+        payload = {"success": False, "errors": [{"code": 10000, "message": DESTINATION},
+            {"code": True}, {"code": "private"}]}
+        error = health.urllib.error.HTTPError("https://invalid.invalid/private", 403,
+            DESTINATION, {"cf-ray": "abc123-SIN"}, io.BytesIO(json.dumps(payload).encode()))
+        request = health.urllib.request.Request("https://invalid.invalid/private", method="GET")
+        with patch.object(health.OPENER, "open", side_effect=error), \
+            patch("control_plane_trace._emit") as emit:
+            with self.assertRaises(health.HealthError) as raised:
+                health.request_json(request, endpoint="email-routing.destinations")
+            self.assertEqual(raised.exception.args, ("provider_unavailable",))
+            self.assertEqual(raised.exception.http_status, 403)
+            end = emit.call_args_list[-1].args[0]
+            self.assertEqual(end["http_status"], 403)
+            self.assertEqual(end["cf_ray"], "abc123-SIN")
+            self.assertEqual(end["provider_error_codes"], [10000])
+            self.assertNotIn(DESTINATION, json.dumps(end))
+            self.assertNotIn("https://", json.dumps(end))
+        with patch.object(health.OPENER, "open", side_effect=TimeoutError(DESTINATION)), \
+            patch("control_plane_trace._emit") as emit:
+            with self.assertRaises(health.HealthError):
+                health.request_json(request, endpoint="email-routing.destinations")
+            self.assertNotIn("http_status", emit.call_args_list[-1].args[0])
 
     def test_exact_snapshot_and_drift(self):
         """Destination, shape, rule identity and duplicate matches are checked."""

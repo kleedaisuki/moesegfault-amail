@@ -36,6 +36,42 @@ WHERE role_contact_policy.contract_id=?9
 """
 READ_SQL = "SELECT contract_id FROM role_contact_policy WHERE id=1"
 
+# Only source-owned categories may enter diagnostics; exception text is private.
+REASONS = frozenset(("provider_unavailable", "response_invalid", "request_invalid",
+    "database_unavailable", "contract_missing", "contract_invalid", "route_drift",
+    "destination_drift", "configuration_drift", "configuration_invalid", "not_committed"))
+PROVISION_REASONS = {
+    "Cloudflare API inventory shape changed": "inventory_invalid",
+    "Cloudflare API inventory item malformed": "inventory_invalid",
+    "Cloudflare API pagination invalid": "pagination_invalid",
+    "Cloudflare API pagination drift": "pagination_invalid",
+    "Cloudflare API inventory truncated or shifted": "pagination_invalid",
+    "Cloudflare API pagination exceeded bound": "pagination_invalid",
+    "Routing rule matcher shape changed": "route_drift",
+    "Routing rule matcher item malformed": "route_drift",
+    "Routing rule literal matcher malformed": "route_drift",
+    "Reserved alias has a conflicting or duplicate rule": "route_drift",
+}
+
+
+def failure(phase: str, write_attempted: bool, error: Exception) -> None:
+    """Emit closed categories; attempted writes remain unknown until exact readback."""
+    reason = "unknown"
+    status = None
+    if isinstance(error, HealthError):
+        if error.args and isinstance(error.args[0], str) and error.args[0] in REASONS:
+            reason = error.args[0]
+        status = error.http_status
+    elif isinstance(error, forwarding.ProvisionError):
+        if error.args and isinstance(error.args[0], str):
+            reason = PROVISION_REASONS.get(error.args[0], "unknown")
+    result = (f"direct_contact_policy_diagnostic phase={phase} reason={reason} "
+        f"write_attempted={'true' if write_attempted else 'false'} "
+        f"commit_state={'unknown' if write_attempted else 'not_attempted'}")
+    if type(status) is int and 100 <= status <= 599:
+        result += f" http_status={status}"
+    print(result, file=sys.stderr)
+
 
 def discover_pins(client: RoutingClient, account: str, policy: dict, destination: str) -> None:
     """Resolve IDs from complete inventories and verify the exact pinned snapshot.
@@ -79,11 +115,14 @@ def main() -> int:
         "destination_id": os.getenv("INPUT_DESTINATION_ID", "")}
     policy.update({key: os.getenv("INPUT_" + key.upper(), "") for key in PIN_COLUMNS})
     supplied = sum(bool(policy[key]) for key in ("destination_id", *PIN_COLUMNS))
+    phase = "input"
+    write_attempted = False
     if (os.getenv("GITHUB_ACTIONS") != "true" or os.getenv("GITHUB_REF") != "refs/heads/main"
         or os.getenv("INPUT_CONFIRM") != "ADOPT_DIRECT_CONTACT_HELD" or target not in DATABASES
         or not re.fullmatch(r"[0-9a-f]{32}", account) or not token or not actor or not CASE.fullmatch(case)
         or (expected != "NONE" and not UUID.fullmatch(expected)) or supplied not in (0, 5)):
         print("direct_contact_policy=invalid_request", file=sys.stderr)
+        failure(phase, write_attempted, HealthError("configuration_invalid"))
         return 2
     try:
         if supplied == 0:
@@ -94,20 +133,25 @@ def main() -> int:
                 or destination.rsplit("@", 1)[-1].casefold() == "moesegfault.dev"
                 or destination.rsplit("@", 1)[-1].casefold().endswith(".moesegfault.dev")):
                 raise HealthError("configuration_invalid")
+            phase = "discovery"
             discover_pins(RoutingClient(routing_token, account), account, policy, destination)
         validate_policy(policy)
         database = DatabaseClient(account, token, target)
         params = [policy["contract_id"], policy["destination_id"], *(policy[key] for key in PIN_COLUMNS), f"github:{actor}", case, expected]
         try:
+            phase = "adopt_write"
+            write_attempted = True
             database.query(ADOPT_SQL, params)
-        except Exception:
+        except Exception as error:
             # Read exactly once before deciding whether an ambiguous adoption
             # committed. Repeating the write would create another contract.
-            pass
+            failure(phase, write_attempted, error)
+        phase = "adopt_readback"
         if one_row(database.query(READ_SQL)) != {"contract_id": policy["contract_id"]}:
-            raise ValueError("not_committed")
-    except Exception:
+            raise HealthError("not_committed")
+    except Exception as error:
         print("direct_contact_policy=not_committed", file=sys.stderr)
+        failure(phase, write_attempted, error)
         return 1
     print("direct_contact_policy=adopted_held")
     return 0
