@@ -10,7 +10,7 @@
     "test:routing-deadline": "node --test routing-deadline.test.mjs",
     "test:maintenance-diagnostics": "node --test maintenance-diagnostics.test.mjs",
     "test:maintenance-liveness": "node --test maintenance-liveness.test.mjs",
-    "test": "node --test address-add.test.mjs embedding-http.test.mjs outbound-recovery.test.mjs accepted-http-cron-race.test.mjs maintenance-budget.test.mjs r2-archive-read.test.mjs sql-comments.test.mjs trace-sink.test.mjs"
+    "test": "node --test address-add.test.mjs embedding-http.test.mjs outbound-recovery.test.mjs accepted-http-cron-race.test.mjs maintenance-budget.test.mjs r2-archive-read.test.mjs sql-comments.test.mjs trace-sink.test.mjs native-trace-canary.test.mjs"
   },
   "devDependencies": {
     "miniflare": "4.20260730.0"

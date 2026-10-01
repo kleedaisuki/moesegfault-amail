@@ -1635,6 +1635,10 @@ jobs:
         run: cargo test -p amail-identity-test-inbox --locked --all-targets
       - name: Run role monitor contract tests
         run: cargo test -p amail-role-monitor --locked --all-targets
+      - name: Check infrastructure native-tracing canary contracts and target
+        run: |
+          cargo test -p amail-native-trace-canary --locked --all-targets
+          cargo check -p amail-native-trace-canary --locked --target wasm32-unknown-unknown
       - name: Compile Worker target
         run: cargo check -p amail-worker --locked --target wasm32-unknown-unknown
       - name: Compile Email ingress target
@@ -1668,6 +1672,9 @@ jobs:
         run: worker-build --release
       - name: Bundle role monitor for Wrangler
         working-directory: workers/role-monitor
+        run: worker-build --release
+      - name: Bundle infrastructure native-tracing canary
+        working-directory: workers/native-trace-canary
         run: worker-build --release
       - name: Save trusted pinned check bundler
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') && steps.worker-bundler-cache.outputs.cache-hit != 'true'
