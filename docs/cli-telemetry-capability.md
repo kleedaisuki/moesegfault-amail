@@ -97,6 +97,21 @@ a streamed over-limit body with no Content-Length, exact byte-limit acceptance,
 and the legacy-parser positive control. This is not a generic parser rewrite or
 an assumption that deny_unknown_fields enforces other existing SDK endpoints.
 
+The first repair run [36903708462](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36903708462)
+also exposed an existing local command-journal fixture assumption on Linux:
+55/56 unit tests passed, but four simultaneous scopes retained only one command
+after three explicitly reported diagnostic losses. The test incorrectly required
+every contending writer to acquire a best-effort 250 ms SQLite budget. Its repaired
+barrier keeps four scopes/dependency buffers concurrently live; private channels
+then release each completion/persistence in sequence, retaining four UUID/eight
+row assertions without asserting guaranteed writer admission. The separate locked-
+store/loss test remains. Production locking, budgets and command behavior are not
+changed, and unchanged-source retry is not used as acceptance.
+That run did validate the parser repair: all eight native suites and the stable
+Worker gate passed, including all 117 core cases and the new strict/bounded-body
+assertions. Overall CI nevertheless failed due to the Linux unit fixture, so
+these results cannot substitute for full acceptance of its final repaired head.
+
 * Legacy clients, upload route, body schema, ACK receipt, saved send keys and
   auth/refresh state are unchanged.
 * Opt-out skips capability persistence/upload as well as existing collection.

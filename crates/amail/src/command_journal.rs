@@ -556,23 +556,34 @@ mod tests {
         );
     }
 
-    /// Independent threads get independent generated identities and buffers.
+    /// Overlapping scopes get independent identities and buffers, not guaranteed lock admission.
     #[test]
     fn simultaneous_commands_do_not_cross_correlations() {
         let (_home, cfg) = fixture();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(5));
         let workers: Vec<_> = (0..4)
             .map(|_| {
                 let cfg = cfg.clone();
-                std::thread::spawn(move || {
+                let barrier = barrier.clone();
+                let (release, wait) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
                     run(&cfg, Some(CommandKind::Config), || {
                         Span::start(Phase::AccessToken).finish(&cfg, true, None, None);
+                        barrier.wait();
+                        wait.recv().unwrap();
                         Ok(())
                     })
                     .unwrap()
-                })
+                });
+                (release, worker)
             })
             .collect();
-        for worker in workers {
+        // All four scopes and pending dependency buffers are live together.
+        // Release persistence sequentially: bounded best-effort SQLite admission
+        // is tested separately and cannot promise four contending writers succeed.
+        barrier.wait();
+        for (release, worker) in workers {
+            release.send(()).unwrap();
             worker.join().unwrap();
         }
         let conn = local_store::open(&cfg, Duration::from_millis(250)).unwrap();
