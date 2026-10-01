@@ -1625,6 +1625,9 @@ jobs:
       - name: Verify Cron embedding deadlines in native workerd (non-deploying)
         working-directory: infra/tests/worker-boundary
         run: pnpm test:embedding-deadline
+      - name: Verify Cron final diagnostic batch in native workerd (non-deploying)
+        working-directory: infra/tests/worker-boundary
+        run: pnpm test:maintenance-diagnostics
       - name: Bundle Rust Email ingress for Wrangler
         working-directory: workers/mail-ingress
         run: worker-build --release

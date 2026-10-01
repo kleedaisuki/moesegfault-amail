@@ -22,7 +22,9 @@ use crate::address_diag::{AddressDiag, Kind as AddressDiagKind, Stage as Address
 use crate::archive::{parse_draft, Draft};
 use crate::auth::Principal;
 use crate::database::{Database, MaintenanceBudget, MaintenancePhase};
-use crate::maintenance::{MaintenanceTurn, PhaseTurn, WorkPermit};
+use crate::maintenance::{
+    DeepCondition, MaintenanceDiagnostics, MaintenanceTurn, PhaseTurn, WorkPermit,
+};
 use crate::trace::{Operation, Phase, Trace};
 
 /// Bound one synchronous search below D1's request query cap and Worker memory. / 将同步搜索限制在 D1 单次请求查询上限与 Worker 内存以内。
@@ -169,18 +171,12 @@ pub async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
 pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
     let turn = MaintenanceTurn::new();
     let budget = MaintenanceBudget::new();
+    let mut diagnostics = MaintenanceDiagnostics::new();
     for phase in maintenance::phase_order(event.schedule()) {
-        let result = maintain_phase(&env, &budget, &turn, phase).await;
-        let Err(error) = result else { continue };
-        let code = if database::is_deferred(&error) {
-            trace::DiagnosticCode::MaintenanceBudgetDeferred
-        } else if maintenance::is_deferred(&error) {
-            trace::DiagnosticCode::MaintenanceDeadlineDeferred
-        } else {
-            maintenance_failure(phase)
-        };
-        trace::diagnostic(&env, code).await;
+        let result = maintain_phase(&env, &budget, &turn, phase, &mut diagnostics).await;
+        diagnostics.finish(phase, &result);
     }
+    trace::flush_maintenance(&env, diagnostics.into_codes()).await;
 }
 
 /// The only scheduled dispatch obtains a phase handle; nested helpers cannot
@@ -190,34 +186,23 @@ async fn maintain_phase(
     budget: &MaintenanceBudget,
     turn: &MaintenanceTurn,
     phase: MaintenancePhase,
+    diagnostics: &mut MaintenanceDiagnostics,
 ) -> Result<()> {
     // Admission includes setup and the first complete item. SQL accounting is
     // deliberately independent: admitted completion never gets a clock cutoff.
     let mut phase_turn = turn.enter(phase)?;
     let database = budget.database(env, phase)?;
     match phase {
-        MaintenancePhase::Addresses => reconcile_addresses(env, &database, &mut phase_turn).await,
+        MaintenancePhase::Addresses => {
+            reconcile_addresses(env, &database, &mut phase_turn, diagnostics).await
+        }
         MaintenancePhase::Outbound => reconcile_outbound(env, &database, &mut phase_turn).await,
-        MaintenancePhase::Embeddings => reindex(env, &database, &mut phase_turn).await,
+        MaintenancePhase::Embeddings => reindex(env, &database, &mut phase_turn, diagnostics).await,
         MaintenancePhase::Storage => reconcile_storage(&database).await,
         MaintenancePhase::Deleted => garbage_collect(env, &database, &mut phase_turn).await,
         MaintenancePhase::Orphans => clean_orphans(env, &database, &mut phase_turn).await,
         MaintenancePhase::Search => search_jobs::cleanup(&database).await,
         MaintenancePhase::Abuse => expire_abuse_data(&database).await,
-    }
-}
-
-/// Deliberate admission deferral has a distinct schema code, not provider failure.
-fn maintenance_failure(phase: MaintenancePhase) -> trace::DiagnosticCode {
-    match phase {
-        MaintenancePhase::Addresses => trace::DiagnosticCode::RoutingReconciliationFailed,
-        MaintenancePhase::Outbound => trace::DiagnosticCode::OutboundReconciliationFailed,
-        MaintenancePhase::Embeddings => trace::DiagnosticCode::SemanticIndexRetryFailed,
-        MaintenancePhase::Storage => trace::DiagnosticCode::StorageLedgerReconciliationFailed,
-        MaintenancePhase::Deleted => trace::DiagnosticCode::DeletedMessageCleanupFailed,
-        MaintenancePhase::Orphans => trace::DiagnosticCode::OrphanObjectCleanupFailed,
-        MaintenancePhase::Search => trace::DiagnosticCode::SearchJobCleanupFailed,
-        MaintenancePhase::Abuse => trace::DiagnosticCode::AbuseDataCleanupFailed,
     }
 }
 
@@ -425,6 +410,7 @@ async fn reconcile_addresses(
     env: &Env,
     database: &Database,
     turn: &mut PhaseTurn<'_>,
+    diagnostics: &mut MaintenanceDiagnostics,
 ) -> Result<()> {
     let scan_at = now();
     let mut budget = platform::RoutingBudget::cron(turn.routing_deadline());
@@ -449,7 +435,7 @@ async fn reconcile_addresses(
         rows.extend(claim_address_repairs(database, scan_at, 30 - rows.len()).await?);
     }
     if rows.len() == 30 {
-        trace::diagnostic(env, trace::DiagnosticCode::AddressReconciliationBatchFull).await;
+        diagnostics.note(DeepCondition::AddressBatchFull);
     }
     for (index, row) in rows.iter().enumerate() {
         // A complete inventory plus one useful repair shares entry entitlement.
@@ -467,7 +453,17 @@ async fn reconcile_addresses(
         // Crash safety comes from the pre-I/O claim. Distinguish a denied
         // external turn from an attempted failure: identical retry slots would
         // let a permanently failing prefix consume every future call budget.
-        match repair_address(env, row, &inventory, &ingress, &mut budget, database).await {
+        match repair_address(
+            env,
+            row,
+            &inventory,
+            &ingress,
+            &mut budget,
+            database,
+            diagnostics,
+        )
+        .await
+        {
             Ok(RepairTurn::Deferred) => {
                 defer_address_repairs(database, std::slice::from_ref(row), scan_at).await?;
                 failed = true;
@@ -546,6 +542,7 @@ async fn repair_address(
     ingress: &str,
     budget: &mut platform::RoutingBudget<'_>,
     database: &Database,
+    diagnostics: &mut MaintenanceDiagnostics,
 ) -> Result<RepairTurn> {
     let rules = inventory.for_address(&row.address, ingress, row.cf_rule_id.as_deref())?;
     let enabled_id = rules.first_enabled().map(str::to_owned);
@@ -560,7 +557,7 @@ async fn repair_address(
         };
         if !saved_enabled {
             if ids.iter().any(|id| id == saved) {
-                trace::diagnostic(env, trace::DiagnosticCode::NonEnabledCommittedRoutingRule).await;
+                diagnostics.note(DeepCondition::CommittedRouteDisabled);
             }
             return Ok(RepairTurn::Attempted);
         }
@@ -604,11 +601,7 @@ async fn repair_address(
                     .bind(&[bind_str(&row.address)])?.run().await?;
             }
         } else if !ids.is_empty() {
-            trace::diagnostic(
-                env,
-                trace::DiagnosticCode::NonEnabledProvisioningRoutingRule,
-            )
-            .await;
+            diagnostics.note(DeepCondition::ProvisioningRouteDisabled);
         }
         return Ok(RepairTurn::Attempted);
     }
@@ -908,7 +901,12 @@ struct EmbeddingLease<'a> {
 }
 
 /// Sweep a bounded, owner-fair set of due IDs until a provider cooldown begins.
-async fn reindex(env: &Env, database: &Database, turn: &mut PhaseTurn<'_>) -> Result<()> {
+async fn reindex(
+    env: &Env,
+    database: &Database,
+    turn: &mut PhaseTurn<'_>,
+    diagnostics: &mut MaintenanceDiagnostics,
+) -> Result<()> {
     let current = now();
     let dependency = database
         .prepare("SELECT blocked_until FROM embedding_dependency WHERE id=1")
@@ -928,7 +926,17 @@ async fn reindex(env: &Env, database: &Database, turn: &mut PhaseTurn<'_>) -> Re
         let Some(row) = read_leased_embedding(database, &lease).await? else {
             continue;
         };
-        if process_embedding(env, &database, &lease, row, &mut invalid_requests, deadline).await? {
+        if process_embedding(
+            env,
+            &database,
+            &lease,
+            row,
+            &mut invalid_requests,
+            deadline,
+            diagnostics,
+        )
+        .await?
+        {
             break;
         }
     }
@@ -1015,6 +1023,7 @@ async fn process_embedding(
     row: EmbeddingPending,
     invalid_requests: &mut i32,
     deadline: maintenance::ExternalDeadline<'_>,
+    diagnostics: &mut MaintenanceDiagnostics,
 ) -> Result<bool> {
     let source = format!("{}\n{}", row.subject, row.body_text);
     let input = embedding_prefix(&source);
@@ -1032,8 +1041,15 @@ async fn process_embedding(
             Err(maintenance::deferred())
         }
         Err(platform::CronEmbeddingFailure::Provider(error)) => {
-            persist_embedding_failure(env, database, lease, row.attempts, error, invalid_requests)
-                .await
+            persist_embedding_failure(
+                database,
+                lease,
+                row.attempts,
+                error,
+                invalid_requests,
+                diagnostics,
+            )
+            .await
         }
     }
 }
@@ -1073,12 +1089,12 @@ async fn persist_embedding_success(
 
 /// Persist bounded retry or quarantine, and stop on the established cooldown rule.
 async fn persist_embedding_failure(
-    env: &Env,
     database: &Database,
     lease: &EmbeddingLease<'_>,
     previous_attempts: i64,
     error: platform::EmbeddingFailure,
     invalid_requests: &mut i32,
+    diagnostics: &mut MaintenanceDiagnostics,
 ) -> Result<bool> {
     let attempts = previous_attempts + 1;
     let (quarantine, mut cooldown) = embedding_failure_policy(error, attempts);
@@ -1107,7 +1123,7 @@ async fn persist_embedding_failure(
         .run()
         .await?;
     if quarantine {
-        trace::diagnostic(&env, trace::DiagnosticCode::SemanticDocumentQuarantined).await;
+        diagnostics.note(DeepCondition::DocumentQuarantined);
     }
     if cooldown == 0 {
         return Ok(false);
@@ -1120,7 +1136,7 @@ async fn persist_embedding_failure(
         .bind(&[bind_num(now() + cooldown), bind_str(error.code())])?
         .run()
         .await?;
-    trace::diagnostic(&env, trace::DiagnosticCode::SemanticProviderCooldown).await;
+    diagnostics.note(DeepCondition::ProviderCooldown);
     Ok(true)
 }
 

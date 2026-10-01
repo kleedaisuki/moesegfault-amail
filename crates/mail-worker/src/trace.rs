@@ -373,6 +373,82 @@ fn bucket(value: u64) -> u64 {
 mod tests {
     use super::*;
 
+    /// Validate real serialized bodies, including the exact thirteen-record case.
+    #[test]
+    fn maintenance_buffer_validates_whole_batch_before_any_binding() {
+        let events = (0..13)
+            .map(|_| diagnostic_record(DiagnosticCode::MaintenanceDeadlineDeferred))
+            .collect::<Vec<_>>();
+        let lengths = events
+            .iter()
+            .map(|event| serde_json::to_vec(event).unwrap().len())
+            .collect::<Vec<_>>();
+        assert!(lengths.iter().all(|length| *length <= 1024));
+        assert_eq!(maintenance_charge(&events), batch_charge(&lengths));
+        assert!(maintenance_charge(&events).unwrap() <= 24_078);
+        let mut invalid = events.clone();
+        invalid[12].error_code = Some(ErrorCode::DependencyFailure);
+        assert!(maintenance_charge(&invalid).is_none());
+        invalid[12] = diagnostic_record(DiagnosticCode::MaintenanceDeadlineDeferred);
+        invalid.push(diagnostic_record(
+            DiagnosticCode::MaintenanceDeadlineDeferred,
+        ));
+        assert!(maintenance_charge(&invalid).is_none());
+    }
+
+    /// Unreachable aggregate extremes belong in the pure charge helper only.
+    #[test]
+    fn maintenance_charge_checks_actual_bytes_cap_and_overflow() {
+        assert_eq!(batch_charge(&[235_390]), Some(240_000));
+        assert_eq!(batch_charge(&[235_391]), None);
+        assert_eq!(batch_charge(&[usize::MAX]), None);
+        assert_eq!(batch_charge(&[usize::MAX, 1]), None);
+        assert_eq!(batch_charge(&[1024; 13]), Some(24_078));
+    }
+
+    /// Native TextEncoder fixture uses this independent literal standalone shape.
+    #[test]
+    fn maintenance_json_byte_contract_matches_native_literal_shape() {
+        for code in [
+            DiagnosticCode::RoutingReconciliationFailed,
+            DiagnosticCode::OutboundReconciliationFailed,
+            DiagnosticCode::SemanticIndexRetryFailed,
+            DiagnosticCode::StorageLedgerReconciliationFailed,
+            DiagnosticCode::DeletedMessageCleanupFailed,
+            DiagnosticCode::OrphanObjectCleanupFailed,
+            DiagnosticCode::SearchJobCleanupFailed,
+            DiagnosticCode::AbuseDataCleanupFailed,
+            DiagnosticCode::AddressReconciliationBatchFull,
+            DiagnosticCode::NonEnabledCommittedRoutingRule,
+            DiagnosticCode::NonEnabledProvisioningRoutingRule,
+            DiagnosticCode::SemanticDocumentQuarantined,
+            DiagnosticCode::SemanticProviderCooldown,
+            DiagnosticCode::MaintenanceBudgetDeferred,
+            DiagnosticCode::MaintenanceDeadlineDeferred,
+        ] {
+            let event = diagnostic_record(code);
+            let expected = serde_json::json!({
+                "schema_version": 1, "event_id": "00000000-0000-4000-8000-000000000001",
+                "service": "mail_api", "operation": "maintenance", "phase": "maintenance",
+                "trace_id": "0123456789abcdef0123456789abcdef", "span_id": "0123456789abcdef",
+                "request_id": "00000000-0000-4000-8000-000000000001", "outcome": "phase_failure",
+                "error_code": event.error_code, "duration_ms_bucket": 0, "diagnostic_code": code
+            });
+            assert_eq!(
+                serde_json::to_vec(&event).unwrap().len(),
+                serde_json::to_vec(&expected).unwrap().len()
+            );
+            assert_eq!(
+                serde_json::to_value(&event)
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .len(),
+                12
+            );
+        }
+    }
+
     /// Resource deferrals preserve distinct wire codes without becoming dependency failures.
     #[test]
     fn maintenance_deferrals_have_exact_diagnostic_pairs() {
@@ -594,9 +670,48 @@ fn queue_batches(mut events: Vec<QueuedEvent>) -> Vec<Vec<QueuedEvent>> {
     batches
 }
 
-/// Preserve fixed operational warnings without emitting logs from a public invocation.
-pub(crate) async fn diagnostic(env: &worker::Env, code: DiagnosticCode) {
-    flush(env, vec![diagnostic_record(code)]).await;
+/// Consume Cron's fixed records at exit, without splitting, retry or console fallback.
+///
+/// Queue has no cancellation contract. This one final await can exceed the soft
+/// scheduling target, but cannot delay admission of another business phase.
+pub(crate) async fn flush_maintenance(env: &worker::Env, codes: Vec<DiagnosticCode>) {
+    let events = codes.into_iter().map(diagnostic_record).collect::<Vec<_>>();
+    if events.is_empty() || maintenance_charge(&events).is_none() {
+        return;
+    }
+    let Ok(queue) = env.queue("TRACE_EVENTS") else {
+        return;
+    };
+    let batch = worker::BatchMessageBuilder::new().messages(events).build();
+    let _ = queue.send_batch(batch).await;
+}
+
+/// Validate the entire buffer and actual UTF-8 body bytes before binding access.
+fn maintenance_charge(events: &[QueuedEvent]) -> Option<usize> {
+    if events.len() > 13 || events.iter().any(|event| !event.valid()) {
+        return None;
+    }
+    let lengths = events
+        .iter()
+        .map(|event| serde_json::to_vec(event).ok().map(|bytes| bytes.len()))
+        .collect::<Option<Vec<_>>>()?;
+    if lengths.iter().any(|length| *length > 1024) {
+        return None;
+    }
+    batch_charge(&lengths)
+}
+
+/// Conservative application charge, not an exact provider serialization formula.
+fn batch_charge(lengths: &[usize]) -> Option<usize> {
+    let bodies = lengths
+        .iter()
+        .try_fold(0usize, |sum, len| sum.checked_add(*len))?;
+    let overhead = 512usize.checked_mul(lengths.len())?.checked_add(4096)?;
+    let charge = 2usize
+        .checked_add(bodies)?
+        .checked_add(lengths.len().saturating_sub(1))?
+        .checked_add(overhead)?;
+    (charge <= 240_000).then_some(charge)
 }
 
 /// Construct a standalone fixed maintenance condition without retaining source context.
