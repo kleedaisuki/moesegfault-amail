@@ -300,6 +300,7 @@ impl Event {
                 | Operation::AddressesDelete
                 | Operation::MessagesList
                 | Operation::MessagesSearch
+                | Operation::SearchPoll
                 | Operation::MessagesSend
                 | Operation::MessagesGet
                 | Operation::MessagesArchive

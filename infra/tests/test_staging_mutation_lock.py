@@ -1,6 +1,7 @@
 """Shared same-repository staging resource exclusion; hosted source tests only."""
 
 from pathlib import Path
+import re
 import unittest
 
 from workflow_source import job_block
@@ -42,10 +43,14 @@ class StagingMutationLockTests(unittest.TestCase):
     def test_ci_mutation_dependencies_avoid_pending_sibling_replacement(self) -> None:
         """The default single-pending queue is not a multiple-writer workflow scheduler."""
         source = (ROOT/'.github/workflows/ci.yml').read_text(encoding='utf-8')
-        self.assertIn('staging-trace-sink]', job_block(source, 'staging-worker'))
-        self.assertIn('    needs: staging-worker\n', job_block(source, 'staging-ingress'))
-        self.assertIn('    needs: staging-ingress\n', job_block(source, 'staging-events'))
-        self.assertIn('    needs: [worker, dns, staging-events]\n', job_block(source, 'staging-identity-test-inbox'))
+        for name, predecessor in (("staging-worker", "staging-trace-sink"),
+                                  ("staging-ingress", "staging-worker"),
+                                  ("staging-events", "staging-ingress"),
+                                  ("staging-identity-test-inbox", "staging-events")):
+            with self.subTest(job=name):
+                match = re.search(r"^    needs: \[(.*?)\]$", job_block(source, name), re.MULTILINE)
+                self.assertIsNotNone(match)
+                self.assertIn(predecessor, match[1].split(", "))
 
     def test_standalone_inbox_deploy_uses_workflow_lock_without_reentrant_job_lock(self) -> None:
         """The manual main-branch inbox deployment must not bypass quota exclusion."""

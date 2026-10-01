@@ -71,8 +71,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v4
-      - name: Update stable Rust toolchain
-        run: rustup update stable
+      - name: Use checked-in exact Rust compiler
+        run: rustup show active-toolchain
       - name: Test CLI on release platform
         run: cargo test -p amail --locked --all-targets
       - name: Build release binary

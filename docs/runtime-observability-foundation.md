@@ -310,3 +310,29 @@ valid closed client metadata on a Mail API record. Those fixture-only additions
 are pending final-head hosted checks; they do not change compilation inputs.
 No reader deployment, enriched upload rollout, Mail mutation or native deployed
 privacy acceptance is implied by the successful source run.
+## Concrete legacy poll telemetry gap
+
+Source inspection at dcc4eed6b2dd27120940d79484ae7d9ddc0cb051 found that CLI
+Api::search_poll journals the static operation `messages.search.poll`, while
+Mail's legacy telemetry batch validator only maps `messages.search`. One poll
+row in the oldest pending 20-row upload therefore rejects the entire batch;
+SQLite keeps the rows unuploaded, blocking unrelated later diagnostics too.
+The Queue schema already has SearchPoll for API handling but its CLI-specific
+allowlist also excludes it. This is an observability contract mismatch, not a
+search or privacy reason to suppress the operation.
+
+A bounded reader-first repair maps the existing CLI label and admits the existing
+closed SearchPoll enum for MailCli/OperationExit. Do not accept arbitrary strings
+or relabel polls as fresh searches. Hosted unit and actual native Queue positive/
+negative tests must pass. Actual sink reader rollout precedes API rollout; until
+both are deployed, source acceptance alone does not unblock old remote batches.
+No new producer field, credential, private filter, user content or command
+behavior is introduced by this repair.
+
+Remaining measured/source coverage boundaries: local pack/unpack/config and
+login/logout subphases have no command-span journal; API events have request
+exit and selected routing/storage/send phases, not every dependency; Cron emits
+fixed warning conditions rather than all eight phase timings; Queue binding/send
+failure and local pending-row exhaustion lack explicit loss receipts. Remote
+uploads still omit the new local failure phase and exact event clock. These are
+required foundation work, not accepted end-to-end coverage.

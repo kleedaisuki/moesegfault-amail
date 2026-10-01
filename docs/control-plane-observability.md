@@ -52,6 +52,13 @@ precondition/schema diagnostics need their own source-owned expected/actual
 context. Native Mail/maintenance/CLI causality and the platform-enrichment canary
 remain separate in runtime-observability-foundation.md.
 
+The next source slice applies the same one-attempt typed process boundary to
+ordinary Mail and sink deployment, retaining an exact recovery UUID even on a
+failed exit without treating it as acceptance. Same-run artifact verification
+emits a distinct precondition phase before temporary secrets/provider submission.
+See [deployment artifact foundation](deployment-artifact-foundation.md) for
+scope, source regressions and the remaining drain/rollback/packaging acceptance.
+
 ## Hosted acceptance
 
 PR 46 source a68c743 passed scoped CI 36852119210 (27s), syntax 36852118204

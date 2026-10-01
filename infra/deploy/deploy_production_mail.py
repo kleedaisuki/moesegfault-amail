@@ -9,12 +9,13 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 from check_production_role_graph import ROOT
-from trace_rollout_attestation import UUID
 from pin_staging_mail import expected_bindings
+from control_plane_trace import span
+from tested_worker_artifact import require_artifact
+from worker_deploy_result import DeploymentFailure, submit
 
 
 def require_context(target: str) -> None:
@@ -43,11 +44,20 @@ def main(argv: list[str] | None = None) -> int:
     target = parser.parse_args(argv).target
     path = None
     try:
-        require_context(target)
+        with span("workers.deploy", "precondition", realm=target, component="mail_api") as facts:
+            facts.reason = "realm_context_required"
+            require_context(target)
+            facts.reason = "realm_context_verified"
+        require_artifact("mail_api")
         names = ("OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "INGRESS_SECRET")
         secrets = {name: os.getenv(name, "") for name in names}
         if not all(secrets.values()):
-            raise ValueError("secrets_unverified")
+            with span("workers.deploy", "precondition", realm=target, component="mail_api") as facts:
+                facts.reason = "project_secrets_missing"
+                facts.schema_field = "project_secrets"
+                facts.schema_expected = "all_required_values_present"
+                facts.schema_actual_type = "missing_value"
+                raise ValueError("secrets_unverified")
         (ROOT / ".temp").mkdir(exist_ok=True)
         descriptor, name = tempfile.mkstemp(prefix=f"{target}-mail-secrets-", suffix=".json", dir=ROOT / ".temp")
         path = Path(name)
@@ -58,18 +68,14 @@ def main(argv: list[str] | None = None) -> int:
         if target == "staging":
             command.extend(["--env", "staging"])
         command.extend(["--secrets-file", str(path)])
-        result = subprocess.run(command,
-                                cwd=ROOT / "crates/mail-worker", capture_output=True,
-                                text=True, timeout=600, check=False)
-        if len(result.stdout) + len(result.stderr) > 1048576:
-            raise ValueError("deployment_unverified")
-        versions = re.findall(r"Current Version ID:\s*(" + UUID.pattern.removesuffix(r"\Z") + r")(?=\s|$)", result.stdout + result.stderr)
-        if len(versions) == 1:
-            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as destination:
-                destination.write(f"version={versions[0]}\n")
-            print(f"{target}_api_deployment=recovery_version_captured version={versions[0]}")
-        if result.returncode or len(versions) != 1:
-            raise ValueError("deployment_unverified")
+        try:
+            version = submit(command, target, "mail_api", cwd=ROOT / "crates/mail-worker")
+        except DeploymentFailure as error:
+            if error.version is not None:
+                write_version(error.version)
+                print(f"{target}_api_deployment=recovery_version_captured version={error.version}")
+            raise
+        write_version(version)
     except (ValueError, KeyError, TypeError, IndexError, OSError, subprocess.TimeoutExpired):
         print(f"{target}_api_deployment=UNVERIFIED")
         return 1
@@ -78,6 +84,12 @@ def main(argv: list[str] | None = None) -> int:
             path.unlink(missing_ok=True)
     print(f"{target}_api_deployment=version_captured")
     return 0
+
+
+def write_version(version: str) -> None:
+    """Preserve an exact provider UUID for subsequent readback, not a readiness claim."""
+    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as destination:
+        destination.write(f"version={version}\n")
 
 if __name__ == "__main__":
     raise SystemExit(main())
