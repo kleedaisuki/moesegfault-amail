@@ -48,7 +48,10 @@ download, TEXT/HTML checks and exact attachment bytes are required.
 
 Automatic OpenRouter indexing of eligible synthetic subjects and extracted text
 is explicitly authorized; raw ZIPs and attachments are not indexing inputs.
-Ordinary diagnostic telemetry is disabled, which does not disable indexing.
+Actual mail commands use the ordinary default diagnostic telemetry so safe
+request and trace receipts remain useful on failures. The existing native-login
+adapter temporarily disables telemetry during its isolated login ceremony; this
+does not disable indexing.
 
 User B is a delegated independent actor. Its authored research reply is retained
 under `infra/user-drafts/reply/`. The reply deliberately distinguishes content
@@ -68,3 +71,32 @@ authentication, sending or receipt.
 
 Online observations will be appended with run IDs, public phase labels and
 conclusions only, not usernames, addresses, mail subjects, bodies or credentials.
+
+### First actual registration execution
+
+Run **36912275906** at merged source **87acaaa** downloaded the existing current
+candidate binary and entered actual registration. It stopped with exactly
+`chrome_cdp_startup_timeout`, about 111 seconds after the action began: 60 seconds
+of route propagation plus 45 seconds of blank-browser CDP startup and cleanup.
+The Browser constructor failed before first-party navigation or any registration
+request, so neither A nor B was created. The exact original error propagated
+only after registration `finally` successfully removed/read back the temporary
+A route and required no new private R2 object relative to its baseline. B was
+never entered. This is a browser-runtime failure, not an Identity auth rejection.
+
+The original installed-Chrome driver compressed local HTTP readiness, page-target
+readiness and WebSocket handshake failures into a timeout. The exact lower-level
+cause cannot be reconstructed from that historical log. The narrow next source
+change uses Google's official Chrome for Testing binary under repository `.temp`
+and records its numeric version, adds only a fixed failing-startup-boundary label,
+and starts the same owned blank browser before opening a verification route.
+No credential/browser trace, probe workflow or alternative auth path is added.
+The next actual registration remains root-dispatched only after its bootstrap
+writer has terminated.
+
+Google recommends [Chrome for Testing for browser automation](https://developer.chrome.com/blog/remote-debugging-port)
+and a non-default `--user-data-dir`; the owned profile already satisfied the
+latter condition. [Chrome Headless documentation](https://developer.chrome.com/docs/automation-and-testing/headless)
+confirms the unified headless mode. The runtime substitution is a practical
+mitigation, not evidence that the installed Chrome version/security change was
+the historical root cause.

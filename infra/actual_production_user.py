@@ -70,13 +70,15 @@ def register(actor: str, material: tuple[str, str, str]) -> None:
     account, token = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
     baseline = inbox.object_inventory(account, token)
     require(identity.route(address=contact) == "absent", "verification_route_already_open")
-    require(identity.route("--apply", contact) == "created", "verification_route_creation_failed")
     browser = None
     fresh: set[str] = set()
     try:
+        # Complete local browser startup before opening any verification route.
+        browser = identity.Browser(RUN / actor / "registration", realm=REALM)
+        marker(f"actor_{actor.lower()}_owned_browser_started")
+        require(identity.route("--apply", contact) == "created", "verification_route_creation_failed")
         time.sleep(60)
         require(identity.route(address=contact) == "enabled", "verification_route_not_settled")
-        browser = identity.Browser(RUN / actor / "registration", realm=REALM)
         browser.navigate(REALM.login_origin + "/register")
         browser.wait_dom('input[name="display_name"]')
         browser.require_login_origin()
@@ -153,7 +155,7 @@ def login(actor: str, material: tuple[str, str, str]) -> tuple[dict[str, str], s
     environment = identity.browser_environment()
     environment.update(AMAIL_HOME=str(homes[0]), AMAIL_ISSUER=REALM.issuer,
                        AMAIL_CLIENT_ID=REALM.client_id, AMAIL_API_BASE=REALM.mail_api,
-                       AMAIL_REDIRECT_URI="http://127.0.0.1/callback", AMAIL_TELEMETRY="off")
+                       AMAIL_REDIRECT_URI="http://127.0.0.1/callback")
     local = "journey-" + actor.lower() + "-" + hashlib.sha256(material[0].encode()).hexdigest()[:8]
     address = local + "@mail.moesegfault.dev"
     owned = cli(environment, "address", "list")

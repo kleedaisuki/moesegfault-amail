@@ -271,23 +271,34 @@ class Browser:
         """Attach only to the local page target. / 仅连接本机页面目标。"""
 
         deadline = time.monotonic() + CHROME_CDP_STARTUP_SECONDS
+        stage = "local_http_readiness"
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 break
             try:
+                stage = "local_http_readiness"
                 with build_opener(ProxyHandler({})).open(f"{origin}/json", timeout=1) as response:
                     targets = json.load(response)
+                stage = "page_target_readiness"
                 page = next(t for t in targets if t.get("type") == "page")
                 endpoint = urlsplit(page["webSocketDebuggerUrl"])
                 if endpoint.scheme != "ws" or endpoint.hostname != "127.0.0.1" or endpoint.port != self.port:
                     raise ProbeError("chrome_cdp_endpoint_mismatch")
+                stage = "websocket_handshake"
                 return websocket.create_connection(
                     page["webSocketDebuggerUrl"], timeout=1, origin=origin,
                     http_no_proxy=["127.0.0.1"],
                 )
+            except websocket.WebSocketBadStatusException as error:
+                status = getattr(error, "status_code", None)
+                stage = "websocket_http_" + (str(status) if status in (400, 401, 403, 404, 500) else "other")
+                time.sleep(0.15)
             except (OSError, ValueError, KeyError, StopIteration, websocket.WebSocketException):
                 time.sleep(0.15)
         exited = self.process.poll() is not None
+        # Startup occurs on a blank owned page, before typing any credential.
+        # Emit only the fixed failing boundary, never a URL or exception text.
+        print("chrome_cdp_startup_boundary=" + stage, flush=True)
         raise ProbeError("chrome_exited_before_cdp" if exited else "chrome_cdp_startup_timeout")
 
     def _receive(self, timeout: float) -> dict:
