@@ -106,7 +106,7 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
         try:
             checkpoint = load_sink_checkpoint(prior_run, folder / "checkpoint")
             if checkpoint is not None:
-                creation_run, sink_epoch, sink_version, queue, dlq = checkpoint
+                creation_run, sink_epoch, sink_version, queue, dlq, replace_needed = checkpoint
             record("intent")
             scope = owned_scope(provider, creation_run, folder)
             if checkpoint is not None:
@@ -129,6 +129,7 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
             provider.r2_empty = lambda bucket: old.r2_count(s3, bucket) == 0
             provider.forward_snapshot = bootstrap.forward_snapshot
             pins = {}
+            retained = {}
             roles = ("sink", "maintenance", "api")
             if checkpoint is None:
                 phase = "migrate"
@@ -143,12 +144,18 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
                 queue, dlq = bootstrap.provision_trace_graph(provider)
                 record("observed", queue=queue, dlq=dlq)
             else:
-                # Storage/migration/queues are retained. Root separately authorizes
-                # one changed-source sink replacement to remove SDK named exports.
+                # Storage/DDL/queues stay retained. Replace only the legacy SDK
+                # surface; an observed completed wrapper is read back, not resent.
                 phase = "retained_sink"
                 record("intent")
                 held_empty(provider, f"accounts/{provider.account}", scope)
-                verify_sink_replacement(scope, sink_version, queue, dlq, provider)
+                if replace_needed:
+                    verify_sink_replacement(scope, sink_version, queue, dlq, provider)
+                else:
+                    verify_sink_reader(scope, sink_version, queue, dlq, provider)
+                    pins[bootstrap.SCRIPTS["sink"]] = sink_version
+                    retained = {"source_epoch": asdict(sink_epoch), "version": sink_version}
+                    roles = ("maintenance", "api")
                 record("observed", source_epoch=asdict(sink_epoch), version=sink_version, queue=queue, dlq=dlq)
             for role in roles:
                 replacing = role == "sink" and checkpoint is not None
@@ -166,7 +173,7 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
             record("intent")
             graph = verify(scope, pins, queue, dlq, provider)
             value = persist(scope, graph, queue, dlq, folder / "receipt.json",
-                            deployment_epoch=deployment_epoch)
+                            deployment_epoch=deployment_epoch, **({"retained_sink": retained} if retained else {}))
             record("observed")
             return value
         except Exception as error:

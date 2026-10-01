@@ -317,15 +317,17 @@ class FreshTransportTests(unittest.TestCase):
         self.assertEqual(request.full_url, fresh.API + "/" + self.path)
         self.assertNotIn("private-dummy", self.output.getvalue())
 
-    def test_queue_optional_errors_do_not_weaken_explicit_success_or_other_providers(self):
-        """Reproduce the successful Queue shape while preserving negative envelope guards."""
+    def test_optional_errors_never_weaken_explicit_http_success_or_result(self):
+        """Queue and actual Workers domains null errors carry no provider failure."""
         queue = f"accounts/{self.provider.account}/queues"
-        for errors in ("missing", None, []):
-            value = {"success": True, "result": []}
-            if errors != "missing":
-                value["errors"] = errors
-            self.response(json.dumps(value).encode())
-            self.assertEqual(self.provider.envelope("GET", queue), envelope([]))
+        domains = f"accounts/{self.provider.account}/workers/domains"
+        for path in (queue, domains, self.path):
+            for errors in ("missing", None, []):
+                value = {"success": True, "result": []}
+                if errors != "missing":
+                    value["errors"] = errors
+                self.response(json.dumps(value).encode())
+                self.assertEqual(self.provider.envelope("GET", path), envelope([]))
         invalid = ({"success": True, "result": [], "errors": [{"code": 1234, "message": "private"}]},
                    {"success": False, "result": []}, {"success": True},
                    {"success": True, "result": [], "errors": {}})
@@ -333,7 +335,7 @@ class FreshTransportTests(unittest.TestCase):
             self.response(json.dumps(value).encode())
             with self.assertRaisesRegex(fresh.FreshError, "fresh_provider_envelope_unverified"):
                 self.provider.envelope("GET", queue)
-        self.response(b'{"success":true,"result":[]}')
+        self.response(b'{"success":true,"result":[]}', status=400)
         with self.assertRaisesRegex(fresh.FreshError, "fresh_provider_envelope_unverified"):
             self.provider.envelope("GET", self.path)
         self.assertNotIn("private", self.output.getvalue())
