@@ -270,12 +270,14 @@ def _absence(provider, epoch: Epoch) -> None:
         # A present smaller server limit is valid; every returned cursor is followed.
         page_limit = info.get("per_page", PAGE_SIZE) if isinstance(info, dict) else None
         if (value.get("success") is not True or value.get("errors") != []
-                or not isinstance(rows, list) or len(rows) > PAGE_SIZE or not isinstance(info, dict)
-                or type(page_limit) is not int or not 1 <= page_limit <= PAGE_SIZE
-                or len(rows) > page_limit
-                or not isinstance(info.get("cursor", ""), str)
-                or len(info.get("cursor", "")) > 2048):
+                or not isinstance(rows, list) or len(rows) > PAGE_SIZE):
             raise FreshError("fresh_r2_inventory_incomplete")
+        if not isinstance(info, dict):
+            raise FreshError("fresh_r2_result_info_type")
+        if type(page_limit) is not int or not 1 <= page_limit <= PAGE_SIZE or len(rows) > page_limit:
+            raise FreshError("fresh_r2_page_limit_unverified")
+        if not isinstance(info.get("cursor", ""), str) or len(info.get("cursor", "")) > 2048:
+            raise FreshError("fresh_r2_cursor_unverified")
         for row in rows:
             if (not isinstance(row, dict) or not isinstance(row.get("name"), str)
                     or not row["name"] or row["name"] in seen):
