@@ -9,6 +9,7 @@ mod database;
 mod maintenance;
 mod platform;
 mod search_jobs;
+mod telemetry_read;
 mod trace;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -1260,7 +1261,7 @@ async fn dispatch(
                     code: "service_unavailable",
                 });
             }
-            telemetry(&mut req, request_id, trace).await
+            telemetry_attempts(&mut req, request_id, trace).await
         }
         _ => Err(AppError::not_found()),
     }
@@ -3000,11 +3001,36 @@ struct TelemetryBatch {
     events: Vec<TelemetryEvent>,
 }
 
+/// Preserve the historical platform JSON parser and acknowledgement contract.
 async fn telemetry(req: &mut Request, request_id: &str, trace: &Trace) -> AppResult<Response> {
     let batch: TelemetryBatch = req
         .json()
         .await
         .map_err(|_| AppError::bad("invalid_json"))?;
+    acknowledge_telemetry(batch, request_id, trace)
+}
+
+/// Enforce the closed attempts schema without the platform struct-field filter.
+/// serde-wasm-bindgen visits declared struct fields only, so deny_unknown_fields
+/// cannot reject unknown object keys through Request::json. Read the new route
+/// as bounded JSON bytes instead; never log the body or deserialize error text.
+/// The legacy route keeps its established parser rather than stricter admission.
+async fn telemetry_attempts(
+    req: &mut Request,
+    request_id: &str,
+    trace: &Trace,
+) -> AppResult<Response> {
+    let body = telemetry_read::read(req).await?;
+    let batch = serde_json::from_slice(&body).map_err(|_| AppError::bad("invalid_json"))?;
+    acknowledge_telemetry(batch, request_id, trace)
+}
+
+/// Both parsers share exact validation, safe reconstruction and existing ACK semantics.
+fn acknowledge_telemetry(
+    batch: TelemetryBatch,
+    request_id: &str,
+    trace: &Trace,
+) -> AppResult<Response> {
     if batch.events.len() > 100
         || batch.events.iter().any(|e| {
             trace::operation_from_cli(&e.operation).is_none()

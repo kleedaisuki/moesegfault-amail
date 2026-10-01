@@ -108,7 +108,10 @@ async function fixture(run, { queueBinding = true } = {}) {
     const request = async (pathname, { auth = token(), body, method = "POST" } = {}) =>
       mf.dispatchFetch(`${origin}${pathname}`, { method,
         headers: { ...(auth === null ? {} : { Authorization: `Bearer ${auth}` }), "Content-Type": "application/json" },
-        ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }),
+        ...(body === undefined ? {} : {
+          body: typeof body === "string" || body instanceof ReadableStream ? body : JSON.stringify(body),
+          ...(body instanceof ReadableStream ? { duplex: "half" } : {}),
+        }),
       });
     const clientRecords = () => records.filter(row => row.service === "mail_cli");
     const delivered = async count => {
@@ -222,15 +225,47 @@ test("missing Queue binding disables announcement and rejects attempts before pa
 
 test("versioned reader rejects unknown fields and impossible source phase metadata", async () => {
   await fixture(async ({ request }) => {
-    for (const event of [{ ...attempt(), phase: "SYNTHETIC_PRIVATE_PHASE" },
-      { ...attempt(), private_body: "SYNTHETIC_PRIVATE_CONTENT" },
-      { ...attempt(), error_kind: "credential_unavailable" },
-      { ...attempt(), elapsed_ms: null }]) {
+    for (const [label, event] of [
+      ["unknown phase", { ...attempt(), phase: "SYNTHETIC_PRIVATE_PHASE" }],
+      ["unknown event field", { ...attempt(), private_body: "SYNTHETIC_PRIVATE_CONTENT" }],
+      ["contradictory cause", { ...attempt(), error_kind: "credential_unavailable" }],
+      ["missing elapsed", { ...attempt(), elapsed_ms: null }],
+    ]) {
       const response = await request("/v1/telemetry/attempts", { body: { events: [event] } });
-      assert.equal(response.status, 400);
+      assert.equal(response.status, 400, label);
       capable(response);
       assert.ok(["invalid_json", "invalid_telemetry"].includes((await response.json()).code));
     }
+    const response = await request("/v1/telemetry/attempts", {
+      body: { events: [attempt()], private_body: "SYNTHETIC_PRIVATE_CONTENT" },
+    });
+    assert.equal(response.status, 400, "unknown batch field");
+    capable(response);
+    assert.equal((await response.json()).code, "invalid_json");
+
+    // Exercise actual streamed bytes without Content-Length, not just a JSON event-count cap.
+    const encoder = new TextEncoder();
+    const oversized = new ReadableStream({ start(controller) {
+      controller.enqueue(encoder.encode('{"events":[],"private_body":"'));
+      controller.enqueue(encoder.encode("S".repeat(256 * 1024)));
+      controller.enqueue(encoder.encode('"}'));
+      controller.close();
+    } });
+    const tooLarge = await request("/v1/telemetry/attempts", { body: oversized });
+    assert.equal(tooLarge.status, 400, "actual chunked body limit");
+    capable(tooLarge);
+    assert.equal((await tooLarge.json()).code, "invalid_telemetry");
+
+    const atLimit = JSON.stringify({ events: [attempt()] }).padEnd(256 * 1024, " ");
+    const accepted = await request("/v1/telemetry/attempts", { body: atLimit });
+    assert.equal(accepted.status, 202, "exact byte-limit positive control");
+    assert.equal((await accepted.json()).accepted, 1);
+
+    const legacyExtension = await request("/v1/telemetry", {
+      body: { events: [{ ...legacy(), private_body: "SYNTHETIC_PRIVATE_CONTENT" }] },
+    });
+    assert.equal(legacyExtension.status, 202, "legacy platform parser remains unchanged");
+    assert.equal((await legacyExtension.json()).accepted, 1);
   });
 });
 

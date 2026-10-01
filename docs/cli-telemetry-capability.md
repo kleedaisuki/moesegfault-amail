@@ -71,6 +71,32 @@ account/provider debugging is authorized here.
 
 ## Compatibility and honest coverage
 
+### Hosted parser boundary finding (2026-10-02)
+
+Exact-head run [36899502755](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36899502755)
+for PR 76 head `cd9e1dc9337255a060041b0c8a6cb3ecaa7c0d55` passed 116/117 native
+core cases, but the new route returned 202 for an unknown event field instead of 400.
+This was not flaky timing: workers-rs Request::json uses serde-wasm-bindgen 0.6.5,
+whose struct deserializer visits declared fields only. Consequently Serde's
+deny_unknown_fields cannot observe extra object keys at that platform boundary,
+unlike existing serde_json unit tests. See the
+[pinned SDK implementation](https://github.com/cloudflare/workers-rs/blob/v0.8.7/worker/src/request.rs)
+and [pinned struct deserializer](https://github.com/RReverser/serde-wasm-bindgen/blob/v0.6.5/src/de.rs).
+
+Only the new attempts route now deserializes actual JSON bytes using serde_json.
+A narrow native reader caps the actual body at 256 KiB, regardless of absent or
+untrusted Content-Length, checking each native chunk before copying into Wasm.
+The cap has generous room for the existing 100-event admission limit (CLI uploads
+at most 20). Over-limit bodies return 400/invalid_telemetry; malformed or
+unknown-key JSON returns 400/invalid_json; errors expose no key/body/error text.
+The reader cancels rejected bodies and releases its lock using the existing native
+cleanup mechanism. Legacy Request::json behavior remains unchanged, including
+discarding extra object keys. Both routes share event validation and ACK/reconstruction.
+Native coverage includes labeled field/phase/cause negatives, extra batch keys,
+a streamed over-limit body with no Content-Length, exact byte-limit acceptance,
+and the legacy-parser positive control. This is not a generic parser rewrite or
+an assumption that deny_unknown_fields enforces other existing SDK endpoints.
+
 * Legacy clients, upload route, body schema, ACK receipt, saved send keys and
   auth/refresh state are unchanged.
 * Opt-out skips capability persistence/upload as well as existing collection.
