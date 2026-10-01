@@ -27,6 +27,9 @@ dead_letter_queue = "amail-sending-events-dlq"
 # 队列负载包含收发件人、标题和 SMTP 响应，禁用自动观测以免泄漏。
 [observability]
 enabled = false
+# Keep the full production metadata contract even while every capture switch is off.
+head_sampling_rate = 1.0
+redact_query_string = true
 
 [observability.logs]
 enabled = false

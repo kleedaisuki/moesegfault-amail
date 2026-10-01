@@ -220,12 +220,17 @@ class OnlineContractsTests(unittest.TestCase):
         self.assertIs(correction.call_args.kwargs["record"], record)
         self.assertIs(correction.call_args.kwargs["reviewed"]["issues"]["enabled"], False)
 
-    def exercise(self, folder: Path, *, fail_phase=None, graph_drift=False):
+    def exercise(self, folder: Path, *, fail_phase=None, graph_drift=False, resume=False):
         """Drive mocked operations through the real fsynced controller state machine."""
         value = receipt_value()
         current = Epoch("e" * 40, "456", 67, "f" * 64, "1.94.0")
         receipt = Mock(value=value, artifact_id=89)
         provider = Mock(account="1" * 32)
+        checkpoint = Mock(epoch=Epoch("2" * 40, "234", 90, "3" * 64, "1.94.0"),
+                          creation_epoch=scope().epoch,
+                          resources={"database": scope().database, "bucket": scope().bucket},
+                          adapter_versions={"mail_ingress": "00000000-0000-0000-0000-000000000005",
+                                            "mail_events": "00000000-0000-0000-0000-000000000006"})
         events = []
         def call(phase, result=None):
             """Collect semantic operations and stop at one selected ambiguous write."""
@@ -245,7 +250,12 @@ class OnlineContractsTests(unittest.TestCase):
             self.assertTrue(kwargs["source_active"])
             return call("active" if active else "paused", graph)
         with ExitStack() as stack:
+            stack.enter_context(patch.dict(online.os.environ, {
+                "AMAIL_FRESH_BOOTSTRAP_RUN_ID": "123:234" if resume else "123"}))
             patches = {"admit": lambda: call("admit", current), "load": lambda run: call("load", receipt),
+                       "load_online_checkpoint": lambda *args: call("checkpoint", checkpoint),
+                       "verify_sending_privacy": lambda *args: call("privacy_read"),
+                       "verify_event_consumer": lambda *args: call("queues_read"),
                        "check_configs": lambda stores: call("source"), "capabilities": lambda stores: (provider, Mock()),
                        "captured": lambda *args, **kwargs: call("privacy" if "configure_sending_privacy.py" in str(args) else "dns"),
                        "email_events": lambda phase: call(phase),
@@ -266,6 +276,36 @@ class OnlineContractsTests(unittest.TestCase):
             except Exception:
                 result = None
             return result, events
+
+    def test_closed_online_resume_ids_and_read_only_privacy(self):
+        """Single-run ABI remains; completed settings are read, never PATCHed again."""
+        self.assertEqual(online.run_ids("123"), ("123", None))
+        self.assertEqual(online.run_ids("123:234"), ("123", "234"))
+        for value in ("", "0", "0123", "123:123", "123:", "123:234:345", "123:private"):
+            with self.assertRaisesRegex(ValueError, "fresh_online_run_ids_unreviewed"):
+                online.run_ids(value)
+        domain = {"name": "mail.moesegfault.dev", "enabled": True, "tag": "owned-tag"}
+        current = {**domain, "preview_enabled": False, "drop_suppressed_recipients": False}
+        with patch.object(online.privacy, "call", side_effect=[{"result": [domain]}, {"result": current}]) as reader:
+            online.verify_sending_privacy(Mock(token="PRIVATE"))
+            self.assertEqual([call.args[0] for call in reader.call_args_list], ["", "/owned-tag"])
+            self.assertTrue(all(len(call.args) == 2 for call in reader.call_args_list))
+
+    def test_owned_online_continuation_retains_both_adapters_and_completed_operations(self):
+        """Actual observed uploads are read back; only missing subscription/cadence proceed."""
+        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder:
+            result, events = self.exercise(Path(folder), resume=True)
+            self.assertIsNotNone(result)
+            self.assertEqual(events, ["admit", "load", "checkpoint", "source", "paused", "dns",
+                                     "privacy_read", "queues_read", "subscription", "maintenance",
+                                     "maintenance_capture_off", "active"])
+            self.assertNotIn("mail_ingress", events)
+            self.assertNotIn("mail_events", events)
+            self.assertNotIn("queues", events)
+            self.assertNotIn("privacy", events)
+            self.assertEqual(result["retained_adapters"]["source_epoch"]["run_id"], "234")
+            self.assertNotEqual(result["retained_adapters"]["source_epoch"], result["source_epoch"])
+            self.assertTrue(result["sendHeld"])
 
     def test_success_paused_before_writes_privacy_before_runtime_and_global_held(self):
         """Existing stores/API/sink remain; only cron activation is granted."""
