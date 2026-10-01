@@ -586,7 +586,11 @@ fn diagnostic_record(code: DiagnosticCode) -> QueuedEvent {
         parent_span_id: None,
         request_id: Some(uuid::Uuid::new_v4().to_string()),
         outcome: amail_trace_schema::Outcome::PhaseFailure,
-        error_code: Some(amail_trace_schema::ErrorCode::DependencyFailure),
+        error_code: Some(if code == DiagnosticCode::MaintenanceBudgetDeferred {
+            ErrorCode::ResourceDeferred
+        } else {
+            ErrorCode::DependencyFailure
+        }),
         http_status_class: None,
         duration_ms_bucket: 0,
         request_bytes_bucket: None,

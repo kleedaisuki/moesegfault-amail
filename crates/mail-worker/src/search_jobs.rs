@@ -23,7 +23,7 @@ fn expensive(input: &SearchRequest) -> bool {
 }
 
 /// Atomically admit one broad-filter request against account and shared daily budgets. / 按账户与共享每日额度原子准入一次宽泛筛选请求。
-async fn reserve_search_work(database: &D1Database, user: &Principal) -> AppResult<()> {
+async fn reserve_search_work(database: &Database, user: &Principal) -> AppResult<()> {
     let quota = |error: AppError| {
         if error.status == 429 {
             AppError {
@@ -48,7 +48,7 @@ async fn reserve_search_work(database: &D1Database, user: &Principal) -> AppResu
 }
 
 /// Read the mutation generation that protects a multi-invocation result. / 读取保护跨调用结果的变更代际。
-async fn generation(database: &D1Database, user: &Principal) -> AppResult<i64> {
+async fn generation(database: &Database, user: &Principal) -> AppResult<i64> {
     let row = database
         .prepare("SELECT generation FROM search_generations WHERE owner_iss=?1 AND owner_sub=?2")
         .bind(&[bind_str(&user.iss), bind_str(&user.sub)])?
@@ -176,7 +176,7 @@ fn cursor_mac(
 /// Load a cursor origin without revealing whether another account owns its UUID.
 /// Return state, expiry, row version, and current account generation for CAS scrubbing.
 async fn origin_state(
-    database: &D1Database,
+    database: &Database,
     user: &Principal,
     cursor: &SearchCursor,
 ) -> AppResult<(SearchState, i64, i64, i64)> {
@@ -217,7 +217,7 @@ async fn origin_state(
 
 /// Verify a v5 token before admission or any row scan, then return the exact origin vector.
 async fn verified_origin(
-    database: &D1Database,
+    database: &Database,
     user: &Principal,
     cursor: &SearchCursor,
 ) -> AppResult<(SearchState, i64)> {
@@ -249,7 +249,7 @@ async fn verified_origin(
 
 /// Best-effort privacy scrub after a trusted generation check detects mutation.
 async fn scrub_invalidated_origin(
-    database: &D1Database,
+    database: &Database,
     user: &Principal,
     cursor: Option<&SearchCursor>,
 ) {
@@ -587,7 +587,7 @@ pub(super) async fn poll(
         .map(|(response, _, _)| response)
 }
 
-async fn load_job(database: &D1Database, user: &Principal, id: &str) -> AppResult<SearchJobRow> {
+async fn load_job(database: &Database, user: &Principal, id: &str) -> AppResult<SearchJobRow> {
     database
         .prepare("SELECT id,request_json,state_json,state,version,lease_started_at,expires_at,COALESCE((SELECT generation FROM search_generations WHERE owner_iss=search_jobs.owner_iss AND owner_sub=search_jobs.owner_sub),0) AS current_generation FROM search_jobs WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3")
         .bind(&[bind_str(id), bind_str(&user.iss), bind_str(&user.sub)])?
@@ -596,11 +596,7 @@ async fn load_job(database: &D1Database, user: &Principal, id: &str) -> AppResul
         .ok_or_else(AppError::not_found)
 }
 
-async fn claim(
-    database: &D1Database,
-    user: &Principal,
-    id: &str,
-) -> AppResult<Option<SearchJobRow>> {
+async fn claim(database: &Database, user: &Principal, id: &str) -> AppResult<Option<SearchJobRow>> {
     let mut row = load_job(database, user, id).await?;
     if row.expires_at <= now() {
         return Err(AppError {
@@ -656,13 +652,7 @@ fn terminal_job_error(code: &str) -> bool {
 }
 
 /// Release a leased job using its owner and version; terminal errors scrub account data.
-async fn release(
-    database: &D1Database,
-    user: &Principal,
-    id: &str,
-    version: i64,
-    error: &AppError,
-) {
+async fn release(database: &Database, user: &Principal, id: &str, version: i64, error: &AppError) {
     let sql = if terminal_job_error(error.code) {
         "UPDATE search_jobs SET state='stale',request_json='{}',state_json='{}',version=version+1,lease_started_at=NULL WHERE id=?1 AND state='advancing' AND version=?2 AND owner_iss=?3 AND owner_sub=?4"
     } else {
@@ -680,7 +670,7 @@ async fn release(
 
 /// Clear a completed job's private state only if its owner and version still match.
 async fn scrub_done(
-    database: &D1Database,
+    database: &Database,
     user: &Principal,
     id: &str,
     version: i64,
@@ -736,7 +726,7 @@ async fn advance(
 }
 
 async fn advance_claimed(
-    database: &D1Database,
+    database: &Database,
     user: &Principal,
     row: &SearchJobRow,
     request_id: &str,
@@ -836,7 +826,7 @@ async fn advance_claimed(
 
 /// One invocation examines an ordered prefix, checkpointing only fully processed rows. / 每次调用扫描一个有序前缀，只检查点化完整处理过的记录。
 async fn scan_batch(
-    database: &D1Database,
+    database: &Database,
     user: &Principal,
     input: &SearchRequest,
     state: &mut SearchState,
@@ -958,7 +948,7 @@ async fn scan_batch(
 }
 
 async fn result_page(
-    database: &D1Database,
+    database: &Database,
     user: &Principal,
     input: &SearchRequest,
     state: &SearchState,
@@ -1066,8 +1056,7 @@ async fn result_page(
 }
 
 /// Expired jobs retain a brief tombstone for a stable 410 before permanent deletion. / 过期任务短暂保留墓碑以稳定返回 410，然后永久清除。
-pub(super) async fn cleanup(env: &Env) -> Result<()> {
-    let database = env.d1("MAIL_DB")?;
+pub(super) async fn cleanup(database: &Database) -> Result<()> {
     database
         .prepare("DELETE FROM search_jobs WHERE state='preparing' AND created_at<?1")
         .bind(&[bind_num(now() - 10 * 60_000)])?

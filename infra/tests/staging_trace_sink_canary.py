@@ -101,7 +101,7 @@ DIAGNOSTIC_CODES = frozenset({
     "search_job_cleanup_failed", "abuse_data_cleanup_failed",
     "address_reconciliation_batch_full", "non_enabled_committed_routing_rule",
     "non_enabled_provisioning_routing_rule", "semantic_document_quarantined",
-    "semantic_provider_cooldown", "storage_ledger_state_deferred",
+    "semantic_provider_cooldown", "storage_ledger_state_deferred", "maintenance_budget_deferred",
 })
 
 
@@ -154,7 +154,7 @@ def safe_event(event: dict) -> bool:
                         ("outcome", legacy.EVENT_OUTCOMES)):
         if not isinstance(event.get(key), str) or event[key] not in values:
             return False
-    for key, values in (("error_code", legacy.EVENT_ERRORS), ("diagnostic_code", DIAGNOSTIC_CODES)):
+    for key, values in (("error_code", legacy.EVENT_ERRORS | {"resource_deferred"}), ("diagnostic_code", DIAGNOSTIC_CODES)):
         if event.get(key) is not None and (not isinstance(event[key], str) or event[key] not in values):
             return False
     if not canonical_uuid(event.get("request_id")) and event.get("request_id") is not None:
@@ -187,7 +187,11 @@ def safe_event(event: dict) -> bool:
     if phase == "maintenance":
         return (((operation == "maintenance" and event.get("parent_span_id") is None)
                  or (operation != "maintenance" and event.get("parent_span_id") is not None))
-                and event["outcome"] == "phase_failure" and event.get("error_code") == "dependency_failure"
+                and event["outcome"] == "phase_failure"
+                and ((event.get("diagnostic_code") == "maintenance_budget_deferred"
+                      and operation == "maintenance" and event.get("error_code") == "resource_deferred")
+                     or (event.get("diagnostic_code") != "maintenance_budget_deferred"
+                         and event.get("error_code") == "dependency_failure"))
                 and event.get("diagnostic_code") is not None
                 and absent(event, "http_status_class", "request_bytes_bucket",
                            "response_bytes_bucket", *PROVIDER_FIELDS))

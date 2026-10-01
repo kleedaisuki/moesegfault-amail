@@ -140,6 +140,20 @@ class SinkCanaryTests(unittest.TestCase):
                     dict(event, request_bytes_bucket=0), dict(event, provider_error_code=0)):
             self.assertFalse(sink.safe_event(bad))
 
+    def test_budget_deferral_has_exact_non_dependency_pair(self):
+        """Budget denial is a standalone fixed condition, not provider failure."""
+        event = json.loads(fixture()[0]["source"])
+        event.pop("http_status_class")
+        event.update(operation="maintenance", parent_span_id=None, phase="maintenance",
+                     outcome="phase_failure", error_code="resource_deferred",
+                     diagnostic_code="maintenance_budget_deferred")
+        self.assertTrue(sink.safe_event(event))
+        for change in ({"error_code": "dependency_failure"},
+                       {"diagnostic_code": "outbound_reconciliation_failed"},
+                       {"operation": "messages_send", "parent_span_id": C},
+                       {"phase": "request_exit"}, {"outcome": "success"}):
+            self.assertFalse(sink.safe_event(dict(event, **change)))
+
     def test_byte_buckets_up_to_four_gib_and_closed_provider_fields(self):
         """The mirror preserves Rust's 2^32 byte bound and routing-only provider data."""
         event = json.loads(fixture()[0]["source"])

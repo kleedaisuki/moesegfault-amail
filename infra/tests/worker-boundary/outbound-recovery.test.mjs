@@ -28,6 +28,8 @@ test("partial chunk failure remains durable and repairs on a later tick", async 
   const staged = (await db.prepare("SELECT COUNT(*) AS n FROM message_text_chunks WHERE message_id='partial'").first()).n;
   assert.ok(staged >= 0 && staged <= 2, `chunk-3 fault permits at most two staged chunks, saw ${staged}`);
   await db.exec("DROP TRIGGER fail_chunk;");
+  // Explicitly model the durable five-minute due slot expiring; no wall wait.
+  await db.exec("UPDATE send_requests SET index_next_attempt_at=0 WHERE message_id='partial';");
   await tick();
   assert.equal(await indexedText(db, "partial"), text);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM message_text_chunks").first()).n, 66);
@@ -38,7 +40,7 @@ test("existing user tombstone is not made visible by accepted recovery", async (
   await accepted(db, bucket, "deleted", "short");
   await tick();
   await db.exec("UPDATE messages SET deleted_at=1 WHERE id='deleted';");
-  await db.exec("UPDATE send_requests SET state='accepted' WHERE message_id='deleted';");
+  await db.exec("UPDATE send_requests SET state='accepted',index_next_attempt_at=0 WHERE message_id='deleted';");
   await tick();
   assert.equal(await indexedText(db, "deleted"), null);
 }));
@@ -54,7 +56,7 @@ test("owned accepted tombstone with archive terminalizes without chunk staging",
   await accepted(db, bucket, "race");
   await tick();
   await db.exec("UPDATE messages SET deleted_at=1 WHERE id='race';");
-  await db.exec("UPDATE send_requests SET state='accepted' WHERE message_id='race';");
+  await db.exec("UPDATE send_requests SET state='accepted',index_next_attempt_at=0 WHERE message_id='race';");
   assert.ok(await bucket.get("messages/race.zip"), "archive still exists before tombstone recovery");
   await db.exec("CREATE TABLE tombstone_chunk_audit(n INTEGER NOT NULL);");
   await db.exec("INSERT INTO tombstone_chunk_audit VALUES(0);");
@@ -108,6 +110,7 @@ test("failure of final sent transition does not expose a partial projection", as
   assert.equal((await db.prepare("SELECT state FROM storage_reservations WHERE id='final-fault'").first()).state, "reserved");
   assert.equal((await db.prepare("SELECT state FROM send_requests WHERE message_id='final-fault'").first()).state, "accepted");
   await db.exec("DROP TRIGGER fail_final;");
+  await db.exec("UPDATE send_requests SET index_next_attempt_at=0 WHERE message_id='final-fault';");
   await tick();
   assert.equal(await indexedText(db, "final-fault"), "short");
 }));
@@ -140,7 +143,7 @@ test("legacy accepted repair clears vectors, revokes embedding lease and removes
   const oldVector = JSON.stringify([1, ...Array(255).fill(0)]);
   await db.prepare("UPDATE messages SET body_text='obsolete projection',is_read=0,embedding_json=?1,embedding_model='qwen/qwen3-embedding-8b',embedding_dimensions=256,embedding_input_version=1,embedding_truncated=0 WHERE id='legacy'").bind(oldVector).run();
   await db.exec("INSERT INTO message_text_chunks(message_id,chunk_index,body) VALUES('legacy',99,'obsolete suffix');");
-  await db.exec("UPDATE send_requests SET state='accepted' WHERE message_id='legacy';");
+  await db.exec("UPDATE send_requests SET state='accepted',index_next_attempt_at=0 WHERE message_id='legacy';");
   await db.prepare("INSERT INTO embedding_work(message_id,owner_iss,owner_sub,received_at,attempts,lease_until,lease_token) VALUES('legacy',?1,?2,?3,7,?4,'synthetic-old-embedding-token')")
     .bind("https://synthetic.invalid", "synthetic-recovery-owner", Date.now(), Date.now() + 900_000).run();
   await tick();
@@ -161,7 +164,7 @@ test("accepted owned tombstone terminalizes after legacy GC already deleted ZIP"
   await accepted(db, bucket, "zipless-tombstone", "deleted body");
   await tick();
   await db.exec("UPDATE messages SET deleted_at=1 WHERE id='zipless-tombstone';");
-  await db.exec("UPDATE send_requests SET state='accepted' WHERE message_id='zipless-tombstone';");
+  await db.exec("UPDATE send_requests SET state='accepted',index_next_attempt_at=0 WHERE message_id='zipless-tombstone';");
   await bucket.delete("messages/zipless-tombstone.zip");
   await tick();
   assert.equal((await db.prepare("SELECT state FROM send_requests WHERE message_id='zipless-tombstone'").first()).state, "sent");
