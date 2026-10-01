@@ -1,7 +1,7 @@
 # Cron complete routing inventory and useful first repair
 
 Date: 2026-10-01. Initial source base: merged PR #25 main `4370d2d`.
-Status: source/fixture candidate, not hosted-accepted or deployed.
+Status: exact source/fixture hosted acceptance below passed; not deployed.
 This is the next independently reviewable slice, not embedding/R2/Queue work.
 
 ## Reused model and integration
@@ -120,3 +120,46 @@ mappings are unchanged. Cron's separate `routing_list_error` still produces the
 standalone maintenance deadline/resource-deferred pair for pre-denial and an
 ordinary dependency failure for submitted timeout. No wildcard/todo conceals
 future enum additions. Narrow independent review precedes the exact-head rerun.
+
+## Corrected exact hosted acceptance
+
+PR #27 remote head `2325828b1402e40e61580091a2765a5c87c7f702`:
+[full CI 36815435803](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36815435803),
+attempt 1, **success**, 2026-10-01 04:30:27 to 04:37:42 UTC;
+[workflow syntax 36815435371](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36815435371),
+**success**. All seven source checks passed: three native CLI platforms,
+infrastructure, site, Rust Worker/Wasm, and workflow syntax.
+
+Actions checked out PR merge revision
+`1320fb746a21e494578107ec8d7e8b4294cf9bc2`, distinct from both branch heads.
+Worker units **65/65**, existing default built-workerd **96/96**, prior focused
+liveness **5/5**, and new native routing **7/7** passed, with zero failures.
+
+| Passing discriminator | TAP case duration, including fixture setup/teardown |
+| --- | ---: |
+| Complete 20-second inventory, first real promotion, deferred next row and fast next turn | 20,973.933290 ms |
+| Hanging headers, one complete exchange deadline | 10,768.013378 ms |
+| Seven-second headers then pending body, same complete deadline | 10,767.675759 ms |
+| Ten 3.2-second pages, original inventory deadline and no partial settlement | 30,912.484897 ms |
+| Remotely accepted DELETE then body stall, finite journal and later absence convergence | 10,848.422172 ms |
+| Native byte cap, stop/cancel/release | 740.242563 ms |
+| Foreign redirect refusal | 652.990905 ms |
+
+These are whole synthetic test case durations, not separately measured handler
+duration, actual provider latency, CPU/RSS, or a production SLO. Assertions
+established the exact addressed SQL counts described in fixture notes, priority
+release slots, first useful repair, no second DELETE, native signal abort and
+reader cancellation/release. They did not rely on Node source cancel callbacks
+or claim that actual remote computation stopped.
+
+The first E0004 failed candidate remains separate historical evidence. Committed
+source and fixture review records preserve that compiler omission/correction,
+the initial header/body timing discriminator gap, its seven-second correction,
+and exact source hashes. Root final review and merge remain separate decisions.
+Raw successful Worker logs are retained at worktree
+`.temp/ci-36815435803-worker.log`, separate from the failed predecessor.
+
+This evidence update is a local documentation-only follow-up, initially not
+pushed into the exact validated PR head. No project runtime tests/builds were
+run locally, no provider/deployment/Cron/unhold mutation occurred. All deferred
+embedding/R2/Queue, privacy, plan/CPU/RSS and old-writer drain gates above remain.
