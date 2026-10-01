@@ -7,7 +7,7 @@ Status: implemented source and hosted fixtures; static checks only. **Not yet in
 
 A provider POST may become visible after the permanent address is retired and its repair marker is cleared; its original invocation need not resume. Scheduled address maintenance therefore inventories actual provider objects even with no due D1 records. Up to five hundred provider name-derived keys are point-read through at most ten fifty-key `IN` batches. Strict retired lifetimes are conditionally rearmed only when `needs_reconcile=0`; already flagged due times are preserved. Unknown lifetimes and scope conflicts are retained anomalies, not garbage. No all-tombstone scan, TTL, new schema, endpoint, address state, issuer/subject transfer, or CLI change is introduced.
 
-The original due rows are claimed/rotated before provider I/O, so a failed list cannot pin the first batch indefinitely. After discovery, available batch slots claim newly due records. At most thirty rows are claimed per tick. One row failure does not suppress later state-only repairs. The existing conditional state machine preserves active committed routes, enabled-only activation, immutable retirement, and pending repair rather than deletion.
+The original due rows are claimed/rotated before provider I/O, so a failed list cannot pin the first batch indefinitely. After discovery, available batch slots claim newly due records. At most thirty rows are claimed per tick. One row failure does not suppress later state-only repairs. Budget-denied external work returns a typed deferred outcome and conditionally receives `next_reconcile_at=scan_at-1`, fenced by address, unchanged state, exact preclaim timestamp and remaining repair intent. Actually attempted failures keep the five-minute backoff. This durable separation prevents a permanent nine-failure prefix from consuming every future healthy tail turn; crash safety still comes from the original pre-I/O claim. The existing conditional state machine preserves active committed routes, enabled-only activation, immutable retirement, and pending repair rather than deletion.
 
 ## Executable boundaries
 
@@ -44,11 +44,15 @@ Existing privacy/Issues, source/version/bindings, public-send hold, recovery-own
 - Zero due rows; one thousand clean historical tombstones; disabled/unknown-enabled strict retired routes; unknown lifetimes/other realms/apex operators preserved.
 - Single-purpose scope, saved-ID repurposing, changed scoped GET, uncertain GET/DELETE envelopes and D1 state changing to committed active during GET.
 - 50/51/404/500/501 inventory edges, malformed and later-page failures, duplicate IDs, short intermediate pages, ten full pages without terminal metadata, oversized streamed body.
-- Forty due lifetimes: every eligible route eventually obtains a turn while every full scheduled call stays within twenty address exchanges and incomplete markers persist.
+- Forty successful due lifetimes, two failed complete inventories rotating distinct thirty/ten cohorts, poisoned first scoped GET with later healthy/state-only progress, and nine permanently false DELETE acknowledgments ahead of a healthy tenth lifetime. These distinguish receiving a D1 claim from receiving an external repair turn; every invocation remains within twenty address exchanges.
 - Aged provisioning initial snapshot empty but fresh recheck sees a disabled route: preserve provisioning.
 - Request-path bounded partial retirement and scope conflict preserve intent without foreign deletion.
 
-The barrier fixture does not kill an isolate; the creator cannot run its post-provider continuation during the acceptance tick. Actual killed-invocation behavior and deployed provenance remain separate evidence.
+Each POST barrier phase has a finite deadline, creator rejection is observed immediately, and cleanup releases both provider barriers before a separately bounded creator settlement. The barrier fixture does not kill an isolate; the creator cannot run its post-provider continuation during the acceptance tick. Actual killed-invocation behavior and deployed provenance remain separate evidence.
+
+## Independent review correction
+
+Static code review of `e06d2ba` found intra-batch starvation: all thirty selected records received identical retry timestamps, so nine permanent DELETE failures could always consume eighteen calls and exclude a later healthy route. The typed deferred-turn/CAS scheduling correction above directly addresses that finding. Boundary review also found unbounded barrier waits and failure-fairness fixture gaps; the finite phase/cleanup deadlines and discriminating prefix/cohort cases above address those source obligations. These are implemented corrections, not yet a follow-up review or hosted pass. Streaming early-stop/all-method behavioral coverage remains narrower than the source contract: the oversized runtime fixture directly exercises list only, without a peak-memory or pull-count claim.
 
 Only Rust formatting, JavaScript syntax checking and Git whitespace checking were run locally. **No local project test/build, provider call, push or deployment.** Hosted exact-head Rust/Wasm and workerd results must be appended after independent review, not inferred from source/fixtures.
 

@@ -578,6 +578,95 @@ test("forty due lifetimes rotate fairly while scoped cleanup stays within twenty
   });
 });
 
+test("persistent nine-failure prefix cannot starve a healthy budget-skipped tail", async () => {
+  const rules = Array.from({ length: 10 }, (_, n) => managedRule(
+    n < 9 ? `poison-${n}` : "healthy-tail",
+    `turn-${String(n).padStart(2, "0")}@mail-staging.moesegfault.dev`,
+  ));
+  await withProvider({ rules, deleteReply: async (id, store, json) => {
+    if (id.startsWith("poison-")) return json({ success: false });
+    assert.ok(store.delete(id));
+    return json({ success: true });
+  } }, async ({ insert, tick, db, store, row }) => {
+    for (const rule of rules) await insert(rule.matchers[0].value, { marker: 1 });
+    const first = await tick();
+    assert.equal(first.filter((call) => call.method === "DELETE").length, 9);
+    assert.ok(store.has("healthy-tail"), "tail was denied pair admission on its first turn");
+    const tail = await row(rules[9].matchers[0].value);
+    const poison = await row(rules[0].matchers[0].value);
+    assert.ok(tail.next_reconcile_at < poison.next_reconcile_at,
+      "durable scheduling distinguishes skipped work from attempted failure backoff");
+    // Admit every cohort, retaining relative due order rather than flattening it.
+    await db.prepare("UPDATE addresses SET next_reconcile_at=next_reconcile_at-360000 WHERE next_reconcile_at>0").run();
+    const second = await tick();
+    assert.equal(second.find((call) => call.method === "DELETE").path, `${rulePath}/healthy-tail`);
+    assert.ok(!store.has("healthy-tail"), "a permanent failure prefix cannot consume every future healthy turn");
+    assert.equal(store.size, 9);
+    assert.equal((await row(rules[0].matchers[0].value)).needs_reconcile, 1);
+  });
+});
+
+test("failed complete inventories rotate forty due records before external work", async () => {
+  let inventories = 0;
+  const rules = Array.from({ length: 40 }, (_, n) => managedRule(
+    `recover-rule-${n}`, `recover-${String(n).padStart(2, "0")}@mail-staging.moesegfault.dev`,
+  ));
+  await withProvider({ rules, listPage: async (_page, store, json) => {
+    inventories++;
+    if (inventories <= 2) return json({ success: false }, 503);
+    return json({ success: true, result: [...store.values()], result_info: { total_pages: 1 } });
+  } }, async ({ insert, tick, db, store }) => {
+    for (const rule of rules) await insert(rule.matchers[0].value, { marker: 1 });
+    await tick();
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM addresses WHERE next_reconcile_at>0").first()).n, 30);
+    await tick();
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM addresses WHERE next_reconcile_at>0").first()).n, 40,
+      "second failed inventory claims the never-claimed cohort, not the same thirty records");
+    assert.equal(store.size, 40);
+    for (let n = 0; n < 8 && store.size; n++) {
+      await db.prepare("UPDATE addresses SET next_reconcile_at=next_reconcile_at-360000 WHERE next_reconcile_at>0").run();
+      await tick();
+    }
+    assert.equal(store.size, 0, "eventual provider recovery lets both rotated cohorts converge");
+  });
+});
+
+test("poisoned first current GET does not suppress later cleanup or state-only repair", async () => {
+  const poison = managedRule("first-poison", "continue-00@mail-staging.moesegfault.dev");
+  const healthy = managedRule("later-healthy", "continue-01@mail-staging.moesegfault.dev");
+  const empty = "continue-02@mail-staging.moesegfault.dev";
+  await withProvider({ rules: [poison, healthy], getRule: async (id, store, json) => {
+    return json({ success: true, result: id === poison.id ?
+      managedRule(id, "foreign@mail-staging.moesegfault.dev") : store.get(id) });
+  } }, async ({ insert, tick, row, store }) => {
+    await insert(poison.matchers[0].value, { marker: 1 });
+    await insert(healthy.matchers[0].value, { marker: 1 });
+    await insert(empty, { state: "deleting", marker: 1 });
+    await tick();
+    assert.ok(store.has(poison.id));
+    assert.ok(!store.has(healthy.id));
+    assert.equal((await row(poison.matchers[0].value)).needs_reconcile, 1);
+    assert.equal((await row(empty)).state, "retired");
+  });
+});
+
+/** Bound each synthetic phase, clear its timer, and retain an actionable label. */
+async function waitForPhase(promise, phase, timeoutMs = 20000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`synthetic phase timed out: ${phase}`)), timeoutMs);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test("an unfulfilled synthetic barrier fails with a finite phase deadline", async () => {
+  await assert.rejects(waitForPhase(new Promise(() => {}), "never-submitted", 50),
+    /synthetic phase timed out: never-submitted/);
+});
+
 /** Create deterministic promise barriers without timers or live provider traffic. */
 function barrier() {
   let release;
@@ -585,7 +674,7 @@ function barrier() {
   return { promise, release };
 }
 
-test("provider POST may commit after two retire ticks while the creator remains blocked", async () => {
+test("provider POST may commit after two retire ticks while the creator remains blocked", { timeout: 60000 }, async () => {
   const submitted = barrier();
   const commit = barrier();
   const committed = barrier();
@@ -600,9 +689,13 @@ test("provider POST may commit after two retire ticks while the creator remains 
     await respond.promise;
     return json({ success: true, result: { id: "delayed-post", enabled: true } });
   } }, async ({ add, db, row, tick, store, calls }) => {
-    const creator = add();
+    // Observe both success and rejection immediately, so failed pre-POST
+    // authentication cannot become an unhandled rejection or a hanging barrier.
+    const creator = add().then((response) => ({ response }), (error) => ({ error }));
     try {
-      await submitted.promise;
+      await waitForPhase(Promise.race([submitted.promise, creator.then(() => {
+        throw new Error("creator settled before synthetic POST submission");
+      })]), "POST submitted");
       await db.prepare("UPDATE addresses SET state='deleting',needs_reconcile=1,next_reconcile_at=-1 WHERE address=?1")
         .bind(address).run();
       await tick();
@@ -610,7 +703,7 @@ test("provider POST may commit after two retire ticks while the creator remains 
       await tick();
       assert.equal((await row()).needs_reconcile, 0);
       commit.release();
-      await committed.promise;
+      await waitForPhase(committed.promise, "late provider side effect committed");
       // The HTTP continuation is still suspended: correctness cannot use rearm.
       assert.equal((await row()).needs_reconcile, 0);
       await tick();
@@ -621,7 +714,8 @@ test("provider POST may commit after two retire ticks while the creator remains 
     } finally {
       commit.release();
       respond.release();
-      await creator;
+      const outcome = await waitForPhase(creator, "creator cleanup", 10000);
+      if (outcome.error) throw outcome.error;
     }
     assert.equal((await row()).state, "retired", "late activation cannot resurrect the lifetime");
   });

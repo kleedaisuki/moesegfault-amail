@@ -402,19 +402,32 @@ async fn reconcile_addresses(env: &Env) -> Result<()> {
         trace::diagnostic(env, trace::DiagnosticCode::AddressReconciliationBatchFull).await;
     }
     for row in rows {
-        // One conflict or exhausted budget must not suppress later state-only
-        // repairs. Every selected row already owns a fair future retry slot.
-        if repair_address(env, &row, &inventory, &ingress, &mut budget)
-            .await
-            .is_err()
-        {
-            failed = true;
+        // Crash safety comes from the pre-I/O claim. Distinguish a denied
+        // external turn from an attempted failure: identical retry slots would
+        // let a permanently failing prefix consume every future call budget.
+        match repair_address(env, &row, &inventory, &ingress, &mut budget).await {
+            Ok(RepairTurn::Deferred) => {
+                database.prepare("UPDATE addresses SET next_reconcile_at=?1 WHERE address=?2 AND state=?3 AND next_reconcile_at=?4 AND (state IN ('provisioning','deleting') OR needs_reconcile=1)")
+                    .bind(&[bind_num(scan_at - 1),bind_str(&row.address),bind_str(&row.state),bind_num(scan_at + 5 * 60_000)])?.run().await?;
+                failed = true;
+            }
+            Err(_) => failed = true,
+            Ok(RepairTurn::Attempted) => {}
         }
     }
     if failed {
         return Err(worker::Error::RustError("routing_repair_incomplete".into()));
     }
     Ok(())
+}
+
+/// Whether this row received its external/state-only repair turn.
+/// Deferred rows retain intent but precede actually attempted retry failures.
+enum RepairTurn {
+    /// State-only progress or an admitted external attempt received its turn.
+    Attempted,
+    /// Remaining external work could not be admitted by the shared budget.
+    Deferred,
 }
 
 /// Execute existing desired-state transitions against strict owned rules only.
@@ -424,7 +437,7 @@ async fn repair_address(
     inventory: &platform::CompleteRuleInventory,
     ingress: &str,
     budget: &mut platform::RoutingBudget,
-) -> Result<()> {
+) -> Result<RepairTurn> {
     let database = env.d1("MAIL_DB")?;
     let rules = inventory.for_address(&row.address, ingress, row.cf_rule_id.as_deref())?;
     let enabled_id = rules.first_enabled().map(str::to_owned);
@@ -435,20 +448,23 @@ async fn repair_address(
     let ids = rules.into_ids();
     if row.state == "active" {
         let Some(saved) = row.cf_rule_id.as_deref() else {
-            return Ok(());
+            return Ok(RepairTurn::Attempted);
         };
         if !saved_enabled {
             if ids.iter().any(|id| id == saved) {
                 trace::diagnostic(env, trace::DiagnosticCode::NonEnabledCommittedRoutingRule).await;
             }
-            return Ok(());
+            return Ok(RepairTurn::Attempted);
         }
         for extra in ids.iter().filter(|id| id.as_str() != saved) {
+            if !budget.can_delete() {
+                return Ok(RepairTurn::Deferred);
+            }
             platform::delete_owned_rule(env, &row.address, ingress, extra, budget).await?;
         }
         database.prepare("UPDATE addresses SET needs_reconcile=0 WHERE address=?1 AND state='active' AND cf_rule_id=?2")
             .bind(&[bind_str(&row.address), bind_str(saved)])?.run().await?;
-        return Ok(());
+        return Ok(RepairTurn::Attempted);
     }
     if row.state == "provisioning" {
         if let Some(first) = enabled_id.as_deref() {
@@ -466,7 +482,7 @@ async fn repair_address(
             // Never promote an early shared snapshot into a fresh absence proof.
             // Reserve the full list cap first; inability to pay leaves the lease.
             if !budget.can_inventory() {
-                return Err(worker::Error::RustError("routing_budget_exhausted".into()));
+                return Ok(RepairTurn::Deferred);
             }
             let fresh = platform::rule_inventory(env, budget)
                 .await
@@ -485,7 +501,7 @@ async fn repair_address(
             )
             .await;
         }
-        return Ok(());
+        return Ok(RepairTurn::Attempted);
     }
     if row.state == "pending" {
         let query = if ids.is_empty() {
@@ -498,12 +514,15 @@ async fn repair_address(
             .bind(&[bind_str(&row.address)])?
             .run()
             .await?;
-        return Ok(());
+        return Ok(RepairTurn::Attempted);
     }
     if !matches!(row.state.as_str(), "deleting" | "retired") {
-        return Ok(());
+        return Ok(RepairTurn::Attempted);
     }
     for id in ids {
+        if !budget.can_delete() {
+            return Ok(RepairTurn::Deferred);
+        }
         platform::delete_owned_rule(env, &row.address, ingress, &id, budget).await?;
     }
     if row.state == "deleting" {
@@ -516,7 +535,7 @@ async fn repair_address(
             .run()
             .await?;
     }
-    Ok(())
+    Ok(RepairTurn::Attempted)
 }
 
 async fn reconcile_outbound(env: &Env) -> Result<()> {
