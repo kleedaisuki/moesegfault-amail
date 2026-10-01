@@ -137,3 +137,23 @@ or hosted result is claimed here.
 Additional primary references:
 [R2 Worker API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/),
 [workers-rs R2 object body](https://github.com/cloudflare/workers-rs/blob/v0.8.3/worker/src/r2/mod.rs).
+
+## Fourth atomic slice: independent actual D1 submission observation
+
+A separately scoped test-only subclass wraps native local D1, preserving real
+workerd/Miniflare SQL execution. It counts actual calls to first/all/run and each
+member of native batch, not application permits or SQL-trigger internal work.
+Prepare/bind spend zero; proxied prepared statements are unwrapped before native
+batch so transactional behavior is unchanged. Unsupported binding methods fail
+closed. Only fixed numeric counters are exposed on a synthetic test-only endpoint;
+no SQL, bound values, owner identities or production API hook is introduced.
+Fixture setup/readback uses Miniflare's unwrapped native binding and must leave
+the observer counters exactly zero before scheduled execution.
+
+For the twenty maximum-valid text / embedding-cooldown workload, the source
+**hypothesis**, to be checked on hosted CI, is 379 submitted SQL statements:
+address2 +outbound367 +embedding1 +storage1 +deleted1 +orphan1 +search3 +abuse3.
+There are five native batches containing fifteen statements, and 364 individual
+executors. The exact count would detect treating batch(N) as one, skipped/bypassed
+binding calls, or accidental retries. It remains a synthetic path count, not a
+proof of every error branch, actual plan enforcement, CPU usage or peak RSS.

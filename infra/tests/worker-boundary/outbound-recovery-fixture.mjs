@@ -57,12 +57,13 @@ function draftZip(body) {
 }
 
 /** Fresh production schema plus strict local-only egress and real Rust scheduled(). */
-export async function fixture(run, { observeR2 = false } = {}) {
+export async function fixture(run, { observeR2 = false, observeSql = false } = {}) {
+  assert.ok(!(observeR2 && observeSql), "native observer fixtures are independently scoped");
   let unexpected = 0;
   const mf = new Miniflare({ cf: false, workers: [{
     name: "amail-recovery-synthetic", modules: true,
-    scriptPath: observeR2 ? path.join(root, "infra/tests/worker-boundary/r2-archive-observer.mjs") : path.join(worker, "build/worker/shim.mjs"),
-    modulesRoot: observeR2 ? root : path.join(worker, "build"), modulesRules: workerModuleRules,
+    scriptPath: observeR2 ? path.join(root, "infra/tests/worker-boundary/r2-archive-observer.mjs") : observeSql ? path.join(root, "infra/tests/worker-boundary/maintenance-counter-observer.mjs") : path.join(worker, "build/worker/shim.mjs"),
+    modulesRoot: observeR2 || observeSql ? root : path.join(worker, "build"), modulesRules: workerModuleRules,
     compatibilityDate: "2026-08-06",
     bindings: { CF_ZONE_ID: "synthetic-zone", CF_EMAIL_ROUTING_TOKEN: "synthetic-token",
       MAIL_DOMAIN: "mail-staging.moesegfault.dev", EMAIL_INGRESS_WORKER_NAME: "synthetic-ingress" },
@@ -87,7 +88,11 @@ export async function fixture(run, { observeR2 = false } = {}) {
       assert.ok(observeR2, "native R2 stats exist only in the isolated observer fixture");
       return (await mf.dispatchFetch("https://synthetic.invalid/r2-stats")).json();
     };
-    await run({ db, bucket, tick, r2Stats });
+    const d1Stats = async () => {
+      assert.ok(observeSql, "D1 stats exist only in the isolated native counter fixture");
+      return (await mf.dispatchFetch("https://synthetic.invalid/d1-stats")).json();
+    };
+    await run({ db, bucket, tick, r2Stats, d1Stats });
   } finally { await mf.dispose(); }
 }
 
