@@ -548,7 +548,10 @@ class HostedTests(unittest.TestCase):
         world = World()
         with mock.patch.object(manifest, "_cipher", SyntheticAEAD):
             blob = manifest.seal(plan(), KEY, RUN, GEN)
-            for identifier, downloaded in [("", blob), ("123", blob[:-1] + b"x")]:
+            # A constant replacement can equal the random tag byte; XOR always changes it.
+            tampered = blob[:-1] + bytes([blob[-1] ^ 1])
+            self.assertNotEqual(blob, tampered)
+            for identifier, downloaded in [("", blob), ("123", tampered)]:
                 with self.assertRaises(manifest.ContractFailure):
                     target.campaign(evidence(), blob, downloaded, identifier, KEY, GEN,
                                     1001, world.adapter())
