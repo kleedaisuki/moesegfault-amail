@@ -27,5 +27,5 @@ The existing Worker CI `pnpm test` automatically includes this separate file. No
 
 - [Cloudflare Request API redirect warning](https://developers.cloudflare.com/workers/runtime-apis/request/): default-follow outbound fetch may forward sensitive headers.
 - [Cloudflare response API](https://developers.cloudflare.com/workers/runtime-apis/response/): JSON helpers consume the complete body.
-- [worker-rs 0.8.3 Fetch implementation](https://github.com/cloudflare/workers-rs/blob/v0.8.3/worker/src/global.rs): native abort signal propagation.
-- [worker-rs 0.8.3 ByteStream implementation](https://github.com/cloudflare/workers-rs/blob/v0.8.3/worker/src/streams.rs): typed-array-to-vector copy before the caller sees a chunk.
+- [worker-rs 0.8.7 (Cargo.lock) Fetch implementation](https://github.com/cloudflare/workers-rs/blob/v0.8.7/worker/src/global.rs): native abort signal propagation.
+- [worker-rs 0.8.7 (Cargo.lock) ByteStream implementation](https://github.com/cloudflare/workers-rs/blob/v0.8.7/worker/src/streams.rs): typed-array-to-vector copy before the caller sees a chunk.
