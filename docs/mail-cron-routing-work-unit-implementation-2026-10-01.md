@@ -99,3 +99,24 @@ Production and research context: [controller reconciliation](https://kubernetes.
 The useful-first-turn test distinguishes recurring successful inventory retrieval
 from actual journal progress; neither safety nor a successful GET alone proves
 reconciliation liveness. No formal verification claim is made.
+
+## First hosted compile failure and exhaustive caller correction
+
+Exact candidate `fe024e3f75dd9f2bf326bade0d28d507a25fb2fa`,
+[CI 36814716325](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36814716325),
+failed before built-workerd execution at Rust unit compilation: `add_address`'s
+foreground diagnostic match omitted the two new closed RuleListFailure variants.
+The source review did not catch that remaining call site; no runtime pass or
+deadline/cancellation conclusion follows from this failed compile.
+
+The correction introduces a small exhaustive typed diagnostic classifier with
+pure tests. Foreground `RoutingBudget::new()` cannot currently produce the
+Cron-only Deferred variant, but explicitly mapping it to existing `State` means
+admission denial rather than invented provider evidence, without expanding the
+established staging header grammar or breaking strict CLI/sanitizer parsers.
+Timeout maps to existing `Request`, retaining transient transport classification
+with no observed provider HTTP status. Existing Request/Http/Provider/Decode
+mappings are unchanged. Cron's separate `routing_list_error` still produces the
+standalone maintenance deadline/resource-deferred pair for pre-denial and an
+ordinary dependency failure for submitted timeout. No wildcard/todo conceals
+future enum additions. Narrow independent review precedes the exact-head rerun.

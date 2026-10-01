@@ -9,7 +9,7 @@ Production diff from the source commit to inspected HEAD is empty. This review
 covers the three production source files changed against base and their callers;
 fixture correctness and hosted runtime results are separately owned.
 
-## Verdict
+## Initial verdict (corrected by the hosted-failure follow-up below)
 
 **No substantive source defect found. GO for nondeploying hosted verification,
 not deployment or release.** No P0/P1/P2 correction request. Confidence is moderate:
@@ -135,3 +135,65 @@ This source review supplies no passing result for those tests.
 | crates/mail-worker/src/maintenance.rs | CA047833F3FAFAEC1D0CB09CE6ACEFF1E4577A5878DAE2F3A57C25383FCA94E3 |
 | crates/mail-worker/src/platform.rs | FAA177E0B71F19D2D924C3F49C8AEE71E9BC63C8C595D6A5F7207A3811A2244D |
 | crates/mail-worker/src/lib.rs | 9B437CCFBFC47850CEB1AFE5EE895CD56C67EE1BC342F6C6741C0BA42BC1C625 |
+
+## Hosted compile failure and narrow correction review
+
+Date: 2026-10-01. Correction inspected against HEAD
+`fe024e3f75dd9f2bf326bade0d28d507a25fb2fa`, as an uncommitted `lib.rs`
+source diff plus implementation-note disclosure. The reviewer again modified
+only this review record and performed no local project build/runtime test.
+
+### Confirmed defect in the initially reviewed source
+
+**P1 build blocker, high confidence; source-resolved by the corrective diff.**
+The initial review missed `add_address`'s foreground diagnostic enum match at
+original `lib.rs:1751`. Extending RuleListFailure with Deferred and Timeout
+made that match non-exhaustive regardless of whether the foreground budget can
+actually produce those variants. Rust library and test-library compilation fail
+with E0004, so the source cannot reach the required hosted native tests.
+
+This is demonstrated by the downloaded
+`.temp/ci-36814716325-failed.log`, lines 343-406, from
+[CI run 36814716325](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36814716325).
+The original "no substantive source defect" statement above was incorrect for
+that snapshot; retain it as provenance, not as a current endorsement of the
+unfixed source. No deadline or cancellation runtime conclusion follows from
+that failed build. The implementation note explicitly records the failure and
+this review miss rather than presenting the correction as a routine cleanup.
+
+### Corrective source assessment
+
+The correction replaces that local match with the pure, exhaustive typed helper
+`routing_list_diagnostic_kind` at current `lib.rs:520-530` and uses it in
+`add_address` at current `lib.rs:1767`. Every existing enum variant is handled;
+there is no wildcard/todo hiding future additions in this classifier.
+
+| Failure | Corrective classification | Contract assessment |
+| --- | --- | --- |
+| Deferred | Existing State | Admission denial is not invented provider evidence. Current foreground RoutingBudget::new cannot produce Cron time denial, but the classifier is still well-defined without expanding wire grammar. |
+| Timeout | Existing Request | Submitted timeout remains transport failure with no observed HTTP status, not resource pre-denial. |
+| Request | Existing Request | Preserved. |
+| Http / Provider / Decode | Corresponding existing kinds | Preserved with existing observed-status handling. |
+
+The authored pure test checks exact existing headers
+`v1:routing_list:state:0:0` and `v1:routing_list:request:0:0`, absent provider
+status for both new variants, and the four legacy mappings. It separately checks
+Cron routing_list_error: Deferred is the recognized maintenance marker; Timeout
+is the fixed routing_exchange_timeout dependency error, not that marker.
+Inspected `address_diag.rs` confirms State/Request and those wire spellings were
+already established. No new Kind, schema, header grammar, foreground deadline,
+API response mapping, routing transport or destructive operation was added by
+the correction. Static search of RuleListFailure references found no remaining
+source match with the same omitted-variant shape. `git diff --check` passed.
+
+**Current narrow verdict: GO to commit/push the reviewed corrective content for
+nondeploying hosted verification only.** The demonstrated omission is corrected
+in source; compilation and runtime acceptance remain pending the exact-head
+hosted rerun. This does not approve deployment or claim the new tests passed.
+No additional material correction request was found in this focused diff.
+
+Corrective raw `crates/mail-worker/src/lib.rs` SHA-256:
+`5C85452EFE4B13C2F3323D183BF1D5D51D5B6421505F6C8F0C0D88AB55CC9E4B`.
+Associate the eventual correction commit with this content fingerprint; it was
+uncommitted when independently inspected. Earlier platform/maintenance hashes
+above describe the unchanged transport/deadline source, not a new runtime pass.

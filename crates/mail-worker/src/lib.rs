@@ -514,6 +514,21 @@ fn routing_list_error(failure: platform::RuleListFailure) -> Error {
     }
 }
 
+/// Foreground currently has no Cron deadline, but its exhaustive classification
+/// preserves the established header grammar: admission denial is state, never
+/// invented provider evidence; a submitted timeout is transient transport.
+fn routing_list_diagnostic_kind(failure: &platform::RuleListFailure) -> AddressDiagKind {
+    match failure {
+        platform::RuleListFailure::Deferred => AddressDiagKind::State,
+        platform::RuleListFailure::Timeout | platform::RuleListFailure::Request => {
+            AddressDiagKind::Request
+        }
+        platform::RuleListFailure::Http { .. } => AddressDiagKind::Http,
+        platform::RuleListFailure::Provider { .. } => AddressDiagKind::Provider,
+        platform::RuleListFailure::Decode { .. } => AddressDiagKind::Decode,
+    }
+}
+
 /// Whether this row received its external/state-only repair turn.
 /// Deferred rows retain intent but precede actually attempted retry failures.
 enum RepairTurn {
@@ -1748,13 +1763,11 @@ async fn add_address(
         trace::elapsed_ms(list_start),
     );
     let existing_rules = existing_rules.map_err(|error| {
-        let kind = match &error {
-            platform::RuleListFailure::Request => AddressDiagKind::Request,
-            platform::RuleListFailure::Http { .. } => AddressDiagKind::Http,
-            platform::RuleListFailure::Provider { .. } => AddressDiagKind::Provider,
-            platform::RuleListFailure::Decode { .. } => AddressDiagKind::Decode,
-        };
-        diagnostic.fail(kind, error.provider_status(), None);
+        diagnostic.fail(
+            routing_list_diagnostic_kind(&error),
+            error.provider_status(),
+            None,
+        );
         AppError::from(worker::Error::RustError("routing_list_failed".into()))
     })?;
     let rule_id = if let Some(id) = existing_rules.first_enabled() {
@@ -2986,6 +2999,53 @@ fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Closed Cron timing classes do not expand or misclassify foreground headers.
+    #[test]
+    fn routing_timing_failure_classification_preserves_existing_contracts() {
+        for (failure, kind, header) in [
+            (
+                platform::RuleListFailure::Deferred,
+                AddressDiagKind::State,
+                "v1:routing_list:state:0:0",
+            ),
+            (
+                platform::RuleListFailure::Timeout,
+                AddressDiagKind::Request,
+                "v1:routing_list:request:0:0",
+            ),
+        ] {
+            assert_eq!(routing_list_diagnostic_kind(&failure), kind);
+            assert_eq!(failure.provider_status(), None);
+            let mut diagnostic = AddressDiag::new();
+            diagnostic.enter(AddressDiagStage::RoutingList);
+            diagnostic.fail(kind, failure.provider_status(), None);
+            assert_eq!(diagnostic.header(false), header);
+        }
+        assert!(maintenance::is_deferred(&routing_list_error(
+            platform::RuleListFailure::Deferred
+        )));
+        let timeout = routing_list_error(platform::RuleListFailure::Timeout);
+        assert!(!maintenance::is_deferred(&timeout));
+        assert!(matches!(timeout, Error::RustError(code) if code == "routing_exchange_timeout"));
+        for (failure, kind) in [
+            (platform::RuleListFailure::Request, AddressDiagKind::Request),
+            (
+                platform::RuleListFailure::Http { status: 403 },
+                AddressDiagKind::Http,
+            ),
+            (
+                platform::RuleListFailure::Provider { status: 200 },
+                AddressDiagKind::Provider,
+            ),
+            (
+                platform::RuleListFailure::Decode { status: 200 },
+                AddressDiagKind::Decode,
+            ),
+        ] {
+            assert_eq!(routing_list_diagnostic_kind(&failure), kind);
+        }
+    }
 
     /// A full batch of failing deletes moves behind untouched due work.
     #[test]
