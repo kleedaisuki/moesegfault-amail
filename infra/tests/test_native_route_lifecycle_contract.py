@@ -365,12 +365,18 @@ class NativeRouteLifecycleTests(unittest.TestCase):
         self.assertEqual(len(deletes), 1)
         self.assertTrue(provider.dns)
         self.assertEqual(receipt["ingress"]["route"]["phase"], "delete_unknown")
-        try:
-            lifecycle.cleanup_ingress(provider, receipt, provider.persist)
-        except ValueError:
-            pass
+        # Only the first Route DELETE lost its acknowledgement. Subsequent
+        # readback proves that exact Route absent before the DNS DELETE proceeds.
+        provider.fail_write = None
+        lifecycle.cleanup_ingress(provider, receipt, provider.persist)
         self.assertEqual(len([x for x in self.mutations(provider)
                               if x[0] == "DELETE" and "/workers/routes/" in x[1]]), 1)
+        self.assertEqual(len([x for x in self.mutations(provider)
+                              if x[0] == "DELETE" and "/dns_records/" in x[1]]), 1)
+        self.assertEqual(receipt["ingress"]["route"]["phase"], "deleted")
+        self.assertEqual(receipt["ingress"]["dns"]["phase"], "deleted")
+        self.assertFalse(provider.dns)
+        self.assertFalse(provider.routes)
 
 
 if __name__ == "__main__":
