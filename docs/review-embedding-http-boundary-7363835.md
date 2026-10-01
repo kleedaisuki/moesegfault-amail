@@ -2,13 +2,21 @@
 
 ## Decision and scope
 
-**GO for hosted source CI. No substantive defect found in the reviewed change.** This is not deployment approval, production runtime verification, or proof that the whole Cron invocation fits platform resource limits. Reviewed candidate `7363835eb9fb332c558dc75488c01515fa4aba9c`, based on `c6f93bf`, with particular attention to `crates/mail-worker/src/platform.rs`, the separate built-Wasm fixture, its package script, and existing CI invocation.
+**GO for hosted source CI after the narrow lifetime correction `91b1de5`.** The initial static review did not identify the subsequently demonstrated compile defect; the hosted result and corrective review below supersede that part of the initial assessment. This is not deployment approval, production runtime verification, or proof that the whole Cron invocation fits platform resource limits. Reviewed candidate `7363835eb9fb332c558dc75488c01515fa4aba9c`, based on `c6f93bf`, with particular attention to `crates/mail-worker/src/platform.rs`, the separate built-Wasm fixture, its package script, and existing CI invocation.
 
 No local project test/build, live provider call, deployment, or secret access was performed. Runtime assertions remain pending GitHub Actions. Confidence is high for the static contract and moderate until the native fetch/reader cancellation fixtures run in workerd.
 
+## Hosted compile failure and exact correction
+
+[Hosted run 36801307357](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36801307357) reported Rust E0597 in `platform.rs`: the tail-expression select/match temporary retained the losing exchange future borrowing the local abort signal through local destruction. This is concrete negative compilation evidence, not an unverified concern, and the initial static GO was not a compilation-success claim.
+
+Independently inspected exact correction `91b1de57cfb2f8ed52f76e6d673ba8e0bdaccb7a`, atop PR #20 head `0c9e1f1`. Its only changed file is `crates/mail-worker/src/platform.rs`; it binds the existing match to local `result`, terminates the statement, then returns the owned result. The select temporary and losing future are thus destroyed before `signal`. The owned result retains no borrow. Timeout still calls native `controller.abort()` inside the same branch before returning the fixed transient error; dropping a Rust future does not replace native abort.
+
+**Narrow corrective review: GO to push for exact-head hosted source CI.** No fixture, deadline, redirect, response cap, status classification, or public-error changes. No local project build/test, live provider call, or deployment was performed. A subsequent exact-head hosted compile and runtime fixture result remain necessary; this update does not claim the E0597 fix has already compiled or that native cancellation has passed runtime tests.
+
 ## Checked contracts
 
-- `Cargo.lock` pins worker 0.8.7. Current official generated Rust API exposes `Fetch::send_with_signal(&AbortSignal)`, `AbortController::signal`, consuming `abort(self)`, and `Response::body()`. The implementation uses these signatures coherently; the locally owned signal outlives the selected exchange future.
+- `Cargo.lock` pins worker 0.8.7. Current official generated Rust API exposes `Fetch::send_with_signal(&AbortSignal)`, `AbortController::signal`, consuming `abort(self)`, and `Response::body()`. The implementation uses these signatures coherently. In corrected source `91b1de5`, a non-tail match statement destroys the select temporary/losing exchange future before the locally owned signal is destroyed.
 - A fixed approved URL and `RequestRedirect::Manual` prevent following 3xx responses. Cloudflare explicitly warns that outbound default-follow redirects forward sensitive headers across hosts. Existing failure classification is preserved and provider bodies/JS errors are not added to diagnostic errors.
 - One select deadline includes both native fetch and body consumption. The timeout branch aborts before returning its fixed transient classification. It does not merely drop the Rust future and claim that native transport was stopped.
 - The successful-body path gets a native reader, checks the incoming typed-array length before a Rust copy, uses subtraction of the already bounded accumulator length, and stops before requesting another over-limit chunk. Cancellation on read/size failure is awaited within the same deadline. Lock-release and cancel errors are discarded without raw error logging. Empty/invalid JSON still enters the fixed malformed class.
