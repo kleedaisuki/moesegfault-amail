@@ -19,7 +19,7 @@ deployment, mail, secret or account authorization.
   a release. An exact cache hit, partial/miss and unreported state are different;
   use `ci_cache_lookup` and suite receipts rather than green-step inference.
   For a test-only native fixture repair, use `docs/native-fixture-replay.md`
-  once its hosted diagnostic lane is accepted: unchanged compilation inputs and
+  for the hosted diagnostic lane: unchanged compilation inputs and
   original artifact provenance are required. Diagnostic replay is not full CI,
   deployment or release evidence.
 * **Runtime tracing/privacy:** `docs/runtime-observability-foundation.md` and

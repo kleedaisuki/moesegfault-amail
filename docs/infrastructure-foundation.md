@@ -185,10 +185,28 @@ workflow was 5m02s (11:12:49–11:17:51 UTC), build 1m40s (11:13:01–11:14:41),
 core job 2m58s including setup (11:14:45–11:17:43). The earlier observed full
 workflow was 8m29s; these are uncontrolled samples, not an SLA or sole-cause
 performance benchmark. A dedicated verified-artifact native fixture diagnostic
-lane is under validation to avoid unrelated rebuild/tests during fixture repair;
+lane is hosted-accepted to avoid unrelated rebuild/tests during fixture repair;
 it cannot substitute for current-source CI or promotion.
 
-Next priorities: accept that narrow replay with an actual hosted run; complete
+Next priorities: complete
 reader-first remote application clocks/error semantics and the synthetic native
 Cloudflare canary; then tested-artifact deployment/release wiring, lifecycle
 readback/recovery and historical-lane cleanup. Business debug remains deferred.
+
+## Accepted narrow native replay
+
+PR 47 head 2ae5124d3002b2dd47cddb725c61bb1f2ce026a9 passed full source CI
+36854745753 and syntax 36854745703, including all 154 native tests. Merged main
+7242ad0d914978c97e8b0e87a0a52aafd5661b11 then executed actual diagnostic replay
+36855666878 against completed source run 36853948436, artifact 11156458767.
+The lane proved unchanged compilation inputs and verified the original 30-file
+artifact with source 7770b4cb0acac48b9145d24813414d53de063eea, attempt 1,
+Rust 1.98.1 and worker-build 0.8.5 before running current fixture source.
+
+The three trace-sink native tests passed, zero failures/cancellations/skips/todo.
+Observed whole replay duration was **24s** (11:29:15–11:29:39 UTC); runner job
+19s (11:29:20–11:29:39), including metadata, download/verification and locked
+runtime setup. This is a useful observed narrow-iteration fast path, not an SLA
+or replacement for all-source CI. The receipt distinguishes original build and
+current fixture source. No Rust compile, provider operation, mailbox action or
+new deployment/release admission was involved. See native-fixture-replay.md.
