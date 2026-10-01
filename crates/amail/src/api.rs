@@ -596,6 +596,12 @@ mod tests {
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap();
+            // Announcements are origin-bound; this real loopback peer is the fixture API.
+            let response_cfg = Runtime {
+                api_base: format!("http://{address}"),
+                ..cfg.clone()
+            };
+            let api = Api::new(&response_cfg).unwrap();
             let server = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
@@ -610,7 +616,7 @@ mod tests {
                 }
                 write!(stream, "HTTP/1.1 {status} Test\r\nContent-Length: {declared}\r\nX-Amail-Request-Id: {correlation}\r\nX-Amail-Telemetry: attempts-v1\r\nConnection: close\r\n\r\n{body}").unwrap();
             });
-            let journal = telemetry::RequestSpan::new(&cfg, "messages.list");
+            let journal = telemetry::RequestSpan::new(&response_cfg, "messages.list");
             let traceparent = journal.traceparent();
             let result = api.execute_request(
                 api.http
