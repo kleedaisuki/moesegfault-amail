@@ -254,6 +254,31 @@ class FreshBootstrapControllerTests(unittest.TestCase):
                     reconcile.assert_not_called()
                 self.provider.get.assert_not_called()
 
+    def test_timeout_without_version_still_observes_intended_script(self):
+        """A missing Wrangler pin cannot hide a possible accepted remote deployment."""
+        records = self.valid_failed_sink_journal()
+        records[-1] = self.record("sink", "failed", error_type="TimeoutExpired")
+        self.journal(records)
+        with patch.object(controller, "reconcile_scope", return_value={"status": "unknown"}), \
+                patch.object(controller, "serving_deployment", return_value=("d", "v")):
+            result = self.bootstrap().recover()
+        self.assertEqual(result["pins"]["amail-trace-sink"], {
+            "captured_version": None, "serving": ("d", "v"), "observation": "OBSERVED"})
+        self.provider.get.assert_called_once()
+        self.assertFalse(result["may_replay_write"])
+        self.adapters["persist"].assert_not_called()
+
+    def test_failed_recovery_read_is_unknown_not_absence_or_replay(self):
+        """Provider refusal does not erase an ambiguous submit or grant ownership."""
+        self.journal(self.valid_failed_sink_journal())
+        self.provider.get.side_effect = TimeoutError("private arbitrary prose")
+        with patch.object(controller, "reconcile_scope", return_value={"status": "unknown"}):
+            result = self.bootstrap().recover()
+        self.assertIsNone(result["pins"]["amail-trace-sink"]["serving"])
+        self.assertEqual(result["pins"]["amail-trace-sink"]["observation"], "UNVERIFIED")
+        self.assertNotIn("private arbitrary prose", json.dumps(result))
+        self.assertFalse(result["may_replay_write"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -329,12 +329,17 @@ class Bootstrap:
             result["scope"] = reconcile_scope(self.provider, self.epoch, self.recovery_path.with_suffix(".scope.jsonl"))
         for role, script in SCRIPTS.items():
             versions = [row["version"] for row in records if row["phase"] == role and "version" in row]
-            if versions:
-                if len(versions) != 1:
+            if any(row["phase"] == role and row["state"] == "intent" for row in records):
+                if len(versions) > 1:
                     raise ValueError("fresh_recovery_journal_unverified")
-                current = self.provider.get(f"accounts/{self.provider.account}/workers/scripts/{script}/deployments?per_page=1&page=1")
-                serving = serving_deployment(current)
-                result["pins"][script] = {"captured_version": versions[0], "serving": serving}
+                try:
+                    current = self.provider.get(f"accounts/{self.provider.account}/workers/scripts/{script}/deployments?per_page=1&page=1")
+                    serving = serving_deployment(current)
+                except Exception:
+                    serving = None  # Failed reads never become resource absence.
+                result["pins"][script] = {"captured_version": versions[0] if versions else None,
+                                          "serving": serving,
+                                          "observation": "OBSERVED" if serving is not None else "UNVERIFIED"}
         return result
 
 

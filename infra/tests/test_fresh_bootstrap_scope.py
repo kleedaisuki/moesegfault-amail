@@ -279,7 +279,10 @@ class FreshTransportTests(unittest.TestCase):
         """Fake one HTTP response including a safe Cloudflare request identifier."""
         value = Mock(status=status, headers={"cf-ray": "abcd-SIN"})
         value.read.return_value = raw
-        self.provider.opener.open.return_value.__enter__.return_value = value
+        context = Mock()
+        context.__enter__ = Mock(return_value=value)
+        context.__exit__ = Mock(return_value=False)
+        self.provider.opener.open.return_value = context
         return value
 
     def test_concrete_request_is_one_bounded_get(self):
