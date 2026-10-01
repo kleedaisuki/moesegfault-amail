@@ -30,6 +30,10 @@ class WorkerArtifactTests(unittest.TestCase):
             (folder / "index.js").write_text("export default {};", encoding="utf-8")
             (folder / "worker/shim.mjs").write_text("export {default} from '../index.js';", encoding="utf-8")
             (folder / "module.wasm").write_bytes(b"inert-fixture")
+        for name in artifact.ENTRY_FILES:
+            entry = self.root / name
+            entry.parent.mkdir(parents=True, exist_ok=True)
+            entry.write_text("export default class Entry {};", encoding="utf-8")
         for patcher in (patch.object(artifact, "ROOT", self.root), patch.object(artifact, "FOLDER", self.folder),
                         patch.dict(artifact.os.environ, {"GITHUB_ACTIONS": "true", "GITHUB_SHA": "a" * 40,
                                    "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}, clear=True)):
@@ -50,6 +54,7 @@ class WorkerArtifactTests(unittest.TestCase):
         expected = artifact.files(self.root)
         self.assertEqual(artifact.files(self.folder), expected)
         self.assertNotIn("rust-toolchain.toml", json.loads((self.folder / "manifest.json").read_text())["files"])
+        self.assertTrue(set(artifact.ENTRY_FILES).issubset(expected))
         self.remove_originals()
         artifact.restore()
         self.assertEqual(artifact.files(self.root), expected)
@@ -95,6 +100,41 @@ class WorkerArtifactTests(unittest.TestCase):
         with patch.dict(artifact.os.environ, {"GITHUB_ACTIONS": "false"}):
             with self.assertRaises(ValueError):
                 artifact.context()
+
+    def test_changed_checkout_entry_refuses_before_any_generated_copy(self):
+        """Restoration cannot replace source or install modules alongside source drift."""
+        artifact.create()
+        self.remove_originals()
+        entry = self.root / artifact.ENTRY_FILES[-1]
+        entry.write_text("export default class Changed {};", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "artifact_source_entry_mismatch"):
+            artifact.restore()
+        self.assertEqual(entry.read_text(), "export default class Changed {};")
+        self.assertFalse(any((self.root / tree).exists() for tree in artifact.TREES))
+
+    def test_missing_source_entry_is_not_restored_from_artifact(self):
+        """Protected checkout source is required; downloaded bytes cannot invent it."""
+        artifact.create()
+        self.remove_originals()
+        entry = self.root / artifact.ENTRY_FILES[0]
+        entry.unlink()
+        with self.assertRaisesRegex(ValueError, "artifact_source_entry_mismatch"):
+            artifact.restore()
+        self.assertFalse(entry.exists())
+        self.assertFalse(any((self.root / tree).exists() for tree in artifact.TREES))
+
+    def test_missing_or_modified_artifact_entry_refuses(self):
+        """Tracked boundary bytes have the same integrity requirement as generated Wasm."""
+        artifact.create()
+        self.remove_originals()
+        entry = self.folder / artifact.ENTRY_FILES[0]
+        entry.write_text("export default class Changed {};", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "artifact_file_integrity_mismatch"):
+            artifact.restore()
+        entry.unlink()
+        with self.assertRaisesRegex(ValueError, "source_entry_missing"):
+            artifact.restore()
+        self.assertFalse(any((self.root / tree).exists() for tree in artifact.TREES))
 
     def test_generated_inputs_are_bounded_and_not_configs(self):
         """Selection protects config/data; SDK maps/licenses are valid generated files."""

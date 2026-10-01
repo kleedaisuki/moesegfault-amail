@@ -1,6 +1,6 @@
 # Native Email Sending Queue consumer. / 原生邮件发送事件队列消费者。
 name = "amail-events"
-main = "build/worker/shim.mjs"
+main = "entry/queue.mjs"
 compatibility_date = "2026-09-25"
 workers_dev = false
 preview_urls = false

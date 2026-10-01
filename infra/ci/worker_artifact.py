@@ -1,8 +1,9 @@
-"""Package public generated modules once; verify identity before native testing.
+"""Package public generated modules and tracked event boundaries for native testing.
 
 This is a same-run source-test artifact, not a deployment or release admission.
 GitHub's fixed producer artifact ID establishes provenance; this manifest checks
 the checkout, producer run, exact file set and contents without caching test results.
+The v1 manifest shape and historical generated-tree namespaces remain unchanged.
 """
 
 import argparse
@@ -16,9 +17,14 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 FOLDER = ROOT / ".temp/ci/worker-built"
+# Historical archive readers reuse these namespaces; tracked entries are separate.
 TREES = ("crates/mail-worker/build", "workers/trace-sink/build", "workers/mail-ingress/build",
          "workers/mail-events/build", "workers/identity-test-inbox/build", "workers/role-monitor/build",
          "workers/native-trace-canary/build")
+# Tracked deployment boundaries are tested inputs, not interchangeable generated exports.
+ENTRY_FILES = ("crates/mail-worker/entry/api.mjs", "crates/mail-worker/entry/maintenance.mjs",
+               "workers/trace-sink/entry/queue.mjs", "workers/mail-ingress/entry/email.mjs",
+               "workers/mail-events/entry/queue.mjs")
 LIMIT = 32 * 1024 * 1024
 
 
@@ -37,7 +43,7 @@ def context() -> dict:
 
 
 def files(base: Path) -> dict[str, str]:
-    """Hash public generated trees, refusing symlinks and oversized data.
+    """Hash public generated trees and fixed entry wrappers, refusing unsafe inputs.
 
     Generated source maps/licenses are ordinary public build outputs too. File
     extensions are not a confidentiality boundary; the credential-free producer
@@ -61,11 +67,21 @@ def files(base: Path) -> dict[str, str]:
             result[path.relative_to(base).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
         if not (folder / "worker/shim.mjs").is_file() or not (folder / "index.js").is_file():
             raise ValueError(f"generated_entry_missing: {tree}")
+    for name in ENTRY_FILES:
+        path = base / name
+        if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != base and parent.is_relative_to(base)):
+            raise ValueError("entry_symlink_refused")
+        if not path.is_file():
+            raise ValueError(f"source_entry_missing: {name}")
+        size += path.stat().st_size
+        if size > LIMIT or len(result) >= 1000:
+            raise ValueError("module_artifact_oversized")
+        result[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     return result
 
 
 def create() -> None:
-    """Assemble generated code and provenance only, never configs or credentials."""
+    """Capture generated code, fixed public entry boundaries and provenance only."""
     identity, hashes = context(), files(ROOT)
     FOLDER.mkdir(parents=True, exist_ok=False)
     for name in hashes:
@@ -77,7 +93,12 @@ def create() -> None:
 
 
 def restore() -> None:
-    """Check all bytes before installing a fresh same-source native module tree."""
+    """Check all bytes/source entries before installing generated trees.
+
+    Entry wrappers must already match the protected checkout; an artifact never
+    overwrites tracked source. Historical archive verification separately admits
+    older manifests without wrappers, not as current deployment/test artifacts.
+    """
     manifest = FOLDER / "manifest.json"
     if FOLDER.is_symlink() or manifest.is_symlink() or manifest.stat().st_size > 262144:
         raise ValueError("artifact_manifest_invalid")
@@ -91,9 +112,17 @@ def restore() -> None:
     actual = {path.relative_to(FOLDER).as_posix() for path in FOLDER.rglob("*") if path.is_file()}
     if value.get("files") != hashes or actual != set(hashes) | {"manifest.json"}:
         raise ValueError("artifact_file_integrity_mismatch: missing, extra or modified generated file")
+    for name in ENTRY_FILES:
+        path = ROOT / name
+        if (path.is_symlink() or not path.is_file()
+                or any(parent.is_symlink() for parent in path.parents if parent != ROOT and parent.is_relative_to(ROOT))
+                or path.stat().st_size > LIMIT or hashlib.sha256(path.read_bytes()).hexdigest() != hashes[name]):
+            raise ValueError("artifact_source_entry_mismatch")
     if any((ROOT / tree).exists() for tree in TREES):
         raise ValueError("artifact_existing_tree_refused")
     for name in hashes:
+        if name in ENTRY_FILES:
+            continue
         destination = ROOT / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(FOLDER / name, destination)

@@ -81,8 +81,8 @@ class ResumeTests(unittest.TestCase):
             self.assertEqual(records[1]["creation_epoch"], asdict(creation))
             self.assertEqual(records[1]["deployment_epoch"], asdict(current))
 
-    def test_observed_sink_checkpoint_preserves_completed_writes_and_source(self):
-        """The actual sink-readback stop continues only maintenance/API after exact reads."""
+    def test_observed_sink_checkpoint_authorizes_only_changed_source_sink_replacement(self):
+        """Retain stores/DDL/queues, verify old version, then replace the unsafe SDK surface once."""
         creation = Epoch("a" * 40, "123", 42, "b" * 64, "1.98.1")
         sink = Epoch("c" * 40, "456", 43, "d" * 64, "1.98.1")
         current = Epoch("e" * 40, "789", 44, "f" * 64, "1.98.1")
@@ -114,10 +114,11 @@ class ResumeTests(unittest.TestCase):
                 submits = stack.enter_context(patch.object(resume.bootstrap, "submit_once", return_value="00000000-0000-0000-0000-000000000005"))
                 stack.enter_context(patch.object(resume, "held_empty"))
                 read = stack.enter_context(patch.object(resume, "verify_sink_reader"))
+                previous = stack.enter_context(patch.object(resume, "verify_sink_replacement"))
                 graph = stack.enter_context(patch.object(resume, "verify", return_value={"state": "paused"}))
                 persist = stack.enter_context(patch.object(resume, "persist", return_value={"state": "paused"}))
                 if failure == "changed_sink":
-                    read.side_effect = ValueError("fresh_serving_unverified")
+                    previous.side_effect = ValueError("fresh_serving_unverified")
                 if failure:
                     with self.assertRaises(ValueError):
                         resume.run(provider, s3, current, "456", path)
@@ -125,15 +126,17 @@ class ResumeTests(unittest.TestCase):
                     persist.assert_not_called()
                 else:
                     self.assertEqual(resume.run(provider, s3, current, "456", path), {"state": "paused"})
-                    read.assert_called_once_with(scope, version, "3" * 32, "4" * 32, provider)
-                    self.assertEqual([call.args[0] for call in submits.call_args_list], ["maintenance", "api"])
-                    self.assertEqual(graph.call_args.args[1]["amail-trace-sink"], version)
-                    self.assertEqual(persist.call_args.kwargs,
-                                     {"deployment_epoch": current,
-                                      "retained_sink": {"source_epoch": asdict(sink), "version": version}})
+                    previous.assert_called_once_with(scope, version, "3" * 32, "4" * 32, provider)
+                    new_version = submits.return_value
+                    read.assert_called_once_with(scope, new_version, "3" * 32, "4" * 32, provider)
+                    self.assertEqual([call.args[0] for call in submits.call_args_list], ["sink", "maintenance", "api"])
+                    self.assertEqual(graph.call_args.args[1]["amail-trace-sink"], new_version)
+                    self.assertEqual(persist.call_args.kwargs, {"deployment_epoch": current})
                     records = [json.loads(line) for line in (path / "recovery/resume.jsonl").read_text().splitlines()]
                     self.assertTrue(all(row["creation_run"] == "123" for row in records))
                     self.assertFalse(any(row["phase"] in ("migrate", "queues", "sink") for row in records))
+                    intent = next(row for row in records if row["phase"] == "sink_replacement" and row["state"] == "intent")
+                    self.assertEqual(intent["previous_version"], version)
                 owned.assert_called_once_with(provider, "123", path)
                 migrate.assert_not_called()
                 queues.assert_not_called()

@@ -1,8 +1,10 @@
 """Hosted synthetic online completion contracts; no real provider or send operations."""
 
 from contextlib import ExitStack
+from contextlib import redirect_stdout
 from dataclasses import asdict
 import json
+import io
 import os
 from pathlib import Path
 import sys
@@ -41,6 +43,19 @@ def receipt_value() -> dict:
 
 class OnlineContractsTests(unittest.TestCase):
     """Verify write order, no release/recreation, private diagnostics and one attempt."""
+
+    def test_failed_main_reports_source_phase_and_fixed_reason_not_provider_text(self):
+        """The real operator entrypoint must not hide a specific predicate behind ValueError."""
+        for reason, expected in (("fresh_online_event_consumer_unverified", "fresh_online_event_consumer_unverified"),
+                                 ("private-token-mail-body", "unexpected")):
+            output = io.StringIO()
+            controller = Mock(phase="adapter_readback")
+            controller.run.side_effect = ValueError(reason)
+            with patch.object(online, "Online", return_value=controller), redirect_stdout(output):
+                self.assertEqual(online.main(), 1)
+            self.assertIn("phase=adapter_readback", output.getvalue())
+            self.assertIn("reason=" + expected, output.getvalue())
+            self.assertNotIn("private-token", output.getvalue())
 
     @classmethod
     def setUpClass(cls):
