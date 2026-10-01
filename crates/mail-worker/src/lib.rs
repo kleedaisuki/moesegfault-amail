@@ -558,18 +558,45 @@ async fn repair_address(
 
 /// Recover only provider-positive sends from their exact immutable ZIP; HTTP
 /// and Cron share one journal-fenced projection and atomic publication path.
+/// Immutable identity plus one durable due slot selected before content transfer.
+#[derive(Deserialize)]
+struct AcceptedDue {
+    /// Immutable owner issuer from the accepted journal.
+    owner_iss: String,
+    /// Immutable owner subject from the accepted journal.
+    owner_sub: String,
+    /// Original owner-scoped idempotency key.
+    idem_key: String,
+    /// Original retained ZIP commitment.
+    payload_hash: String,
+    /// Stable local delivery identity, never replaced during recovery.
+    message_id: String,
+    /// Existing provider acceptance; recovery never sends again.
+    provider_id: String,
+    /// Original ordering and envelope-retention timestamp.
+    created_at: i64,
+    /// Exact observed retry slot for conditional pre-I/O advancement.
+    index_next_attempt_at: i64,
+    /// Size only when an exact-owned legacy tombstone already exists.
+    deleted_bytes: Option<i64>,
+}
+
+/// A bounded ordered due query skips active HTTP/Cron projection leases. Poison
+/// archives still receive a finite pre-I/O retry slot, never the oldest forever.
+const ACCEPTED_DUE_SQL: &str = "SELECT s.owner_iss,s.owner_sub,s.idem_key,s.payload_hash,s.message_id,s.provider_id,s.created_at,s.index_next_attempt_at,
+    (SELECT m.storage_bytes FROM messages m WHERE m.id=s.message_id
+     AND m.owner_iss=s.owner_iss AND m.owner_sub=s.owner_sub
+     AND m.direction='outbound' AND m.deleted_at IS NOT NULL
+     AND m.r2_key='messages/'||s.message_id||'.zip'
+     AND COALESCE(json_extract(m.metadata_json,'$.message_id'),'')=s.provider_id) AS deleted_bytes
+    FROM send_requests s WHERE s.state='accepted' AND s.message_id IS NOT NULL
+      AND s.provider_id IS NOT NULL AND s.index_next_attempt_at<=?1
+      AND s.index_projection_lease_until<=?1
+    ORDER BY s.index_next_attempt_at,s.created_at,s.message_id LIMIT 5";
+
+/// Recover already-accepted sends without resubmission. Per-item failures do not
+/// suppress other admitted items; resource denial alone ends this phase's turn.
 async fn reconcile_outbound(env: &Env, database: &Database) -> Result<()> {
-    #[derive(Deserialize)]
-    struct Pending {
-        owner_iss: String,
-        owner_sub: String,
-        idem_key: String,
-        payload_hash: String,
-        message_id: String,
-        provider_id: String,
-        created_at: i64,
-        deleted_bytes: Option<i64>,
-    }
     database
         .prepare(
             "UPDATE send_requests SET state='preparing',reservation_started_at=NULL WHERE state='reserving' AND reservation_started_at<?1",
@@ -577,64 +604,70 @@ async fn reconcile_outbound(env: &Env, database: &Database) -> Result<()> {
         .bind(&[bind_num(now() - 10 * 60_000)])?
         .run()
         .await?;
-    let rows = database.prepare("SELECT s.owner_iss,s.owner_sub,s.idem_key,s.payload_hash,s.message_id,s.provider_id,s.created_at,
-        (SELECT m.storage_bytes FROM messages m WHERE m.id=s.message_id
-         AND m.owner_iss=s.owner_iss AND m.owner_sub=s.owner_sub
-         AND m.direction='outbound' AND m.deleted_at IS NOT NULL
-         AND m.r2_key='messages/'||s.message_id||'.zip'
-         AND COALESCE(json_extract(m.metadata_json,'$.message_id'),'')=s.provider_id) AS deleted_bytes
-        FROM send_requests s WHERE s.state='accepted' AND s.message_id IS NOT NULL AND s.provider_id IS NOT NULL LIMIT 20")
-        .all().await?.results::<Pending>()?;
+    let scan_at = now();
+    let rows = database
+        .prepare(ACCEPTED_DUE_SQL)
+        .bind(&[bind_num(scan_at)])?
+        .all()
+        .await?
+        .results::<AcceptedDue>()?;
+    let mut failed = false;
     for row in rows {
-        // A serial item must have enough room for its maximum valid projection,
-        // including failure resolution/release, before R2 or compilation starts.
-        database.ensure_remaining(74)?;
-        if let Some(bytes) = row.deleted_bytes.filter(|bytes| *bytes >= 0) {
-            accepted::finish_deleted(
-                database,
-                &accepted::Projection {
-                    id: &row.message_id,
-                    issuer: &row.owner_iss,
-                    subject: &row.owner_sub,
-                    idem: &row.idem_key,
-                    hash: &row.payload_hash,
-                    provider: &row.provider_id,
-                    created_at: row.created_at,
-                    bytes: bytes as usize,
-                },
-            )
-            .await?;
+        // Includes the due UPDATE plus the existing projector's maximum 74:
+        // 2 setup +5*75=377 stays within this phase's non-borrowable 380 grant.
+        database.ensure_remaining(75)?;
+        if !advance_accepted_due(database, &row, scan_at).await? {
             continue;
         }
-        let key = format!("messages/{}.zip", row.message_id);
-        let Some(object) = env.bucket("MAIL_BODIES")?.get(&key).execute().await? else {
-            continue;
-        };
-        // R2's native metadata bounds allocation before reading retained bytes.
-        // Preserve every service-valid ZIP; a larger stored object is not one.
-        if object.size() > archive::MAX_ZIP as u64 {
-            continue;
+        match repair_accepted(env, database, &row).await {
+            Err(error) if database::is_deferred(&error) => return Err(error),
+            Err(_) => failed = true,
+            Ok(()) => {}
         }
-        let Some(body) = object.body() else {
-            continue;
-        };
-        let bytes = body.bytes().await?;
-        if format!("{:x}", Sha256::digest(&bytes)) != row.payload_hash {
-            continue;
-        }
-        let Ok(draft) = parse_draft(&bytes) else {
-            continue;
-        };
-        if validate_draft(&draft).is_err() {
-            continue;
-        }
-        let m = &draft.manifest;
-        let envelope = outbound_envelope_json(&draft)?;
-        if row.created_at >= now() - 90 * 86_400_000 {
-            database.prepare("UPDATE send_requests SET sender=COALESCE(sender,?1),envelope_json=COALESCE(envelope_json,?2) WHERE message_id=?3 AND provider_id=?4 AND owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND payload_hash=?8 AND state='accepted'")
-                .bind(&[bind_str(&m.from),bind_str(&envelope),bind_str(&row.message_id),bind_str(&row.provider_id),bind_str(&row.owner_iss),bind_str(&row.owner_sub),bind_str(&row.idem_key),bind_str(&row.payload_hash)])?.run().await?;
-        }
-        accepted::publish(
+    }
+    if failed {
+        return Err(Error::RustError("send_index_pending".into()));
+    }
+    Ok(())
+}
+
+/// CAS the exact observed due slot before any R2 read or parsing. This is retry
+/// scheduling, not projection authority: the existing opaque lease still fences
+/// every content write. RETURNING presence avoids trigger-expanded changes counts.
+async fn advance_accepted_due(
+    database: &Database,
+    row: &AcceptedDue,
+    scan_at: i64,
+) -> Result<bool> {
+    let advanced = database
+        .prepare(
+            "UPDATE send_requests SET index_next_attempt_at=?1
+        WHERE message_id=?2 AND owner_iss=?3 AND owner_sub=?4 AND idem_key=?5
+          AND payload_hash=?6 AND provider_id=?7 AND state='accepted'
+          AND index_next_attempt_at=?8 AND index_next_attempt_at<=?9
+          AND index_projection_lease_until<=?9 RETURNING message_id",
+        )
+        .bind(&[
+            bind_num(scan_at + 5 * 60_000),
+            bind_str(&row.message_id),
+            bind_str(&row.owner_iss),
+            bind_str(&row.owner_sub),
+            bind_str(&row.idem_key),
+            bind_str(&row.payload_hash),
+            bind_str(&row.provider_id),
+            bind_num(row.index_next_attempt_at),
+            bind_num(scan_at),
+        ])?
+        .first::<serde_json::Value>(None)
+        .await?;
+    Ok(advanced.is_some())
+}
+
+/// A single due attempt preserves the immutable ZIP and accepted journal on any
+/// malformed/missing/foreign input; later due items must still get their turn.
+async fn repair_accepted(env: &Env, database: &Database, row: &AcceptedDue) -> Result<()> {
+    if let Some(bytes) = row.deleted_bytes.filter(|bytes| *bytes >= 0) {
+        accepted::finish_deleted(
             database,
             &accepted::Projection {
                 id: &row.message_id,
@@ -644,12 +677,55 @@ async fn reconcile_outbound(env: &Env, database: &Database) -> Result<()> {
                 hash: &row.payload_hash,
                 provider: &row.provider_id,
                 created_at: row.created_at,
-                bytes: bytes.len(),
+                bytes: bytes as usize,
             },
-            &draft,
         )
         .await?;
+        return Ok(());
     }
+    let key = format!("messages/{}.zip", row.message_id);
+    let Some(object) = env.bucket("MAIL_BODIES")?.get(&key).execute().await? else {
+        return Ok(());
+    };
+    // R2's native metadata bounds allocation before reading retained bytes.
+    // Preserve every service-valid ZIP; a larger stored object is not one.
+    if object.size() > archive::MAX_ZIP as u64 {
+        return Ok(());
+    }
+    let Some(body) = object.body() else {
+        return Ok(());
+    };
+    let bytes = body.bytes().await?;
+    if format!("{:x}", Sha256::digest(&bytes)) != row.payload_hash {
+        return Ok(());
+    }
+    let Ok(draft) = parse_draft(&bytes) else {
+        return Ok(());
+    };
+    if validate_draft(&draft).is_err() {
+        return Ok(());
+    }
+    let m = &draft.manifest;
+    let envelope = outbound_envelope_json(&draft)?;
+    if row.created_at >= now() - 90 * 86_400_000 {
+        database.prepare("UPDATE send_requests SET sender=COALESCE(sender,?1),envelope_json=COALESCE(envelope_json,?2) WHERE message_id=?3 AND provider_id=?4 AND owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND payload_hash=?8 AND state='accepted'")
+            .bind(&[bind_str(&m.from),bind_str(&envelope),bind_str(&row.message_id),bind_str(&row.provider_id),bind_str(&row.owner_iss),bind_str(&row.owner_sub),bind_str(&row.idem_key),bind_str(&row.payload_hash)])?.run().await?;
+    }
+    accepted::publish(
+        database,
+        &accepted::Projection {
+            id: &row.message_id,
+            issuer: &row.owner_iss,
+            subject: &row.owner_sub,
+            idem: &row.idem_key,
+            hash: &row.payload_hash,
+            provider: &row.provider_id,
+            created_at: row.created_at,
+            bytes: bytes.len(),
+        },
+        &draft,
+    )
+    .await?;
     Ok(())
 }
 

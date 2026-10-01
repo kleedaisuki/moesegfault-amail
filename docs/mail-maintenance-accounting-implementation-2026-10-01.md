@@ -70,3 +70,37 @@ References: [ADR](mail-cron-budget-architecture-decision-2026-10-01.md),
 [D1 batch](https://developers.cloudflare.com/d1/worker-api/d1-database/),
 [workers-rs D1 v0.8.3](https://github.com/cloudflare/workers-rs/blob/v0.8.3/worker/src/d1/mod.rs),
 [Workers production practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/).
+
+## Second atomic slice: accepted due fairness
+
+Migration `0011_accepted_projection_due.sql` adds one journal-owned finite retry
+slot, with existing rows due immediately. Cron selects only exact accepted,
+provider-positive rows with due slot and projection lease expired, ordered by due
+time / original created time / stable message ID, LIMIT 5. Before R2 or parsing,
+one conditional UPDATE advances the exact observed due slot to scan time +5min.
+It rechecks owner/idempotency/archive/provider/state and expired lease; returned
+row presence, not trigger-expanded D1 change counts, proves admission. The due
+claim **does not replace** the opaque projection lease shared by HTTP and Cron.
+HTTP post-acceptance projector behavior remains unchanged. A concurrent HTTP
+projector may win that lease; Cron cannot overwrite a sent/deleted projection.
+
+Missing ZIPs, hash mismatch, malformed archives and foreign reservation/projection
+identities still consume a retry turn and move behind untouched work. Catching a
+per-item projection error continues other selected rows. Budget denial stops only
+the outbound phase, without unmetered release/recovery statements or provider
+resend. Five still-active foreground leases do not use the five-row selection.
+
+The extra pre-R2 due UPDATE is **in addition to** PR22's existing projection lease
+claim. Correct source arithmetic is healthy `734+5=739` combined / outbound367;
+conservative late path `744+5=749` combined / outbound377. The item's whole-allowance
+check becomes 75, i.e. `2+5*(66+9)=377`, under the 380 fixed grant. Three remaining
+tokens are not a license to add uncounted compensation. All submissions still go
+through the adapter and fail closed, regardless of the arithmetic model.
+
+Added provider-free built-workerd contracts model three poison batches followed
+by healthy work, skip five live foreground leases, and continue a good item after
+a preceding projection fault. Existing fault-recovery tests explicitly reset
+the durable due slot to model its expiry rather than assume immediate retry or
+sleep on wall time. Eventual recovery assumes recurring scheduled service and
+eventually successful admitted D1/R2 operations; a permanent database failure is
+not repaired by retry ordering. This slice has no new local/runtime test claim.
