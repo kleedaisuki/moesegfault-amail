@@ -83,7 +83,7 @@ export async function fixture(run, { observeR2 = false, observeSql = false } = {
       .bind(sender, issuer, owner, Date.now()).run();
     // Keep this test about persistence, not third-party embedding processing.
     await db.prepare("UPDATE embedding_dependency SET blocked_until=?1 WHERE id=1").bind(Date.now() + 86_400_000).run();
-    const tick = async () => { await (await mf.getWorker()).scheduled(); assert.equal(unexpected, 0); };
+    const tick = async (scheduledTime) => { await (await mf.getWorker()).scheduled(scheduledTime === undefined ? undefined : { scheduledTime: new Date(scheduledTime) }); assert.equal(unexpected, 0); };
     const r2Stats = async () => {
       assert.ok(observeR2, "native R2 stats exist only in the isolated observer fixture");
       return (await mf.dispatchFetch("https://synthetic.invalid/r2-stats")).json();

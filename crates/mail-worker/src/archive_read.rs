@@ -5,6 +5,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use worker::{Error, Object, ResponseBody, Result};
 
 use crate::archive::MAX_ZIP;
+use crate::{maintenance, platform};
 
 /// Invalid retained content is durable deferral; transport failures are separate.
 enum Failure {
@@ -16,7 +17,13 @@ enum Failure {
 
 /// Read only an admitted retained object. No HEAD/second GET/retry is introduced.
 /// `None` preserves accepted state for missing/oversized/inconsistent content.
-pub(crate) async fn read(object: &Object) -> Result<Option<Vec<u8>>> {
+/// The caller captures a thirty-second absolute cutoff before GET, clipped to
+/// the original sixty-second setup/item allowance and invocation cutoff. Native
+/// stream cancellation never implies cancellation of GET or an R2/D1 write.
+pub(crate) async fn read(
+    object: &Object,
+    deadline: maintenance::ExternalDeadline<'_>,
+) -> Result<Option<Vec<u8>>> {
     let Some(body) = object.body() else {
         return Ok(None);
     };
@@ -24,37 +31,48 @@ pub(crate) async fn read(object: &Object) -> Result<Option<Vec<u8>>> {
         ResponseBody::Stream(stream) => JsValue::from(stream),
         _ => return Ok(None),
     };
+    let duration = match deadline.remaining() {
+        Ok(duration) => duration,
+        Err(error) => {
+            // The binding GET is not cancelable. Release its late returned body
+            // without a first read, copy, parse, or renewed deadline.
+            platform::finish_native_reader(&stream, true);
+            return Err(error);
+        }
+    };
     if object.size() > MAX_ZIP as u64 {
         // A rejected GET body must not occupy an open stream/connection slot.
         // Cancel without requesting a chunk or allocating an archive buffer.
-        cancel(&stream).await;
+        platform::finish_native_reader(&stream, true);
         return Ok(None);
     }
     let reader = method(&stream, "getReader")
         .and_then(|method| method.call0(&stream).map_err(|_| Failure::Dependency))
         .map_err(|_| failed())?;
-    let result = read_chunks(&reader).await;
-    if result.is_err() {
-        // This cancels only the retained object's read stream, not a binding
-        // write. Await cancellation; neither its error nor body is logged.
-        cancel(&reader).await;
-    }
-    if let Ok(release) = method(&reader, "releaseLock") {
-        let _ = release.call0(&reader);
-    }
+    // One absolute timer covers the entire body, never one fresh timeout per
+    // chunk. Keep reader ownership outside the raced future, including on stall.
+    let result = {
+        let body = Box::pin(read_chunks(&reader));
+        let timer = Box::pin(worker::Delay::from(duration));
+        match futures_util::future::select(body, timer).await {
+            futures_util::future::Either::Left((result, timer)) => {
+                drop(timer);
+                result
+            }
+            futures_util::future::Either::Right((_, body)) => {
+                drop(body);
+                platform::finish_native_reader(&reader, true);
+                return Err(maintenance::deferred());
+            }
+        }
+    };
+    // Initiate cancellation before releasing the lock; an untrusted cancel
+    // promise must not hold Cron after its absolute deadline.
+    platform::finish_native_reader(&reader, result.is_err());
     match result {
         Ok(bytes) if bytes.len() as u64 == object.size() => Ok(Some(bytes)),
         Ok(_) | Err(Failure::Invalid) => Ok(None),
         Err(Failure::Dependency) => Err(failed()),
-    }
-}
-
-/// Release native read resources only; never infer cancellation of an R2 write.
-async fn cancel(target: &JsValue) {
-    if let Ok(cancel) = method(target, "cancel")
-        .and_then(|method| method.call0(target).map_err(|_| Failure::Dependency))
-    {
-        let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&cancel)).await;
     }
 }
 

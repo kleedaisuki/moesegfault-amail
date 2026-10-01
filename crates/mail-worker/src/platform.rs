@@ -400,7 +400,7 @@ async fn routing_fetch(
         controller.abort();
     }
     if let Some(reader) = reader {
-        finish_routing_reader(&reader, cancel);
+        finish_native_reader(&reader, cancel);
     }
     result
 }
@@ -471,7 +471,7 @@ async fn read_routing_reader(reader: &JsValue) -> Result<Vec<u8>> {
 /// Initiate native cancellation synchronously, then release the lock.
 /// Do not await an untrusted cancellation promise after the exchange deadline.
 /// Handling rejection is native Promise bookkeeping, not detached read cleanup.
-fn finish_routing_reader(reader: &JsValue, cancel: bool) {
+pub(crate) fn finish_native_reader(reader: &JsValue, cancel: bool) {
     if cancel {
         if let Ok(pending) = reader_method(reader, "cancel").and_then(|method| {
             method
@@ -845,7 +845,7 @@ pub(crate) async fn embed_classified(
     }
     let controller = worker::AbortController::default();
     let signal = controller.signal();
-    let exchange = Box::pin(embedding_exchange(env, input, input_type, &signal));
+    let exchange = Box::pin(embedding_exchange(env, input, input_type, &signal, None));
     let deadline = Box::pin(worker::Delay::from(std::time::Duration::from_secs(30)));
     let result = match futures_util::future::select(exchange, deadline).await {
         futures_util::future::Either::Left((result, _)) => result,
@@ -857,7 +857,62 @@ pub(crate) async fn embed_classified(
     result
 }
 
-/// One 30-second deadline covers connection, headers, and body consumption.
+/// Cron policy expiration is not a provider defect or durable failed attempt.
+pub(crate) enum CronEmbeddingFailure {
+    /// Existing provider classes remain unchanged for ordinary response failures.
+    Provider(EmbeddingFailure),
+    /// The original invocation or ten-second complete-exchange allowance expired.
+    Deferred,
+}
+
+/// Cron-only complete native exchange; headers and body share one timer.
+/// Reader ownership stays outside the raced future so timeout can cancel the
+/// exact pending reader. No retry, redirect, or raw dependency text is introduced.
+pub(crate) async fn embed_cron(
+    env: &Env,
+    input: &str,
+    input_type: &str,
+    deadline: maintenance::ExternalDeadline<'_>,
+) -> std::result::Result<Vec<f32>, CronEmbeddingFailure> {
+    if input.is_empty() || input.len() > EMBEDDING_INPUT_MAX_BYTES {
+        return Err(CronEmbeddingFailure::Provider(
+            EmbeddingFailure::InvalidInput,
+        ));
+    }
+    let duration = deadline
+        .exchange_duration()
+        .map_err(|_| CronEmbeddingFailure::Deferred)?;
+    let controller = worker::AbortController::default();
+    let signal = controller.signal();
+    let mut reader = None;
+    let result = {
+        let exchange = Box::pin(embedding_exchange(
+            env,
+            input,
+            input_type,
+            &signal,
+            Some(&mut reader),
+        ));
+        let timer = Box::pin(worker::Delay::from(duration));
+        match futures_util::future::select(exchange, timer).await {
+            futures_util::future::Either::Left((result, timer)) => {
+                drop(timer);
+                result.map_err(CronEmbeddingFailure::Provider)
+            }
+            futures_util::future::Either::Right((_, exchange)) => {
+                drop(exchange);
+                controller.abort();
+                Err(CronEmbeddingFailure::Deferred)
+            }
+        }
+    };
+    if let Some(reader) = reader {
+        finish_native_reader(&reader, result.is_err());
+    }
+    result
+}
+
+/// The caller's one deadline covers connection, headers, and body consumption.
 /// The caller aborts the native transport on timeout instead of leaving a detached
 /// provider exchange running. No provider or JS error text escapes this boundary.
 async fn embedding_exchange(
@@ -865,6 +920,7 @@ async fn embedding_exchange(
     input: &str,
     input_type: &str,
     signal: &worker::AbortSignal,
+    mut reader: Option<&mut Option<JsValue>>,
 ) -> std::result::Result<Vec<f32>, EmbeddingFailure> {
     let headers = Headers::new();
     headers
@@ -907,6 +963,22 @@ async fn embedding_exchange(
     .send_with_signal(signal)
     .await
     .map_err(|_| EmbeddingFailure::Transient)?;
+    if response.status_code() != 200 {
+        // Cron owns rejected status bodies too, but never reads provider text.
+        // Foreground retains its established status behavior and cleanup policy.
+        if let (Some(owner), worker::ResponseBody::Stream(stream)) =
+            (reader.as_deref_mut(), response.body())
+        {
+            let stream = JsValue::from(stream.clone());
+            *owner = reader_method(&stream, "getReader")
+                .and_then(|method| {
+                    method
+                        .call0(&stream)
+                        .map_err(|_| EmbeddingFailure::Malformed)
+                })
+                .ok();
+        }
+    }
     match response.status_code() {
         200 => {}
         400 | 413 | 422 => return Err(EmbeddingFailure::InvalidRequest),
@@ -914,7 +986,10 @@ async fn embedding_exchange(
         429 => return Err(EmbeddingFailure::RateLimited),
         _ => return Err(EmbeddingFailure::Transient),
     }
-    let bytes = embedding_body(&mut response).await?;
+    let bytes = match reader {
+        Some(reader) => embedding_cron_body(&response, reader).await?,
+        None => embedding_body(&mut response).await?,
+    };
     let data: EmbeddingResult =
         serde_json::from_slice(&bytes).map_err(|_| EmbeddingFailure::Malformed)?;
     let values = data
@@ -973,6 +1048,28 @@ async fn read_embedding_reader(reader: &JsValue) -> std::result::Result<Vec<u8>,
         }
         bytes.extend(chunk.to_vec());
     }
+}
+
+/// Retain Cron native-reader ownership outside its raced exchange future.
+/// Foreground uses the established awaited-cleanup helper below instead.
+async fn embedding_cron_body(
+    response: &worker::Response,
+    reader: &mut Option<JsValue>,
+) -> std::result::Result<Vec<u8>, EmbeddingFailure> {
+    let stream = match response.body() {
+        worker::ResponseBody::Empty => return Ok(Vec::new()),
+        worker::ResponseBody::Body(bytes) if bytes.len() <= EMBEDDING_RESPONSE_MAX_BYTES => {
+            return Ok(bytes.clone())
+        }
+        worker::ResponseBody::Body(_) => return Err(EmbeddingFailure::Malformed),
+        worker::ResponseBody::Stream(stream) => JsValue::from(stream.clone()),
+    };
+    *reader = Some(
+        reader_method(&stream, "getReader")?
+            .call0(&stream)
+            .map_err(|_| EmbeddingFailure::Malformed)?,
+    );
+    read_embedding_reader(reader.as_ref().unwrap()).await
 }
 
 /// Own the native reader until EOF or failure, explicitly cancel rejected bodies

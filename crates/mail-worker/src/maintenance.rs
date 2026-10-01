@@ -120,6 +120,22 @@ impl<'a> PhaseTurn<'a> {
         }
     }
 
+    /// Share the outbound setup-plus-first-item allowance with retained reads.
+    /// This deadline never applies to an admitted successful SQL projector.
+    pub(crate) fn archive_deadline(&self) -> ExternalDeadline<'a> {
+        self.routing_deadline()
+    }
+
+    /// Bound Cron embedding exchanges by the original invocation cutoff.
+    /// Each exchange is separately clipped to ten seconds, without changing the
+    /// foreground embedding policy or interrupting successful fenced persistence.
+    pub(crate) fn embedding_deadline(&self) -> ExternalDeadline<'a> {
+        ExternalDeadline {
+            turn: self.turn,
+            cutoff_ms: CUTOFF_MS,
+        }
+    }
+
     /// Admit a whole item before its due/claim/write boundary.
     ///
     /// The first unit was entitled at phase entry; setup cannot consume that
