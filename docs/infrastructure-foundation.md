@@ -210,3 +210,39 @@ runtime setup. This is a useful observed narrow-iteration fast path, not an SLA
 or replacement for all-source CI. The receipt distinguishes original build and
 current fixture source. No Rust compile, provider operation, mailbox action or
 new deployment/release admission was involved. See native-fixture-replay.md.
+
+## Accepted native tracing canary source and checked-artifact lifecycle
+
+PR 49 head 8bf3f5097de0edafec8b9171c797e34f1a3023a0 / merge checkout
+383052f832e2d7a9e02279c42f040f0ec0bae314 passed CI 36861601016 and syntax
+36861600039. All 156 native tests passed (107 core plus 49 others), along with
+three CLI platforms, Astro, Rust/Wasm/unit and infrastructure checks. The
+build-once artifact now contains 35 files across seven module trees. Main
+7b04df8425cf277c339042c06bea1faf42e43e39 preserves the accepted tree.
+
+The new Rust infrastructure product uses native tracing imports directly; the
+untraced caller generates four controlled requests to a private service-bound
+probe without forwarding incoming data. Old-runtime tests accurately report
+unsupported active getter and do not pretend to prove current platform support.
+See native-cloudflare-tracing-canary.md for the comparison and evidence scope.
+
+PR 50 head 5247463 passed full CI 36864805997 and syntax 36864805535; main
+9d0a9599723a0887cc05a49376be54552252d64b retains the checked source. The isolated
+experiment lane adds stronger artifact admission than diagnostic replay: complete
+successful exact-main source CI, all required source jobs, fixed artifact ID and
+original compiler/source/run/attempt/file hashes before provider access. Its
+Wrangler configs omit Rust custom build commands, so deployment packages the
+same checked bytes. Source-owned absent-script creation, version/endpoint/capture
+readback and receipt-owned cleanup are implemented and synthetically tested.
+Actual deployment/native-record observation/cleanup remains pending. This lane
+has no Mail, account, store, routing or sending capability; it is not general
+production/release admission. Full task/foundation completion is not claimed.
+
+First infrastructure-only deployment run 36866726157 consumed the fully checked
+main artifact from 36865492327. Both canary products deployed; a caller capture
+readback guard refused progression before runtime invocation. Owned cleanup
+completed and verified both scripts absent. This proves the tested-byte deploy
+and failed-run cleanup paths, not native tracing or privacy acceptance. See
+[native canary evidence](native-cloudflare-tracing-canary.md) for exact versions,
+artifact and pending boundary repair. Mail deployment and business debug remain
+deferred.
