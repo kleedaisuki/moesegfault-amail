@@ -40,8 +40,9 @@ class DirectContactWorkflowTests(unittest.TestCase):
                 self.assertIn(CHECKOUT, block)
                 self.assertIn("persist-credentials: false", block)
                 self.assertNotIn("send_control.py", block)
-                self.assertNotIn("ROLE_FORWARD_DESTINATION", block)
-                self.assertNotIn("CF_EMAIL_ROUTING_TOKEN", block)
+                if name == "direct-contact-attest.yml":
+                    self.assertNotIn("ROLE_FORWARD_DESTINATION", block)
+                    self.assertNotIn("CF_EMAIL_ROUTING_TOKEN", block)
 
     def test_adoption_pins_exact_current_contract_without_input_shell_expansion(self):
         """A stale manual request must not replace a newer adopted identity."""
@@ -59,6 +60,20 @@ class DirectContactWorkflowTests(unittest.TestCase):
         self.assertIn("run: python infra/operator/direct_contact_policy.py", block)
         self.assertNotRegex(block, r"run:.*\$\{\{")
         self.assertLessEqual(len(re.findall(r"^      [a-z_]+:$", text, re.M)), 25)
+
+    def test_adoption_discovery_uses_existing_secrets_and_optional_pins(self):
+        """All five pins may be omitted without a second operation or disclosure."""
+        text = source("direct-contact-adopt.yml")
+        head = text.split("permissions:", 1)[0]
+        block = job_block(text, "adopt")
+        for key in ("destination_id", "apex_abuse_rule_id", "apex_postmaster_rule_id",
+                    "mail_abuse_rule_id", "mail_postmaster_rule_id"):
+            self.assertRegex(head, rf"(?m)^      {key}:\n(?:        .+\n)*        required: false$")
+        for secret in ("CF_EMAIL_ROUTING_TOKEN", "ROLE_FORWARD_DESTINATION"):
+            self.assertIn(f"{secret}: ${{{{ secrets.{secret} }}}}", block)
+        for forbidden in ("upload-artifact", "GITHUB_STEP_SUMMARY", "ensure_role_forwarding.py",
+                          "continue-on-error:", "|| true", "send_control.py"):
+            self.assertNotIn(forbidden, block)
 
     def test_human_attestation_requires_exact_contract_and_explicit_phrase(self):
         """Revocation defaults false and requires no affirmative coverage input."""

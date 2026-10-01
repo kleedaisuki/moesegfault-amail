@@ -7,6 +7,7 @@ Run this suite on the existing hosted infra test lane, not a local deployment.
 from __future__ import annotations
 
 import copy
+import io
 from pathlib import Path
 import sqlite3
 import sys
@@ -262,6 +263,117 @@ class FakeDatabase:
 
 class DirectContactProviderTest(unittest.TestCase):
     """A new identity or malformed route never silently re-adopts the contract."""
+
+    def test_discovery_resolves_only_exact_existing_provider_ids(self):
+        """Complete GET inventories plus pinned readback determine all five IDs."""
+        row = policy()
+        for key in ("destination_id", *health.PIN_COLUMNS):
+            row[key] = ""
+        adoption.discover_pins(FakeRouting(), "a" * 32, row, DESTINATION)
+        self.assertEqual(row, policy())
+
+    def test_discovery_rejects_ambiguous_or_nonstandard_inventory(self):
+        """Never select the first duplicate, infer wildcard scope, or repair routes."""
+        mutations = ("missing_destination", "duplicate_destination", "duplicate_destination_id",
+            "unverified", "bad_id", "missing_role", "duplicate_role", "duplicate_rule_id",
+            "wrong_domain", "disabled", "wrong_action", "wrong_source", "wrong_type", "mixed", "wildcard", "catchall")
+        for mutation in mutations:
+            client = FakeRouting()
+            if mutation == "missing_destination":
+                client.addresses.clear()
+            elif mutation == "duplicate_destination":
+                client.addresses.append(copy.deepcopy(client.addresses[0]))
+            elif mutation == "duplicate_destination_id":
+                client.addresses.append({"id": "destination", "email": "other@example.invalid", "verified": "date"})
+            elif mutation == "unverified":
+                client.addresses[0]["verified"] = None
+            elif mutation == "bad_id":
+                client.addresses[0]["id"] = "invalid id"
+            elif mutation == "missing_role":
+                client.rules.pop()
+            elif mutation == "duplicate_role":
+                client.rules.append(copy.deepcopy(client.rules[0]))
+            elif mutation == "duplicate_rule_id":
+                client.rules[1]["id"] = client.rules[0]["id"]
+            elif mutation == "wrong_domain":
+                client.rules[0]["matchers"][0]["value"] = "abuse@wrong.invalid"
+            elif mutation == "disabled":
+                client.rules[0]["enabled"] = False
+            elif mutation == "wrong_action":
+                client.rules[0]["actions"] = [{"type": "worker", "value": ["worker"]}]
+            elif mutation == "wrong_source":
+                client.rules[0]["source"] = "dashboard"
+            elif mutation == "wrong_type":
+                client.rules[0]["matchers"][0]["type"] = "all"
+            elif mutation == "mixed":
+                client.rules[0]["matchers"].append({"type": "all"})
+            else:
+                client.rules.append({"id": "extra", "enabled": True,
+                    "matchers": [{"type": "all"}] if mutation == "catchall" else
+                        [{"type": "literal", "field": "to", "value": "*@moesegfault.dev"}],
+                    "actions": [{"type": "forward", "value": [DESTINATION]}]})
+            with self.subTest(mutation=mutation), self.assertRaises(Exception):
+                adoption.discover_pins(client, "a" * 32, policy(), DESTINATION)
+
+    def test_discovery_rejects_pinned_readback_drift_and_truncated_inventory(self):
+        """No exact stable inventory means no policy write is eligible."""
+        with patch.object(adoption, "snapshot", return_value=("changed",)):
+            with self.assertRaises(health.HealthError):
+                adoption.discover_pins(FakeRouting(), "a" * 32, policy(), DESTINATION)
+        client = FakeRouting()
+        reply = client.request("GET", "/addresses?")
+        reply["result_info"]["total_count"] += 1
+        with patch.object(client, "request", return_value=reply), self.assertRaises(Exception):
+            adoption.discover_pins(client, "a" * 32, policy(), DESTINATION)
+
+    def test_adoption_input_modes_preserve_single_write_and_hold(self):
+        """Explicit pins need no routing read; omitted pins use the same CAS SQL."""
+        base = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main",
+            "GITHUB_ACTOR": "operator", "INPUT_TARGET": "staging", "INPUT_CASE_REF": "CASE_1",
+            "INPUT_CONFIRM": "ADOPT_DIRECT_CONTACT_HELD", "INPUT_EXPECTED_CONTACT_CONTRACT_ID": "NONE",
+            "CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "synthetic"}
+        keys = ("destination_id", *health.PIN_COLUMNS)
+        for count in range(6):
+            env = dict(base)
+            env.update({"INPUT_" + key.upper(): policy()[key] for key in keys[:count]})
+            if count == 0:
+                env.update(CF_EMAIL_ROUTING_TOKEN="synthetic", ROLE_FORWARD_DESTINATION=DESTINATION)
+            db = FakeDatabase(adopted=False)
+            with self.subTest(supplied=count), patch.dict("os.environ", env, clear=True), \
+                patch.object(adoption, "DatabaseClient", return_value=db) as database_client, \
+                patch.object(adoption, "RoutingClient", return_value=FakeRouting()) as routing, \
+                patch.object(db, "query", wraps=db.query) as query:
+                self.assertEqual(adoption.main(), 0 if count in (0, 5) else 2)
+                self.assertEqual(routing.call_count, 1 if count == 0 else 0)
+                if count in (0, 5):
+                    self.assertEqual([call.args[0] for call in query.call_args_list], [adoption.ADOPT_SQL, adoption.READ_SQL])
+                    params = query.call_args_list[0].args[1]
+                    self.assertRegex(params[0], health.UUID)
+                    self.assertNotEqual(params[0], CONTRACT)
+                    self.assertEqual(params[1:6], [policy()[key] for key in keys])
+                    self.assertNotIn(DESTINATION, params)
+                    self.assertEqual(db.db.execute("SELECT state FROM send_policy WHERE scope='global'").fetchone()[0], "held")
+                    self.assertEqual(db.db.execute("SELECT abuse_contact_verified FROM send_release_gates").fetchone()[0], 0)
+                else:
+                    database_client.assert_not_called()
+                    query.assert_not_called()
+
+    def test_failed_discovery_never_constructs_database_client(self):
+        """Provider rejection precedes the original SQL write and fixed diagnostics."""
+        env = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main",
+            "GITHUB_ACTOR": "operator", "INPUT_TARGET": "staging", "INPUT_CASE_REF": "CASE_1",
+            "INPUT_CONFIRM": "ADOPT_DIRECT_CONTACT_HELD", "INPUT_EXPECTED_CONTACT_CONTRACT_ID": "NONE",
+            "CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "synthetic",
+            "CF_EMAIL_ROUTING_TOKEN": "synthetic", "ROLE_FORWARD_DESTINATION": DESTINATION}
+        client = FakeRouting()
+        client.addresses[0]["verified"] = None
+        with patch.dict("os.environ", env, clear=True), \
+            patch.object(adoption, "RoutingClient", return_value=client), \
+            patch.object(adoption, "DatabaseClient") as database_client, \
+            patch.object(adoption.sys, "stderr", new_callable=io.StringIO) as diagnostics:
+            self.assertEqual(adoption.main(), 1)
+            database_client.assert_not_called()
+            self.assertEqual(diagnostics.getvalue(), "direct_contact_policy=not_committed\n")
 
     def test_exact_snapshot_and_drift(self):
         """Destination, shape, rule identity and duplicate matches are checked."""
