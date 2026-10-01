@@ -74,6 +74,8 @@ def failure_reason(error: Exception) -> str:
     known = {
         "consumer_drift", "consumer_identity_conflict", "queue_settings_drift", "ownership_shape",
         "producer_drift", "dlq_consumer_unreviewed", "fresh_queue_consumers_unverified",
+        "fresh_capabilities_unverified", "fresh_capture_or_surface_unverified", "fresh_version_unverified",
+        "fresh_sink_replacement_precondition_unverified", "fresh_reader_changed", "fresh_sink_entry_unreviewed",
         "production_inspection_not_authorized", "production_resources_unverified",
         "production_isolation_or_paused_config_unverified", "production_capabilities_unverified",
         "production_r2_read_capability_missing", "production_provider_read_unverified",

@@ -23,7 +23,7 @@ from pin_staging_mail import UUID
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/ci"))
 from inbox_worker_artifact import REQUIRED
-from worker_artifact import TREES
+from worker_artifact import TREES, ENTRY_FILES
 
 LIMIT = 65_536
 MODULE_LIMIT = 32 * 1024 * 1024
@@ -184,7 +184,7 @@ def original(raw: bytes, epoch: Epoch) -> None:
     if (not isinstance(value, dict) or set(value) != set(expected) | {"files"}
             or any(type(value[k]) is not type(v) or value[k] != v for k, v in expected.items())
             or value["files"] != {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
-            or any(not any(name.startswith(tree + "/") for tree in TREES) for name in files)
+            or any(name not in ENTRY_FILES and not any(name.startswith(tree + "/") for tree in TREES) for name in files)
             or any(f"{tree}/{suffix}" not in files for tree in TREES for suffix in ("index.js", "worker/shim.mjs"))):
         raise ValueError("fresh_recovery_original_artifact_mismatch")
 

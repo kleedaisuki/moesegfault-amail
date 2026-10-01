@@ -164,6 +164,20 @@ class FreshReadbackTests(unittest.TestCase):
         self.assertTrue(any("/versions/" + VERSION in path for path in paths))
         self.assertEqual(sum("deployments?" in path for path in paths), 2)
 
+    def test_sdk_named_exports_are_replacement_input_not_isolation_success(self):
+        """The actual old module can be replaced, never signed off as a queue-only target."""
+        self.reader_fixture()
+        version = self.provider.data[self.provider.base + "/workers/scripts/" + readback.SINK + "/versions/" + VERSION]
+        version["resources"]["script"]["named_handlers"] = [
+            {"name": name, "handlers": ["class"]}
+            for name in ("ContainerStartupOptions", "MinifyConfig", "R2Range")]
+        readback.verify_sink_replacement(self.provider.scope, VERSION, QUEUE, DLQ, self.provider)
+        with self.assertRaisesRegex(ValueError, "fresh_capabilities_unverified"):
+            readback.verify_sink_reader(self.provider.scope, VERSION, QUEUE, DLQ, self.provider)
+        version["resources"]["bindings"] = [{"name": "unexpected", "type": "secret_text"}]
+        with self.assertRaisesRegex(ValueError, "fresh_sink_replacement_precondition_unverified"):
+            readback.verify_sink_replacement(self.provider.scope, VERSION, QUEUE, DLQ, self.provider)
+
     def test_reader_first_refuses_absent_consumer_existing_producer_or_public_sink(self):
         """Provisioning allowances cannot admit an uninstalled/unsafe reader."""
         self.reader_fixture()

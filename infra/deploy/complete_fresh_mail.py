@@ -41,6 +41,36 @@ CONFIGS = {"api": "crates/mail-worker/wrangler.toml",
            "mail_ingress": "workers/mail-ingress/wrangler.toml",
            "mail_events": "workers/mail-events/wrangler.toml"}
 ADAPTERS = {"mail_ingress": "amail-inbound", "mail_events": "amail-events"}
+# Closed source-owned labels only: never project arbitrary exception arguments.
+ERROR_REASONS = {
+    "fresh_online_protected_context_required", "fresh_online_scope_mismatch",
+    "fresh_online_source_database_unadopted", "fresh_online_staging_database_changed",
+    "fresh_online_source_bucket_unadopted", "fresh_online_operation_unverified",
+    "fresh_online_email_phase_unreviewed", "fresh_online_adapter_unreviewed",
+    "fresh_online_ingress_secret_missing", "fresh_online_adapter_serving_unverified",
+    "fresh_online_adapter_capabilities_unverified", "fresh_online_ingress_service_unverified",
+    "fresh_online_adapter_capture_unverified", "fresh_online_adapters_changed",
+    "fresh_online_event_queue_unverified", "fresh_online_event_dlq_consumer_unreviewed",
+    "fresh_online_event_consumer_unverified", "fresh_online_recovery_path_unreviewed",
+    "fresh_online_record_unreviewed", "fresh_online_paused_graph_changed",
+    "fresh_online_external_graph_changed", "fresh_online_capabilities_missing",
+    "fresh_provider_read_unverified", "fresh_inventory_incomplete", "fresh_inventory_unverified",
+    "fresh_serving_unverified", "fresh_d1_read_unverified", "fresh_send_hold_unverified",
+    "fresh_grant_unverified", "fresh_population_unverified", "fresh_queue_identity_unverified",
+    "fresh_queue_detail_unverified", "fresh_queue_consumers_unverified", "fresh_public_domain_unverified",
+    "fresh_zones_unverified", "fresh_public_route_unverified", "fresh_api_ingress_shadowed",
+    "fresh_version_unverified", "fresh_capabilities_unverified", "fresh_capture_or_surface_unverified",
+    "fresh_coordinates_unreviewed", "fresh_schedule_unreviewed", "fresh_r2_empty_unverified",
+    "fresh_graph_changed", "process_exit", "version_count", "output_limit",
+}
+
+
+def failure_reason(error: Exception) -> str:
+    """Keep useful fixed predicate labels while excluding credentials and provider prose."""
+    if (isinstance(error, ValueError) and len(error.args) == 1
+            and isinstance(error.args[0], str) and error.args[0] in ERROR_REASONS):
+        return error.args[0]
+    return old.failure_reason(error)
 
 
 def admit() -> Epoch:
@@ -345,11 +375,15 @@ def capabilities(scope: Scope):
 
 
 def main() -> int:
-    """Emit only a fixed status and error type; never echo provider exception text."""
+    """Emit the source phase and closed failure label, never provider exception text."""
+    controller = None
     try:
-        Online().run()
+        controller = Online()
+        controller.run()
     except Exception as error:
-        print(f"fresh_production_online=UNVERIFIED error_type={type(error).__name__} replay=NOT_GRANTED")
+        phase = controller.phase if controller is not None else "admission"
+        print(f"fresh_production_online=UNVERIFIED phase={phase} error_type={type(error).__name__} "
+              f"reason={failure_reason(error)} replay=NOT_GRANTED")
         return 1
     print("fresh_production_online=online-held maintenance_cron=active send_release=NOT_GRANTED")
     return 0

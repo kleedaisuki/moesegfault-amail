@@ -276,6 +276,31 @@ def capabilities(provider, base: str, scope: Scope, pins: dict, queue: str,
             raise ValueError("fresh_capture_or_surface_unverified")
 
 
+def verify_sink_replacement(scope: Scope, version: str, queue: str, dlq: str, provider) -> None:
+    """Re-observe the admitted old sink before its authorized source-changed replacement.
+
+    This is not a successful isolation witness: the old SDK module has incidental
+    named exports, which the new source-owned wrapper removes. Require its exact
+    observed serving version, queue-only default handler, empty capabilities and
+    exact zero-producer Queue ownership before submitting the replacement once.
+    No named-export policy exception is granted to the new target.
+    """
+    base, pins = f"accounts/{provider.account}", {SINK: version}
+    before = serving(provider, base, pins)
+    queue_graph(provider, base, queue, dlq, reader_only=True)
+    immutable = provider.get(f"{base}/workers/scripts/{SINK}/versions/{version}")
+    resources = immutable.get("resources") if isinstance(immutable, dict) else None
+    bindings = resources.get("bindings") if isinstance(resources, dict) else None
+    if isinstance(bindings, dict) and set(bindings) == {"result"}:
+        bindings = bindings["result"]
+    script = resources.get("script") if isinstance(resources, dict) else None
+    if (not isinstance(immutable, dict) or immutable.get("id") != version or bindings != []
+            or not isinstance(script, dict) or script.get("handlers") != ["queue"]):
+        raise ValueError("fresh_sink_replacement_precondition_unverified")
+    if serving(provider, base, pins) != before:
+        raise ValueError("fresh_reader_changed")
+
+
 def verify_sink_reader(scope: Scope, version: str, queue: str, dlq: str, provider) -> None:
     """Admit the exact private reader before either producer can be submitted.
 

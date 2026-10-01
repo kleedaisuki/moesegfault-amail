@@ -16,7 +16,7 @@ from fresh_bootstrap_contract import Epoch, Scope
 from fresh_bootstrap_recovery import load, load_sink_checkpoint
 from fresh_bootstrap_scope import reconcile_scope, render_configs
 from fresh_bootstrap_receipt import persist
-from fresh_bootstrap_readback import held_empty, verify, verify_sink_reader
+from fresh_bootstrap_readback import held_empty, verify, verify_sink_reader, verify_sink_replacement
 from mail_schema_contract import MIGRATIONS, SCHEMA_SQL, expected_schema, verify_schema
 from production_bootstrap_contract import ProductionResources
 from worker_deploy_result import DeploymentFailure
@@ -129,7 +129,6 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
             provider.r2_empty = lambda bucket: old.r2_count(s3, bucket) == 0
             provider.forward_snapshot = bootstrap.forward_snapshot
             pins = {}
-            retained = {}
             roles = ("sink", "maintenance", "api")
             if checkpoint is None:
                 phase = "migrate"
@@ -144,19 +143,17 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
                 queue, dlq = bootstrap.provision_trace_graph(provider)
                 record("observed", queue=queue, dlq=dlq)
             else:
-                # These writes already completed in the admitted failed attempt.
-                # Re-observe their exact identities before any remaining deployment.
+                # Storage/migration/queues are retained. Root separately authorizes
+                # one changed-source sink replacement to remove SDK named exports.
                 phase = "retained_sink"
                 record("intent")
                 held_empty(provider, f"accounts/{provider.account}", scope)
-                verify_sink_reader(scope, sink_version, queue, dlq, provider)
-                retained = {"source_epoch": asdict(sink_epoch), "version": sink_version}
-                record("observed", **retained, queue=queue, dlq=dlq)
-                pins[bootstrap.SCRIPTS["sink"]] = sink_version
-                roles = ("maintenance", "api")
+                verify_sink_replacement(scope, sink_version, queue, dlq, provider)
+                record("observed", source_epoch=asdict(sink_epoch), version=sink_version, queue=queue, dlq=dlq)
             for role in roles:
-                phase = role
-                record("intent")
+                replacing = role == "sink" and checkpoint is not None
+                phase = "sink_replacement" if replacing else role
+                record("intent", **({"previous_version": sink_version} if replacing else {}))
                 version = bootstrap.submit_once(role, configs[role], scope)
                 pins[bootstrap.SCRIPTS[role]] = version
                 record("observed", version=version)
@@ -168,9 +165,8 @@ def run(provider, s3, deployment_epoch: Epoch, prior_run: str, folder: Path) -> 
             phase = "receipt"
             record("intent")
             graph = verify(scope, pins, queue, dlq, provider)
-            provenance = {"retained_sink": retained} if retained else {}
             value = persist(scope, graph, queue, dlq, folder / "receipt.json",
-                            deployment_epoch=deployment_epoch, **provenance)
+                            deployment_epoch=deployment_epoch)
             record("observed")
             return value
         except Exception as error:

@@ -182,8 +182,10 @@ def sink_config(folder: Path) -> Path:
     """Render the exact source sink with absolute entry and independent Issues off."""
     source = ROOT / "workers/trace-sink/wrangler.toml"
     text = source.read_text(encoding="utf-8")
-    text = text.replace('main = "build/worker/shim.mjs"',
-                        f'main = "{(source.parent / "build/worker/shim.mjs").as_posix()}"', 1)
+    if text.count('main = "entry/queue.mjs"') != 1:
+        raise ValueError("fresh_sink_entry_unreviewed")
+    text = text.replace('main = "entry/queue.mjs"',
+                        f'main = "{(source.parent / "entry/queue.mjs").as_posix()}"', 1)
     if "[observability.issues]" not in text.split("[env.staging]", 1)[0]:
         text = text.replace("[env.staging]", "[observability.issues]\nenabled = false\n\n[env.staging]", 1)
     target = folder / "sink.toml"
