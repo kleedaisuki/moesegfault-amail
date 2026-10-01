@@ -17,7 +17,8 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[2]
 FOLDER = ROOT / ".temp/ci/worker-built"
 TREES = ("crates/mail-worker/build", "workers/trace-sink/build", "workers/mail-ingress/build",
-         "workers/mail-events/build", "workers/identity-test-inbox/build", "workers/role-monitor/build")
+         "workers/mail-events/build", "workers/identity-test-inbox/build", "workers/role-monitor/build",
+         "workers/native-trace-canary/build")
 LIMIT = 32 * 1024 * 1024
 
 

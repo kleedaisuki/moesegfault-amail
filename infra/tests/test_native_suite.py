@@ -25,7 +25,7 @@ class NativeSuiteTests(unittest.TestCase):
         files = [name for key in suite.SUITES for name in suite.command(key)[2:]]
         self.assertEqual(len(files), len(set(files)))
         self.assertEqual(set(files), {path.name for path in suite.BOUNDARY.glob("*.test.mjs")})
-        self.assertEqual(sum(value[1] for value in suite.SUITES.values()), 154)
+        self.assertEqual(sum(value[1] for value in suite.SUITES.values()), 156)
 
     def test_counts_reject_missing_partial_skipped_and_failed_tests(self):
         """Zero exit status does not excuse absent or skipped required coverage."""
