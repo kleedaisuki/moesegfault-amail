@@ -99,3 +99,18 @@ No academic novelty is claimed for these foundations; mature platform mechanisms
 are preferable to a speculative orchestration/telemetry framework. Evaluate
 advanced sampling or automated incident diagnosis only after accurate baseline
 events and an executable coverage check exist.
+
+## First hosted implementation check
+
+PR 42 run 36839757185 passed infrastructure, syntax, site and all three CLI
+platforms. Worker build/unit checks and all six bundles completed, but artifact
+assembly refused a regular generated file under a guessed extension allowlist.
+No native suites ran and the stable aggregate correctly failed on build failure
+plus skipped native coverage. This run is not a complete Worker pass.
+
+Remove the guessed extension policy rather than adding another SDK special case.
+Source maps/licenses are public generated outputs. Confidentiality comes from
+the credential-free producer and exact generated directories, not extensions
+(a .js/.json could contain a secret too). Preserve regular-file/symlink checks,
+size bounds, source/run binding and full file-set/hash verification. A regression
+allows a generated map while excluding config outside the selected trees.

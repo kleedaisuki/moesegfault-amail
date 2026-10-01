@@ -36,7 +36,12 @@ def context() -> dict:
 
 
 def files(base: Path) -> dict[str, str]:
-    """Hash only public module trees, refusing symlinks, extras and oversized data."""
+    """Hash public generated trees, refusing symlinks and oversized data.
+
+    Generated source maps/licenses are ordinary public build outputs too. File
+    extensions are not a confidentiality boundary; the credential-free producer
+    and these exact input directories establish the public-data contract.
+    """
     result, size = {}, 0
     for tree in TREES:
         folder = base / tree
@@ -47,8 +52,8 @@ def files(base: Path) -> dict[str, str]:
                 raise ValueError("module_symlink_refused")
             if path.is_dir():
                 continue
-            if not path.is_file() or path.suffix not in (".js", ".mjs", ".wasm", ".json", ".ts"):
-                raise ValueError("module_file_unexpected")
+            if not path.is_file():
+                raise ValueError(f"module_file_not_regular: {path.relative_to(base).as_posix()}")
             size += path.stat().st_size
             if size > LIMIT or len(result) >= 1000:
                 raise ValueError("module_artifact_oversized")

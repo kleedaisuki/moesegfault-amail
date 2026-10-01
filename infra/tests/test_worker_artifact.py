@@ -97,14 +97,17 @@ class WorkerArtifactTests(unittest.TestCase):
                 artifact.context()
 
     def test_generated_inputs_are_bounded_and_not_configs(self):
-        """Unknown artifacts and absent platform entries cannot be packaged silently."""
-        file = self.root / artifact.TREES[0] / "secrets.toml"
-        file.write_text("inert fixture")
-        with self.assertRaises(ValueError):
-            artifact.create()
-        file.unlink()
+        """Selection protects config/data; SDK maps/licenses are valid generated files."""
+        private = self.root / "private.env"
+        private.write_text("inert fixture")
+        generated = self.root / artifact.TREES[0] / "shim.mjs.map"
+        generated.write_text("{}")
+        artifact.create()
+        manifest = json.loads((self.folder / "manifest.json").read_text())
+        self.assertNotIn("private.env", manifest["files"])
+        self.assertIn(generated.relative_to(self.root).as_posix(), manifest["files"])
         with patch.object(artifact, "LIMIT", 1), self.assertRaises(ValueError):
-            artifact.create()
+            artifact.files(self.root)
 
 
 if __name__ == "__main__":
