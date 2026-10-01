@@ -88,6 +88,39 @@ class NativeTracingExperimentTests(unittest.TestCase):
         self.assertNotIn("private.invalid", str(result))
         self.assertEqual(experiment.trigger_facts(SimpleNamespace(code=403, headers=headers), b"Forbidden")["body_class"], "bare_forbidden")
 
+    def test_standard_public_provider_error_code_is_retained_without_prose(self):
+        headers = Message()
+        result = experiment.trigger_facts(SimpleNamespace(code=403, headers=headers), b"error code: 1020\n")
+        self.assertEqual(result["provider_error_code"], 1020)
+        self.assertEqual(result["body_class"], "cloudflare_error_code")
+        self.assertNotIn("provider_error_code", experiment.trigger_facts(
+            SimpleNamespace(code=403, headers=headers), b"error code: private-address"))
+
+    def test_absent_endpoint_probe_never_creates_or_posts_and_refuses_live_scripts(self):
+        provider = Mock(account="a" * 32)
+        provider.script.side_effect = lambda name: "/scripts/" + name + "/settings"
+        provider.request.side_effect = [HTTPError("https://api.synthetic.invalid", 404, "missing", {}, None),
+            HTTPError("https://api.synthetic.invalid", 404, "missing", {}, None), {"subdomain": "synthetic"}]
+        opener = Mock()
+        opener.open.side_effect = HTTPError("https://caller.synthetic.invalid", 403, "refused", Message(),
+                                           io.BytesIO(b"error code: 1020\n"))
+        with patch.object(experiment, "Provider", return_value=provider), \
+             patch.object(experiment, "build_opener", return_value=opener), \
+             patch.object(experiment, "write_receipt") as write, \
+             patch.dict(experiment.os.environ, {"GITHUB_SHA": "b" * 40, "GITHUB_RUN_ID": "123"}), redirect_stdout(io.StringIO()):
+            experiment.diagnose_endpoint()
+            self.assertTrue(write.call_args.args[0]["scripts_absent"])
+            self.assertEqual(write.call_args.args[0]["response"]["provider_error_code"], 1020)
+        self.assertEqual([call.args[0] for call in provider.request.call_args_list], ["GET"] * 3)
+        self.assertEqual(opener.open.call_args.args[0].get_method(), "GET")
+        self.assertNotIn("Authorization", opener.open.call_args.args[0].headers)
+        provider.request.side_effect = None
+        provider.request.return_value = {}
+        opener.open.reset_mock()
+        with patch.object(experiment, "Provider", return_value=provider), patch.object(experiment, "build_opener", return_value=opener):
+            with self.assertRaises(ValueError): experiment.diagnose_endpoint()
+        opener.open.assert_not_called()
+
     def _trigger_case(self, kind):
         """Hosted transport fixture: never open a network socket or write outside the repo."""
         report = {"available": kind != "unsupported", "sampled": True,
@@ -148,6 +181,12 @@ class NativeTracingExperimentTests(unittest.TestCase):
         self.assertIn("if: always()",source)
         self.assertIn("native_tracing_experiment.py cleanup",source)
         self.assertIn("github.run_attempt == 1",source)
+        diagnostic = source.split("\n  diagnose:", 1)[1]
+        self.assertIn("DIAGNOSE_NATIVE_TRACING_ENDPOINT", diagnostic)
+        self.assertIn("native_tracing_experiment.py diagnose", diagnostic)
+        for forbidden in ("native_tracing_experiment.py deploy", "native_tracing_experiment.py trigger",
+                          "worker_artifact.py restore", "wrangler", "cargo"):
+            self.assertNotIn(forbidden, diagnostic)
 
 
 if __name__ == "__main__":unittest.main()
