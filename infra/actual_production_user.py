@@ -169,7 +169,7 @@ def login(actor: str, material: tuple[str, str, str]) -> tuple[dict[str, str], s
 
 
 def draft(actor: str, sender: str, recipient: str, environment: dict[str, str],
-          authored_run: str) -> tuple[Path, str, bytes, str, str]:
+          authored_run: str) -> tuple[Path, str, bytes, str, str, str]:
     """Author TEXT, HTML and an attachment, then let amail pack the ZIP."""
     directory = RUN / actor / "draft"
     (directory / "assets").mkdir(parents=True)
@@ -178,15 +178,17 @@ def draft(actor: str, sender: str, recipient: str, environment: dict[str, str],
     html = '<html><body><h1>Research note</h1><p>Simple invariants make mail delivery reproducible.</p></body></html>'
     attachment = b"Claim,Evidence\nNative authorization,PKCE\nDelivery,Received archive\n"
     filename, phrase = "research.csv", "simple invariants"
+    content_type = "text/plain"
     if actor == "B":
         source = ROOT / "infra" / "user-drafts" / "reply"
         text = (source / "body.txt").read_text(encoding="utf-8")
         html = (source / "body.html").read_text(encoding="utf-8")
         attachment = (source / "comparison-card.txt").read_bytes()
         filename, phrase = "comparison-card.txt", "independent user b"
+        content_type = "application/octet-stream"
     (directory / "manifest.toml").write_text(
         f'version = 1\nfrom = "{sender}"\nto = ["{recipient}"]\nsubject = "{subject}"\n'
-        f'[[assets]]\npath = "assets/{filename}"\ncontent_type = "text/plain"\n'
+        f'[[assets]]\npath = "assets/{filename}"\ncontent_type = "{content_type}"\n'
         f'disposition = "attachment"\nfilename = "{filename}"\n', encoding="utf-8")
     (directory / "body.txt").write_text(text, encoding="utf-8")
     (directory / "body.html").write_text(html, encoding="utf-8")
@@ -194,11 +196,11 @@ def draft(actor: str, sender: str, recipient: str, environment: dict[str, str],
     archive = RUN / actor / "draft.zip"
     cli(environment, "pack", str(directory), "-o", str(archive))
     marker(f"actor_{actor.lower()}_text_html_attachment_packed")
-    return archive, subject, attachment, filename, phrase
+    return archive, subject, attachment, filename, phrase, content_type
 
 
 def receive(actor: str, environment: dict[str, str], subject: str, attachment: bytes,
-            filename: str, phrase: str, receipt: dict) -> dict:
+            filename: str, phrase: str, expected_type: str, receipt: dict) -> dict:
     """Require actual inbound delivery and inspect the retrieved safe archive."""
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
@@ -241,7 +243,16 @@ def receive(actor: str, environment: dict[str, str], subject: str, attachment: b
                                            "assets": observations}
     save_receipt(receipt)
     require(len(files) == 1, "received_attachment_filename_not_preserved")
-    require((directory / files[0]["path"]).read_bytes() == attachment, "received_attachment_bytes_changed")
+    require(files[0].get("content_type") == expected_type, "received_attachment_media_type_changed")
+    data = (directory / files[0]["path"]).read_bytes()
+    exact = data == attachment
+    # RFC 2046 section 4.1.1 gives text media CRLF line-break semantics.
+    # Permit only LF/CRLF equivalence for a matching declared text type; never
+    # trim content, normalize Unicode, or weaken opaque binary byte fidelity.
+    canonical = expected_type.startswith("text/") and data.replace(b"\r\n", b"\n") == attachment.replace(b"\r\n", b"\n")
+    require(exact or canonical, "received_attachment_bytes_changed")
+    progress["attachment_verified_as"] = "opaque_exact_bytes" if exact else "matching_text_type_crlf_canonical"
+    save_receipt(receipt)
     marker(f"actor_{actor.lower()}_actual_received_archive_text_html_attachment_verified")
     return message
 
@@ -449,7 +460,7 @@ def main() -> int:
             other_environment, other_address = sessions[recipient]
             previous = receipt["sends"].get(sender)
             authored = previous["authored_run_id"] if previous else os.environ["GITHUB_RUN_ID"]
-            archive, subject, attachment, filename, phrase = draft(sender, address, other_address, environment, authored)
+            archive, subject, attachment, filename, phrase, content_type = draft(sender, address, other_address, environment, authored)
             if previous:
                 require(hashlib.sha256(archive.read_bytes()).hexdigest() == previous["archive_sha256"],
                         "prior_accepted_payload_changed")
@@ -469,7 +480,7 @@ def main() -> int:
                 receipt["sends"][sender]["accepted_at"] = datetime.now(timezone.utc).isoformat()
                 save_receipt(receipt)
                 marker(f"actor_{sender.lower()}_normal_send_accepted")
-            received = receive(recipient, other_environment, subject, attachment, filename, phrase, receipt)
+            received = receive(recipient, other_environment, subject, attachment, filename, phrase, content_type, receipt)
             cli(environment, "get", received["id"], allow_failure=True)
             require(cli(other_environment, "get", received["id"])[0]["id"] == received["id"],
                     "owner_message_disappeared_after_foreign_denial")

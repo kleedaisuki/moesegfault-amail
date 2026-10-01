@@ -124,6 +124,29 @@ No extra mail, fixture, broad mailbox search or feedback-probe workflow is added
 Provider acceptance (202), actual received content and actual consumer feedback
 remain distinct observations; configuration alone is not feedback evidence.
 
+### Observed text-media representation contract
+
+Normal run **36939312825** passed both dedicated native logins and owned-address
+activation, accepted A's one normal send and received its TEXT/HTML in B. The
+first helper assertion incorrectly expected all attachment media to be opaque
+bytes. Continuation **36940689924** reused A's original accepted key/local ID and
+regenerated identical ZIP SHA-256 without another submission or grant. Reading
+the same B delivery observed one correctly named `text/plain` asset: authored
+67 bytes, received 70 bytes, with exactly three LF-to-CRLF line-break changes.
+The canonical text bytes were equal; body alternatives and unchanged read state
+also passed. Receipt artifact **11199888632** retains only that synthetic asset's
+metadata, lengths and hashes, not raw mail. This is a representation-oracle bug,
+not evidence of arbitrary content corruption or a reason to alter the Worker.
+
+[RFC 2046 section 4.1.1](https://www.rfc-editor.org/rfc/rfc2046#section-4.1.1)
+requires CRLF as the canonical line-break representation for MIME text media.
+The helper now requires the declared and received media types to match, then
+allows only LF/CRLF equivalence for text media: no stripping of other characters
+or Unicode normalization. Binary media remain strict bytes/SHA-256 comparisons.
+A's original ZIP, key and ID stay unchanged. B's still-unsent ordinary authored
+reply declares its attachment `application/octet-stream` to exercise genuine
+opaque byte fidelity. There is no new message fixture or production-code change.
+
 Google recommends [Chrome for Testing for browser automation](https://developer.chrome.com/blog/remote-debugging-port)
 and a non-default `--user-data-dir`; the owned profile already satisfied the
 latter condition. [Chrome Headless documentation](https://developer.chrome.com/docs/automation-and-testing/headless)
