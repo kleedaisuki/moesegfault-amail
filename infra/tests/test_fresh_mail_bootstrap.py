@@ -1,8 +1,9 @@
 """Hosted synthetic first-bootstrap contracts; never access real providers."""
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from contextlib import ExitStack
 import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -85,6 +86,7 @@ class FreshBootstrapControllerTests(unittest.TestCase):
         graph = {"pins": {}, "api_crons": [], "maintenance_crons": [], "topology": "api-scheduled"}
         results = {
             "verify_same_run_artifact": None, "inspect_old_scope": {},
+            "verify_sink_reader": None, "sink_config": self.folder / "sink.toml",
             "create_scope": self.scope,
             "render_configs": {"api": self.folder / "api.toml", "maintenance": self.folder / "maintenance.toml"},
             "migrate_and_hold_new_scope": None,
@@ -112,6 +114,10 @@ class FreshBootstrapControllerTests(unittest.TestCase):
         self.assertLess(names.index("inspect_old_scope"), names.index("create_scope"))
         self.assertLess(names.index("migrate_and_hold_new_scope"), names.index("submit_once"))
         self.assertLess(names.index("verify"), names.index("persist"))
+        sink_readback = names.index("verify_sink_reader")
+        submits = [i for i, name in enumerate(names) if name == "submit_once"]
+        self.assertLess(submits[0], sink_readback)
+        self.assertLess(sink_readback, submits[1])
         self.adapters["verify_same_run_artifact"].assert_called_once_with(epoch())
         self.adapters["inspect_old_scope"].assert_called_once_with(self.provider, self.s3)
         hold_args = self.adapters["migrate_and_hold_new_scope"].call_args.args
@@ -157,10 +163,13 @@ class FreshBootstrapControllerTests(unittest.TestCase):
 
     def test_timeout_or_readback_failure_never_retries_or_emits_receipt(self):
         """Ambiguous writes retain failure; observation cannot turn them into success."""
-        for failing in ("create_scope", "migrate_and_hold_new_scope", "submit_once", "verify"):
+        for failing in ("create_scope", "render_configs", "migrate_and_hold_new_scope",
+                        "provision_trace_graph", "submit_once", "verify_sink_reader", "verify"):
             with self.subTest(adapter=failing):
-                self.recovery = self.folder / (failing + ".jsonl")
-                self.receipt = self.folder / (failing + ".json")
+                case = self.folder / failing
+                case.mkdir()
+                self.recovery = case / "controller.jsonl"
+                self.receipt = case / "receipt.json"
                 for adapter in self.adapters.values():
                     adapter.reset_mock()
                 adapter = self.adapters[failing]
@@ -174,6 +183,71 @@ class FreshBootstrapControllerTests(unittest.TestCase):
                     self.assertFalse(self.receipt.exists())
                 finally:
                     adapter.side_effect = old
+
+
+    def record(self, phase, state, **facts):
+        """Build the documented journal envelope, not controller-generated diagnostics."""
+        return {"schema": "mail-fresh-controller/v1", "epoch": asdict(epoch()),
+                "phase": phase, "state": state, **facts}
+
+    def journal(self, records):
+        """Persist only synthetic bounded intent evidence inside the test folder."""
+        self.recovery.write_text("".join(json.dumps(row) + "\n" for row in records),
+                                 encoding="utf-8")
+
+    def valid_failed_sink_journal(self):
+        """An ambiguous one-attempt sink submit occurs after owned creation and queues."""
+        return [self.record("admission", "intent"),
+                self.record("create_scope", "intent"),
+                self.record("create_scope", "observed", scope=asdict(self.scope)),
+                self.record("migrate", "intent"), self.record("queues", "intent"),
+                self.record("queues", "observed",
+                            queue="00000000-0000-0000-0000-000000000003",
+                            dlq="00000000-0000-0000-0000-000000000004"),
+                self.record("sink", "intent"),
+                self.record("sink", "failed", error_type="DeploymentFailure",
+                            version="00000000-0000-0000-0000-000000000005")]
+
+    def test_failed_write_recovery_observes_owned_coordinates_without_replay(self):
+        """Captured failure versions permit readback, never success receipts or writes."""
+        self.journal(self.valid_failed_sink_journal())
+        observed = {"id": "00000000-0000-0000-0000-000000000006",
+                    "versions": [{"version_id": "00000000-0000-0000-0000-000000000005", "percentage": 100}]}
+        with patch.object(controller, "reconcile_scope", return_value={"status": "observed"}) as reconcile, \
+                patch.object(controller, "serving_deployment", return_value=observed):
+            result = self.bootstrap().recover()
+        reconcile.assert_called_once_with(self.provider, epoch(), self.recovery.with_suffix(".scope.jsonl"))
+        self.provider.get.assert_called_once_with(
+            "accounts/" + str(self.provider.account) + "/workers/scripts/amail-trace-sink/deployments?per_page=1&page=1")
+        self.assertIs(result["may_replay_write"], False)
+        self.assertEqual(result["activation"], "NOT_GRANTED")
+        self.assertEqual(result["receipt"], "NOT_GRANTED")
+        for name in ("create_scope", "migrate_and_hold_new_scope", "provision_trace_graph", "submit_once", "persist"):
+            self.adapters[name].assert_not_called()
+        self.assertFalse(self.receipt.exists())
+
+    def test_forged_phase_or_scope_journal_is_rejected_before_provider_reads(self):
+        """Well-typed fields cannot forge the phase protocol or creator-owned scope."""
+        forged_scope = asdict(replace(self.scope, epoch=replace(epoch(), run_id="123457")))
+        cases = [
+            [self.record("admission", "intent"), self.record("api", "observed",
+                version="00000000-0000-0000-0000-000000000005")],
+            [self.record("admission", "intent"), self.record("create_scope", "intent"),
+                self.record("create_scope", "observed", scope=forged_scope)],
+            [self.record("admission", "intent"), self.record("create_scope", "intent"),
+                self.record("create_scope", "observed", scope=asdict(self.scope)),
+                self.record("sink", "failed", error_type="DeploymentFailure",
+                            version="00000000-0000-0000-0000-000000000005")],
+        ]
+        for records in cases:
+            with self.subTest(records=records):
+                self.journal(records)
+                self.provider.reset_mock()
+                with patch.object(controller, "reconcile_scope") as reconcile:
+                    with self.assertRaises(ValueError):
+                        self.bootstrap().recover()
+                    reconcile.assert_not_called()
+                self.provider.get.assert_not_called()
 
 
 if __name__ == "__main__":

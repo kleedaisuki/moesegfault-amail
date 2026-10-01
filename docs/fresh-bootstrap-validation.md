@@ -56,5 +56,24 @@ The controller and workflow contract drafts are isolated in
 requires sink → maintenance → API submission, exact new-scope arguments, all
 three pinned script identities at readback, and no receipt before full readback.
 These mocked checks intentionally do not claim provider parsing or migration
-correctness. Recovery fixtures await the concrete durable-journal interface;
-absence of such a fixture is an explicit coverage gap, not a passing result.
+correctness. The recovery fixtures now use the documented `mail-fresh-controller/v1`
+JSONL envelope. A positive failed-sink observation must not call any write or
+receipt adapter. Negative controls reject out-of-order API observations,
+source/run-mismatched creation scopes, and a sink failure without its durable
+intent before any provider reads.
+
+## Static implementation finding (pending hosted reproduction)
+
+The first controller draft checked journal row syntax but did not enforce the
+phase protocol or validate embedded creation scope against the epoch. Therefore
+`admission intent → api observed/version` could trigger a deployment read without
+creation/migration/Queue intent, and a mismatched scope record was ignored before
+scope reconciliation. The negative controls above preserve these examples.
+This is a source-backed finding, not a locally executed reproduction. The owner
+was notified; the hosted run must establish rejection after the implementation
+fix and retain the exact accepted head/run as evidence.
+
+Local authoring checks: Python standard-library AST parsing of the two test files
+(no production imports, test execution, dependencies or provider access), plus
+`git diff --check`. AST parsing succeeded. Runtime verdict remains **unverified**
+until credential-free GitHub Actions executes the integrated source.
