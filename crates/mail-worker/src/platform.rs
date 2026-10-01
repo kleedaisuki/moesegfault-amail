@@ -3,7 +3,7 @@
 use futures_util::StreamExt;
 use serde::Deserialize;
 use std::collections::BTreeSet;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Result};
 
 use crate::archive::Draft;
@@ -660,6 +660,9 @@ pub async fn embed(env: &Env, input: &str, input_type: &str) -> Result<Vec<f32>>
 }
 
 /// Preserve only failure class for scheduler backoff; never propagate provider bodies.
+/// Redirects are refused before credentials/input can cross origins. Successful
+/// responses are incrementally limited to 64 KiB before JSON decoding; an
+/// oversized, unreadable, or invalid body retains the malformed failure class.
 pub(crate) async fn embed_classified(
     env: &Env,
     input: &str,
@@ -668,6 +671,29 @@ pub(crate) async fn embed_classified(
     if input.is_empty() || input.len() > EMBEDDING_INPUT_MAX_BYTES {
         return Err(EmbeddingFailure::InvalidInput);
     }
+    let controller = worker::AbortController::default();
+    let signal = controller.signal();
+    let exchange = Box::pin(embedding_exchange(env, input, input_type, &signal));
+    let deadline = Box::pin(worker::Delay::from(std::time::Duration::from_secs(30)));
+    let result = match futures_util::future::select(exchange, deadline).await {
+        futures_util::future::Either::Left((result, _)) => result,
+        futures_util::future::Either::Right((_, _)) => {
+            controller.abort();
+            Err(EmbeddingFailure::Transient)
+        }
+    };
+    result
+}
+
+/// One 30-second deadline covers connection, headers, and body consumption.
+/// The caller aborts the native transport on timeout instead of leaving a detached
+/// provider exchange running. No provider or JS error text escapes this boundary.
+async fn embedding_exchange(
+    env: &Env,
+    input: &str,
+    input_type: &str,
+    signal: &worker::AbortSignal,
+) -> std::result::Result<Vec<f32>, EmbeddingFailure> {
     let headers = Headers::new();
     headers
         .set(
@@ -700,12 +726,13 @@ pub(crate) async fn embed_classified(
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
-        .with_body(Some(JsValue::from_str(&payload.to_string())));
+        .with_body(Some(JsValue::from_str(&payload.to_string())))
+        .with_redirect(worker::RequestRedirect::Manual);
     let mut response = Fetch::Request(
         Request::new_with_init("https://openrouter.ai/api/v1/embeddings", &init)
             .map_err(|_| EmbeddingFailure::Transient)?,
     )
-    .send()
+    .send_with_signal(signal)
     .await
     .map_err(|_| EmbeddingFailure::Transient)?;
     match response.status_code() {
@@ -715,10 +742,9 @@ pub(crate) async fn embed_classified(
         429 => return Err(EmbeddingFailure::RateLimited),
         _ => return Err(EmbeddingFailure::Transient),
     }
-    let data: EmbeddingResult = response
-        .json()
-        .await
-        .map_err(|_| EmbeddingFailure::Malformed)?;
+    let bytes = embedding_body(&mut response).await?;
+    let data: EmbeddingResult =
+        serde_json::from_slice(&bytes).map_err(|_| EmbeddingFailure::Malformed)?;
     let values = data
         .data
         .into_iter()
@@ -733,6 +759,81 @@ pub(crate) async fn embed_classified(
         return Err(EmbeddingFailure::Malformed);
     }
     Ok(values.into_iter().map(|x| (x / norm) as f32).collect())
+}
+
+/// A single 256-dimensional JSON vector needs far less than this envelope cap.
+/// The limit applies to actual decoded response bytes, not Content-Length.
+const EMBEDDING_RESPONSE_MAX_BYTES: usize = 64 * 1024;
+
+/// Invoke a native stream-reader method without retaining arbitrary JS errors.
+fn reader_method(
+    reader: &JsValue,
+    name: &str,
+) -> std::result::Result<js_sys::Function, EmbeddingFailure> {
+    js_sys::Reflect::get(reader, &JsValue::from_str(name))
+        .and_then(|value| value.dyn_into::<js_sys::Function>())
+        .map_err(|_| EmbeddingFailure::Malformed)
+}
+
+/// Read one native chunk before copying it into the bounded Rust accumulator.
+/// Unlike worker-rs ByteStream, this checks the JS array length before to_vec.
+async fn read_embedding_reader(reader: &JsValue) -> std::result::Result<Vec<u8>, EmbeddingFailure> {
+    let read = reader_method(reader, "read")?;
+    let mut bytes = Vec::new();
+    loop {
+        let pending = read
+            .call0(reader)
+            .map_err(|_| EmbeddingFailure::Malformed)?;
+        let result = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&pending))
+            .await
+            .map_err(|_| EmbeddingFailure::Malformed)?;
+        let done = js_sys::Reflect::get(&result, &JsValue::from_str("done"))
+            .map_err(|_| EmbeddingFailure::Malformed)?;
+        if done.as_bool() == Some(true) {
+            return Ok(bytes);
+        }
+        let chunk = js_sys::Reflect::get(&result, &JsValue::from_str("value"))
+            .map_err(|_| EmbeddingFailure::Malformed)?
+            .dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| EmbeddingFailure::Malformed)?;
+        if chunk.length() as usize > EMBEDDING_RESPONSE_MAX_BYTES.saturating_sub(bytes.len()) {
+            return Err(EmbeddingFailure::Malformed);
+        }
+        bytes.extend(chunk.to_vec());
+    }
+}
+
+/// Own the native reader until EOF or failure, explicitly cancel rejected bodies
+/// and release its lock. Cancellation errors are discarded, never logged. Reading
+/// stops at the first over-limit chunk; no further provider chunk is requested.
+async fn embedding_body(
+    response: &mut worker::Response,
+) -> std::result::Result<Vec<u8>, EmbeddingFailure> {
+    let stream = match response.body() {
+        worker::ResponseBody::Empty => return Ok(Vec::new()),
+        worker::ResponseBody::Body(bytes) if bytes.len() <= EMBEDDING_RESPONSE_MAX_BYTES => {
+            return Ok(bytes.clone())
+        }
+        worker::ResponseBody::Body(_) => return Err(EmbeddingFailure::Malformed),
+        worker::ResponseBody::Stream(stream) => JsValue::from(stream.clone()),
+    };
+    let reader = reader_method(&stream, "getReader")?
+        .call0(&stream)
+        .map_err(|_| EmbeddingFailure::Malformed)?;
+    let result = read_embedding_reader(&reader).await;
+    if result.is_err() {
+        if let Ok(cancel) = reader_method(&reader, "cancel").and_then(|method| {
+            method
+                .call0(&reader)
+                .map_err(|_| EmbeddingFailure::Malformed)
+        }) {
+            let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&cancel)).await;
+        }
+    }
+    if let Ok(release) = reader_method(&reader, "releaseLock") {
+        let _ = release.call0(&reader);
+    }
+    result
 }
 
 /// Submit a validated draft through Cloudflare Email Service. / 经 Cloudflare Email Service 提交已校验草稿。
