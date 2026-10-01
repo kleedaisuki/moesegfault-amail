@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from urllib.error import HTTPError
@@ -124,9 +125,45 @@ class Provider:
 
 
 def write_receipt(value: dict) -> None:
-    """Persist public operational state before advancing to the next side effect."""
+    """Atomically persist unchanged public JSON before the next side effect.
+
+    A failed write, file sync or replacement leaves the previous receipt intact.
+    The same-directory temporary file is closed before replacement for Windows.
+    POSIX directory sync must succeed before returning; if it fails after replace,
+    the new complete receipt remains visible but no following mutation is admitted.
+    Windows has no portable directory fsync, so power-loss durability is weaker.
+    The workflow's existing single-writer lock remains required.
+    """
+    serialized = json.dumps(value, sort_keys=True)
     FOLDER.mkdir(parents=True, exist_ok=True)
-    RECEIPT.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+    output = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False,
+                                         prefix=".experiment-", suffix=".json", dir=RECEIPT.parent)
+    pending = Path(output.name)
+    try:
+        with output:
+            output.write(serialized)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(pending, RECEIPT)
+        sync_receipt_directory()
+    finally:
+        # An orphan is never a recovery receipt. Do not mask a failed durability
+        # boundary with temporary-file cleanup errors or remove the old receipt.
+        try:
+            pending.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def sync_receipt_directory() -> None:
+    """Persist the POSIX replacement entry; never pretend a failed sync succeeded."""
+    if os.name == "nt":
+        return
+    descriptor = os.open(RECEIPT.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def config(name: str, probe_id: str, *, route: bool = False) -> dict:
