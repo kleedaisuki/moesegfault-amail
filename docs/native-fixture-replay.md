@@ -30,8 +30,8 @@ This lane directly addresses fixture iteration latency: prior native Queue
 investigations rebuilt unchanged Rust and executed 102 unrelated core tests to
 learn about one three-test fixture. Observe the real replay duration/cache output
 before claiming a speedup. Source-only tests check changed-input refusal, owned
-file selection and read-only workflow contracts. Actual hosted replay acceptance
-is still required; never run native tests on the developer machine.
+file selection and read-only workflow contracts. Require an actual hosted replay for each fixture investigation; never run native
+tests on the developer machine.
 
 ## Hosted acceptance
 
