@@ -1,0 +1,9 @@
+Independent user B: comparison card
+
+kind,required_observation
+integrity,both bodies preserve the research question
+attachment,downloaded comparison card matches authored bytes
+isolation,foreign object observation denied while owner access succeeds
+state,owner read state unchanged after foreign observations
+
+Status: proposal only; no live result asserted.
