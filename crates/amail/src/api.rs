@@ -319,7 +319,7 @@ impl<'a> Api<'a> {
         &self,
         request: RequestBuilder,
         operation: &str,
-        journal: telemetry::RequestSpan<'_>,
+        mut journal: telemetry::RequestSpan<'_>,
     ) -> Result<(StatusCode, Vec<u8>)> {
         let response = request.send();
         let response = match response {
@@ -339,6 +339,7 @@ impl<'a> Api<'a> {
             }
         };
         let status = response.status();
+        journal.observe_response(response.headers(), response.url(), status.as_u16());
         let correlation = response_correlation(response.headers());
         let diagnostic = (operation == "addresses.add")
             .then(|| address_response_diag(response.headers()))
@@ -607,7 +608,7 @@ mod tests {
                     assert!(read > 0 && received.len() < 8192);
                     received.extend_from_slice(&buffer[..read]);
                 }
-                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Length: {declared}\r\nX-Amail-Request-Id: {correlation}\r\nConnection: close\r\n\r\n{body}").unwrap();
+                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Length: {declared}\r\nX-Amail-Request-Id: {correlation}\r\nX-Amail-Telemetry: attempts-v1\r\nConnection: close\r\n\r\n{body}").unwrap();
             });
             let journal = telemetry::RequestSpan::new(&cfg, "messages.list");
             let traceparent = journal.traceparent();
@@ -632,6 +633,12 @@ mod tests {
             assert_eq!(row.3, correlation);
             assert_eq!(traceparent, format!("00-{}-{}-01", row.4, row.5));
             assert!(row.6 > 0);
+            let known: bool = conn
+                .query_row("SELECT supported=1 FROM journal_capability", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert!(known, "complete headers establish schema support even when the body fails; they never change the failed command result");
             if let Err(error) = result {
                 assert!(!error.to_string().contains("private-"));
             }

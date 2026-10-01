@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 mod role;
 pub use role::{RoleCode, RoleEvent, RoleKind};
 mod client;
-pub use client::{ClientAttempt, ClientErrorKind, ClientPhase};
+pub use client::{
+    ClientAttempt, ClientErrorKind, ClientPhase, ATTEMPT_CAPABILITY, ATTEMPT_UPLOAD_PATH,
+    CAPABILITY_HEADER,
+};
 
 /// Closed union of reviewed producers; existing Mail events retain their wire shape.
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -54,6 +54,7 @@ dependencies = [
 name = "amail"
 version = "0.1.0"
 dependencies = [
+ "amail-trace-schema",
  "anyhow",
  "base64 0.22.1",
  "chacha20poly1305",

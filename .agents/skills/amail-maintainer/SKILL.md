@@ -38,6 +38,10 @@ do not retire the standalone Identity inbox or active native-tracing experiment.
   `crates/trace-schema`. Separate implemented correlation from actual observed
   native tracing. Retain timestamps, status, source/version and request/trace IDs;
   exclude mail content, personal metadata, credentials and private destinations.
+  See `docs/cli-telemetry-capability.md` for the authenticated attempts-v1 header,
+  explicit rollback-safe upload route and five-minute realm-scoped observation.
+  Deploy/read back the enriched Queue reader before an announcing API; the
+  header proves parser support, not Queue delivery or native tracing.
   Do not hide all infrastructure metadata or dump arbitrary provider bodies.
 * **Deploy/recovery:** `docs/control-plane-observability.md`, `docs/backend-operations.md` and the exact workflow/helper
   for the requested component. Keep project-managed Secrets as requested. Use

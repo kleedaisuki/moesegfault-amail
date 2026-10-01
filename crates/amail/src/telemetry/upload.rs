@@ -1,16 +1,97 @@
 //! One bounded detached upload; delivery receipts never recursively become events.
 
-use super::{delivery, Event};
+use super::{capability, delivery, Event};
 use crate::{api, auth, config::Runtime};
+use amail_trace_schema::{ClientAttempt, ClientErrorKind, ClientPhase};
 use anyhow::Result;
 use delivery::{Attempt, Outcome};
 use reqwest::blocking::{Client, Response};
 use rusqlite::Connection;
+use serde::Serialize;
 use std::io::Read;
 use std::time::Duration;
 
 /// Legacy acknowledgements are tiny; read one overflow sentinel, never an arbitrary body.
 const ACK_LIMIT: u64 = 4096;
+
+/// A stored operation keeps legacy fields independent of optional exact metadata.
+struct StoredEvent {
+    /// Historical wire body, never extended on the legacy route.
+    legacy: Event,
+    /// Original local UTC clock, absent for historical records.
+    started_at_ms: Option<i64>,
+    /// Original frozen monotonic duration, never upload time.
+    elapsed_ms: Option<i64>,
+    /// Closed reader labels are decoded before use; unknown values are not exported.
+    phase: Option<String>,
+    /// Safe failure label, never an arbitrary error message.
+    error_kind: Option<String>,
+}
+
+/// Only reviewed complete metadata may be flattened into the explicit new route body.
+#[derive(Serialize)]
+struct AttemptFields {
+    /// Source UTC start; do not fill missing clocks from upload time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    started_at_ms: Option<u64>,
+    /// Exact source attempt elapsed time, distinct from the legacy clamp.
+    elapsed_ms: u64,
+    /// Actual observed failure/completion boundary.
+    phase: ClientPhase,
+    /// Reviewed failure cause; a complete exchange has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_kind: Option<ClientErrorKind>,
+}
+
+/// Serialization cannot accidentally add metadata to an unknown-capability legacy upload.
+#[derive(Serialize)]
+struct WireEvent {
+    /// Preserve all historical operation/status/correlation fields exactly.
+    #[serde(flatten)]
+    legacy: Event,
+    /// Absent unless the new route was explicitly negotiated and metadata validates.
+    #[serde(flatten)]
+    attempt: Option<AttemptFields>,
+}
+
+impl StoredEvent {
+    /// Shared reader validation closes phase/cause/status/precision combinations.
+    fn exact(&self) -> Option<AttemptFields> {
+        let started_at_ms = self.started_at_ms.map(u64::try_from).transpose().ok()?;
+        let elapsed_ms = self.elapsed_ms.map(u64::try_from).transpose().ok()??;
+        let phase: ClientPhase =
+            serde_json::from_value(serde_json::json!(self.phase.as_ref()?)).ok()?;
+        let error_kind: Option<ClientErrorKind> = self
+            .error_kind
+            .as_ref()
+            .map(|value| serde_json::from_value(serde_json::json!(value)))
+            .transpose()
+            .ok()?;
+        let attempt = ClientAttempt {
+            started_at_ms,
+            elapsed_ms: Some(elapsed_ms),
+            phase: Some(phase),
+            error_kind,
+        };
+        attempt.valid(self.legacy.status).then_some(AttemptFields {
+            started_at_ms,
+            elapsed_ms,
+            phase,
+            error_kind,
+        })
+    }
+
+    /// Historical or invalid metadata remains legacy-shaped rather than poisoning a batch.
+    fn wire(self, support: capability::Capability) -> WireEvent {
+        let attempt = (support == capability::Capability::Attempts)
+            .then(|| self.exact())
+            .flatten();
+        WireEvent {
+            legacy: self.legacy,
+            attempt,
+        }
+    }
+}
 
 /// Execute the legacy-compatible batch without holding a database transaction over I/O.
 pub(super) fn run(cfg: &Runtime, scheduled_id: Option<&uuid::Uuid>) -> Result<()> {
@@ -81,30 +162,47 @@ fn run_with(
             )
         }
     };
-    let events: Vec<_> = selected.into_iter().map(|(_, event)| event).collect();
-    send(cfg, conn, attempt, &ids, &token, &http, &events)
+    let support = match capability::load(conn, cfg) {
+        Ok(support) => support,
+        Err(error) => {
+            super::report_loss("capability_read", &error);
+            capability::Capability::Legacy
+        }
+    };
+    let events: Vec<_> = selected
+        .into_iter()
+        .map(|(_, event)| event.wire(support))
+        .collect();
+    send(cfg, conn, attempt, &ids, &token, &http, &events, support)
 }
 
-/// Select at most twenty historical wire records; do not enrich the current producer.
-fn pending(conn: &Connection) -> Result<Vec<(i64, Event)>> {
+/// Select twenty pending source records; capability controls enrichment after selection.
+fn pending(conn: &Connection) -> Result<Vec<(i64, StoredEvent)>> {
     let tx = delivery::transaction(conn)?;
     delivery::prune(&tx)?;
     let items = {
         let mut stmt = tx.prepare(
-            "SELECT id,operation,status,duration_ms,bytes_bucket,trace_id,span_id,correlation_id
+            "SELECT id,operation,status,duration_ms,bytes_bucket,trace_id,span_id,correlation_id,
+                started_at_ms,elapsed_ms,phase,error_kind
             FROM events WHERE uploaded=0 ORDER BY id LIMIT 20",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get(0)?,
-                Event {
-                    operation: row.get(1)?,
-                    status: row.get(2)?,
-                    duration_ms: row.get(3)?,
-                    bytes_bucket: row.get(4)?,
-                    trace_id: row.get(5)?,
-                    span_id: row.get(6)?,
-                    correlation_id: row.get(7)?,
+                StoredEvent {
+                    legacy: Event {
+                        operation: row.get(1)?,
+                        status: row.get(2)?,
+                        duration_ms: row.get(3)?,
+                        bytes_bucket: row.get(4)?,
+                        trace_id: row.get(5)?,
+                        span_id: row.get(6)?,
+                        correlation_id: row.get(7)?,
+                    },
+                    started_at_ms: row.get(8)?,
+                    elapsed_ms: row.get(9)?,
+                    phase: row.get(10)?,
+                    error_kind: row.get(11)?,
                 },
             ))
         })?;
@@ -122,11 +220,12 @@ fn send(
     ids: &[i64],
     token: &str,
     http: &Client,
-    events: &[Event],
+    events: &[WireEvent],
+    support: capability::Capability,
 ) -> Result<()> {
     attempt.phase(conn, "transport", None, None)?;
     let response = http
-        .post(format!("{}/v1/telemetry", cfg.api_base))
+        .post(format!("{}{}", cfg.api_base, support.path()))
         .bearer_auth(token)
         .json(&serde_json::json!({"events":events}))
         .send();
@@ -155,6 +254,16 @@ fn send(
     };
     let status = response.status();
     let correlation = api::response_correlation(response.headers());
+    let observation =
+        capability::Observation::headers(cfg, response.headers(), response.url(), status.as_u16());
+    let update = if support == capability::Capability::Attempts && status.as_u16() == 404 {
+        capability::unsupported(conn, cfg)
+    } else {
+        observation.store(conn, cfg)
+    };
+    if let Err(error) = update {
+        super::report_loss("capability_update", &error);
+    }
     if !status.is_success() {
         return attempt.finish(
             conn,
@@ -211,6 +320,11 @@ mod tests {
 
     /// Read the actual bounded legacy JSON request across arbitrary TCP fragmentation.
     fn request(stream: &mut TcpStream) -> serde_json::Value {
+        captured_request(stream).1
+    }
+
+    /// Capture the real method/path alongside its JSON, not a serializer-only surrogate.
+    fn captured_request(stream: &mut TcpStream) -> (String, serde_json::Value) {
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -237,7 +351,10 @@ mod tests {
             assert!(n > 0 && received.len() < 8192);
             received.extend_from_slice(&buffer[..n]);
         }
-        serde_json::from_slice(&received[header_end..header_end + length]).unwrap()
+        (
+            headers.lines().next().unwrap().to_owned(),
+            serde_json::from_slice(&received[header_end..header_end + length]).unwrap(),
+        )
     }
 
     /// Extract only typed receipt fields, never HTTP or credential messages.
@@ -370,6 +487,200 @@ mod tests {
                     .windows(protected.len())
                     .any(|bytes| bytes == protected));
             }
+        }
+    }
+
+    /// Seed capability through the same header observer as ordinary authenticated traffic.
+    fn announce(conn: &Connection, cfg: &Runtime) {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            amail_trace_schema::CAPABILITY_HEADER,
+            reqwest::header::HeaderValue::from_static(amail_trace_schema::ATTEMPT_CAPABILITY),
+        );
+        capability::Observation::headers(
+            cfg,
+            &headers,
+            &url::Url::parse(&cfg.api_base).unwrap(),
+            200,
+        )
+        .store(conn, cfg)
+        .unwrap();
+    }
+
+    /// One accepted socket is kept alive for an immediate queued-connection check after upload.
+    fn serve_once(
+        listener: TcpListener,
+        response: String,
+    ) -> std::thread::JoinHandle<(TcpListener, String, serde_json::Value)> {
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let (line, body) = captured_request(&mut stream);
+            let _ = stream.write_all(response.as_bytes());
+            (listener, line, body)
+        })
+    }
+
+    /// Every HTTP fixture completes one scheduled attempt, without detached helper processes.
+    fn flush(cfg: &Runtime, conn: &Connection) {
+        run_with(
+            cfg,
+            conn,
+            None,
+            || Ok("SYNTHETIC_PRIVATE_TOKEN".into()),
+            Client::builder().timeout(Duration::from_secs(5)).build(),
+        )
+        .unwrap();
+    }
+
+    /// A nonblocking accept checks queued retries/probes without a guessed sleep interval.
+    fn no_extra_request(listener: &TcpListener) {
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        listener.set_nonblocking(false).unwrap();
+    }
+
+    /// Unknown support never sends exact fields; negotiated support preserves source clocks.
+    #[test]
+    fn actual_http_paths_and_frozen_attempt_fields_follow_observed_capability() {
+        for supported in [false, true] {
+            let (_home, mut cfg, conn) = fixture();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            cfg.api_base = format!("http://{}", listener.local_addr().unwrap());
+            conn.execute("UPDATE events SET started_at_ms=1790000000123,elapsed_ms=7123,phase='response_body',error_kind='body'", []).unwrap();
+            if supported {
+                announce(&conn, &cfg);
+            }
+            let peer = serve_once(listener, "HTTP/1.1 202 Test\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"accepted\":1}".into());
+            flush(&cfg, &conn);
+            let (listener, line, body) = peer.join().unwrap();
+            no_extra_request(&listener);
+            assert_eq!(
+                line,
+                if supported {
+                    "post /v1/telemetry/attempts http/1.1"
+                } else {
+                    "post /v1/telemetry http/1.1"
+                }
+            );
+            let mut expected = serde_json::json!({"operation":"messages.list","status":200,"duration_ms":7,"bytes_bucket":0,"trace_id":"0123456789abcdef0123456789abcdef","correlation_id":null});
+            if supported {
+                expected["started_at_ms"] = serde_json::json!(1790000000123u64);
+                expected["elapsed_ms"] = serde_json::json!(7123);
+                expected["phase"] = serde_json::json!("response_body");
+                expected["error_kind"] = serde_json::json!("body");
+            }
+            assert_eq!(body, serde_json::json!({"events":[expected]}));
+            assert_eq!(receipt(&conn).0, "accepted");
+        }
+    }
+
+    /// Historical and malformed metadata remain legacy-shaped inside an enriched-route batch.
+    #[test]
+    fn actual_http_mixed_history_does_not_poison_the_enriched_batch() {
+        let (_home, mut cfg, conn) = fixture();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        cfg.api_base = format!("http://{}", listener.local_addr().unwrap());
+        announce(&conn, &cfg);
+        conn.execute("INSERT INTO events(operation,status,duration_ms,bytes_bucket,trace_id,started_at_ms,elapsed_ms,phase,error_kind) SELECT operation,status,duration_ms,bytes_bucket,trace_id,1790000000123,23,'complete',NULL FROM events", []).unwrap();
+        conn.execute("INSERT INTO events(operation,status,duration_ms,bytes_bucket,trace_id,started_at_ms,elapsed_ms,phase,error_kind) SELECT operation,status,duration_ms,bytes_bucket,trace_id,-1,23,'SYNTHETIC_PRIVATE_PHASE','SYNTHETIC_PRIVATE_CAUSE' FROM events WHERE id=1", []).unwrap();
+        let peer = serve_once(
+            listener,
+            "HTTP/1.1 202 Test\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"accepted\":3}"
+                .into(),
+        );
+        flush(&cfg, &conn);
+        let (listener, line, body) = peer.join().unwrap();
+        no_extra_request(&listener);
+        assert_eq!(line, "post /v1/telemetry/attempts http/1.1");
+        let legacy = serde_json::json!({"operation":"messages.list","status":200,"duration_ms":7,"bytes_bucket":0,"trace_id":"0123456789abcdef0123456789abcdef","correlation_id":null});
+        let mut exact = legacy.clone();
+        exact["started_at_ms"] = serde_json::json!(1790000000123u64);
+        exact["elapsed_ms"] = serde_json::json!(23);
+        exact["phase"] = serde_json::json!("complete");
+        assert_eq!(
+            body,
+            serde_json::json!({"events":[legacy.clone(),exact,legacy]})
+        );
+        assert_eq!(receipt(&conn).0, "accepted");
+    }
+
+    /// A misleading announcement cannot defeat rollback404; only a later run uses legacy.
+    #[test]
+    fn rollback404_invalidates_without_retry_and_next_separate_run_is_legacy() {
+        let (_home, mut cfg, conn) = fixture();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        cfg.api_base = format!("http://{}", listener.local_addr().unwrap());
+        announce(&conn, &cfg);
+        conn.execute(
+            "UPDATE events SET started_at_ms=1790000000123,elapsed_ms=23,phase='complete'",
+            [],
+        )
+        .unwrap();
+        let peer = serve_once(listener, "HTTP/1.1 404 Test\r\nX-Amail-Telemetry: attempts-v1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into());
+        flush(&cfg, &conn);
+        let (listener, line, body) = peer.join().unwrap();
+        assert_eq!(line, "post /v1/telemetry/attempts http/1.1");
+        assert_eq!(body["events"][0]["elapsed_ms"], 23);
+        no_extra_request(&listener);
+        assert_eq!(
+            capability::load(&conn, &cfg).unwrap(),
+            capability::Capability::Legacy
+        );
+        assert_eq!(
+            conn.query_row("SELECT uploaded FROM events", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(receipt(&conn).0, "failed");
+        let peer = serve_once(
+            listener,
+            "HTTP/1.1 202 Test\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"accepted\":1}"
+                .into(),
+        );
+        flush(&cfg, &conn);
+        let (listener, line, body) = peer.join().unwrap();
+        no_extra_request(&listener);
+        assert_eq!(line, "post /v1/telemetry http/1.1");
+        assert!(body["events"][0].get("elapsed_ms").is_none());
+        assert_eq!(
+            conn.query_row("SELECT uploaded FROM events", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    /// Headers can downgrade capability even when private truncated body data is discarded.
+    #[test]
+    fn missing_announcement_on_body_failure_downgrades_without_retaining_private_text() {
+        let (_home, mut cfg, conn) = fixture();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        cfg.api_base = format!("http://{}", listener.local_addr().unwrap());
+        announce(&conn, &cfg);
+        let marker = "SYNTHETIC_PRIVATE_TRUNCATED_ACK";
+        let peer = serve_once(listener, format!("HTTP/1.1 202 Test\r\nX-Amail-Request-Id: {marker}\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n{marker}"));
+        flush(&cfg, &conn);
+        let (listener, line, _) = peer.join().unwrap();
+        no_extra_request(&listener);
+        assert_eq!(line, "post /v1/telemetry/attempts http/1.1");
+        assert_eq!(
+            capability::load(&conn, &cfg).unwrap(),
+            capability::Capability::Legacy
+        );
+        let row = receipt(&conn);
+        assert_eq!(row.0, "unknown");
+        assert_eq!(row.2.as_deref(), Some("body"));
+        assert_eq!(row.3, Some(202));
+        assert!(row.4.is_none());
+        let bytes = std::fs::read(cfg.home.join("telemetry.sqlite3")).unwrap();
+        for protected in [marker.as_bytes(), b"SYNTHETIC_PRIVATE_TOKEN"] {
+            assert!(!bytes
+                .windows(protected.len())
+                .any(|window| window == protected));
         }
     }
 

@@ -154,6 +154,12 @@ pub async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .headers_mut()
         .set("x-amail-request-id", &request_id)?;
     response.headers_mut().set("Cache-Control", "no-store")?;
+    if trace.can_announce(env.queue("TRACE_EVENTS").is_ok()) {
+        response.headers_mut().set(
+            amail_trace_schema::CAPABILITY_HEADER,
+            amail_trace_schema::ATTEMPT_CAPABILITY,
+        )?;
+    }
     trace.exit(
         &request_id,
         response.status_code(),
@@ -1178,6 +1184,7 @@ async fn dispatch(
         status: 401,
         code: "unauthorized",
     })?;
+    trace.authenticated();
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
     trace.accept_parent(req.headers().get("traceparent").ok().flatten().as_deref());
     trace.operation(operation_for(req.method(), &segments));
@@ -1245,6 +1252,16 @@ async fn dispatch(
         }
         (Method::Delete, ["v1", "messages", id]) => delete_message(&env, &user, id).await,
         (Method::Post, ["v1", "telemetry"]) => telemetry(&mut req, request_id, trace).await,
+        (Method::Post, ["v1", "telemetry", "attempts"]) => {
+            // Refuse before JSON parsing: no enrichment admission without the required safe sink boundary.
+            if env.queue("TRACE_EVENTS").is_err() {
+                return Err(AppError {
+                    status: 503,
+                    code: "service_unavailable",
+                });
+            }
+            telemetry(&mut req, request_id, trace).await
+        }
         _ => Err(AppError::not_found()),
     }
 }
@@ -1275,6 +1292,7 @@ fn operation_for(method: Method, segments: &[&str]) -> Operation {
         (Method::Patch, ["v1", "messages", _]) => Operation::MessagesMark,
         (Method::Delete, ["v1", "messages", _]) => Operation::MessagesDelete,
         (Method::Post, ["v1", "telemetry"]) => Operation::TelemetryUpload,
+        (Method::Post, ["v1", "telemetry", "attempts"]) => Operation::TelemetryUpload,
         _ => Operation::Unknown,
     }
 }

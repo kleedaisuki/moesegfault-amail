@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::{config::Runtime, local_store};
+mod capability;
 mod delivery;
 mod upload;
 
@@ -40,6 +41,7 @@ fn db(cfg: &Runtime) -> Result<Connection> {
     )?;
     ensure_event_columns(&mut conn)?;
     delivery::schema(&conn)?;
+    capability::schema(&conn)?;
     Ok(conn)
 }
 
@@ -120,6 +122,8 @@ pub struct RequestSpan<'a> {
     span_id: String,
     started_at_ms: Option<i64>,
     start: Instant,
+    /// Header metadata remains in memory until the actual attempt clock is frozen.
+    observation: Option<capability::Observation>,
 }
 
 impl<'a> RequestSpan<'a> {
@@ -138,12 +142,28 @@ impl<'a> RequestSpan<'a> {
                 .ok()
                 .and_then(|value| i64::try_from(value.as_millis()).ok()),
             start: Instant::now(),
+            observation: None,
         }
     }
 
     /// Propagate the same identity as the journaled HTTP attempt.
     pub fn traceparent(&self) -> String {
         format!("00-{}-{}-01", self.trace_id, self.span_id)
+    }
+
+    /// Observe complete HTTP headers without adding diagnostic SQLite latency to the exchange.
+    pub(crate) fn observe_response(
+        &mut self,
+        headers: &reqwest::header::HeaderMap,
+        response_url: &url::Url,
+        status: u16,
+    ) {
+        self.observation = Some(capability::Observation::headers(
+            self.cfg,
+            headers,
+            response_url,
+            status,
+        ));
     }
 
     /// Finish consumes the span to prevent two rows for one HTTP attempt.
@@ -172,6 +192,11 @@ impl<'a> RequestSpan<'a> {
                 error_kind,
                 elapsed,
             )?;
+            if let Some(observation) = self.observation {
+                if let Err(error) = observation.store(&conn, self.cfg) {
+                    report_loss("capability_update", &error);
+                }
+            }
             maybe_spawn_flush(&conn)
         })();
         if let Err(error) = result {
