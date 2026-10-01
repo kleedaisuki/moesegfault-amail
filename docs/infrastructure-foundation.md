@@ -6,6 +6,58 @@ the owner explicitly prioritized infrastructure and debt repayment before furthe
 mail debugging. Preserve the current send hold and do not resume production
 inspection, mailbox campaigns or release promotion until this foundation passes.
 
+## Current integrated state (2026-10-01)
+
+This section supersedes dated implementation-status statements below. Product
+scope and remaining release requirements are in the [Goal progress snapshot](goal-progress-snapshot.md).
+Source baseline is main `6f63e1f559bc2d0a5c9d27c40294349fcf77dde1`;
+[exact-main CI 36883747018](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36883747018)
+passed. Historical receipts remain useful but do not imply current deployment.
+
+* PRs 52, 54 and 64 are merged: search-poll reader compatibility, enriched
+  source-clock/error readers, and durable bounded CLI upload/loss accounting.
+  The CLI still produces legacy remote events; capability negotiation and
+  local/auth command coverage are separate ongoing source work.
+* PRs 55 and 58 are merged: ordinary deploy jobs consume verified same-run module
+  artifacts, and the standalone Identity inbox admits an original exact-main
+  artifact. Their actual Mail/inbox deployment paths have not been executed by
+  this foundation. Wrangler packaging still occurs; final packaged graph/bytes
+  and runtime entry behavior are being tested in a credential-free hosted probe.
+* PRs 59, 60 and 65 are merged: fixed diagnostic client identity, exact scoped
+  diagnostic checks and per-case native-parentage admission. These do not prove
+  that native spans have been retained by Cloudflare.
+* PR 62 is merged: three fixed historical incident-read lanes are retired while
+  source fixtures and receipts remain. The Queue permission workflow's automatic
+  push trigger is the next bounded maintenance cleanup.
+* PR 63 is merged: partial predecessor/receipt/readback contracts. There is not
+  yet an executable production receipt producer or an accepted activation,
+  drain or rollback. Fresh held production bootstrap is being implemented; old
+  stores remain untouched, and empty inventory is not historical ownership proof.
+
+Actual isolated canary [36884872446](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36884872446)
+restored artifact `11172022967` from the exact-main run and passed deployment,
+ownership, version and capture/isolation readback. Its one fixed-client POST
+returned HTTP 404 / provider code 1042; no native-case receipts were produced,
+and retained-record collection was skipped. Owned cleanup verified both scripts
+absent at `2026-10-01T15:31:53.852080+00:00`. Artifact `11174410747` retains the
+safe receipt. This is negative invocation evidence, not native-tracing/privacy
+acceptance. Do not repeat the unchanged workers.dev experiment. The selected
+next source design uses an absent-only, nonce-owned Worker Route and proxied DNS
+record with existing Universal SSL, without borrowing public service hostnames
+or creating an Advanced Certificate. It requires review before provider writes.
+
+Five independent workstreams run in parallel: deployment/bootstrap, runtime
+telemetry, native tracing, CI packaging/latency, and maintenance. Their leaders
+may delegate bounded implementation/validation tasks. Root coordinates provider
+writes under existing serialization; source review is not a global serial gate
+for unrelated work. Tests and cross-platform execution remain hosted only.
+
+The owner's original account belongs to production Identity, not staging.
+Its rejected staging login is an environment/realm mismatch, not an established
+production authentication bug. Its production native-client journey is
+**UNEXECUTED**; do not repeat staging login, copy accounts or reset credentials
+based on that historical rejection.
+
 ## Architecture and scope
 
 Use platform mechanisms rather than a second home-grown control platform:
@@ -52,10 +104,10 @@ control-plane call merely because the mail application has spans.
 | Work package | Exit condition | State |
 | --- | --- | --- |
 | CI dependency graph and caches | Build once; all native files assigned; parallel suites; stable fail-closed aggregate; dependency caches without credentials/workspace binaries; observed hosted durations and cache outcomes | Hosted source accepted; three CLI platforms and Worker observed exact warm dependency hits |
-| Artifact and compiler provenance | Source/run/compiler/bundler/file hashes verified before consumption; wrong-source, modified/missing/extra file refused; promotion consumes tested artifacts rather than rebuilding silently | Source checks accepted; deploy/release wiring pending |
+| Artifact and compiler provenance | Source/run/compiler/bundler/file hashes verified before consumption; wrong-source, modified/missing/extra file refused; promotion consumes tested artifacts rather than rebuilding silently | Ordinary same-run deployment and exact-main inbox source wiring merged; isolated canary consumption executed; final packaging and actual ordinary deployment remain unaccepted |
 | CI and deployment diagnostics | Machine-readable timing/outcome summaries; source/run/stage/request correlation; useful safe provider failures; no repeated opaque probes | CI cache/native receipts and initial [control-plane integration](control-plane-observability.md) source accepted; lifecycle consumers pending |
 | Runtime observability | Field-level schemas; CLI/API/maintenance/lifecycle coverage and diagnostics for loss; Cloudflare configuration and a synthetic correlation/privacy canary accepted | [Coverage repair and native-span validation plan](runtime-observability-foundation.md) |
-| Deployment lifecycle | Explicit paused/active state; consistent source/toolchain/artifact; writer lock, readback, rollback and bounded recovery; project Secrets remain unchanged | Pending |
+| Deployment lifecycle | Explicit paused/active state; consistent source/toolchain/artifact; writer lock, readback, rollback and bounded recovery; project Secrets remain unchanged | Partial source contracts merged; fresh held bootstrap implementation ongoing; actual producer/activation/drain/rollback not accepted |
 | Maintenance knowledge and cleanup | Current runbook and maintainer skill; legacy research probes isolated from normal product paths; canonical status ledger; no dangling test/active workflow | [Operational lane inventory and first historical retirement](maintenance-operational-lanes.md) hosted-source accepted on PR 62; supported recovery and active native-tracing preserved; remaining legacy debt explicitly inventoried |
 
 Completion means all rows have executable evidence, not just a design review.
