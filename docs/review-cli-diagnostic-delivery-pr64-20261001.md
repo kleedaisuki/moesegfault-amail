@@ -11,6 +11,17 @@ acceptance. Also inspected the author's uncommitted narrow journal-before-auth
 and poisoned-header test refinements in `.temp/runtime-upload-loss`; those do
 not have final hosted evidence yet and are not an exact committed-head verdict.
 
+Final source update: the refinements were subsequently committed and the parent
+reader branch synchronized with main. Independently inspected the entire CLI
+delta from the first head to final PR 64 head
+`043f99b062da7711fe4cca56941c55bcbf166ece`: only the reviewed journal/auth phase
+refinement and the two corresponding HTTP/SQLite test cases changed. Source GO
+now binds this final head, with no substantive findings. `git diff --check`
+passed and the author's worktree is clean. At the final metadata snapshot,
+run 36881490992 has successful scope/infrastructure and running three CLI jobs;
+syntax run 36881490411 already succeeded. Final source CI acceptance remains
+pending, not borrowed from the first head's green run.
+
 Existing hosted source run
 [36880337510](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36880337510)
 is independently confirmed success at the reviewed head, created 14:56:32 and
