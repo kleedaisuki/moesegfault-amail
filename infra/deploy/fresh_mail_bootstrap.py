@@ -119,7 +119,8 @@ def inspect_old_scope(provider, s3) -> dict:
             or first_forward != forward_snapshot(provider.account)):
         raise ValueError("production_inventory_drift")
     return {"snapshot_sha256": old.stable_digest(snapshots[0]), "old_work_end": "UNVERIFIED",
-            "original_stores": "RETAINED", "external_activation": "NOT_GRANTED"}
+            "original_stores": "RETAINED", "external_activation": "NOT_GRANTED",
+            "sink_present": SCRIPTS["sink"] in snapshots[0]["scripts"]}
 
 
 def migrate_and_hold_new_scope(provider, s3, scope: Scope, config: Path) -> None:
@@ -430,7 +431,12 @@ def main() -> int:
                           aws_access_key_id=access, aws_secret_access_key=secret, region_name="auto",
                           config=Config(connect_timeout=15, read_timeout=30, retries={"max_attempts": 0}))
         folder = ROOT / ".temp/fresh-bootstrap"
-        Bootstrap(provider, s3, epoch, folder / "recovery/controller.jsonl", folder / "receipt.json").run()
+        prior_run = os.getenv("AMAIL_FRESH_BOOTSTRAP_RUN_ID", "")
+        if prior_run:
+            from resume_fresh_mail import run
+            run(provider, s3, epoch, prior_run, folder)
+        else:
+            Bootstrap(provider, s3, epoch, folder / "recovery/controller.jsonl", folder / "receipt.json").run()
         print("fresh_production_bootstrap=paused_receipt activation=NOT_GRANTED source_adoption=REQUIRED")
         return 0
     except Exception as error:

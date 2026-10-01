@@ -178,6 +178,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           AMAIL_WORKER_ARTIFACT_ID: ${{ needs.worker-build.outputs.artifact_id }}
           AMAIL_PRODUCTION_BOOTSTRAP_CONFIRM: ${{ inputs.confirm }}
+          AMAIL_FRESH_BOOTSTRAP_RUN_ID: ${{ inputs.fresh_bootstrap_run }}
           AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
           AMAIL_PRODUCTION_ENVIRONMENT: production
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

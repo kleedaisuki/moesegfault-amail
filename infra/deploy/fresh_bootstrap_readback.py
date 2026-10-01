@@ -238,7 +238,8 @@ def surfaces(provider, base: str, *, reader_only: bool = False) -> None:
                 raise ValueError("fresh_api_ingress_shadowed")
 
 
-def capabilities(provider, base: str, scope: Scope, pins: dict, queue: str) -> None:
+def capabilities(provider, base: str, scope: Scope, pins: dict, queue: str,
+                 *, maintenance_crons: tuple[str, ...] = (), source_active: bool = False) -> None:
     """Independent API/maintenance/sink immutable and effective capture/surface checks."""
     for script, version in pins.items():
         path = f"{base}/workers/scripts/{script}"
@@ -249,7 +250,7 @@ def capabilities(provider, base: str, scope: Scope, pins: dict, queue: str) -> N
             safe = isolation.version_isolated(immutable, version)
         else:
             expected = (expected_bindings("queue-api", queue, realm="production") if script == API
-                        else maintenance.expected_bindings("production", queue))
+                        else maintenance.expected_bindings("production", queue, active=source_active))
             expected.update({"MAIL_DB": ("d1", scope.database), "MAIL_BODIES": ("r2_bucket", scope.bucket)})
             safe = _bindings_match(immutable, version, expected) and maintenance.entry_surface_match(
                 immutable, version, "fetch" if script == API else "scheduled")
@@ -270,7 +271,8 @@ def capabilities(provider, base: str, scope: Scope, pins: dict, queue: str) -> N
         subdomain = provider.get(f"{path}/subdomain")
         if (not safe or not isinstance(subdomain, dict) or subdomain.get("enabled") is not False
                 or subdomain.get("previews_enabled") is not False
-                or not maintenance.schedules_match(provider.get(f"{path}/schedules"))):
+                or not maintenance.schedules_match(provider.get(f"{path}/schedules"),
+                     maintenance_crons if script == MAINTENANCE else ())):
             raise ValueError("fresh_capture_or_surface_unverified")
 
 
@@ -299,13 +301,16 @@ def verify_sink_reader(scope: Scope, version: str, queue: str, dlq: str, provide
         raise ValueError("fresh_reader_changed")
 
 
-def verify(scope: Scope, pins: dict, queue: str, dlq: str, provider) -> dict:
+def verify(scope: Scope, pins: dict, queue: str, dlq: str, provider,
+           *, maintenance_crons: tuple[str, ...] = (), source_active: bool = False) -> dict:
     """Bracket the full fresh graph; only successful complete observations persist.
 
     Usage: ``persist(scope, verify(scope, pins, queue, dlq, provider), queue,
     dlq, receipt_path)``. Protected executor authorization and storage creation
     provenance are separately required; this function performs no migrations.
     """
+    if maintenance_crons not in ((), maintenance.CADENCE):
+        raise ValueError("fresh_schedule_unreviewed")
     account = getattr(provider, "account", None)
     if (not isinstance(scope, Scope) or not isinstance(pins, dict) or set(pins) != scripts("production")
             or any(not isinstance(pin, str) or UUID.fullmatch(pin) is None for pin in pins.values())
@@ -319,7 +324,7 @@ def verify(scope: Scope, pins: dict, queue: str, dlq: str, provider) -> dict:
     if provider.r2_empty(scope.bucket) is not True:
         raise ValueError("fresh_r2_empty_unverified")
     queue_graph(provider, base, queue, dlq)
-    capabilities(provider, base, scope, pins, queue)
+    capabilities(provider, base, scope, pins, queue, maintenance_crons=maintenance_crons, source_active=source_active)
     surfaces(provider, base)
     queue_graph(provider, base, queue, dlq)
     held_empty(provider, base, scope)
@@ -327,5 +332,6 @@ def verify(scope: Scope, pins: dict, queue: str, dlq: str, provider) -> dict:
         raise ValueError("fresh_r2_empty_unverified")
     if forward_snapshot(provider, account) != forwards_before or serving(provider, base, pins) != before:
         raise ValueError("fresh_graph_changed")
-    value = checked_graph({"pins": before, "api_crons": [], "maintenance_crons": [], "topology": "api-scheduled"}, "production")
+    value = checked_graph({"pins": before, "api_crons": [], "maintenance_crons": list(maintenance_crons),
+                           "topology": "api-scheduled"}, "production")
     return VerifiedGraph(value, scope, queue, dlq, _witness=_OBSERVED)
