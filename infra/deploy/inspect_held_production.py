@@ -75,6 +75,10 @@ def failure_reason(error: Exception) -> str:
         "consumer_drift", "consumer_identity_conflict", "queue_settings_drift", "ownership_shape",
         "producer_drift", "dlq_consumer_unreviewed", "fresh_queue_consumers_unverified",
         "fresh_capabilities_unverified", "fresh_capture_or_surface_unverified", "fresh_version_unverified",
+        "fresh_capture_coordinates_unreviewed", "fresh_capture_capabilities_unverified",
+        "fresh_capture_projection_unverified", "fresh_capture_serving_changed",
+        "fresh_capture_patch_unverified", "fresh_capture_readback_unverified",
+        "production_owned_scripts_unreviewed", "production_owned_scripts_unobserved",
         "fresh_sink_replacement_precondition_unverified", "fresh_reader_changed", "fresh_sink_entry_unreviewed",
         "production_inspection_not_authorized", "production_resources_unverified",
         "production_isolation_or_paused_config_unverified", "production_capabilities_unverified",
@@ -243,13 +247,18 @@ def exact_rows(values: object, key: str, limit: int) -> list[dict]:
     return sorted(values, key=lambda value: value[key])
 
 
-def script_inventory(provider: Provider) -> dict:
+def script_inventory(provider: Provider, *, owned_scripts: frozenset[str] = frozenset()) -> dict:
     """Collect successful SinglePage scripts and bracket every current binding set.
+
+    An admitted fresh checkpoint may retain its exact API/maintenance names; this
+    never permits bindings to the original stores or unexpected service callers.
 
     This is current capability inventory, not deleted/historical version proof.
     A complete independently reviewed deployment/audit history remains necessary
     for the operational no-known-prior-writer disposition.
     """
+    if not owned_scripts <= {provider.resources.api, "amail-mail-maintenance"}:
+        raise ValueError("production_owned_scripts_unreviewed")
     base = f"/accounts/{provider.account}/workers/scripts"
     response = provider.envelope(base)
     if response.get("result_info") not in (None, {}):
@@ -259,7 +268,7 @@ def script_inventory(provider: Provider) -> dict:
     result = {}
     for script in scripts:
         name = script["id"]
-        if not NAME.fullmatch(name) or name in forbidden:
+        if not NAME.fullmatch(name) or name in forbidden and name not in owned_scripts:
             raise ValueError("production_partial_bootstrap_or_prior_worker")
         settings = provider.get(f"{base}/{name}/settings")
         if not isinstance(settings, dict):
@@ -282,10 +291,13 @@ def script_inventory(provider: Provider) -> dict:
                 raise ValueError("production_unexpected_store_or_service_caller")
         # Capture settings stay private and do not become an all-off attestation.
         result[name] = {"script": script, "settings": settings}
+    if not owned_scripts <= result.keys():
+        raise ValueError("production_owned_scripts_unobserved")
     return result
 
 
-def unattached_route(provider: Provider, zone: str, *, progress: Progress | None = None) -> dict:
+def unattached_route(provider: Provider, zone: str, *, progress: Progress | None = None,
+                     owned_api: bool = False) -> dict:
     """Reject any Worker route or custom domain covering the intended Mail host."""
     if not ACCOUNT.fullmatch(zone):
         raise ValueError("production_zone_unverified")
@@ -323,8 +335,12 @@ def unattached_route(provider: Provider, zone: str, *, progress: Progress | None
                        for label in hostname.removesuffix(".").split("."))):
             raise ValueError("production_domain_hostname_unverified")
         hosts.append(hostname.lower().removesuffix("."))
-    if any(host == provider.resources.domain or row.get("service") == provider.resources.api
-           for host, row in zip(hosts, domains)):
+    attached = [(host, row) for host, row in zip(hosts, domains)
+                if host == provider.resources.domain or row.get("service") == provider.resources.api]
+    if attached and not (owned_api and len(attached) == 1
+                         and attached[0][0] == provider.resources.domain
+                         and attached[0][1].get("service") == provider.resources.api
+                         and attached[0][1].get("zone_id") == zone):
         raise ValueError("production_domain_already_attached")
     return {"routes": routes, "domains": domains}
 
@@ -385,7 +401,7 @@ def uninitialized_schema(provider: Provider) -> bool:
 
 
 def collect(provider: Provider, zone: str, object_count: int, *, progress: Progress | None = None,
-            allow_uninitialized: bool = False) -> dict:
+            allow_uninitialized: bool = False, owned_scripts: frozenset[str] = frozenset()) -> dict:
     """Return current facts; only fresh bootstrap may inspect uninitialized old D1.
 
     An uninitialized store has no policy or grant, rather than a fictitious held
@@ -394,9 +410,9 @@ def collect(provider: Provider, zone: str, object_count: int, *, progress: Progr
     """
     progress = progress or Progress()
     progress.stage = Stage.SCRIPTS
-    scripts = script_inventory(provider)
+    scripts = script_inventory(provider, owned_scripts=owned_scripts)
     progress.stage = Stage.ROUTES
-    routes = unattached_route(provider, zone, progress=progress)
+    routes = unattached_route(provider, zone, progress=progress, owned_api=provider.resources.api in owned_scripts)
     progress.stage = Stage.SCHEMA
     if allow_uninitialized and uninitialized_schema(provider):
         if type(object_count) is not int or object_count != 0:

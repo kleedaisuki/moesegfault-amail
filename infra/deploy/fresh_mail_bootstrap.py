@@ -85,7 +85,7 @@ def verify_same_run_artifact(epoch: Epoch) -> None:
         raise ValueError("fresh_fixed_artifact_id_required")
 
 
-def inspect_old_scope(provider, s3) -> dict:
+def inspect_old_scope(provider, s3, *, owned_scripts: frozenset[str] = frozenset()) -> dict:
     """Keep original stores untouched and reject existing-user abandonment.
 
     Current complete absence/held facts are bracketed; no failed read is empty.
@@ -99,7 +99,8 @@ def inspect_old_scope(provider, s3) -> dict:
     first_forward = forward_snapshot(provider.account)
     snapshots = []
     for _ in range(2):
-        snapshot = old.collect(reader, zone, old.r2_count(s3, resources.bucket), allow_uninitialized=True)
+        snapshot = old.collect(reader, zone, old.r2_count(s3, resources.bucket),
+                               allow_uninitialized=True, owned_scripts=owned_scripts)
         if snapshot["schema_prefix"] == 0:
             snapshots.append(snapshot)  # Positive metadata absence, never a failed table read.
             continue

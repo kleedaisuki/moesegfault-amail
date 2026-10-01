@@ -81,7 +81,10 @@ def capture_off(provider, script: str, version: str, *, expected_bindings: dict,
     checked_version()
     current_path = f"{base}/workers/workers/{script}"
     prior = provider.get(current_path)
-    body = projection(prior, script=script, reviewed=reviewed)
+    try:
+        body = projection(prior, script=script, reviewed=reviewed)
+    except ValueError as error:
+        raise ValueError("fresh_capture_projection_unverified") from error
     snapshot = unaffected(prior)
     if serving(provider, base, pins) != before:
         raise ValueError("fresh_capture_serving_changed")

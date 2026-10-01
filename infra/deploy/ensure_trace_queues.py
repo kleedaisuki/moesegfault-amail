@@ -70,7 +70,11 @@ def request(account: str, token: str, path: str, body: dict | None = None, *, me
 
 def inventory(account: str, token: str) -> list[dict]:
     """Read the documented unfiltered SyncSinglePage endpoint with bounded completeness guards."""
-    payload = request(account, token, "queues")
+    return inventory_rows(request(account, token, "queues"))
+
+
+def inventory_rows(payload: dict) -> list[dict]:
+    """Validate one successful complete Queue catalog before resolving binding names."""
     if set(payload) - {"success", "errors", "messages", "result", "result_info"}:
         raise ValueError("inventory_incomplete")
     rows = payload.get("result")
@@ -102,6 +106,35 @@ def inventory(account: str, token: str) -> list[dict]:
         ids.add(queue_id)
         names.add(name)
     return rows
+
+
+def normalize_queue_bindings(version: dict, catalog: list[dict]) -> dict:
+    """Resolve live queue_name bindings to unique same-account observed UUIDs.
+
+    The caller supplies a positively read catalog validated by ``inventory_rows``.
+    Never guess a UUID from a name or replace an explicit contradictory identity.
+    Exact binding matchers and graph ownership checks remain unchanged.
+    """
+    if not isinstance(version, dict):
+        return version
+    resources = version.get("resources")
+    bindings = resources.get("bindings") if isinstance(resources, dict) else None
+    if isinstance(bindings, dict) and set(bindings) == {"result"}:
+        bindings = bindings["result"]
+    if not isinstance(bindings, list):
+        return version
+    for binding in bindings:
+        if not isinstance(binding, dict) or binding.get("type") != "queue" or "queue_name" not in binding:
+            continue
+        name = binding["queue_name"]
+        if not isinstance(name, str) or not name:
+            raise ValueError("queue_binding_identity_unverified")
+        row = exact_queue(catalog, name)
+        if row is None or any(binding.get(key) is not None and binding[key] != row["queue_id"]
+                              for key in ("queue_id", "id")):
+            raise ValueError("queue_binding_identity_unverified")
+        binding["queue_id"] = row["queue_id"]
+    return version
 
 
 def exact_queue(rows: list[dict], name: str) -> dict | None:
