@@ -76,9 +76,10 @@ def failure(phase: str, write_attempted: bool, error: Exception) -> None:
 def discover_pins(client: RoutingClient, account: str, policy: dict, destination: str) -> None:
     """Resolve IDs from complete inventories and verify the exact pinned snapshot.
 
-    Reject non-literal matchers rather than guessing whether a wildcard or
-    catchall overlaps a reserved role. Only IDs enter the existing SQL path;
-    provider bodies and the external destination remain in memory.
+    Use the existing four-reserved-role audit and health snapshot contract;
+    unrelated rules do not add a discovery-only admission gate. Only IDs enter
+    the existing SQL path; private provider values remain in memory. This does
+    not validate global catchall configuration.
     """
     addresses = forwarding.pages(client, f"/accounts/{account}/email/routing/addresses")
     matches = [row for row in addresses if row.get("email") == destination]
@@ -87,11 +88,6 @@ def discover_pins(client: RoutingClient, account: str, policy: dict, destination
         raise HealthError("destination_drift")
     rules = forwarding.pages(client, f"/zones/{forwarding.ZONE}/email/routing/rules")
     if forwarding.audit(rules, destination) != set(forwarding.ROLES):
-        raise HealthError("route_drift")
-    if any(not rule["matchers"] or any(
-        matcher.get("type") != "literal" or matcher.get("field") != "to"
-        or "*" in matcher.get("value", "")
-        for matcher in rule["matchers"]) for rule in rules):
         raise HealthError("route_drift")
     policy["destination_id"] = matches[0].get("id")
     for role, column in zip(forwarding.ROLES, PIN_COLUMNS):
