@@ -92,3 +92,12 @@ test("native sink rejects poisoned metadata without logging either the payload o
   assert.equal(logs.includes(marker), false);
   assert.deepEqual(records, [legacy()], "positive control proves the Queue entrypoint executed");
 });
+
+/** The existing CLI poll label must survive the reader before producer rollout. */
+test("native sink retains CLI search polling without accepting arbitrary operation labels", async () => {
+  const poll = { ...legacy(), service: "mail_cli", operation: "search_poll",
+    phase: "operation_exit", response_bytes_bucket: 64 };
+  delete poll.parent_span_id;
+  const { records } = await consume([poll, { ...poll, operation: "private_search_text" }]);
+  assert.deepEqual(records, [poll]);
+});
