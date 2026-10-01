@@ -154,6 +154,75 @@ class HostedTests(unittest.TestCase):
                 self.assertEqual(world.calls, [])
                 self.assertEqual(world.deletes, [])
 
+    def test_escrow_attachment_drift_rechecks_all_admission_before_arm(self):
+        """Attach success cannot mask changed global, owner, serving or storage evidence."""
+        from test_staging_ten_address_escrow import Database
+        for drift in ("global", "owner", "serving", "storage"):
+            with self.subTest(drift=drift), mock.patch.object(manifest, "_cipher", SyntheticAEAD):
+                database = Database()
+                self.addCleanup(database.db.close)
+                world = World()
+                blob = manifest.seal(plan(), KEY, RUN, GEN)
+                client = target.escrow.Escrow("a"*32, "synthetic", query=database.query)
+                client.put(blob, KEY, RUN, GEN)
+                attach = client.attach
+                adapter = world.adapter()
+                def attached_then_drifted(*args):
+                    attach(*args)
+                    if drift == "global":
+                        world.snapshot = manifest.Snapshot({"foreign@example.test": row(owner="foreign",
+                            saved="foreign-rule", local_part="foreign", created=1)},
+                            [rule("foreign@example.test", "foreign-rule")], 1)
+                    elif drift == "owner":
+                        adapter.list_owned = lambda: {"foreign@example.test"}
+                    elif drift == "serving":
+                        world.version = "00000000-0000-0000-0000-000000000099"
+                    else:
+                        world.empty = False
+                client.attach = attached_then_drifted
+                with mock.patch.object(client, "arm", wraps=client.arm) as arm:
+                    with self.assertRaises(manifest.ContractFailure):
+                        target.campaign_escrow(evidence(), blob, blob, "123", KEY, GEN,
+                                               1001, adapter, client)
+                    arm.assert_not_called()
+                self.assertEqual(world.calls, [])
+                self.assertEqual(world.deletes, [])
+                retained, actual = client.read(RUN, KEY, GEN)
+                self.assertEqual(retained["state"], "sealed")
+                self.assertEqual(retained["artifact_id"], "123")
+                self.assertIsNone(retained["armed_at"])
+                self.assertEqual(actual, blob)
+
+    def test_escrow_arm_zero_change_never_grants_controller_mutation_or_cleanup(self):
+        """Even an armed readback cannot repair a zero-change current-invocation ACK."""
+        from test_staging_ten_address_escrow import Database
+        for committed in (False, True):
+            with self.subTest(committed=committed), mock.patch.object(manifest, "_cipher", SyntheticAEAD):
+                database = Database()
+                self.addCleanup(database.db.close)
+                world = World()
+                blob = manifest.seal(plan(), KEY, RUN, GEN)
+                arm_calls = []
+                def zero_arm(sql, params):
+                    if sql == target.escrow.SQL["arm"]:
+                        arm_calls.append(params)
+                        if committed:
+                            database.query(sql, params)
+                        return target.escrow.Result([], 0)
+                    return database.query(sql, params)
+                client = target.escrow.Escrow("a"*32, "synthetic", query=zero_arm)
+                client.put(blob, KEY, RUN, GEN)
+                with self.assertRaisesRegex(manifest.ContractFailure, "escrow_arm_ack_unverified"):
+                    target.campaign_escrow(evidence(), blob, blob, "123", KEY, GEN,
+                                           1001, world.adapter(), client)
+                self.assertEqual(len(arm_calls), 1)
+                self.assertEqual(world.calls, [])
+                self.assertEqual(world.deletes, [])
+                retained, actual = client.read(RUN, KEY, GEN)
+                self.assertEqual(retained["state"], "armed" if committed else "sealed")
+                self.assertIsNone(retained["cleanup_receipt_sha"])
+                self.assertEqual(actual, blob)
+
     def test_ten_serial_reserved_and_exact_cleanup(self):
         """Ten simultaneous active routes and exact quota denial precede cleanup."""
         world = World()
