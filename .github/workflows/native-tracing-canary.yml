@@ -1,4 +1,5 @@
 # Synthetic infrastructure experiment only; no Mail/data/sending capability.
+# Source-only scope probe: comment change, no provider or runtime behavior change.
 name: Native Cloudflare tracing experiment
 on:
   workflow_dispatch:
