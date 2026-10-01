@@ -1,9 +1,18 @@
 # Cron final Queue local-wait deadline
 
-Date: 2026-10-01. Status: source candidate; independent review and hosted evidence pending.
-Baseline: merged main `8ca1815307ae515aa5cacc6a25bb161779bb7be7` (PR #31).
+Date: 2026-10-01. Status: independent source review GO; hosted evidence pending.
+Original baseline: merged main `8ca1815307ae515aa5cacc6a25bb161779bb7be7` (PR #31).
+Integrated baseline: merged main `74257732b7d6a0a272f618b125b5a52b08347060` (PR #32).
 Isolated worktree: root `.temp/cron-final-queue-deadline`; branch
 `feat/cron-final-queue-deadline`.
+
+Independent review covers source `cc97e182b99481f3d9977e383179b4f0ed7636ce`:
+[review artifact](review-cron-final-queue-local-wait-cc97e18-2026-10-01.md).
+The post-PR #32 rebase was conflict-free; all three changed Rust source files
+and both diagnostic fixture files remain byte-identical to that reviewed source.
+Accepted staging and both `test:accepted-stage` / `test:maintenance-diagnostics`
+script and CI registrations are retained without changes in this slice. Subsequent
+local commits only clarify documentation and include independent review evidence.
 
 ## Retrieved knowledge and narrow scope
 
