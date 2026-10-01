@@ -39,6 +39,14 @@ class ValidatedWorkerBuildTests(unittest.TestCase):
             next(row for row in jobs["jobs"] if row["name"]==name)["conclusion"]="skipped"
             with self.assertRaises(ValueError):build.identity(run,jobs,artifacts,SHA)
 
+    def test_reuse_changes_are_narrowly_non_build_only(self):
+        self.assertEqual(build.build_changes(list(build.NON_BUILD_FILES) + ["docs/result.md", ".agents/skills/amail/SKILL.md"]), [])
+        for path in ("Cargo.lock", "rust-toolchain.toml", "crates/mail-worker/src/lib.rs",
+                     "workers/native-trace-canary/wrangler.toml", "infra/ci/worker_artifact.py",
+                     "infra/tests/worker-boundary/trace-sink.test.mjs", ".github/workflows/ci.yml",
+                     "infra/deploy/other.py", "new-unknown-file"):
+            self.assertEqual(build.build_changes([path]), [path])
+
     def test_expired_ambiguous_artifact_and_partial_inventory_refused(self):
         for mode in ("expired","duplicate","partial_jobs","partial_artifacts"):
             run,jobs,artifacts=fixture()
