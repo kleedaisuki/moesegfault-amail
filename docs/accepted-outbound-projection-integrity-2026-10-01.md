@@ -107,3 +107,11 @@ pnpm --dir infra/tests/worker-boundary test
 ```
 
 Local checks of the integration were `node --check` for the six new JavaScript modules and `git diff --check`, not test execution.
+
+### First hosted run and DELETE result correction
+
+[Actions run 36804402543](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36804402543), PR head `25acdf1`, compiled the Rust/Wasm Worker but its default built workerd suite failed **13/87 cases**: eleven standalone fixtures were rejected by the production held-send INSERT guard before exercising recovery, and two real HTTP/Cron cases reported owner DELETE 404. These are failures, not completed acceptance. The isolated held-canary fixture correction is reviewed separately; do not disable the production guard to seed tests.
+
+The DELETE implementation's exact-one `meta.changes` check was incorrect. The pinned Miniflare implementation derives that metadata from SQLite aggregate `total_changes()`; deleting a pending embedding work row and its owner schedule makes more than one database change although exactly one message was tombstoned. The official [D1 result contract](https://developers.cloudflare.com/d1/worker-api/return-object/) does not promise a direct-message-only count under triggers. The fix uses a single owner-scoped, still-live `UPDATE ... RETURNING id` and the returned row's presence. [SQLite RETURNING](https://www.sqlite.org/lang_returning.html) distinguishes directly modified rows from additional trigger changes. This preserves one submitted statement, first successful owner deletion `204`, foreign/already-deleted `404`, and deletion of a known hidden accepted legacy projection; it introduces neither a precheck race nor unconditional success.
+
+The HTTP/Cron harness now checks exact owner/live-row preconditions, persisted deletion even when status is unexpected, foreign identity `404` without modification, first owner `204`, and repeated `404` without retombstoning. Two additional cases cover no pending embedding work and a known legacy projection hidden by accepted state. The ordinary cases explicitly require pending work so the cleanup triggers are actually exercised. These added cases await hosted rerun; only static syntax/format/diff checks were performed locally.

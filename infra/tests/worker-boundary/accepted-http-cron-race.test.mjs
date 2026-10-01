@@ -30,9 +30,9 @@ function deferred() {
 }
 
 /** Sign a local token; real signature, issuer and ownership checks remain active. */
-function bearer() {
+function bearer(subject = owner) {
   const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: "race" })).toString("base64url");
-  const payload = Buffer.from(JSON.stringify({ iss: issuer, sub: owner, aud: "amail-cli-staging", exp: Math.floor(Date.now() / 1000) + 600, token_use: "access" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ iss: issuer, sub: subject, aud: "amail-cli-staging", exp: Math.floor(Date.now() / 1000) + 600, token_use: "access" })).toString("base64url");
   const input = `${header}.${payload}`;
   return `Bearer ${input}.${sign("RSA-SHA256", Buffer.from(input), privateKey).toString("base64url")}`;
 }
@@ -50,7 +50,7 @@ async function barrierArrived(arrived, pending) {
 }
 
 /** Exercise native HTTP admission, then Cron and optional public delete/real GC. */
-async function race(deleteBeforeResume, expireClaim = false) {
+async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork = false, hiddenAccepted = false } = {}) {
   const entry = path.join(worker, "build/worker/accepted-race-test.mjs");
   await copyFile(path.join(here, "accepted-race-entry.mjs"), entry);
   const arrived = deferred(), release = deferred();
@@ -140,8 +140,29 @@ async function race(deleteBeforeResume, expireClaim = false) {
     assert.equal((await db.prepare("SELECT state FROM send_requests WHERE idem_key=?1").bind(idem).first()).state, "sent");
     assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM messages WHERE id=?1 AND deleted_at IS NULL").bind(journal.message_id).first()).n, 1);
     if (deleteBeforeResume) {
+      const messageBefore = await db.prepare("SELECT owner_iss,owner_sub,deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first();
+      assert.deepEqual(messageBefore, { owner_iss: issuer, owner_sub: owner, deleted_at: null }, "public delete must target the authenticated owner's live delivery");
+      assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM embedding_work WHERE message_id=?1").bind(journal.message_id).first()).n, 1, "ordinary delete exercises pending embedding cleanup triggers");
+      if (noEmbeddingWork) {
+        await db.prepare("DELETE FROM embedding_work WHERE message_id=?1").bind(journal.message_id).run();
+      }
+      if (hiddenAccepted) {
+        // Model a legacy visible partial row: its known ID remains deletable
+        // although the accepted journal now excludes it from public reads.
+        await db.prepare("UPDATE send_requests SET state='accepted' WHERE idem_key=?1").bind(idem).run();
+        const hidden = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { headers: { Authorization: authorization } });
+        assert.equal(hidden.status, 404, "accepted partial projection is hidden from metadata reads");
+      }
+      const foreign = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { method: "DELETE", headers: { Authorization: bearer("synthetic-foreign-owner") } });
+      assert.equal(foreign.status, 404, "foreign identity cannot tombstone this delivery");
+      assert.equal((await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first()).deleted_at, null);
       const deleted = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { method: "DELETE", headers: { Authorization: authorization } });
-      assert.ok(deleted.ok, `owner delete failed: ${deleted.status}`);
+      const tombstone = await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first();
+      assert.ok(tombstone && Number.isFinite(tombstone.deleted_at) && tombstone.deleted_at > 0, "the public DELETE must persist the owner tombstone, regardless of result metadata");
+      assert.equal(deleted.status, 204, "a matching owner delete returns 204 despite cleanup trigger changes");
+      const repeated = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { method: "DELETE", headers: { Authorization: authorization } });
+      assert.equal(repeated.status, 404, "already deleted delivery does not match the atomic predicate");
+      assert.equal((await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first()).deleted_at, tombstone.deleted_at);
       await (await mf.getWorker()).scheduled();
       assert.equal(await bucket.get(`messages/${journal.message_id}.zip`), null, "real GC removed the immutable archive");
       assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM messages").first()).n, 0);
@@ -188,3 +209,9 @@ test("late HTTP projector cannot resurrect after Cron, owner delete and real GC"
 
 /** A real paused HTTP projector loses its token after persisted deadline expiry. */
 test("expired HTTP projection token cannot resurrect after fresh Cron lease and delete", { timeout: 90_000 }, async () => race(true, true));
+
+/** A matched delivery remains deletable when no derived work cleanup is needed. */
+test("public owner DELETE returns 204 without embedding work and preserves repeat/foreign 404", { timeout: 90_000 }, async () => race(true, false, { noEmbeddingWork: true }));
+
+/** Known legacy IDs can be deleted without exposing an incomplete projection. */
+test("public owner DELETE tombstones a hidden accepted legacy projection", { timeout: 90_000 }, async () => race(true, false, { hiddenAccepted: true }));

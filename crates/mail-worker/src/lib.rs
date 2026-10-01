@@ -1870,9 +1870,12 @@ async fn mark_message(
 /// Tombstone an owned delivery immediately, including a known legacy accepted
 /// projection hidden from fresh reads; recovery must preserve this deletion.
 async fn delete_message(env: &Env, user: &Principal, id: &str) -> AppResult<Response> {
-    let changed = db(env)?.prepare("UPDATE messages SET deleted_at=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND deleted_at IS NULL")
-        .bind(&[bind_num(now()),bind_str(id),bind_str(&user.iss),bind_str(&user.sub)])?.run().await?;
-    if changed.meta()?.and_then(|meta| meta.changes) != Some(1) {
+    // RETURNING identifies the matched delivery, not trigger-sensitive aggregate
+    // change counts. The same atomic predicate handles hidden legacy projections,
+    // foreign IDs and repeated deletion without a separate existence race.
+    let deleted = db(env)?.prepare("UPDATE messages SET deleted_at=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND deleted_at IS NULL RETURNING id")
+        .bind(&[bind_num(now()),bind_str(id),bind_str(&user.iss),bind_str(&user.sub)])?.first::<serde_json::Value>(None).await?;
+    if deleted.is_none() {
         return Err(AppError::not_found());
     }
     Ok(Response::empty()?.with_status(204))
