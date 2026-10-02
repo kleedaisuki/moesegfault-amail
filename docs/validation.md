@@ -73,3 +73,13 @@ all three CLI platforms, Rust unit tests, Wasm builds, retained workerd boundari
 infrastructure safety and both site states. Deployment/provider/mail jobs were
 skipped. The retired Cargo target and test-only observer entry were corrected
 before this pass; this is source acceptance, not production rollout evidence.
+
+On 2026-10-03 the owner selected maintenance-only publication, preserving unchanged
+live services. Source `c66dbba` passed [main CI 37038760121](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37038760121)
+and [workflow guard 37038759966](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37038759966).
+Application sources, production configs, migrations and site inputs are unchanged
+from recorded production source `6414b203`; the lockfile only loses the retired
+tracing experiment. No Worker/site deployment, policy change or provider write
+was performed. Fresh exact-route GETs returned Mail health 200, anonymous address
+list 401, and home/manual/changelog 200 with published v0.1.0 copy and Release links.
+These public checks do not re-establish SMTP delivery or private graph inventory.
