@@ -191,10 +191,10 @@ try {
         await page.evaluate(() => document.fonts.ready);
         assert.equal(await page.locator('main#main').count(), 1);
         const text = await page.locator('main').innerText();
-        const state = { '/': 'v0.1.0 尚未发布', '/manual/': 'v0.1.0 尚未开放下载',
-          '/changelog/': 'v0.1.0 仍在验收' };
+        const state = { '/': 'v0.1.2 尚未发布', '/manual/': 'v0.1.2 尚未开放下载',
+          '/changelog/': 'v0.1.2 仍在验收' };
         assert.ok(text.includes(state[route]), 'route-local candidate status missing');
-        assert.ok(text.includes('这是候选版本说明，不表示邮件服务或发送已开放。'));
+        assert.ok(text.includes('这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。'));
         assert.doesNotMatch(text, /v0\.1\.0 已(?:正式)?发布/);
       });
       await check(result, 'route-local CSS and zero client runtime', async () => {
