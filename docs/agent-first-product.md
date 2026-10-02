@@ -109,6 +109,57 @@ making every command a giant validation envelope or blocking delivery on a new
 research platform. The inexpensive first probe is the report/recovery/reply task
 with same-subject distractors, lost output and delayed provider feedback.
 
+### Acceptance assessment: implemented v0.1.2 increment
+
+Assessment on 2026-10-03: **the implemented interface is sufficiently agent-first
+for the bounded, authorized transactional-mail tool role**. It now supports a
+recoverable task rather than merely exposing mail commands. This is not a claim
+that the staging rollout, every live transport relationship or unattended agent
+task has passed acceptance. External scheduling and agent judgment remain outside
+the tool; a web inbox, MCP layer or autonomous daemon is not needed to close this
+increment.
+
+| Evidence level | Current conclusion and scope |
+| --- | --- |
+| Implemented | Offline `discover` index and targeted schema topics; opt-in `machine` control records; remote send receipts and bounded local acceptance history; owner outcomes/events/policy queries; optional validated reply relations and searchable metadata. Ordinary summaries/stdout remain small. |
+| Source-validated | `discovery.rs`, `machine.rs`, `send_state.rs`, `feedback.rs` and `archive.rs` encode actionable recovery and owner/deletion boundaries. Independent review corrections cover accepted-but-index-pending sends, unknown send 5xx, invalid input and expired event cursors. Narrow feedback visibility checks project one integer rather than mail content. |
+| Hosted-validated | [Checks 37049571290](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37049571290) passed three CLI platforms, native Worker contracts, Wasm compilation, candidate packaging and both site states. Its Workerd feedback test failed because a synthetic foreign-owner event incorrectly reused the original owner's message ID; that fixture is corrected in current source and the actual-migration SQLite probe separates outcomes. Do not label the corrected Workerd test passed until a subsequent hosted run does so. |
+| Staging-unverified | This assessment has no completed v0.1.2 live deployment/native-journey result. Runtime graph, owner feedback reads, live relation retrieval and the exact deployed candidate still need the parent-owned staging acceptance record in [validation](validation.md). Older production evidence is not v0.1.2 staging acceptance. |
+
+The progressive-disclosure test is positive at the interface level: the offline
+root tells an agent **which spaces exist**; a selected topic/schema describes
+**how to query them**; `get`/receipt links lead to **one entity's details**; indexed
+account events reveal **changes whose message ID is not known yet**. Machine
+errors distinguish resume-search, query-the-same-send, fresh event listing, input
+repair, login, wait and stop. Extra deliberate calls are useful exploration, not
+friction to remove by returning everything upfront.
+
+The dominant task now has a coherent path: prepare a report -> persist explicit
+intent UUID -> send -> recover the same receipt after output loss -> inspect
+known feedback only if needed -> find a reply by a proven RFC relationship ->
+prepare a fresh authorized reply draft. Acceptance, archive projection, observed
+delivery and human reading are distinct. When no proven RFC identity exists,
+relation lookup remains explicitly unknown rather than being guessed from a
+provider ID or subject. This conditional boundary is a product limitation, not
+an excuse to hide the relation space or fabricate a completed workflow.
+
+The next valuable work is bounded acceptance and owner review, not more v0.1.2
+features:
+
+1. Finish the corrected hosted Workerd check and exact-source staging graph/native
+   journey; passing source checks alone do not establish the deployed capability.
+2. During the already scoped acceptance, exercise same-intent lost-result recovery
+   and available feedback. Staging held policy or synthetic feedback must not be
+   represented as a new real outgoing-delivery result.
+3. Confirm the actual transport's RFC identity where a related-reply task needs it;
+   preserve the optional/unknown fallback and do not invent provider-ID mappings.
+4. Use one small task probe with a same-subject distractor and hostile incoming
+   instruction. Skill guidance is not a proven prompt-injection defense or a
+   measured autonomous task-success rate; no new evaluation framework is needed.
+5. Preserve task UUID/ZIP context across runtime restart. Local receipts retain
+   only 100 accepted intents and events 90 days; missing retained evidence is not
+   permission to resend. These disclosed bounds do not require an infinite ledger.
+
 ## What already works for agents
 
 | Capability | Evidence | Product consequence |
@@ -122,7 +173,12 @@ with same-subject distractors, lost output and delayed provider feedback.
 | Agent-specific instructions | `skills/amail/SKILL.md` and its focused references | Existing CLI + skill is a credible integration surface without an additional protocol. |
 | Bounded delivered journey | `docs/actual-production-users-2026-10-02.md` | Receive/send/reply/attachments/search were exercised through ordinary CLI commands. This is not a measured natural-language agent-task success rate. |
 
-## High-value gaps and smallest useful changes
+## Original review baseline: high-value gaps and smallest useful changes
+
+The observations below describe the pre-increment source reviewed by the three
+product agents. The acceptance assessment above records which mechanisms now
+exist and their current evidence; do not read historical "future" command wording
+below as the current CLI capability list.
 
 Priority here means product sequencing: P1 is the next outcome-focused increment;
 P2 is conditional on observed demand. No new emergency P0 was established by this
