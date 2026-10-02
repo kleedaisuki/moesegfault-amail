@@ -21,6 +21,7 @@ count render dependencies and built asset bytes; they do not measure LCP.
 | Backend send | Copy the entire already-validated outbound ZIP before the R2 write; retain original bytes only to read its size later | Preserve length, transfer byte ownership into R2 | Removes one allocation/copy up to the 5 MiB accepted bound; no new buffering policy, changed request bytes, or replay behavior. Copy-cost microbenchmark is not R2 service latency |
 | Backend idempotent marks | UPDATE fired the search-generation trigger even when read state already matched | SQL updates only a differing read state, preserving authorization lookup and full response | Ordinary native migration fixture checks repeat marking leaves generation unchanged, actual toggles increment it, and foreign ownership never mutates |
 | Backend exact semantic scan | Revalidate and sum the same query's 256-coordinate norm for every eligible vector | A borrowed validated query computes norm once per scan batch, without normalizing stored values | Near-tie-sensitive f64 score-bit equivalence tested against the frozen original; same-process original/prepared microbench measures the candidate gain before staging acceptance |
+| Backend feedback exploration | Ownership checks called the full-message loader, transferring unrelated body and metadata | Shared narrow `SELECT 1 AS visible` query for receipt links, outcomes and per-message events | Same owner/outbound/undeleted/pending visibility guard; native and Wasm synthetic large-body fixtures exercise the transfer boundary. Message `get` retains its full content contract; this is not a latency claim |
 | Frontend manual/changelog | Shared layout included all vendor component CSS, though only homepage buttons use it | Explicit homepage opt-in, unchanged pinned vendor source and cascade | Each manual/changelog cold load omits 58,817 raw CSS bytes and one blocking stylesheet request. Shared vendor CSS is 8,807 instead of 67,624 bytes (86.98% reduction); final Astro CSS is measured separately |
 | CLI discovery | Ordinary initialization would load config and diagnostics even for offline discovery | Product CLI executes offline discovery before application-state initialization | Benchmark alongside help/version/config; discovery must work without network, credentials or config writes |
 
@@ -139,10 +140,31 @@ mobile and dark layouts; the static guide remains zero-client-script.
 
 ## Results and next decisions
 
-Source-level eliminated bytes, allocation and lock acquisition above are concrete;
-hosted measurements are still required to quantify their elapsed-time effect.
-Record exact run/commit and selected summaries here after the candidate workflow
-returns. Staging success is separate from native timing and site-byte evidence.
+### Hosted built-site results
+
+[Run 37048299485](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37048299485),
+source `890f55a649a004cba7c44fcefb4f24bd8eef4ba4`, completed the site job including
+Astro/TypeScript checks, candidate and published-state builds, release-copy checks
+and payload reports. Artifact `performance-site-37048299485` contains both states.
+Candidate measurements from the actual build:
+
+| Route | HTML raw / gzip bytes | Stylesheet requests | External CSS raw / gzip bytes | Inline CSS bytes | Client script elements |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `/` | 8,295 / 3,433 | 5 | 82,218 / 17,082 | 0 | 0 |
+| `/manual/` | 47,719 / 13,875 | 3 | 16,498 / 4,791 | 434 | 0 |
+| `/changelog/` | 6,368 / 2,988 | 3 | 16,498 / 4,791 | 1,190 | 0 |
+
+The omitted vendor stylesheet is exactly 58,817 raw / 10,338 estimated-gzip
+bytes per manual/changelog cold load. This report includes real Astro chunks,
+not just vendor-file arithmetic, and verifies zero client scripts. It does not
+establish paint latency or visual correctness; browser/staging acceptance is a
+separate check. The containing full workflow was still running when this site
+artifact was inspected, so this is not a claim that all jobs passed.
+
+Source-level eliminated allocation and lock acquisition above are concrete;
+hosted native measurements are still required to quantify their elapsed-time
+effect. Record exact run/commit and selected summaries when those jobs return.
+Staging success is separate from native timing and site-byte evidence.
 Escalate only the measured consequential bottleneck: e.g. repeated query-norm
 work in broad exact search, redundant ZIP inflate, or synchronous store writes.
 Do not adopt a heap, binary vector migration or persistent connection daemon
