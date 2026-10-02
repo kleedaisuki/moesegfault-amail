@@ -51,8 +51,12 @@ The bounded native staging journey was extended to read new owner-visible
 surfaces and correlate its existing second SMTP fixture to the first verified
 DATA receipt. Its local mocked fixtures prove harness ordering/error contracts,
 not actual provider delivery; no live outgoing feedback is claimed under the
-staging global hold. Runtime outbound feedback remains covered by hosted synthetic
-Wasm/D1 tests unless a separately scoped owned canary is actually executed.
+staging global hold. A separately confirmed one-use owned self-send probe is now
+prepared, including atomic live-grant refusal, first-output loss recovery, exact
+same-key replay, actual outcomes/events and retained unknown intent ZIP. Its local
+mock/SQLite tests prove harness and grant predicates, not delivery. Runtime outbound
+feedback remains covered by hosted synthetic Wasm/D1 tests until that authorized
+real canary is actually executed and its evidence recorded here.
 
 Staging [36719116852](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36719116852),
 source `17abe25`, passed one-principal native PKCE/two-message receive/search/ZIP/

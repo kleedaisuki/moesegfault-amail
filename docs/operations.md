@@ -108,8 +108,42 @@ unsubmitted send intent returns typed 404/stop. It retains exactly two real SMTP
 fixtures: only after the first DATA receipt is verified does the second include
 its RFC reply/reference relation; Reply-To is the same run's owned route. Get,
 ZIP and metadata search must preserve and find those relations. Existing route
-cleanup is unchanged. This is not a live outbound provider-feedback canary: no
-fake send/event rows are seeded in staging D1 and general sending remains held.
+cleanup is unchanged. With no separate send confirmation, this does not exercise
+live outbound feedback; no fake send/event rows are seeded in staging D1 and
+general sending remains held.
+For v0.1.2 acceptance, pass `source_run` equal to the successful same-source
+staging/checks producer run. The job admits its immutable candidate artifact ID,
+verifies all bundle checksums/producer provenance and copies only the reviewed
+Windows release executable under `.temp/staging-cli` for native login/SMTP tests.
+This proves the user-downloadable release bytes, not a separately rebuilt debug
+binary. An omitted input preserves the historical hosted debug-build fallback;
+it is not the preferred v0.1.2 candidate-byte acceptance. Source SHA must match
+exactly; do not use ancestry or a successful sub-artifact from a failed run.
+
+An explicit `send_confirm=RUN_STAGING_OWNED_SEND_V012`, together with the normal
+`confirm=RUN_STAGING_E2E` and exact `source_run`, admits one additional protected
+synthetic self-notification after the original two-message cleanup. The existing
+operator canary helper's staging-only guarded mode requires this run's private
+nonce, exact owned active alias/rule and GitHub actor. Its conditional UPDATE
+preserves global hold and atomically refuses any still-live grant; the established
+main/production wrapper remains unchanged. The grant targets one hashed self
+recipient for 15 minutes and is consumed by the original persisted send UUID.
+Ambiguous grant writes or provider submissions are not retried. The probe discards
+first stdout, retrieves server/local receipt, and replays the identical ZIP/key
+only after positive accepted/archive evidence; provider/local IDs must remain
+unchanged. Real delivered outcomes and their owner-indexed event have a bounded
+wait; absence or failure never authorizes a new send.
+
+Exact original ZIP/UUID/hash are fsynced under private root `.temp` outside the
+disposable credential home before grant/submission. Unknown/error keeps them;
+only positive acceptance and successful journey/cleanup remove the private ZIP.
+Neither private file nor credentials/mail bodies are public artifacts. The probe
+closes only its one new alias and deletes only verified task-created messages;
+accepted/unknown journals remain. A private two-boolean comparison between the
+actual received RFC header and provider ID records this fixture's mapping evidence,
+not a global identity contract. The outbound RFC field is not fabricated from
+provider-ID syntax. This optional probe is not another sending campaign, a global
+policy enable, or production mail authority.
 
 The retained production and production-api-only-maintenance targets still admit
 the historical held, single-API-producer graph, not the current active split
