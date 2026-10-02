@@ -25,8 +25,8 @@ or authorize a new mutation.** Existing emergency holds and safety contracts rem
   [manual](https://amail.moesegfault.dev/manual/) and [changelog](https://amail.moesegfault.dev/changelog/):
   HTTP200, published copy, exact Release links, no candidate copy/noindex; the manual
   has seven direct downloads and14 fragment links, the changelog two fragment links.
-  The continuation remains **FAILURE** because its first smoke ran only0.420s after
-  deployment and saw old copy. Later real access, not a repeated deploy or a rewritten
+  The continuation remains **FAILURE**: its first smoke ran only0.420s after
+  deployment and did not confirm published-copy readiness. Later real access, not a repeated deploy or a rewritten
   all-green run, closes the public-site acceptance.
 
 Date: 2026-10-02 (Asia/Singapore). Last fully checked baseline before the new
