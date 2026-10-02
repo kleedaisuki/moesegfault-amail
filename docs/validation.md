@@ -67,3 +67,9 @@ current six-tree and historical seven-tree bootstrap artifacts. Native JavaScrip
 syntax and local imports passed. This initial local verification did not execute
 the hosted Rust/Wasm/runtime pipeline; premerge CI is a separate check. No provider
 access/deployment or heavy local Rust/Wasm build occurred.
+
+Premerge source `00d74df` passed [hosted checks 37035990692](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37035990692):
+all three CLI platforms, Rust unit tests, Wasm builds, retained workerd boundaries,
+infrastructure safety and both site states. Deployment/provider/mail jobs were
+skipped. The retired Cargo target and test-only observer entry were corrected
+before this pass; this is source acceptance, not production rollout evidence.
