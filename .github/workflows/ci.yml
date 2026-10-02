@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging, staging-e2e, production, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [checks, staging-inspect, staging, staging-e2e, production, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
         description: Documented RUN_* confirmation; production bootstrap or api-only maintenance is explicit
         required: false
@@ -262,6 +262,33 @@ jobs:
         run: cargo test -p amail --locked --all-targets
       - name: Check CLI help
         run: cargo run -p amail --locked -- --help
+  staging-inspect:
+    name: Read isolated staging rollout predecessor
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging-inspect' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'INSPECT_STAGING_V012'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read reviewed staging capabilities without writes or payloads
+        run: python infra/deploy/inspect_staging.py
+      - name: Preserve bounded predecessor pins for rollout review
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-predecessor-${{ github.run_id }}
+          path: .temp/staging-predecessor.json
+          if-no-files-found: error
+          retention-days: 14
+
   staging-e2e:
     name: Hosted Windows native PKCE and SMTP to ZIP/search
     if: >-
