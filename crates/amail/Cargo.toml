@@ -2,7 +2,7 @@
 name = "amail"
 version = "0.1.0"
 edition = "2021"
-# Preserve `cargo run -p amail` after adding optional diagnostic binaries.
+# Keep `cargo run -p amail` bound to the user-facing CLI.
 default-run = "amail"
 description = "Agent-first mail CLI for moeSegFault"
 license = "GPL-3.0-only"
@@ -10,14 +10,6 @@ license = "GPL-3.0-only"
 [[bin]]
 name = "amail"
 path = "src/main.rs"
-
-[[bin]]
-name = "staging-http-compare"
-path = "src/bin/staging_http_compare.rs"
-required-features = ["staging-diagnostics"]
-
-[features]
-staging-diagnostics = []
 
 [dependencies]
 amail-trace-schema = { path = "../trace-schema" }
