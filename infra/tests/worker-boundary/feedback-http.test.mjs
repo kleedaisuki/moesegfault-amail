@@ -78,6 +78,21 @@ test("feedback spaces preserve owner isolation, bounded discovery and stable con
     const details = await get(`/v1/messages/${id}`);
     assert.ok(details.body.links.events);
     assert.equal(details.body.events, undefined, "get advertises the space without embedding history");
+    // Synthetic storage permits a body above a normal D1 response-row budget.
+    // Feedback visibility must project SELECT 1, never retrieve this content.
+    const largeBody = "unrelated-body-".repeat(170000);
+    await db.prepare("UPDATE messages SET body_text=?1 WHERE id=?2").bind(largeBody, id).run();
+    assert.equal((await get(`/v1/sends/${key}`)).body.links.outcomes, `/v1/messages/${id}/outcomes`);
+    assert.equal((await get(`/v1/messages/${id}/outcomes`)).status, 200);
+    assert.equal((await get(`/v1/messages/${id}/events`)).status, 200);
+    // Incomplete projection and undeleted inbound rows must not authorize reads.
+    await db.prepare("UPDATE send_requests SET state='accepted' WHERE idem_key=?1").bind(key).run();
+    assert.equal((await get(`/v1/sends/${key}`)).body.links, undefined);
+    assert.equal((await get(`/v1/messages/${id}/outcomes`)).status, 404);
+    await db.prepare("UPDATE send_requests SET state='sent' WHERE idem_key=?1").bind(key).run();
+    await db.prepare("UPDATE messages SET direction='inbound' WHERE id=?1").bind(id).run();
+    assert.equal((await get(`/v1/messages/${id}/events`)).status, 404);
+    await db.prepare("UPDATE messages SET direction='outbound' WHERE id=?1").bind(id).run();
     const first = await get("/v1/events?limit=1");
     assert.equal(first.status, 200);
     assert.deepEqual(first.body.events.map((e) => e.event_id), ["event-b"]);

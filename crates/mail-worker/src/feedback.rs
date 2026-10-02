@@ -7,8 +7,8 @@ use sha2::{Digest, Sha256};
 use worker::{Env, Request, Response};
 
 use crate::{
-    auth::Principal, bind_num, bind_str, db, direct_role_contact_ready, iso, now, one_message,
-    parse_date, stored_rejection, AppError, AppResult, Database,
+    auth::Principal, bind_num, bind_str, db, direct_role_contact_ready, iso, now, parse_date,
+    stored_rejection, AppError, AppResult, Database,
 };
 
 /// Closed provider feedback vocabulary; no arbitrary reason or payload is accepted.
@@ -20,9 +20,26 @@ const KINDS: &[&str] = &[
     "rejected",
     "complained",
 ];
-/// A continuation is short-lived: retention can remove history but cannot recycle
-/// a fresh high-water rowid while this cursor is valid.
+/// Limit continuation age; retention may remove old history during pagination.
 const CURSOR_LIFETIME_MS: i64 = 3_600_000;
+
+/// Check only visibility, never retrieve body/metadata to authorize feedback.
+/// Match ordinary message reads' deletion/projection guard and require outbound.
+const OUTBOUND_VISIBLE_SQL: &str = "SELECT 1 AS visible FROM messages m WHERE m.id=?1 AND m.owner_iss=?2 AND m.owner_sub=?3 AND m.direction='outbound' AND m.deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=m.id AND s.owner_iss=m.owner_iss AND s.owner_sub=m.owner_sub AND s.state='accepted')";
+
+/// Preserve database failures as failures; only a missing visible row means false.
+async fn outbound_visible(env: &Env, user: &Principal, id: &str) -> AppResult<bool> {
+    #[derive(Deserialize)]
+    struct Witness {
+        visible: i64,
+    }
+    Ok(db(env)?
+        .prepare(OUTBOUND_VISIBLE_SQL)
+        .bind(&[bind_str(id), bind_str(&user.iss), bind_str(&user.sub)])?
+        .first::<Witness>(None)
+        .await?
+        .is_some_and(|row| row.visible == 1))
+}
 
 /// Links reveal deeper spaces without embedding their results in every summary.
 pub(crate) fn message_links(id: &str, outbound: bool) -> serde_json::Value {
@@ -68,13 +85,9 @@ pub(crate) async fn send_receipt(
     if let Some(id) = row.message_id {
         // Deleted content stays deleted. The non-content submission receipt remains
         // available for deduplication, but cannot revive archive or event access.
-        match one_message(env, user, &id).await {
-            Ok(_) => {
-                value["links"] = message_links(&id, true);
-                value["links"]["message"] = format!("/v1/messages/{id}").into();
-            }
-            Err(error) if error.status == 404 => {}
-            Err(error) => return Err(error),
+        if outbound_visible(env, user, &id).await? {
+            value["links"] = message_links(&id, true);
+            value["links"]["message"] = format!("/v1/messages/{id}").into();
         }
     }
     Ok(Response::from_json(&value)?)
@@ -91,8 +104,7 @@ struct OutcomeRow {
 
 /// Require the caller's undeleted, visible outbound delivery before exposing recipients.
 async fn outbound_owned(env: &Env, user: &Principal, id: &str) -> AppResult<()> {
-    let row = one_message(env, user, id).await?;
-    if row.direction != "outbound" {
+    if !outbound_visible(env, user, id).await? {
         return Err(AppError::not_found());
     }
     Ok(())
@@ -253,8 +265,11 @@ fn event_sql(query: &EventQuery, cursor: Option<&EventCursor>) -> String {
 }
 
 /// Explore account changes without first knowing the changed message ID. New appends
-/// are excluded during continuation; retention/deletion may remove rows. Start a fresh
-/// query to observe later events. This is a bounded journal, not an infinite audit log.
+/// are excluded during continuation under the service receipt-time/90-day retention
+/// contract; retention/deletion may remove rows. Reclaimed old rowids cannot admit
+/// fresh service-timestamped events behind the older keyset boundary. This is not
+/// a snapshot under arbitrary SQL rewriting or a multi-month backwards clock jump.
+/// Start a fresh query to observe later events; this is a bounded journal.
 pub(crate) async fn events(
     req: &Request,
     env: &Env,
@@ -476,6 +491,48 @@ mod tests {
         assert!(message_links("id", true).get("outcomes").is_some());
     }
 
+    /// Feedback authorization transfers one integer, independent of content size
+    /// or representation, and retains owner/direction/deletion/projection guards.
+    #[test]
+    fn visibility_projects_no_content() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE messages(id TEXT PRIMARY KEY,owner_iss TEXT,owner_sub TEXT,direction TEXT,deleted_at INTEGER,body_text BLOB,metadata_json BLOB); CREATE TABLE send_requests(message_id TEXT,owner_iss TEXT,owner_sub TEXT,state TEXT);").unwrap();
+        db.execute(
+            "INSERT INTO messages VALUES('m','iss','owner','outbound',NULL,?1,X'FF')",
+            [vec![0_u8; 2_200_000]],
+        )
+        .unwrap();
+        let visible = |owner: &str| {
+            let mut statement = db.prepare(OUTBOUND_VISIBLE_SQL).unwrap();
+            assert_eq!(statement.column_names(), ["visible"]);
+            let values = statement
+                .query_map(["m", "iss", owner], |row| row.get::<_, i64>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            values
+        };
+        assert_eq!(visible("owner"), [1]);
+        assert!(visible("foreign").is_empty());
+        db.execute(
+            "INSERT INTO send_requests VALUES('m','iss','owner','accepted')",
+            [],
+        )
+        .unwrap();
+        assert!(visible("owner").is_empty());
+        db.execute("UPDATE send_requests SET state='sent'", [])
+            .unwrap();
+        assert_eq!(visible("owner"), [1]);
+        db.execute("UPDATE messages SET direction='inbound'", [])
+            .unwrap();
+        assert!(visible("owner").is_empty());
+        db.execute("UPDATE messages SET direction='outbound',deleted_at=1", [])
+            .unwrap();
+        assert!(visible("owner").is_empty());
+        db.execute("DELETE FROM messages", []).unwrap();
+        assert!(visible("owner").is_empty());
+    }
+
     /// The exact production SQL uses covering order indexes and numbered bindings;
     /// appends cannot enter an existing fence and foreign/deleted history stays hidden.
     #[test]
@@ -545,6 +602,22 @@ mod tests {
             .unwrap();
         assert!(ids(&sql, "delivered", "").is_empty());
         db.execute("DELETE FROM messages WHERE id='m'", []).unwrap();
+        assert!(ids(&sql, "delivered", "").is_empty());
+
+        // Retention may reclaim every old rowid. The consumer assigns fresh
+        // receipt time (100), even to an occurrence older than this page (1).
+        // Descending keyset excludes it despite recycled rowid <= old fence.
+        db.execute(
+            "INSERT INTO messages VALUES('m','iss','owner','outbound',NULL)",
+            [],
+        )
+        .unwrap();
+        db.execute("DELETE FROM provider_events", []).unwrap();
+        db.execute("INSERT INTO provider_events VALUES('fresh','m','iss','owner','recipient','delivered',1,100)", []).unwrap();
+        let reused: i64 = db
+            .query_row("SELECT rowid FROM provider_events", [], |row| row.get(0))
+            .unwrap();
+        assert!(reused <= cursor.high_water);
         assert!(ids(&sql, "delivered", "").is_empty());
     }
 }
