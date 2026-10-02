@@ -88,10 +88,23 @@ test("feedback spaces preserve owner isolation, bounded discovery and stable con
     const details = await get(`/v1/messages/${id}`);
     assert.ok(details.body.links.events);
     assert.equal(details.body.events, undefined, "get advertises the space without embedding history");
-    // Synthetic storage permits a body above a normal D1 response-row budget.
-    // Feedback visibility must project SELECT 1, never retrieve this content.
-    const largeBody = "unrelated-body-".repeat(170000);
-    await db.prepare("UPDATE messages SET body_text=?1 WHERE id=?2").bind(largeBody, id).run();
+    // Stay inside real D1 value/row limits. Native SQL separately proves the
+    // one-integer visibility projection; HTTP must retain metadata, not content.
+    const largeBody = "x".repeat(64 * 1024);
+    const storedVector = Array(256).fill(0);
+    storedVector[0] = 1;
+    await db.prepare("UPDATE messages SET body_text=?1,embedding_json=?2 WHERE id=?3")
+      .bind(largeBody, JSON.stringify(storedVector), id).run();
+    const boundedDetails = await get(`/v1/messages/${id}`);
+    assert.equal(boundedDetails.status, 200);
+    assert.deepEqual(boundedDetails.body.metadata, {});
+    assert.equal(boundedDetails.body.has_text, true);
+    assert.equal(boundedDetails.body.has_html, false);
+    assert.equal(boundedDetails.body.has_attachments, false);
+    assert.deepEqual(boundedDetails.body.attachments, []);
+    assert.equal(boundedDetails.body.body_text, undefined);
+    assert.equal(boundedDetails.body.embedding_json, undefined);
+    assert.equal(JSON.stringify(boundedDetails.body).includes(largeBody), false);
     assert.equal((await get(`/v1/sends/${key}`)).body.links.outcomes, `/v1/messages/${id}/outcomes`);
     assert.equal((await get(`/v1/messages/${id}/outcomes`)).status, 200);
     assert.equal((await get(`/v1/messages/${id}/events`)).status, 200);
