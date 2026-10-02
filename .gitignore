@@ -2,6 +2,7 @@
 # English: Keep build caches, experiments, and local credentials out of Git.
 /.cache/
 /.temp/
+/.idea/
 /target/
 /node_modules/
 **/node_modules/

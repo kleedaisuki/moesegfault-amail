@@ -111,17 +111,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "amail-native-trace-canary"
-version = "0.1.0"
-dependencies = [
- "js-sys",
- "serde",
- "serde_json",
- "wasm-bindgen",
- "worker",
-]
-
-[[package]]
 name = "amail-role-monitor"
 version = "0.1.0"
 dependencies = [

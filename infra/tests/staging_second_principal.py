@@ -1,37 +1,51 @@
-"""Provision only the reviewed second staging Identity principal on hosted Windows.
+"""Private Identity verification inbox used by the owned production-user journey.
 
-The repository-level B credential must already be protected in GitHub Secrets.
-This one-shot script refuses any pre-existing B contact; a partial registration
-requires same-account recovery rather than another dispatch.
+This module retains bounded read and exact-object cleanup helpers, not the retired
+staging principal registration/recovery command. No credentials or MIME are logged.
 """
 
 from __future__ import annotations
 
+
 from datetime import datetime, timezone
+
+
 from email import policy
+
+
 from email.parser import BytesParser
+
+
 from email.utils import getaddresses, parsedate_to_datetime
+
+
 import json
-import os
-from pathlib import Path
+
+
 import re
-import shutil
-import subprocess
-import sys
-import tempfile
+
+
 import time
+
+
 import urllib.error
+
+
 import urllib.parse
+
+
 import urllib.request
 
 
-ROOT = Path(__file__).resolve().parents[2]
-TEMP = (ROOT / ".temp").resolve()
 ADDRESS = "amail-e2e-isolation@moesegfault.dev"
-FIRST = "amail-e2e@moesegfault.dev"
+
+
 BUCKET = "amail-identity-test-inbox-staging"
-DB = "c4042bd4-bb4a-4cf7-aa7f-04cf1a5d6ad9"
+
+
 API = "https://api.cloudflare.com/client/v4"
+
+
 KEY = re.compile(r"verification/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.eml\Z")
 
 
@@ -86,42 +100,6 @@ def json_result(raw: bytes) -> object:
     require(isinstance(value, dict) and value.get("success") is True,
             "cloudflare_envelope_invalid")
     return value
-
-
-def identity_contacts(account: str, token: str) -> dict[str, tuple[str, str, str, str]]:
-    """Read A/B contact, username ownership and pairwise subjects in memory."""
-
-    sql = (
-        "SELECT i.normalized_value AS contact,i.verification_state AS state,"
-        "i.principal_id AS principal,s.pairwise_subject AS subject,"
-        "(SELECT u.normalized_value FROM identifiers u WHERE u.principal_id=i.principal_id "
-        "AND u.kind='username') AS username "
-        "FROM identifiers i LEFT JOIN oauth_clients c ON c.client_id='amail-cli-staging' "
-        "LEFT JOIN pairwise_subjects s ON s.principal_id=i.principal_id "
-        "AND s.sector_identifier=c.sector_identifier "
-        "WHERE i.kind='email' AND i.normalized_value IN (?1,?2)"
-    )
-    body = json.dumps({"sql": sql, "params": [FIRST, ADDRESS]}).encode()
-    value = json_result(request("POST", f"/accounts/{account}/d1/database/{DB}/query", token, body))
-    batches = value.get("result")
-    require(isinstance(batches, list) and len(batches) == 1 and
-            isinstance(batches[0], dict) and batches[0].get("success") is True,
-            "identity_readback_invalid")
-    rows = batches[0].get("results")
-    require(isinstance(rows, list) and len(rows) <= 2, "identity_readback_invalid")
-    contacts: dict[str, tuple[str, str, str, str]] = {}
-    for row in rows:
-        require(isinstance(row, dict) and row.get("contact") in (FIRST, ADDRESS)
-                and row["contact"] not in contacts and
-                row.get("state") in ("unverified", "pending", "verified")
-                and isinstance(row.get("principal"), str)
-                and isinstance(row.get("username"), str)
-                and re.fullmatch(r"[a-z0-9_]{3,32}", row["username"]),
-                "identity_readback_invalid")
-        contacts[row["contact"]] = (
-            row["principal"], row.get("subject") or "", row["state"], row["username"]
-        )
-    return contacts
 
 
 def object_inventory(account: str, token: str) -> set[str]:
@@ -209,282 +187,3 @@ def guarded_code(account: str, token: str, baseline: set[str], started: float) -
             return verification_code(raw)
         time.sleep(5)
     raise ProvisionFailure("verification_delivery_timeout")
-
-
-def recover_contact(run_dir: Path, username: str, password: str,
-                    account: str, token: str, baseline: set[str]) -> None:
-    """Verify the existing B contact through first-party Login and Account UI."""
-
-    from staging_identity_cdp import (
-        ACCOUNT_ORIGIN, LOGIN_ORIGIN, PASSWORD_AUTH, VERIFICATION_DONE, VERIFICATION_START,
-        Browser, route,
-    )
-
-    browser = Browser(run_dir / "recovery-browser")
-    try:
-        time.sleep(60)
-        require(route(address=ADDRESS) == "enabled", "exact_route_changed_during_settle")
-        browser.navigate(LOGIN_ORIGIN + "/login")
-        browser.wait_dom('form.auth-form input[name="login"]')
-        browser.require_login_origin()
-        browser.fill('form.auth-form input[name="login"]', username)
-        browser.fill('form.auth-form input[name="password"]', password)
-        browser.click('form.auth-form button[type="submit"]')
-        status, _ = browser.response(lambda path: path == PASSWORD_AUTH)
-        require(status == 200, "existing_account_login_failed")
-        browser.navigate(ACCOUNT_ORIGIN + "/profile")
-        browser.wait_dom(".entity-list .entity-row", timeout=60)
-        browser.require_account_origin()
-        # Select one exact private contact row; never click a neighboring user's
-        # contact or a generic first button without checking the destination.
-        expression = (
-            "(()=>{const r=[...document.querySelectorAll('.entity-list .entity-row')]"
-            ".filter(e=>e.querySelector('strong')?.textContent?.trim()==="
-            + json.dumps(ADDRESS)
-            + ");if(r.length!==1)return false;const b=r[0].querySelector('.row-actions button');"
-              "if(!b)return false;b.click();return true})()"
-        )
-        require(browser.evaluate(expression) is True, "existing_contact_row_missing")
-        started_status, _ = browser.response(
-            lambda path: bool(VERIFICATION_START.fullmatch(path)), timeout=45
-        )
-        require(started_status == 201, "recovery_verification_start_failed")
-        browser.wait_dom('.verification-form input[name="code"]')
-        started = time.monotonic()
-        code = guarded_code(account, token, baseline, started)
-        require(route("--remove", ADDRESS) in ("removed", "absent")
-                and route(address=ADDRESS) == "absent", "exact_route_cleanup_failed")
-        browser.require_account_origin()
-        browser.fill('.verification-form input[name="code"]', code)
-        browser.click('.verification-form button[type="submit"]')
-        completed, request_id = browser.response(
-            lambda path: bool(VERIFICATION_DONE.fullmatch(path)), timeout=45
-        )
-        require(completed == 200 and
-                browser.response_body(request_id).get("verification_state") == "verified",
-                "recovery_verification_completion_failed")
-    finally:
-        try:
-            browser.close()
-        except Exception:
-            raise ProvisionFailure("recovery_browser_teardown_failed") from None
-
-
-def preflight_contacts(mode: str, contacts: dict[str, tuple[str, str, str, str]],
-                       username: str) -> None:
-    """Make create-only and same-account recovery mutually exclusive."""
-
-    require(FIRST in contacts and contacts[FIRST][0] and contacts[FIRST][1]
-            and contacts[FIRST][2] == "verified", "identity_contact_preflight_failed")
-    if mode == "provision":
-        require(ADDRESS not in contacts, "identity_contact_preflight_failed")
-        return
-    require(ADDRESS in contacts and contacts[ADDRESS][2] in ("unverified", "pending")
-            and contacts[ADDRESS][3] == username
-            and contacts[ADDRESS][0] != contacts[FIRST][0],
-            "recovery_contact_preflight_failed")
-
-
-def private_inbox_failure_label(stderr: bytes) -> str:
-    """Classify only trusted checker messages, never expose captured stderr.
-
-    ``check_config.py`` owns the privacy/binding policy. This function is a
-    fixed-label diagnostic for its current source-controlled errors, not a
-    second implementation of those live checks. Unknown output fails closed.
-    """
-
-    if len(stderr) > 4096:
-        return "private_inbox_checker_unclassified"
-    message = stderr.decode("utf-8", errors="replace").strip()
-    fixed = {
-        "staging test inbox config is not isolated": "private_inbox_source_invalid",
-        "missing or invalid R2 read credentials": "private_r2_credentials_invalid",
-        "R2 managed public domain is enabled or unknown": "private_r2_managed_policy_failed",
-        "R2 custom domains are present or unknown": "private_r2_custom_policy_failed",
-        "R2 lifecycle rules are missing or unknown": "private_r2_lifecycle_policy_failed",
-        "R2 verification expiry rule is missing or duplicated": "private_r2_lifecycle_policy_failed",
-        "R2 verification expiry rule is disabled or too long": "private_r2_lifecycle_policy_failed",
-        "missing or invalid Worker read credentials": "private_inbox_settings_credentials_invalid",
-        "Worker binding inventory unexpected": "private_inbox_bindings_failed",
-        "Worker bindings differ from reviewed staging configuration":
-            "private_inbox_bindings_failed",
-    }
-    if message in fixed:
-        return fixed[message]
-    reads = {
-        "R2 managed-domain read failed": "private_r2_managed",
-        "R2 custom-domain read failed": "private_r2_custom",
-        "R2 lifecycle read failed": "private_r2_lifecycle",
-        "Worker settings readback unavailable": "private_inbox_settings",
-    }
-    for prefix, label in reads.items():
-        match = re.fullmatch(re.escape(prefix) + r": HTTP([0-9]{1,3})", message)
-        if match:
-            return label + ("_transport_failed" if match[1] == "0" else "_read_failed")
-    return "private_inbox_checker_unclassified"
-
-
-def inspect_state(username: str, password: str) -> tuple[str, str, dict, set[str]]:
-    """Read deployed inbox, both routes, Identity contacts and private R2 only."""
-
-    from staging_identity_cdp import decoded_credential, route
-
-    decoded_credential({"username": username, "password": password, "address": ADDRESS})
-    account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
-    token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
-    route_token = os.environ.get("CF_EMAIL_ROUTING_TOKEN", "")
-    require(re.fullmatch(r"[a-f0-9]{32}", account) is not None and bool(token and route_token),
-            "provider_credentials_missing")
-    config = ROOT / "workers" / "identity-test-inbox" / "check_config.py"
-    try:
-        deployed = subprocess.run(
-            [sys.executable, str(config), "--live", "--deployed"],
-            capture_output=True, timeout=90, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        raise ProvisionFailure("private_inbox_subprocess_failed") from None
-    if deployed.returncode != 0:
-        raise ProvisionFailure(private_inbox_failure_label(deployed.stderr))
-    require(route(address=ADDRESS) == "absent" and route(address=FIRST) == "absent",
-            "verification_route_preexisting")
-    try:
-        contacts = identity_contacts(account, token)
-    except ProvisionFailure as error:
-        if str(error).startswith("cloudflare_"):
-            raise ProvisionFailure("identity_d1_read_failed") from None
-        raise
-    try:
-        baseline = object_inventory(account, token)
-    except ProvisionFailure as error:
-        if str(error).startswith("cloudflare_"):
-            raise ProvisionFailure("private_r2_list_failed") from None
-        raise
-    require(len(baseline) <= 1000, "r2_inventory_too_large")
-    return account, token, contacts, baseline
-
-
-def classify_contact(contacts: dict[str, tuple[str, str, str, str]], username: str) -> str:
-    """Classify B with fixed labels only; never return any Identity identifier."""
-
-    require(FIRST in contacts and contacts[FIRST][0] and contacts[FIRST][1]
-            and contacts[FIRST][2] == "verified", "identity_contact_preflight_failed")
-    if ADDRESS not in contacts:
-        return "absent"
-    b = contacts[ADDRESS]
-    require(b[0] != contacts[FIRST][0] and b[3] == username,
-            "second_contact_owner_mismatch")
-    if b[2] in ("unverified", "pending"):
-        return "pending_same_account"
-    require(b[2] == "verified", "second_contact_state_invalid")
-    return "verified_same_account"
-
-
-def read_only_preflight() -> None:
-    """Check current token capabilities and B state before any one-shot change."""
-
-    require(os.environ.get("AMAIL_SECOND_PRINCIPAL_MODE") == "preflight"
-            and os.environ.get("AMAIL_SECOND_PRINCIPAL_CONFIRM") ==
-            "READ_STAGING_SECOND_PRINCIPAL_PREFLIGHT", "explicit_confirmation_required")
-    username = os.environ.pop("STAGING_E2E_B_USERNAME", "")
-    password = os.environ.pop("STAGING_E2E_B_PASSWORD", "")
-    _, _, contacts, _ = inspect_state(username, password)
-    print("staging_second_principal_preflight_" + classify_contact(contacts, username))
-
-
-def execute() -> None:
-    """Provision B exactly once and attest its distinct native principal."""
-
-    require(os.name == "nt", "windows_runner_required")
-    mode = os.environ.get("AMAIL_SECOND_PRINCIPAL_MODE", "provision")
-    require(mode in ("provision", "recover"), "principal_mode_invalid")
-    expected_confirm = ("RUN_STAGING_SECOND_PRINCIPAL_PROVISION" if mode == "provision"
-                        else "RUN_STAGING_SECOND_PRINCIPAL_RECOVER")
-    require(os.environ.get("AMAIL_SECOND_PRINCIPAL_CONFIRM") == expected_confirm,
-            "explicit_confirmation_required")
-    require(TEMP == ROOT / ".temp", "repo_temp_redirected")
-    username = os.environ.pop("STAGING_E2E_B_USERNAME", "")
-    password = os.environ.pop("STAGING_E2E_B_PASSWORD", "")
-    from staging_identity_cdp import native_login, registration, route
-    account, token, before, baseline = inspect_state(username, password)
-    preflight_contacts(mode, before, username)
-    binary = ROOT / "target" / "debug" / "amail.exe"
-    require(binary.is_file(), "hosted_cli_binary_missing")
-    TEMP.mkdir(exist_ok=True)
-    run_dir = Path(tempfile.mkdtemp(prefix="staging-second-principal-", dir=TEMP)).resolve()
-    try:
-        copied = run_dir / "amail.exe"
-        shutil.copy2(binary, copied)
-        require(route("--apply", ADDRESS) in ("created", "enabled"), "route_create_failed")
-        if mode == "provision":
-            registration(run_dir, ADDRESS, credential=(username, password),
-                         code_source=lambda started: guarded_code(account, token, baseline, started))
-        else:
-            from staging_identity_cdp import store_credential
-            store_credential(run_dir, username, password, ADDRESS)
-            recover_contact(run_dir, username, password, account, token, baseline)
-        require(route(address=ADDRESS) == "absent", "route_cleanup_unverified")
-        native_login(run_dir, copied, expected_address=ADDRESS)
-        after = identity_contacts(account, token)
-        require(ADDRESS in after and after[ADDRESS][2] == "verified"
-                and after[ADDRESS][3] == username
-                and after[ADDRESS][0] != before[FIRST][0]
-                and after[ADDRESS][1] and before[FIRST][1]
-                and after[ADDRESS][1] != before[FIRST][1],
-                "independent_subject_unverified")
-    finally:
-        cleanup_failed = False
-        try:
-            if route(address=ADDRESS) == "enabled":
-                route("--remove", ADDRESS)
-            cleanup_failed |= route(address=ADDRESS) != "absent"
-        except Exception:
-            cleanup_failed = True
-        # All post-baseline objects are run-window deliveries to this private
-        # synthetic inbox. Remove even ambiguous/late ones, never baseline keys.
-        for settle_seconds in (0, 60):
-            if settle_seconds:
-                time.sleep(settle_seconds)
-            try:
-                fresh = object_inventory(account, token) - baseline
-                for key in fresh:
-                    deleted = request(
-                        "DELETE", f"/accounts/{account}/r2/buckets/{BUCKET}/objects/{key}", token
-                    )
-                    if deleted:
-                        json_result(deleted)
-            except ProvisionFailure:
-                cleanup_failed = True
-        try:
-            cleanup_failed |= bool(object_inventory(account, token) - baseline)
-        except ProvisionFailure:
-            cleanup_failed = True
-        try:
-            shutil.rmtree(run_dir)
-        except OSError:
-            cleanup_failed = True
-        require(not cleanup_failed, "private_principal_cleanup_required")
-    print("staging_second_principal_recovered_distinct_native_subject" if mode == "recover"
-          else "staging_second_principal_provisioned_distinct_native_subject")
-
-
-def main() -> int:
-    """Emit only fixed labels, never provider responses or exception reprs."""
-
-    try:
-        if os.environ.get("AMAIL_SECOND_PRINCIPAL_MODE") == "preflight":
-            read_only_preflight()
-        else:
-            execute()
-        return 0
-    except ProvisionFailure as error:
-        label = str(error)
-        print("staging_second_principal_failed:" +
-              (label if re.fullmatch(r"[a-z][a-z0-9_]{2,100}", label)
-               else "unexpected_failure"), file=sys.stderr)
-    except Exception:
-        print("staging_second_principal_failed:unexpected_failure", file=sys.stderr)
-    return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -29,7 +29,7 @@ export function migrationStatements(sql) {
   return statements;
 }
 
-/** Keep smoke and Rust boundary setup on the same D1 migration contract. */
+/** Seed each runtime fixture from the same contiguous production migration history. */
 export async function applyMigrations(db, migrationsDir) {
   const names = (await readdir(migrationsDir)).filter((name) => /^\d{4}_.*\.sql$/.test(name)).sort();
   assert.ok(names.length >= 8, "address scheduling migration is required");

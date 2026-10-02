@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/amail", "crates/mail-worker", "workers/mail-ingress", "workers/mail-events", "workers/identity-test-inbox", "workers/role-monitor", "crates/trace-schema", "workers/trace-sink", "workers/native-trace-canary"]
+members = ["crates/amail", "crates/mail-worker", "workers/mail-ingress", "workers/mail-events", "workers/identity-test-inbox", "workers/role-monitor", "crates/trace-schema", "workers/trace-sink"]
 resolver = "2"

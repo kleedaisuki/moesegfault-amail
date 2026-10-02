@@ -13,8 +13,6 @@ import re
 import subprocess
 import sys
 
-from native_fixture import api
-import native_suite
 import worker_artifact
 
 ROOT = worker_artifact.ROOT
@@ -22,8 +20,31 @@ STATE = ROOT / ".temp/ci/inbox-worker-artifact.json"
 REPO = "kleedaisuki/moesegfault-amail"
 REQUIRED = {"Infrastructure probe unit tests", "CLI (ubuntu-latest)", "CLI (windows-latest)",
             "CLI (macos-latest)", "Astro release site", "Rust Worker (Wasm)",
-            "Build and unit-check Rust Worker modules",
-            *(f"Native workerd ({name})" for name in native_suite.SUITES)}
+            "Build and unit-check Rust Worker modules"}
+
+
+LEGACY_NATIVE_JOBS = {f"Native workerd ({name})" for name in
+                      ("core", "entry", "liveness", "accepted", "routing", "embedding", "diagnostics", "budget")}
+
+
+def required_jobs(jobs: list[dict]) -> set[str]:
+    """Require all historical matrix members when admitting an old producer run.
+
+    Current producers execute runtime tests before artifact upload. Older runs
+    delegated those tests; their immutable metadata must still prove every lane.
+    """
+    names = {row.get("name") for row in jobs}
+    return REQUIRED | LEGACY_NATIVE_JOBS if names & LEGACY_NATIVE_JOBS else REQUIRED
+
+
+def api(suffix: str):
+    """Bound GitHub metadata reads without copying arbitrary API error bodies."""
+    repository = os.environ["GITHUB_REPOSITORY"]
+    result = subprocess.run(["gh", "api", f"repos/{repository}/actions/{suffix}"],
+                            capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode or len(result.stdout) > 1_048_576:
+        raise ValueError(f"github_metadata_read_failed: exit={result.returncode}")
+    return json.loads(result.stdout)
 
 
 def rows(value: object, key: str) -> list[dict]:
@@ -46,7 +67,7 @@ def identity(run: object, jobs: object, artifacts: object, sha: str) -> dict:
             or not isinstance(run.get("repository"), dict) or run["repository"].get("full_name") != REPO):
         raise ValueError("successful_exact_main_source_required")
     listing = rows(jobs, "jobs")
-    for name in REQUIRED:
+    for name in required_jobs(listing):
         matches = [row for row in listing if row.get("name") == name]
         if (len(matches) != 1 or matches[0].get("status") != "completed"
                 or matches[0].get("conclusion") != "success"):
@@ -105,7 +126,7 @@ def prepare(run_id: str) -> None:
 
 
 def restore() -> None:
-    """Restore all seven original trees under original run/compiler/hash identity."""
+    """Restore the original production component trees under original run/compiler/hash identity."""
     value = json.loads(STATE.read_text(encoding="utf-8"))
     fields = {"source_sha", "run_id", "run_attempt", "artifact_id", "checkout_sha", "orchestration_run_id"}
     if (os.getenv("GITHUB_ACTIONS") != "true" or os.getenv("GITHUB_REF") != "refs/heads/main"

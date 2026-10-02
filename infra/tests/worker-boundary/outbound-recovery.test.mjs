@@ -174,3 +174,16 @@ test("accepted owned tombstone terminalizes after legacy GC already deleted ZIP"
     assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${key}='zipless-tombstone'`).first()).n, 0);
   }
 }));
+
+/** UTF-8 byte limits must not split multibyte content during accepted projection. */
+test("maximum mixed-width UTF-8 survives native staging and replay exactly", async () => fixture(async ({ db, bucket, tick }) => {
+  const body = "火🔥".repeat(571_428) + "xxxx";
+  assert.equal(Buffer.byteLength(body), 4_000_000);
+  await accepted(db, bucket, "utf8", body);
+  await tick();
+  assert.equal(await indexedText(db, "utf8"), body);
+  const usage = await db.prepare("SELECT used_bytes FROM storage_usage").first();
+  await tick();
+  assert.equal(await indexedText(db, "utf8"), body);
+  assert.deepEqual(await db.prepare("SELECT used_bytes FROM storage_usage").first(), usage);
+}));

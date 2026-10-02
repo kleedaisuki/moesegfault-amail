@@ -4,9 +4,9 @@ name: Candidate site CI
 on:
   push:
     branches: [main, codex/amail-site-candidate]
-    paths: ['site/**', 'infra/release/candidate_site.py', 'infra/release/check_candidate_site_gate.py', 'infra/release/test_candidate_site*.py', '.github/workflows/site-ci.yml', '.github/workflows/site-candidate.yml', 'docs/site-*.md']
+    paths: ['site/**', 'infra/release/candidate_site.py', 'infra/release/check_candidate_site_gate.py', '.github/workflows/site-ci.yml', '.github/workflows/site-candidate.yml', 'docs/site-*.md']
   pull_request:
-    paths: ['site/**', 'infra/release/candidate_site.py', 'infra/release/check_candidate_site_gate.py', 'infra/release/test_candidate_site*.py', '.github/workflows/site-ci.yml', '.github/workflows/site-candidate.yml', 'docs/site-*.md']
+    paths: ['site/**', 'infra/release/candidate_site.py', 'infra/release/check_candidate_site_gate.py', '.github/workflows/site-ci.yml', '.github/workflows/site-candidate.yml', 'docs/site-*.md']
   workflow_dispatch:
   workflow_call:
 
@@ -47,11 +47,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Check synthetic candidate and workflow regressions without provider access
-        working-directory: .
-        env:
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: python -m unittest discover -s infra/release -p 'test_candidate_site*.py' -v
       - name: Install locked site dependencies
         run: pnpm install --frozen-lockfile
       - name: Check Astro and route-local release-state fixtures

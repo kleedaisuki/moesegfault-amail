@@ -22,7 +22,7 @@ from pin_staging_mail import UUID
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/ci"))
-from inbox_worker_artifact import REQUIRED
+from inbox_worker_artifact import required_jobs
 from worker_artifact import TREES, ENTRY_FILES
 
 LIMIT = 65_536
@@ -59,7 +59,7 @@ def origin(run_id: str, *, job: str = JOB) -> tuple[str, list[dict]]:
         raise ValueError("fresh_recovery_protected_job_required")
     if job == ONLINE_JOB and selected[0]["conclusion"] != "failure":
         raise ValueError("fresh_recovery_protected_job_required")
-    for name in REQUIRED:
+    for name in required_jobs(jobs):
         matches = [row for row in jobs if row.get("name") == name]
         if (len(matches) != 1 or matches[0].get("status") != "completed"
                 or matches[0].get("conclusion") != "success"):
@@ -184,13 +184,16 @@ def original(raw: bytes, epoch: Epoch) -> None:
     if manifest is None or len(manifest) > 262144 or hashlib.sha256(manifest).hexdigest() != epoch.manifest_sha256:
         raise ValueError("fresh_recovery_original_manifest_mismatch")
     value = decode(manifest)
+    # Read historical seven-tree receipts without rebuilding the retired canary.
+    legacy = "workers/native-trace-canary/build"
+    trees = TREES + (legacy,) if any(name.startswith(legacy + "/") for name in files) else TREES
     expected = {"schema": "worker-native-artifact/v1", "source_sha": epoch.source_sha,
                 "run_id": epoch.run_id, "run_attempt": 1, "rust": epoch.rust, "worker_build": epoch.worker_build}
     if (not isinstance(value, dict) or set(value) != set(expected) | {"files"}
             or any(type(value[k]) is not type(v) or value[k] != v for k, v in expected.items())
             or value["files"] != {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
-            or any(name not in ENTRY_FILES and not any(name.startswith(tree + "/") for tree in TREES) for name in files)
-            or any(f"{tree}/{suffix}" not in files for tree in TREES for suffix in ("index.js", "worker/shim.mjs"))):
+            or any(name not in ENTRY_FILES and not any(name.startswith(tree + "/") for tree in trees) for name in files)
+            or any(f"{tree}/{suffix}" not in files for tree in trees for suffix in ("index.js", "worker/shim.mjs"))):
         raise ValueError("fresh_recovery_original_artifact_mismatch")
 
 

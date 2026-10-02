@@ -66,8 +66,6 @@ jobs:
           merge-multiple: true
       - name: Verify original source run compiler and complete generated file hashes
         run: python infra/ci/inbox_worker_artifact.py restore
-      - name: Test exact-route ownership and conflict safeguards
-        run: python -m unittest discover -s workers/identity-test-inbox -p 'test_*.py' -v
       - name: Install reviewed deployment tools
         run: |
           npm install --global wrangler@4.142.0

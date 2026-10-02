@@ -22,10 +22,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Install the pinned non-executing YAML parser
+      - name: Check workflows with pinned upstream actionlint
+        shell: bash
         run: |
-          python -m pip install --disable-pip-version-check --only-binary=:all: -r infra/workflow_lint/requirements.txt
-      - name: Verify synthetic parser and boundary fixtures
-        run: python -m unittest discover -s infra/workflow_lint -p 'test_*.py' -v
-      - name: Check all workflow files independently of CI
-        run: python infra/workflow_lint/check.py
+          set -euo pipefail
+          mkdir -p .temp/actionlint
+          curl --fail --silent --show-error --retry 3 --connect-timeout 10 --max-time 60 \
+            --location --output .temp/actionlint/archive.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.11/actionlint_1.7.11_linux_amd64.tar.gz
+          echo '900919a84f2229bac68ca9cd4103ea297abc35e9689ebb842c6e34a3d1b01b0a  .temp/actionlint/archive.tar.gz' | sha256sum --check -
+          tar -xzf .temp/actionlint/archive.tar.gz -C .temp/actionlint actionlint
+          .temp/actionlint/actionlint

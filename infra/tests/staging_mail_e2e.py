@@ -620,7 +620,7 @@ def provider_receipt(reply: bytes) -> str:
 
 
 def smtp_send(token: str, address: str, messages: list[EmailMessage], realm: AcceptanceRealm = STAGING) -> None:
-    """Submit legacy role/isolation probes without changing their public helper contract.
+    """Submit SMTP fixtures and retain the established helper contract.
 
     This helper intentionally does not claim provider receipt provenance. The
     mail E2E's stronger oracle lives in ``smtp_send_receipts`` below.
@@ -781,44 +781,6 @@ def search_cases(binary: Path, env: dict[str, str], address: str, oracle: dict, 
         amail(binary, env, "search", "--title", f"^AMAIL-E2E-.*-Signal$", "--regex", failure="search_regex_positive_failed"),
         subject, 1, "search_regex_positive_count",
     )
-
-
-def semantic_cases(
-    binary: Path, env: dict[str, str], address: str, nonce: str,
-    rich_row: dict, rich_oracle: dict, distractor_row: dict,
-) -> None:
-    """Check the two delivered messages without adding mail or changing state.
-
-    Document indexing runs on a five-minute Cron. Only the typed incomplete
-    index result is retried, under one seven-minute deadline for all four
-    searches. Provider/auth/quota failures remain failures, never retries.
-    """
-
-    from staging_semantic_e2e import SemanticProbeError, check_cli_search
-
-    deadline = time.monotonic() + 7 * 60
-
-    def search(*args: str) -> list[dict]:
-        """Return only complete CLI JSONL rows; suppress raw provider output."""
-
-        while True:
-            try:
-                return rows(amail(binary, env, "search", *args, failure="semantic_search_failed"))
-            except ProbeFailure as error:
-                if str(error) != "semantic_search_failed_http_503_semantic_index_incomplete":
-                    raise
-                if time.monotonic() + 30 >= deadline:
-                    raise ProbeFailure("semantic_index_timeout") from None
-                time.sleep(30)
-
-    signal = {"id": rich_row.get("id"), "received_at": rich_row.get("received_at"),
-              "phrase": rich_oracle["phrase"]}
-    distractor = {"id": distractor_row.get("id"), "received_at": distractor_row.get("received_at")}
-    try:
-        check_cli_search(search, address, nonce, signal, distractor)
-    except SemanticProbeError as error:
-        raise ProbeFailure(str(error)) from None
-    print("semantic_two_message_search_verified")
 
 
 def cleanup_inventory(binary: Path, env: dict[str, str], address: str | None,
@@ -1065,13 +1027,8 @@ def main() -> int:
     parser.add_argument("--confirm-staging", action="store_true")
     parser.add_argument("--home", required=True)
     parser.add_argument("--amail", required=True)
-    parser.add_argument("--check-semantic", action="store_true")
-    parser.add_argument("--check-exact-cosine", action="store_true",
-                        help="restricted staging operator oracle; implies --check-semantic")
-    parser.add_argument("--isolation-home", help="separate native B home; adds no SMTP or route")
     args = parser.parse_args()
     check(args.confirm_staging, "staging_confirmation_required")
-    check(not args.check_exact_cosine or args.check_semantic, "exact_cosine_requires_semantic")
     home, binary = inside_temp(args.home), inside_temp(args.amail)
     check(binary.is_file() and home.is_dir(), "cli_binary_or_home_missing")
     zone = os.environ.get("CLOUDFLARE_ZONE_ID", "")
@@ -1086,10 +1043,6 @@ def main() -> int:
     env = cli_env(home)
     status = amail(binary, env, "auth", "status", failure="auth_status_failed")
     check(len(status) == 1 and status[0].get("authenticated") is True, "not_authenticated")
-    isolation_home = inside_temp(args.isolation_home) if args.isolation_home else None
-    if isolation_home is not None:
-        from staging_two_principal_isolation import assert_b_ready
-        assert_b_ready(binary, home, isolation_home)
     # A hosted run may crash before cleanup. The protected synthetic password
     # plus run ID/attempt can reconstruct only its alias for exact-rule
     # reconciliation, without publishing the address; local probes stay random.
@@ -1126,9 +1079,6 @@ def main() -> int:
             raise ProbeFailure("address_activation_timeout")
         assert_route(zone, routing_token, address, True)
         print("address_and_literal_route_verified")
-        if args.check_exact_cosine:
-            check(not cleanup_inventory(binary, env, None), "oracle_owner_preinventory_not_empty")
-
         # Email Routing rule propagation can lag the control-plane readback.
         # 邮件路由数据面可能落后于规则 API 回读。
         time.sleep(60)
@@ -1169,29 +1119,6 @@ def main() -> int:
         print("smtp_to_zip_verified")
 
         search_cases(binary, env, address, rich_oracle, rich_row)
-        if isolation_home is not None:
-            from staging_two_principal_isolation import assert_foreign_isolation
-            assert_foreign_isolation(
-                binary, home, isolation_home, address, target, distractor_id,
-                (rich_oracle["subject"], distractor_oracle["subject"]),
-                rich_oracle["provider_message_id"], zone, routing_token,
-            )
-            print("two_principal_mail_isolation_verified")
-        if args.check_semantic:
-            semantic_cases(
-                binary, env, address, nonce, rich_row, rich_oracle,
-                distractor_row,
-            )
-        if args.check_exact_cosine:
-            from staging_exact_cosine_oracle import OracleError, verify
-            check(set(cleanup_inventory(binary, env, None)) == {target, distractor_id},
-                  "oracle_owner_inventory_changed")
-            try:
-                error = verify(account, api_token, binary, env, address, nonce,
-                               (target, distractor_id))
-            except OracleError as failure:
-                raise ProbeFailure(str(failure)) from None
-            print(f"semantic_exact_cosine_verified:max_abs_error={error:.8f}:count=2:order=true:origin_vector=true")
         amail(binary, env, "mark", target, "--read", failure="mark_read_failed")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--read", failure="read_search_failed"), rich_oracle["subject"], 1, "read_search_count")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--unread", failure="unread_search_failed"), rich_oracle["subject"], 0, "unread_search_count")

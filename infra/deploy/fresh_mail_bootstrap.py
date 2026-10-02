@@ -30,8 +30,7 @@ from worker_deploy_result import submit, DeploymentFailure
 from control_plane_trace import span
 from pin_staging_mail import UUID, serving_deployment
 import worker_artifact
-from native_fixture import api
-from inbox_worker_artifact import REQUIRED, rows
+from inbox_worker_artifact import api, required_jobs, rows
 import inspect_held_production as old
 import ensure_trace_queues as queues
 from check_production_role_graph import forward_snapshot
@@ -73,7 +72,7 @@ def verify_same_run_artifact(epoch: Epoch) -> None:
             or not isinstance(run.get("repository"), dict) or run["repository"].get("full_name") != REPO):
         raise ValueError("fresh_run_identity_unverified")
     listing = rows(api(f"runs/{epoch.run_id}/attempts/1/jobs?per_page=100"), "jobs")
-    for name in REQUIRED:
+    for name in required_jobs(listing):
         selected = [row for row in listing if row.get("name") == name]
         if (len(selected) != 1 or selected[0].get("status") != "completed"
                 or selected[0].get("conclusion") != "success"):

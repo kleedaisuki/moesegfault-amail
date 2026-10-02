@@ -19,8 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FOLDER = ROOT / ".temp/ci/worker-built"
 # Historical archive readers reuse these namespaces; tracked entries are separate.
 TREES = ("crates/mail-worker/build", "workers/trace-sink/build", "workers/mail-ingress/build",
-         "workers/mail-events/build", "workers/identity-test-inbox/build", "workers/role-monitor/build",
-         "workers/native-trace-canary/build")
+         "workers/mail-events/build", "workers/identity-test-inbox/build", "workers/role-monitor/build")
 # Tracked deployment boundaries are tested inputs, not interchangeable generated exports.
 ENTRY_FILES = ("crates/mail-worker/entry/api.mjs", "crates/mail-worker/entry/maintenance.mjs",
                "workers/trace-sink/entry/queue.mjs", "workers/mail-ingress/entry/email.mjs",
