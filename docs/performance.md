@@ -21,7 +21,7 @@ count render dependencies and built asset bytes; they do not measure LCP.
 | Backend send | Copy the entire already-validated outbound ZIP before the R2 write; retain original bytes only to read its size later | Preserve length, transfer byte ownership into R2 | Removes one allocation/copy up to the 5 MiB accepted bound; no new buffering policy, changed request bytes, or replay behavior. Copy-cost microbenchmark is not R2 service latency |
 | Backend idempotent marks | UPDATE fired the search-generation trigger even when read state already matched | SQL updates only a differing read state, preserving authorization lookup and full response | Ordinary native migration fixture checks repeat marking leaves generation unchanged, actual toggles increment it, and foreign ownership never mutates |
 | Backend exact semantic scan | Revalidate and sum the same query's 256-coordinate norm for every eligible vector | A borrowed validated query computes norm once per scan batch, without normalizing stored values | Near-tie-sensitive f64 score-bit equivalence tested against the frozen original; same-process original/prepared microbench measures the candidate gain before staging acceptance |
-| Backend feedback exploration | Ownership checks called the full-message loader, transferring unrelated body and metadata | Shared narrow `SELECT 1 AS visible` query for receipt links, outcomes and per-message events | Same owner/outbound/undeleted/pending visibility guard. Native SQLite proves the single-column projection with a 2.2 MB body; the Wasm/D1 fixture uses a legal 64 KiB body plus a stored vector and checks that `get` retains metadata/flags without embedding content. A previous oversized HTTP fixture failed D1 storage admission (`SQLITE_TOOBIG`), not the read contract; the corrected fixture remains pending hosted validation. This is not a latency claim |
+| Backend feedback exploration | Ownership checks called the full-message loader, transferring unrelated body and metadata | Shared narrow `SELECT 1 AS visible` query for receipt links, outcomes and per-message events | Same owner/outbound/undeleted/pending visibility guard. Native SQLite proves the single-column projection with a 2.2 MB body; the actual workerd/D1 fixture uses a legal 64 KiB body plus a stored vector and checks that `get` retains metadata/flags without embedding content. The corrected fixture passed hosted runtime checks in run 37053907751. A previous oversized fixture failed D1 storage admission (`SQLITE_TOOBIG`), not the read contract. This is not a latency claim |
 | Backend everyday detail/archive/mark | Shared row query also transferred indexed body text and embedding JSON that none of its callers consumed | Preserve the `MessageRow` shape with empty-text/null-vector aliases, while retaining metadata, body-presence flags and archive coordinates | Native SQLite fixture stores a 2.2 MB body and a valid 256-coordinate embedding, and checks only unused fields are omitted. That oversized SQLite stress fixture is not a valid D1 row or proof of reading oversized production data. Actual content still comes from the archive; search queries are unchanged |
 | Frontend manual/changelog | Shared layout included all vendor component CSS, though only homepage buttons use it | Explicit homepage opt-in, unchanged pinned vendor source and cascade | Each manual/changelog cold load omits 58,817 raw CSS bytes and one blocking stylesheet request. Shared vendor CSS is 8,807 instead of 67,624 bytes (86.98% reduction); final Astro CSS is measured separately |
 | CLI discovery | Ordinary initialization would load config and diagnostics even for offline discovery | Product CLI executes offline discovery before application-state initialization | Benchmark alongside help/version/config; discovery must work without network, credentials or config writes |
@@ -212,9 +212,57 @@ column inspection no longer requires acquiring SQLite's writer. Other necessary
 diagnostic writes and retention transactions still acquire it; this change does
 not promise contention-free telemetry or a 34% faster CLI.
 
-Source-level eliminated allocation and lock acquisition above are concrete;
-hosted Worker measurements are still required to quantify their CPU effect.
-Record exact run/commit and selected summaries when those jobs return.
+### Hosted Worker native CPU and long-tail results
+
+[Run 37053907751](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37053907751),
+source `b2dbd66`, passed the Worker build/unit job, actual built-module workerd
+boundary tests, and opt-in release microbenchmarks. Artifact
+`performance-worker-37053907751` (ID `11247976295`) contains
+`worker-microbench.log` with all 15 raw samples per case. Timing profile is native
+release Rust on the hosted x86-64 runner, not the deployed Wasm isolate. Units
+below are microseconds per measured operation/batch:
+
+| Native CPU case | Median µs | MAD µs | Sample p95 µs |
+| --- | ---: | ---: | ---: |
+| Original exact cosine, 512 × 256 | 198.024 | 0.253 | 199.818 |
+| Prepared-query exact cosine, 512 × 256 | 163.179 | 0.109 | 165.925 |
+| Retain top 21 of 2,048 | 99.450 | 0.089 | 100.199 |
+| Retain top 101 of 2,048 | 346.412 | 0.371 | 351.362 |
+| Literal body predicate, early hit in 32 KiB | 0.085 | 0.00023 | 0.091 |
+| Regex body predicate, early hit in 32 KiB | 0.110 | 0.00015 | 0.315 |
+| Body predicate, miss/full scan of 32 KiB | 2.756 | 0.0068 | 2.940 |
+| Parse ZIP with 4 KiB expanded asset | 25.444 | 0.152 | 30.523 |
+| Parse ZIP with 2 MiB expanded asset | 382.969 | 2.311 | 390.142 |
+| Eliminated independent 4 KiB buffer copy | 1.403 | 0.0034 | 1.978 |
+| Eliminated independent 2 MiB buffer copy | 55.285 | 0.162 | 68.975 |
+
+**Decision: retain query-norm preparation.** Its median batch CPU cost fell
+17.6% (34.85 µs, 1.214× throughput for this scoring kernel), far above this run's
+local variation; query preparation is included in the candidate batch timing.
+Ordinary bit-equivalence tests and actual Worker contract tests also passed.
+This establishes a useful constant-factor gain without approximation, stored
+vector changes, a new index, or altered tie/cursor behavior. It does **not** prove
+a 17.6% faster search request: JSON decoding, D1 queries/continuations and network
+latency are outside the scoring kernel, and native CPU is not Wasm CPU.
+
+The top-K page-size cost is visible and bounded; neither 99 µs nor 346 µs for the
+synthetic 2,048 candidates justifies replacing the small linear selector with a
+heap now. Predicate hits terminate early; the 85/110 ns positive cases do not
+claim that a full 32 KiB body was scanned at that speed. The miss case is the
+useful scan baseline, not evidence to change regex semantics.
+
+ZIP parsing expands highly compressible synthetic asset bytes. Its 2 MiB label
+is **expanded asset size**, not a 2 MiB compressed archive. The copy cases time
+separate raw buffers of the named sizes, so the 55 µs copy cost must not be added
+to, or subtracted from, that ZIP fixture's parse time as if both describe the same
+archive. Production ownership transfer removes one whole compressed-archive
+allocation/copy (at most 5 MiB) but does not remove validation, expansion or the
+platform's necessary R2 transfer. These results give a cheap future baseline;
+there is no demonstrated need for a new archive format or decompression pipeline.
+
+Source-level eliminated allocation and lock acquisition above are concrete and
+the local CPU gains are now measured. The Worker job's source/runtime acceptance
+is not evidence of staging deployment; provider rollout is a separate gate.
 Staging success is separate from native timing and site-byte evidence.
 Native SQLite accepts values beyond D1's real per-value/row limits. A workerd
 fixture that attempts to insert such a value fails before exercising the query;
