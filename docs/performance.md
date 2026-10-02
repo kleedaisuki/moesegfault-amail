@@ -21,7 +21,8 @@ count render dependencies and built asset bytes; they do not measure LCP.
 | Backend send | Copy the entire already-validated outbound ZIP before the R2 write; retain original bytes only to read its size later | Preserve length, transfer byte ownership into R2 | Removes one allocation/copy up to the 5 MiB accepted bound; no new buffering policy, changed request bytes, or replay behavior. Copy-cost microbenchmark is not R2 service latency |
 | Backend idempotent marks | UPDATE fired the search-generation trigger even when read state already matched | SQL updates only a differing read state, preserving authorization lookup and full response | Ordinary native migration fixture checks repeat marking leaves generation unchanged, actual toggles increment it, and foreign ownership never mutates |
 | Backend exact semantic scan | Revalidate and sum the same query's 256-coordinate norm for every eligible vector | A borrowed validated query computes norm once per scan batch, without normalizing stored values | Near-tie-sensitive f64 score-bit equivalence tested against the frozen original; same-process original/prepared microbench measures the candidate gain before staging acceptance |
-| Backend feedback exploration | Ownership checks called the full-message loader, transferring unrelated body and metadata | Shared narrow `SELECT 1 AS visible` query for receipt links, outcomes and per-message events | Same owner/outbound/undeleted/pending visibility guard; native and Wasm synthetic large-body fixtures exercise the transfer boundary. Message `get` retains its full content contract; this is not a latency claim |
+| Backend feedback exploration | Ownership checks called the full-message loader, transferring unrelated body and metadata | Shared narrow `SELECT 1 AS visible` query for receipt links, outcomes and per-message events | Same owner/outbound/undeleted/pending visibility guard; native and Wasm synthetic large-body fixtures exercise the transfer boundary. Message `get` retains its established metadata contract; this is not a latency claim |
+| Backend everyday detail/archive/mark | Shared row query also transferred indexed body text and embedding JSON that none of its callers consumed | Preserve the `MessageRow` shape with empty-text/null-vector aliases, while retaining metadata, body-presence flags and archive coordinates | Exact query fixture stores a 2.2 MB body and a valid 256-coordinate embedding, and checks only unused fields are omitted. Actual message content still comes from the archive; search queries are unchanged |
 | Frontend manual/changelog | Shared layout included all vendor component CSS, though only homepage buttons use it | Explicit homepage opt-in, unchanged pinned vendor source and cascade | Each manual/changelog cold load omits 58,817 raw CSS bytes and one blocking stylesheet request. Shared vendor CSS is 8,807 instead of 67,624 bytes (86.98% reduction); final Astro CSS is measured separately |
 | CLI discovery | Ordinary initialization would load config and diagnostics even for offline discovery | Product CLI executes offline discovery before application-state initialization | Benchmark alongside help/version/config; discovery must work without network, credentials or config writes |
 
@@ -158,12 +159,62 @@ The omitted vendor stylesheet is exactly 58,817 raw / 10,338 estimated-gzip
 bytes per manual/changelog cold load. This report includes real Astro chunks,
 not just vendor-file arithmetic, and verifies zero client scripts. It does not
 establish paint latency or visual correctness; browser/staging acceptance is a
-separate check. The containing full workflow was still running when this site
-artifact was inspected, so this is not a claim that all jobs passed.
+separate check. The containing full workflow later failed on an unrelated Rust
+formatting check and a missing-address foreign-key test fixture; both were
+corrected. This site artifact is not a claim that all jobs or browser acceptance
+passed.
+
+### Hosted CLI elapsed time and schema constant
+
+[Run 37049571290](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37049571290),
+source `1aa3c9f47872785d04907d7bce10328ea1b1a7ae`, produced
+`cli.json` and `cli-microbench.log`. The verified published v0.1.0 Linux release
+and candidate release binary ran on the same x86-64 hosted runner: Linux
+`6.17.0-1022-azure`, four logical CPUs, Python 3.12.14 and pinned Rust 1.98.1.
+Below, time is milliseconds and uncertainty is median absolute deviation (MAD):
+
+| Offline process workload | v0.1.0 median ± MAD | v0.1.2 median ± MAD | v0.1.2 sample p95 | Candidate / baseline median |
+| --- | ---: | ---: | ---: | ---: |
+| Help | 1.5818 ± 0.0244 | 1.6155 ± 0.0259 | 1.6873 | 1.021 |
+| Version | 1.5004 ± 0.0161 | 1.5140 ± 0.0216 | 1.6402 | 1.009 |
+| Config, diagnostics off | 1.6055 ± 0.0240 | 1.5928 ± 0.0458 | 1.7649 | 0.992 |
+| Config, warm diagnostics | 3.3642 ± 0.0373 | 3.3126 ± 0.0406 | 3.3792 | 0.985 |
+| Config, first-use app state | 11.8098 ± 0.2172 | 12.0388 ± 0.3926 | 13.6587 | 1.019 |
+| Pack 4 KiB | 2.5736 ± 0.0351 | 2.6661 ± 0.1408 | 3.0617 | 1.036 |
+| Unpack 4 KiB | 2.5245 ± 0.0385 | 2.5299 ± 0.0725 | 2.8007 | 1.002 |
+| Pack 2 MiB | 12.5064 ± 0.1204 | 12.4995 ± 0.1270 | 13.9877 | 0.999 |
+| Unpack 2 MiB | 5.1836 ± 0.0828 | 5.0993 ± 0.0810 | 5.3962 | 0.984 |
+
+All compared workloads exited zero. Candidate discovery also exited zero with
+median 1.5595 ms / MAD 0.0235 ms / sample p95 1.6653 ms; baseline discovery exited
+two because it does not exist and is correctly marked incomparable. Auth status
+exited one in both binaries on the empty hosted keyring setup, so its timings are
+also excluded from success-path comparisons. Candidate binary size was
+15,716,776 bytes versus 15,589,976 bytes (+0.81%, including the new product APIs).
+
+**Interpretation:** no demonstrated whole-CLI startup acceleration, nor a clear
+material regression in these common process workloads. The small differences
+and few tail samples do not establish reliable production tail changes. Startup
+remains about 1.5–1.6 ms for simple offline operations on this Linux host; this is
+not a Windows/macOS or real-login claim. Do not optimize pack/unpack based on a
+single noisy tail or call the new discovery command faster than a legacy error.
+
+The same-file schema microbenchmark provides a much clearer local effect:
+
+| Schema check | Median ns | MAD ns | Sample p95 ns |
+| --- | ---: | ---: | ---: |
+| Former writer-reserving check | 16,341.7 | 99.8 | 16,764.4 |
+| Read fast path | 10,807.7 | 36.4 | 11,222.2 |
+
+Median cost fell 33.9% (5.53 microseconds), well above this run's local variation.
+The reserved-writer regression test also passed in the hosted CLI suite: modern
+column inspection no longer requires acquiring SQLite's writer. Other necessary
+diagnostic writes and retention transactions still acquire it; this change does
+not promise contention-free telemetry or a 34% faster CLI.
 
 Source-level eliminated allocation and lock acquisition above are concrete;
-hosted native measurements are still required to quantify their elapsed-time
-effect. Record exact run/commit and selected summaries when those jobs return.
+hosted Worker measurements are still required to quantify their CPU effect.
+Record exact run/commit and selected summaries when those jobs return.
 Staging success is separate from native timing and site-byte evidence.
 Escalate only the measured consequential bottleneck: e.g. repeated query-norm
 work in broad exact search, redundant ZIP inflate, or synchronous store writes.
