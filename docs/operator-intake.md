@@ -1,44 +1,46 @@
-# Operational role mail: v0.1 forwarding
+# Operational contacts
 
-Status 2026-09-28: **four exact production forward rules are live and all four canaries reached the owner, but all landed in Junk rather than a monitored Inbox**. The user selected the simplest v0.1.0 operation: exact Cloudflare Email Routing rules forward system-role mail to **one confidential, owner-controlled external mailbox**. There is no v0.1 operator Worker, Access application, ticket UI, internal agent CLI, report D1/R2 store or autonomous case queue. The unused `workers/mail-ops` source was removed from the release tree after a read-only live inventory found no previous production role rule, deployed ops Worker, R2 report object, or D1 case table. The unused remote D1/R2 resources were **not deleted**. The global public send switch remains held; `abuse_contact_verified` is false until an actionable monitoring and response path is proved.
+v0.1 uses four exact Cloudflare Email Routing **direct forwards**:
+`abuse@moesegfault.dev`, `postmaster@moesegfault.dev`,
+`abuse@mail.moesegfault.dev`, `postmaster@mail.moesegfault.dev`.
+One confidential verified destination is an Environment secret, never a public
+input/log/status field. The mail-domain pair reserves two literal rules, leaving
+198 user aliases at the current 200-rule limit.
 
-## Purpose and addresses
+Actual receipts/contact health passed in
+[36954714726](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36954714726).
+Earlier receipts landed in Junk: ongoing coverage includes **Inbox and Junk**,
+not only provider analytics. [Validation](validation.md) records current status.
 
-The canonical system contacts are `abuse@moesegfault.dev` and `postmaster@moesegfault.dev`. Because `mail.moesegfault.dev` itself receives SMTP, also reserve and route `abuse@mail.moesegfault.dev` and `postmaster@mail.moesegfault.dev`. These are four **literal** rules on the appropriate Cloudflare Email Routing domains, all forwarding to the same verified destination. They are not user mailboxes and consume none of a user's ten-address allowance. The two public mail-subdomain rules consume two of its [200-rule provider limit](https://developers.cloudflare.com/email-service/platform/limits/), leaving at most 198 literal user aliases. The apex pair consumes separate apex-domain capacity. `mail@moesegfault.dev` remains the site's official sender; it is not an abuse intake alias. Staging role routes are optional future probes; they are **not provisioned by the v0.1 forwarding workflow** and must not be counted as acceptance evidence for the four production contacts.
+## One state owner
 
-`postmaster` at the SMTP-receiving domain follows [RFC 5321 §4.5.1](https://www.rfc-editor.org/info/rfc5321/); `abuse` follows [RFC 2142](https://www.rfc-editor.org/info/rfc2142/). Apex-only aliases are not sufficient for a service that receives at `mail.moesegfault.dev`. Do not install a catch-all or forward arbitrary user mail into the operator destination. Cloudflare documents that a [forwarding destination must be verified](https://developers.cloudflare.com/email-service/configuration/email-routing-addresses/) and that rules pointing at an unverified destination remain disabled.
+Contact adoption, observations and attestation identity live in Mail D1. The API
+has no ROLE_MONITOR binding or role-Worker lease dependency. Old role Worker/
+isolated role D1/ticket-service designs are outside v0.1; do not deploy them or
+translate an old lease into direct-forward acceptance.
 
-## Privacy and trust boundary
+Retained contact workflows separate audit/adoption, bounded health observation
+and explicit attestation. Schedule is opt-in; observations cannot fabricate a
+human response commitment. Preserve exact enabled literal rules and verified
+destination equality across all pages. Duplicates/disabled/wrong-action/wrong-
+destination rules fail closed: no silent takeover, catch-all or replacement.
+Addresses Read/Write is account-scoped; Rules Read/Write is zone-scoped.
+Read success is not write authorization. Use the shared production writer lock.
 
-The destination address is an operational secret. Store it only in the protected deployment environment/secret store and Cloudflare's destination registry; **never** print it in GitHub Actions logs, commit it, put it in a public document/skill, paste it into chat, or expose it through a status API. The external mailbox provider will receive the **full original operational report**, potentially including sender identity, subject, MIME body, attachments and headers. This is an intentional trust boundary of the chosen forwarding approach, unlike the abandoned Cloudflare-only case-store design; restrict mailbox access, enable strong authentication, choose appropriate retention, and prevent accidental forwarding to a user-owned amail alias or to either role address (loop). Normal user mail archives, search, semantic embeddings and telemetry must never include these reports. A routing-rule read-back that reveals the destination should be redacted to a boolean `matches_configured_destination` plus rule ID/status, not emitted raw.
+## Privacy and response
 
-Reports are untrusted evidence. Neither a sender's assertion, an embedded command, a URL, nor an attachment is authority to hold a user or disclose data. Correlate claimed Message-ID/account with trusted provider events and restricted send-policy records before acting. A provider-authenticated complaint event may independently trigger the existing automated account hold; an arbitrary email to `abuse@` must not. Use the audited sender-control workflow for any manual hold, using an opaque case/reference code rather than report text or personal data in workflow inputs. Never clear a complaint suppression merely to pass a test. **Do not click Reply in the external inbox:** Cloudflare forwarding does not make replies originate from the role alias, so that would expose the confidential destination. If a response is warranted, verify the reporter's intended recipient and send separately through the site's controlled, authenticated `mail@moesegfault.dev` identity; otherwise do not respond.
+Full reports cross into the external mailbox provider; restrict access/retention.
+Reports, URLs and assets are untrusted evidence, not authority to execute, disclose
+data or hold accounts. Correlate claims with trusted provider events and restricted
+send records. Never put reports into user archives, embeddings or telemetry.
 
-## Provisioning and fail-closed behavior
+Do not click Reply in the forwarding inbox: it exposes the destination. If warranted,
+verify the reporter and send separately through controlled mail@moesegfault.dev.
+Manual policy actions use opaque case references. Authenticated lifecycle complaints
+may impose holds; arbitrary role email does not automatically authorize them.
 
-1. Verify that the controlled external mailbox exists and can receive the Cloudflare destination-verification email. Create or locate the account-level destination, complete its verification, and confirm its verified status **before** creating forward rules. The destination itself must not appear in command output captured by CI. If the destination cannot be verified, stop; do not substitute a Worker route or a guessed address.
-2. Audit existing routing rules for each exact role/domain before writing. If a rule is absent, create one `forward` action to the verified destination; if it already matches, leave it untouched. If there is any duplicate, disabled, Wrangler-managed, wrong-action or wrong-destination rule, **fail closed and require an explicit reviewed resolution**. Do not silently take over, delete, reorder or replace a rule, and do not use Wrangler `addresses` reconciliation for these API-managed roles. After creation, read back ID, literal matcher, `forward` action, enabled state and destination equality without displaying the destination. The zone-scoped Email Routing Rules token must have the necessary write permission; read access alone proves nothing about deployment.
-3. Check authoritative MX and Cloudflare Email Routing status for the apex, staging subdomain and public mail subdomain. DNS records or an enabled rule alone are not delivery evidence. Keep the global send policy held until the contact path is externally tested.
-4. From an independently controlled external SMTP sender, send a distinct nonce to **each production role**, including mixed-case `Postmaster` at the receiving domain. Confirm acceptance and the actual original report in the intended external mailbox, with recipient/headers/body intact and no loop. Test at least one negative unmatched alias so the role setup did not create a catch-all. Record only opaque nonce IDs, timestamps and pass/fail in deployment evidence; do not reproduce the external destination or raw report in public logs.
-5. Verify there is a **real notification and response owner** for this mailbox: a new report is noticed within the declared response objective (initially one business day for routine reports, sooner for credible urgent risk), can be investigated and answered through the controlled provider, and an outage/missed notification is observable. Merely proving SMTP delivery to an unread inbox does not satisfy `abuse_contact_verified`. The interim design does not promise autonomous agent triage; if no monitored response path exists, leave the gate false and public send held.
-
-The planned main-branch-only, manually dispatched role-forward workflow has three distinct operations: `request-verification`, `audit`, and `apply`. Its production Environment secret is `ROLE_FORWARD_DESTINATION`, never a workflow input or printed output. The existing `CF_EMAIL_ROUTING_TOKEN` needs **account-level Email Routing Addresses Read/Write** as well as **zone-level Email Routing Rules Read/Write**; those are different API resources. `request-verification` creates or locates the destination but cannot verify it on the owner's behalf; `audit` checks all pages of destination/rule state without mutation; `apply` acts only after verified-status read-back and fails closed on pre-existing conflicting/disabled/duplicate role rules. This paragraph specifies the intended automation contract; only a committed workflow and a hosted run can prove its implementation. Never mark `abuse_contact_verified` from an API success alone.
-
-Only after role-delivery and monitored response are evidenced may the audited release-gate workflow set `abuse_contact_verified=1`. This is independent of the other sending gates and of actual external delivery canaries. On forwarding failure or lost mailbox access, revoke that attestation and hold sending; preserve evidence and repair without deleting user addresses.
-
-### Live rollout checkpoint (not yet the release attestation)
-
-The owner-selected destination was already **verified** in Cloudflare's account registry; the restricted `request-verification` call did not create another destination or require a new owner click. After the hosted Python route safeguards passed, the four exact production `forward` rules were created through a restricted local Wrangler OAuth bootstrap because the new main-only Actions workflow was not yet available on the feature branch. Readback found all four enabled API-owned literals with the configured destination; no catch-all or other rule was changed. The destination value was entered through a hidden prompt and never emitted to Git, scripts or logs. The production GitHub Environment has the same destination as a secret and permits only `main` plus release tags; a later main-branch workflow `audit` must independently verify its token permissions and exact rule state.
-
-After a 60-second propagation wait, four unique synthetic canaries were submitted from the authenticated site sender. Cloudflare's restricted `emailSendingAdaptive` and `emailRoutingAdaptive` event datasets each reported **4/4 `delivered`**, with routing action `forward` and no error detail. Routing events reported SPF, DKIM and DMARC `pass`, plus `isSpam=0`; those provider-side checks cannot certify the destination's later classification. The owner independently confirmed **all four received in Junk**. This proves reachability but exposes a monitoring failure: a new report from an arbitrary external sender could also be hidden or eventually deleted in Junk. Keep `abuse_contact_verified=0` and global sending held until a reliable monitored response path is demonstrated. Do not repeat sends merely to make analytics green.
-
-## Future, not in v0.1.0
-
-The owner wants agent-first operational access eventually, not a daily human ticket page. [`operator-agent-workflow.md`](operator-agent-workflow.md) contains the **deferred** internal agent/CLI design and its trust boundaries. The former `workers/mail-ops` Rust source, config template and Worker-route helper were exploratory implementation work and are preserved only in Git history; no current release path deploys them. The previously provisioned empty D1/R2 resources remain untouched pending a separate resource-retirement review:
-
-| Environment | D1 | R2 bucket | State |
-| --- | --- | --- | --- |
-| Staging | `moesegfault-mail-ops-staging` / `272e024c-453a-461b-bea0-c37a62c89d24` | `moesegfault-mail-ops-reports-staging` | Empty, unused |
-| Production | `moesegfault-mail-ops-production` / `06e84adb-fe29-4183-b131-5042a48bcdee` | `moesegfault-mail-ops-reports-production` | Empty, unused |
-
-Do not mistake historical source or unused resources for a functional intake route. Before any future replacement, migrate without dropping verified role rules, prove new delivery/alert/response end to end, and only then atomically switch the exact destinations. A broken or unverified destination is never an acceptable migration state.
+On lost access, routing drift or missed monitoring, revoke acceptance and hold
+sending with [outbound operations](outbound-abuse-operations.md). Preserve the four
+forwards through rollback; never delete user aliases or manufacture attestation.
+References: [RFC 5321](https://www.rfc-editor.org/rfc/rfc5321#section-4.5.1),
+[RFC 2142](https://www.rfc-editor.org/rfc/rfc2142).

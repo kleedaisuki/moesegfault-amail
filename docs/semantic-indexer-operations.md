@@ -1,6 +1,6 @@
 # Automatic semantic indexer: D1 ledger and recovery
 
-Status (2026-09-29): implementation in `crates/mail-worker/migrations/0007_embedding_work.sql`, `src/lib.rs`, `src/platform.rs`, and `src/search_jobs.rs`; **not evidence of a hosted deployment**. This supplements the product/privacy decision in [semantic-indexing-privacy-decision.md](semantic-indexing-privacy-decision.md). Automatic indexing remains the selected behavior for *every eligible active message*, even when the owner never invokes `--semantic`. Do not describe this as search-triggered or telemetry.
+Implementation contract: the private scheduled maintenance Worker runs the shared indexing logic; the API has empty Cron. Bounded production indexing is accepted in [validation](validation.md). Automatic indexing applies to every eligible active message, not only users invoking --semantic; see [privacy](semantic-indexing-privacy-decision.md).
 
 ## Contract and state
 
@@ -31,7 +31,7 @@ SELECT COUNT(*) AS active_missing_vector FROM messages
 WHERE deleted_at IS NULL AND embedding_json IS NULL;
 ```
 
-Counts should reconcile: active missing vectors should equal pending plus quarantined work, except during a just-started migration or a live transaction. A large due backlog means throughput/latency is insufficient; a growing quarantine count is an operator alert. Do not assume a successful Cron invocation means every provider call succeeded. No customer-data staging test or live provider call was performed for this implementation; controlled synthetic-message E2E remains a release gate.
+Counts should reconcile: active missing vectors should equal pending plus quarantined work, except during a just-started migration or a live transaction. A large due backlog means throughput/latency is insufficient; a growing quarantine count is an operator alert. Do not assume a successful Cron invocation means every provider call succeeded. Current production synthetic-message indexing evidence is in [validation](validation.md); aggregate health still does not prove every provider call or a latency SLA.
 
 After correcting a dependency, the global cooldown expires by itself. A reviewed operator recovery may advance `blocked_until` to zero, but **never** delete work to hide incomplete search. Quarantined rows require diagnosis by fixed error code and an explicit reset of `state='pending'`, `attempts=0`, `next_attempt_at=0`, `lease_until=0`, `lease_token=NULL`; keep their active message rows and preserve the audit trail externally. Do not reset all quarantines as a blind reaction to a provider outage. Migrations must precede the Worker deployment; Cloudflare rolls back a failed migration, not a previously applied one: [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/), [Wrangler apply behavior](https://developers.cloudflare.com/d1/wrangler-commands/).
 

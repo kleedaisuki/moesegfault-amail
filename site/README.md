@@ -1,6 +1,6 @@
 # amail release site
 
-Standalone Astro/TypeScript static product candidate at
+Standalone Astro/TypeScript static release site at
 `https://amail.moesegfault.dev/`, served by Cloudflare Workers Static Assets.
 Expected routes: `/`, `/manual/`, `/changelog/`, with heading-derived manual
 navigation and stable version-based changelog navigation.
@@ -8,6 +8,9 @@ navigation and stable version-based changelog navigation.
 The repository contains the CLI, Mail backend, versioned Agent Skill and release
 pipeline. The site itself remains a static public guide, not a web inbox.
 Hosting its candidate mode does not publish the CLI or authorize public sending.
+v0.1.0 is now published; [current acceptance](../docs/validation.md) records
+the delivered Release and real public-route outcome. Candidate mode remains an
+isolated compatibility build, not the site's present release status.
 
 ## Hosted checks and guarded deployment
 

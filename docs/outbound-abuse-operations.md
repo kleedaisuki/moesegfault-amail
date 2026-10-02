@@ -1,56 +1,56 @@
-# Outbound abuse operations and release evidence
+# Outbound policy and incident operations
 
-Status 2026-09-28: **source work pending hosted CI and deployed lifecycle canaries**. No public send has been unheld. The two operational mail routes (`abuse@` and `postmaster@` under `mail.moesegfault.dev`) have **not** been provisioned or externally tested. This document is an operator runbook, not a claim that a contact address already works.
+Amail permits agent-workflow transactional notifications and related replies,
+not bulk marketing or unrestricted correspondence. Production sending was
+explicitly allowed on 2026-10-02; [validation](validation.md) records evidence.
+Global/account/recipient holds remain operative. Initial new storage defaults held;
+that is a safe initialization rule, not today's production status.
 
-## Scope, resources and permissions
+## Policy and delivery
 
-Amail permits AI-agent workflow transactional notifications and related replies, not marketing, bulk prospecting or unrestricted person-to-person mailbox use. The Rust mail API enforces owner, recipient and quota rules on each ZIP send. The Rust `workers/mail-events` Queue consumer handles Cloudflare Email Sending lifecycle events, not inbound Email Routing events. It validates Cloudflare account, zone, exact sending subdomain, schema version, provider ID, original sender and complete private To/Cc/Bcc envelope. A unique event ID and D1 triggers make redelivery idempotent; a complaint holds the accountable owner and blocks that recipient. No subject, MIME body or SMTP response is stored in these abuse tables or logged by application code.
+Every ordinary ZIP send checks ownership, recipient/quota controls, global/account
+policy and required release/contact state. Read failure or missing policy denies
+send. Errors stay typed: send_held, recipient_blocked, quota_exhausted. Revoking a
+required gate re-holds sending. Manual changes leave append-only audit records
+with opaque case reference, never report prose.
 
-Four new empty Queue resources were created through local Wrangler OAuth on 2026-09-28. **No Event Subscription or consumer deployment was created by that action**:
+One-use grants are explicit time-bounded recipient-bound exceptions, not global
+unhold or automatic retry. Provider acceptance is not delivered mail. Validate a
+controlled send from independently received TEXT/HTML/CID/assets, authenticated
+receiver SPF/DKIM/DMARC evidence and the exact delivered lifecycle event. An unknown
+submission remains unknown; no blind second send with a new key.
 
-| Environment | Lifecycle Queue ID | DLQ ID |
-| --- | --- | --- |
-| Production | `amail-sending-events` / `1ad327471caa4921b69ee5e0b6b03cff` | `amail-sending-events-dlq` / `54c4cda6dc794622a8585473350644e3` |
-| Staging | `amail-sending-events-staging` / `da1c62c7769148e7b74a6dcf9536c607` | `amail-sending-events-dlq-staging` / `6fde1bcbdaf24568860388e0e95e5608` |
+The mail-events Queue consumer validates account/zone/domain/schema/provider ID,
+original sender and complete private envelope before attribution. Unique event ID
+and D1 transitions deduplicate redelivery. Authenticated complaints hold the owner
+and suppress that recipient. Malformed/unknown/expired attribution goes to retry/
+DLQ review, not silent acknowledgement or guessed owner.
 
-`infra/deploy/ensure_email_events.py` idempotently confirms the named queues **before** Rust consumer deployment and subscribes the exact domain **after** consumer readiness to `message.delivered`, `message.deferred`, `message.bounced`, `message.failed`, `message.rejected` and `message.complained`. The consumer uses batches of 10, five retries delayed 120 seconds, and a DLQ. The current GitHub `CLOUDFLARE_API_TOKEN` must permit account-scope **Queues Write** (or equivalent Workers Scripts Write for subscription and Queue creation), D1 Write and Worker deployment. The candidate-branch read-only `.github/workflows/probe-queues.yml` checks Queue list capability without provisioning or printing resources. The separate zone-scoped `CF_EMAIL_ROUTING_TOKEN` still controls only literal inbound rules; do not broaden it to Queues. Cloudflare documents [event subscription permissions](https://developers.cloudflare.com/api/resources/queues/subresources/subscriptions/methods/create/) and [Queue/DLQ retry behavior](https://developers.cloudflare.com/queues/configuration/dead-letter-queues/). If a permission probe fails, update the existing deployment token if appropriate; no second Queue token is inherently required.
+## Restricted state and retention
 
-The production mail subdomain has a 200-literal-rule provider limit. Reserve two operational rules for `postmaster@` and `abuse@`, leaving **198 user aliases** in the API's `capacity.limit`; the provider's actual rule state remains authoritative. [RFC 5321 §4.5.1](https://www.rfc-editor.org/info/rfc5321/) requires postmaster support on a receiving SMTP domain, and [RFC 2142](https://www.rfc-editor.org/info/rfc2142/) defines abuse as an operational contact. Mail-subdomain routing cannot use a catch-all, so both require explicit routes to a **controlled, monitored operator destination or Worker**, plus external delivery tests including mixed-case `Postmaster`. Do not publish a dead `mailto:` link or set `abuse_contact_verified=1` until this works. A provider destination address, if forwarding is chosen, must be operator-owned and verified; none is assumed here.
+send_requests retains restricted sender/envelope/provider attribution separately
+from visible mailbox content so deleting an archive cannot sever complaint handling.
+No subject/body/raw SMTP prose is stored in abuse tables or telemetry.
+Envelope attribution is cleared in bounded maintenance batches after 90 days from
+send creation; provider_events after 90 days from Queue receipt; recipient_outcomes
+after 90 days from event time. These are scheduled targets, not real-time erasure
+promises. Complaint suppression and policy audit require explicit review/removal.
+Queue/DLQ provider payloads contain PII under provider retention; restrict access.
 
-## Queue capability diagnostic execution boundary (2026-10-02)
+## Emergency response
 
-The registered `probe-queues.yml` diagnostic is now **manual only**; ordinary
-source pushes/PRs do not query provider permissions. Its existing workflow name,
-no-input dispatch/ref API, environment variables and fixed helper status/exit
-outputs remain unchanged. It performs one Queue-list GET without provisioning
-or printing resource data. `read_available` is a coarse HTTP-status signal, not
-Queue Write proof or deployment readiness. Normal hosted source contracts use
-mocked HTTP; actual lifecycle/trace deployment keeps its separate resource graph,
-writer-lock, readback and hold admission. Do not duplicate tokens, reinterpret an
-old successful probe as current authorization or replay old source runs.
-See [current operational lanes](maintenance-operational-lanes.md#follow-on-isolate-queue-reads-from-ordinary-source-edits).
+1. Use send-control on main or restricted audited policy control to hold new sends.
+   Keep existing accepted/unknown state and inbound/search/archive operations.
+2. Inspect safe typed events and exact Queue/DLQ health. If consumer is faulty,
+   pause subscription only after hold; retain messages for corrected replay.
+3. Resolve complaints using trusted event records. Do not clear suppression to pass
+   a canary or treat arbitrary abuse email as policy authority.
+4. Preserve additive migrations, idempotency journals and four direct contact
+   forwards through repair. No queue purge/table drop/resource deletion as rollback.
+5. Restore only compatible source/configuration, verify actual graph and independently
+   accepted contact/feedback state, then use the explicit separately gated allow.
 
-## Fail-closed send policy and controlled canary
-
-Migration `0006_outbound_abuse.sql` creates a singleton global `held` row and four release attestations initially false: `feedback_verified`, `abuse_contact_verified`, `delivery_canary_verified`, `preview_reviewed`. Every ordinary send checks both the global state **and all four attestations**; a missing D1 row/read error denies send. A recipient complaint inserts an account hold and block atomically. Holds do not block receiving, retrieval, search or address management. The public error is `send_held` (403), a local do-not-contact error is `recipient_blocked` (403), and exhausted quotas are `quota_exhausted` (429). Account/global state and gate changes leave append-only D1 audit rows with an opaque case reference. `send-control.yml` on `main` can hold immediately; a production global `allowed` action also requires literal `ENABLE_PRODUCTION_SEND` and all four recorded attestations. Revoking any gate automatically re-holds the global switch.
-
-The first real send cannot require its own already-passed delivery gate. `grant-send-canary.yml` therefore records a **single-use, 15-minute** exception pinned to one `(issuer, subject)` and the SHA-256 of one owned external recipient; the raw test address is **not** a GitHub workflow input. The send path permits exactly one To recipient and no Cc/Bcc. A D1 INSERT trigger atomically claims the first fresh idempotency key, so another key cannot fan out during the window. The same key may replay its accepted or definitive rejected outcome without a second provider call. This SHA-256 is an exact-match control, **not an anonymization guarantee** for a guessable address; the grant and audit remain restricted operator data. Compute the digest locally from stdin, not from a command-line argument/history, for example `python -c "import hashlib,sys; print(hashlib.sha256(sys.stdin.readline().strip().lower().encode()).hexdigest())"` then enter the address on stdin. Obtain the test account's opaque Identity subject from a restricted Identity/D1 operator query, not from a public CLI status field.
-
-Exact sequence, separately for staging and production:
-
-The first candidate push can deploy staging but cannot invoke the new `workflow_dispatch` operator workflows: GitHub requires their workflow files on the default branch. Keep staging globally held through pre-merge checks, merge only after hosted build/security review, then use the now-available main-branch `grant-send-canary.yml` against the isolated staging database. If a pre-merge canary is essential, use a restricted, audited D1 operator action with the same grant semantics; do not pre-attest delivery. A `main` push **does not** auto-promote production. After staging canary and feedback review, explicitly dispatch `CI and deploy` with `target=production` on `main`; this deploys the mail API, ingress, lifecycle consumer, and (only if matching Release assets are published) the public site. Production still starts with the global send hold and needs its own canary and four attestations.
-
-1. Apply migration 0006 and deploy API, Rust lifecycle consumer and domain Event Subscription. Verify the subscription's exact domain/events, consumer and DLQ; leave global `held`. Review `infra/provider/configure_sending_privacy.py` hosted preflight: for the exact user sending subdomain it PATCHes `preview_enabled=false` and `drop_suppressed_recipients=false`, then GET-verifies both metadata booleans. It does **not** modify the official apex sender. Cloudflare says new domains have full HTML/text/header/attachment/raw [Email preview](https://developers.cloudflare.com/email-service/observability/logs/) on by default, and its [subdomain API](https://developers.cloudflare.com/api/resources/email_sending/subresources/subdomains/methods/edit/) exposes these two flags. If existing `CLOUDFLARE_API_TOKEN` cannot edit Sending settings, leave the gate false; either extend the same token with reviewed scope or use the dashboard and verify via a read-capable credential.
-2. After the operator owns an external test inbox, run `grant-send-canary.yml` for the exact environment, Identity subject, recipient digest and opaque case. Within 15 minutes send one CLI-authored ZIP to that inbox through the deployed Worker. Confirm the API's 202 is only provider acceptance; inspect the external inbox for the exact body, attachment/CID, and SPF/DKIM/DMARC alignment. Record only coarse result and opaque IDs, not content or address, in CI evidence. A controlled bounce/complaint fixture should establish provider event → Queue → D1 recipient outcome/owner hold; do not create an unconsented complaint to a third party.
-3. Verify a real Event Subscription Queue body matches Cloudflare's documented direct `{type,source,payload,metadata}` event object. The consumer deliberately retries unknown wrappers/schemas to the DLQ rather than guessing. Cloudflare's [published examples](https://developers.cloudflare.com/email-service/platform/event-subscriptions/) use `type=cf.email.sending.message.*`, but a deployed canary is still required to prove the Queue body shape and hosted D1 trigger behavior. Test duplicate/out-of-order replay and a deleted-message late complaint in hosted contracts; the provider's actual event correlation must be observed separately.
-4. Provision and externally test both operational literal routes to a monitored operator destination/Worker. Verify an abuse report with full headers and a delivered Message-ID reaches a human process; it is untrusted input, never an agent command. Acknowledge reports within one business day, urgently review credible spam/complaint reports, apply an owner block or a `sending_domain` manual Cloudflare suppression, and record an opaque case/audit reference. [Cloudflare's suppression API](https://developers.cloudflare.com/email-service/configuration/suppressions/) requires Email Sending: Edit for automation; an operator may use the dashboard instead. Never delete a provider complaint suppression just to pass a test. A domain-wide suppression must target `mail.moesegfault.dev`, not the separate official sender domain.
-5. Configure a DLQ/backlog notification to an actually monitored operator channel and test it; without an active DLQ consumer, Cloudflare retains DLQ messages only [four days](https://developers.cloudflare.com/queues/configuration/dead-letter-queues/). Inspect queue metrics daily and investigate any DLQ event under restricted access; do not paste raw Queue payload into a GitHub issue/log. Reconcile daily delivered/bounced/rejected/complained aggregates against Cloudflare [Email Sending analytics](https://developers.cloudflare.com/email-service/observability/metrics-analytics/). At low volume, even one complaint merits owner review; the provider's guide suggests delivery >95%, hard bounce <2%, complaint <0.1% as trend indicators, not statistically reliable small-sample guarantees.
-6. Only after the evidence above exists, use `attest-send-gate.yml` to record each environment's four gates with opaque evidence case references. The production global switch can then be set `allowed` through `send-control.yml` with the explicit confirmation. A staging pass alone does not attest a production send. If any external dependency fails afterward, revoke its gate or run global `held` immediately; do not wait for the next release.
-
-## Investigation, privacy and rollback
-
-`send_requests` records provider ID, original API `request_id`, sender and complete normalized envelope in one D1 accepted-state update. The Rust Queue consumer resolves feedback against that row even if the user deletes the visible message archive. It logs only lifecycle kind plus the API-generated opaque request ID on a newly inserted event; automatic Queue observability is disabled because provider payloads include sender/recipient/subject/SMTP text. Worker `wrangler tail` and D1 operator access must remain restricted. The mail API's own response already exposes the same request ID to the CLI, making correlation possible without logging a recipient or provider ID. A malformed/unknown event is retried and ultimately reviewed in the DLQ; never silently ack it.
-
-The sender and full envelope on `send_requests` are **restricted anti-abuse data**, not a second mail copy or CLI-search field. A five-minute cron clears them in bounded batches after 90 days from original send creation, independent of request state. `provider_events` is removed after 90 days from Queue receipt; `recipient_outcomes` after 90 days from event time. Backlog/outage can delay cleanup, so these are scheduled retention targets, not real-time erasure promises. Complaint recipient blocks and policy/gate audit records remain until a documented operator review/removal; raw mail body, subject and SMTP response are never in these D1 abuse tables. The Queue/DLQ itself contains transient provider PII under Cloudflare's separate retention; restrict access. If the provider's event arrives after attribution expiry, it is intentionally sent to DLQ for review instead of being attached to the wrong account.
-
-Emergency rollback: set the global state `held` using the operator workflow or restricted D1 dashboard first. This prevents new sends but preserves existing accepted/unknown states and inbound service. If the lifecycle consumer is faulty, pause/disable the Event Subscription only after the hold, retain Queue/DLQ contents, fix and replay; do **not** delete or purge queues. If an operator route is faulty, do not attest intake; repair and retest external SMTP. Do not roll back migration 0006 by dropping tables—the old API can still read the augmented `send_requests` columns, and destructive rollback would erase idempotency/complaint evidence. The only currently provisioned resources are the four empty Queue objects listed above; deleting them is unnecessary for safe rollback.
+Role contact response/privacy is in [operator intake](operator-intake.md).
+Cloudflare [event subscriptions](https://developers.cloudflare.com/api/resources/queues/subresources/subscriptions/methods/create/)
+and [DLQs](https://developers.cloudflare.com/queues/configuration/dead-letter-queues/)
+describe platform behavior; actual deployed configuration remains authoritative.

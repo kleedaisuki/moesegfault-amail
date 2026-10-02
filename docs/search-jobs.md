@@ -1,6 +1,6 @@
 # Durable exact search continuation
 
-Status: implemented in source as of 2026-09-28, pending remote CI and deployed verification. Complements [the measured-search plan](perf-search.md) and [backend operations](backend-operations.md).
+Status: implemented contract; bounded actual acceptance and remaining scale limits are in [validation](validation.md).
 
 ## Why a job is necessary
 

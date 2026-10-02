@@ -1,122 +1,56 @@
-# First protected fresh-production bootstrap: implementation contract
+# Fresh storage bootstrap and recovery
 
-Date: 2026-10-01. Source-only work; no provider creation/deploy/account/mail or
-secret changes are authorized. Root approved a controlled fresh storage epoch
-and two-step receipt -> reviewed source adoption; v1 lifecycle stays unchanged.
+This is an exceptional owned-storage lifecycle, not the normal deployment path.
+The delivered graph and current coordinates are in [operations](operations.md).
+Original stores are retained; current inventory is not historical ownership proof.
+No document itself grants a new bootstrap, activation, drain or deletion.
 
-Cheap source/history search found production D1
-`ad06f7f3-8897-4150-b9a9-7a46a8e55b30` and R2
-`moesegfault-mail-raw-production` first in source `d5a98a8` (2026-09-28).
-Operations/backend docs retain coordinates but no successful provider creation
-response/owned immutable run receipt was found. Held inspection explicitly
-states current-only facts and no historical/old-work admission. That is not a
-positive fresh-resource witness. Preserve both original stores and reject any
-retained user data, migration or abandonment from this first-bootstrap lane.
+## Protected creation
 
-## Settled interfaces and ownership
+production-fresh-bootstrap admits original exact-main full hosted checks and its
+immutable six-tree artifact identity before a provider call. Historical seven-tree
+receipts remain readable without rebuilding the retired native tracing canary.
+The source/run epoch
+binds source SHA, run/attempt, artifact ID, manifest digest and compiler versions;
+derived names cannot be caller-selected. Establish complete positive name absence,
+persist submit intent, attempt each creation once, then capture positive response
+identity and exact readback. A timeout/409/failed read is UNKNOWN, not adoption or
+retry authority.
 
-* Shared `fresh_bootstrap_contract.py`: `Epoch(source_sha, run_id, artifact_id,
-  manifest_sha256, rust, worker_build="0.8.5")`; source/run derive a 24-hex suffix
-  and bounded D1/R2 names. `Scope(epoch, database, database_created_at,
-  bucket_created_at)` binds successful response/readback identities; original
-  production and staging D1 are refused. Objects validate syntax, not authority.
-* Resource worker owns `fresh_bootstrap_scope.py`: bounded no-redirect provider
-  transport, complete positive name absence, each create attempted once, durable
-  pre-submit recovery intent, validated create plus exact GET readback, and
-  `create_scope(provider, epoch, recovery_path) -> Scope`.
-  `render_configs(scope, folder) -> dict[str, Path]` maps keys `api`, `maintenance`
-  to source-derived TOML; only production resource IDs/names and source-owned
-  absolute main/migration paths may differ. No guessed adoption on 409/timeout,
-  no token, no deletion, no rebuild, no user-controlled path/name/epoch.
-* Readback/receipt worker owns `fresh_bootstrap_readback.py` and
-  `fresh_bootstrap_receipt.py`. `verify(scope, pins, queue, dlq, provider) -> dict`
-  pins all three fixed scripts (API/maintenance/sink) by version+deployment;
-  enforces fresh bindings, held NEW DB, independent capture/surface checks,
-  strict two-producer Queue/DLQ, unchanged external forwarding snapshot and both
-  explicit empty schedules. `pins` starts as `{script: version_uuid}`, and the
-  result is the complete v1 graph-shaped `{pins:{script:{version,deployment}},
-  api_crons:[],maintenance_crons:[],topology:"api-scheduled"}`.
-  `persist(scope, graph, queue, dlq, path) -> dict` emits a closed v2 paused
-  first receipt only after that successful exact readback. `load(run_id)` must
-  admit only successful first-attempt main ci.yml protected job
-  `Fresh held production bootstrap` and immutable bounded unique artifact
-  `mail-fresh-bootstrap-<run>-1` containing `receipt.json`; v1 untouched.
-* Leader owns `fresh_mail_bootstrap.py`, CI target/job/source-gate/lock wiring,
-  shared model and integrated docs. Controller independently verifies full same-
-  run hosted source checks + original artifact identity before any provider step,
-  calls existing OLD scope complete held-empty/absence/routing/send preconditions,
-  provisions new scope, runs source migrations/NEW DB held-empty checks, packages
-  the same generated modules once per fixed sink/paused maintenance/fetch-only API,
-  exact readback, then persists first receipt. Failure persists owned recovery
-  metadata, never a successful receipt or automatic retry/rollback/delete.
-* Validator owns controller/workflow synthetic tests in its separate worktree;
-  no local execution. Provider models/readback tests belong to their implementers.
+Create fresh D1/R2, apply source migrations and verify held/empty state without
+inventing grants or unconditional writes that alter migration audit rows. Submit
+private sink first, paused maintenance and fetch-only API from the checked artifact.
+Read back pinned versions/deployments, response-owned bindings, two exact Queue
+producers/one private consumer/DLQ, independent capture/public-surface checks,
+empty schedules and unchanged external forwards. Only complete successful readback
+emits the immutable paused receipt. It grants neither activation nor old-work drain.
 
-## V2 meaning and unfinished acceptance
+Reviewed source adoption and separately protected production-fresh-online activation
+are distinct transitions. Normal API replacement/rollback never restores Cron.
 
-V2 records fresh positive creation, original same-run artifact source/run/ID/hash/
-compiler, exact scope/Queue/pins and paused schedules, original stores retained,
-global sending held, source adoption required, activation NOT_GRANTED.
-Fresh storage proves only its isolated storage scope. Independent shared
-routing/sending current writer/freeze/history preconditions must not be waived;
-unknown old external work stays explicit. No active/legacy rollback command.
+## Read-only interruption recovery
 
-The initial generated deployment config is not automatically established normal
-source truth. After a genuine successful protected receipt, root separately
-reviews adoption of internal resource coordinates in checked-in configs/operator
-targets. Public CLI/domain/Identity/ZIP contracts remain unchanged; no migration
-or hash-Secret ceremony. Ordinary deployment/release remain fail-closed until
-source truth matches the actual receipt-owned graph.
+fresh-mail-bootstrap-recovery.yml and infra/deploy/fresh_bootstrap_recovery.py admit
+the original completed main ci.yml dispatch attempt 1 and exact creator job.
+Success/failure/timeout/cancellation may be observed only if all original source
+gates succeeded and immutable controller/scope evidence is available. Cancellation
+can interrupt artifact upload; always() is not a durability guarantee.
 
-### First actual bootstrap refusal (2026-10-02)
+Verify original manifest/module hashes and closed bounded JSON/ZIP journal before
+provider reads. Refuse duplicate/traversal/symlink/encrypted/oversized entries,
+changed source/compiler coordinates or substituted caller receipts. Extract only
+known safe records to a new repository .temp folder, never replace existing files.
 
-Protected run [36906562887](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36906562887)
-passed its source gates but stopped in old-scope inspection. The first D1 query
-was `SELECT name FROM d1_migrations ORDER BY id`; it returned HTTP400, CF-Ray
-`a43d8a26bf6c6bfb-DFW`, at October1 18:30:38 UTC. The provider body was not
-retained, so a missing migration table is **not yet an observed fact**.
-Immutable recovery artifact `11185461013` contains only admission intent/observed
-and old_scope intent/failed: no fresh creation intent, scope journal or receipt.
-No D1/R2/Queue/Worker creation phase was reached.
+Only positive original creation identities may be observed. A prefix ending at a
+submit intent is valid interruption evidence, not resource existence/ownership.
+Missing artifact or scope remains typed unavailable; truncated/malformed journals
+are rejected. Expired artifacts are not admission. Current inventory/name equality
+cannot replace creator evidence.
 
-The existing inspector now lets this first-bootstrap caller read successful
-complete `sqlite_master` metadata before querying the migration table. A database
-with no non-platform schema objects, zero whole-bucket R2 objects, absent current
-store callers and unattached product route may be retained as uninitialized old
-storage. Missing policy/grant tables are not reported as held rows. Both metadata
-snapshots and forwarding brackets must still agree. Nonempty unrecorded schema
-and failed reads stop with safe structural reasons; recorded prefixes retain
-their exact migration/held-state checks. Old stores are never migrated/deleted.
-This correction permits a new changed-source initial deployment, not an unchanged
-retry or an activation. Cloudflare documents [SQLite metadata inspection](https://developers.cloudflare.com/d1/sql-api/sql-statements/)
-and the separate [Wrangler migration ledger](https://developers.cloudflare.com/d1/reference/migrations/).
+Recovery never creates, updates, deletes, migrates, deploys, consumes messages,
+replays writes, adopts coordinates, activates, drains or emits a success receipt.
+Review unknown outcomes explicitly rather than launch a replacement epoch.
 
-The old-scope opaque-domain reader repair is integrated from main PR 73. It
-preserves incomplete-read refusal; this source integration does not imply actual
-inspection or first receipt acceptance.
-
-## Executable source integration
-
-`infra/deploy/fresh_mail_bootstrap.py` now implements the protected controller and
-the CI `production-fresh-bootstrap` target. It verifies all original same-run
-source jobs and the immutable module artifact before provider construction,
-preserves old stores and owner state, creates the new epoch once, migrates only
-that epoch, verifies default-held state, installs and attests the sink before the
-two paused producers, then persists the closed v2 observation.
-
-An initial bounded `preflight.jsonl` survives admission refusal before controller
-creation. Append-only controller/scope intent plus the bounded Queue provisioning
-receipt survive partial failure; secrets and arbitrary provider outputs do not.
-All intended Worker submissions are observed during recovery, including those
-whose timed-out Wrangler invocation never yielded a version. Failed recovery
-reads remain UNVERIFIED, not absence. The durable read-only recovery workflow
-admits the original protected run and immutable recovery archive before any
-provider observation; it never replays writes, creates a success receipt, adopts
-stores, activates schedules or lifts the send hold.
-
-PR 75 source checks and independent review are ongoing. No actual production
-bootstrap, new-store adoption, activation or rollback has been executed.
-
-Runtime validation is GitHub Actions only; local AST/diff work only. Root alone
-may authorize/perform provider operations. The successful future first receipt
-does not establish complete product release or deployed end-to-end acceptance.
+References: [GitHub cancellation](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation),
+[immutable artifacts](https://github.com/actions/upload-artifact),
+[D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/).
