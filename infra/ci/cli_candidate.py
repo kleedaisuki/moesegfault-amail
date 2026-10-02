@@ -7,6 +7,7 @@ material, not publication admission. Source/run metadata contains no credentials
 
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -59,6 +60,58 @@ def archive_name(version: str, target: str) -> str:
     return f"amail-v{version}-candidate-{target}.{extension}"
 
 
+def candidate_readme(version: str) -> str:
+    """Prepend isolated acceptance instructions without changing public README bytes."""
+    return f"""# amail v{version} — unpublished staging candidate
+
+This archive is for staging acceptance, not a Release. **The binary still defaults
+to production for backward compatibility.** Use a separate shell and dedicated
+staging home before login or any mailbox operation; do not reuse a production home.
+
+From the directory where you keep this acceptance task, configure staging:
+
+```sh
+export AMAIL_HOME=\"$PWD/.temp/amail-staging-acceptance\"
+export AMAIL_API_BASE=https://mail-staging.moesegfault.dev
+export AMAIL_ISSUER=https://identity-staging.moesegfault.dev
+export AMAIL_CLIENT_ID=amail-cli-staging
+./amail config
+./amail discover
+```
+
+Windows PowerShell:
+
+```powershell
+$env:AMAIL_HOME = Join-Path $PWD '.temp/amail-staging-acceptance'
+$env:AMAIL_API_BASE = 'https://mail-staging.moesegfault.dev'
+$env:AMAIL_ISSUER = 'https://identity-staging.moesegfault.dev'
+$env:AMAIL_CLIENT_ID = 'amail-cli-staging'
+.\\amail.exe config
+.\\amail.exe discover
+```
+
+Keep the registered default loopback redirect `http://127.0.0.1/callback`; do not
+substitute a production client or remote redirect. Inspect `config` before login:
+the API, issuer, client and dedicated home must all be the staging values above.
+Staging Identity is a separate realm: a production account/session does not prove
+staging authorization. Use only an authorized staging identity and owned fixtures.
+No token or password belongs in these commands, task notes or public logs.
+
+Automatic semantic indexing sends mail subject/body text to OpenRouter and upstream
+model providers even when `--semantic` is never used. There is no per-account off
+switch. Read the [staging privacy boundary](https://amail-staging.moesegfault.dev/manual/#隐私与边界)
+before creating an address; use nonsensitive synthetic content for acceptance.
+Staging testing does not authorize general sending or change a global send hold.
+
+Verify this bundle's `SHA256SUMS` and `candidate.json` before use. The product
+reference below retains stable defaults/links; it is not an instruction to point
+this staging acceptance task at production.
+
+---
+
+""" + (ROOT / "README.md").read_text(encoding="utf-8")
+
+
 def binary() -> None:
     """Archive the actual native release binary and its public license/manual."""
     info = context()
@@ -81,11 +134,21 @@ def binary() -> None:
     if "windows" in target:
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
             for path, name in inputs:
-                bundle.write(path, name)
+                if name == "README.md":
+                    bundle.writestr(name, candidate_readme(info["version"]))
+                else:
+                    bundle.write(path, name)
     else:
         with tarfile.open(archive, "w:gz") as bundle:
             for path, name in inputs:
-                bundle.add(path, arcname=name, recursive=False)
+                if name == "README.md":
+                    content = candidate_readme(info["version"]).encode("utf-8")
+                    entry = tarfile.TarInfo(name)
+                    entry.size = len(content)
+                    entry.mode = 0o644
+                    bundle.addfile(entry, io.BytesIO(content))
+                else:
+                    bundle.add(path, arcname=name, recursive=False)
     write_json(OUTPUT / f"{target}.json", {**info, "target": target,
                "archive": archive.name, "sha256": digest(archive)})
 

@@ -101,6 +101,13 @@ class CandidateTests(unittest.TestCase):
         archive = self.output / CANDIDATE.archive_name("0.1.2", CANDIDATE.TARGETS[0])
         with tarfile.open(archive, "r:gz") as bundle:
             self.assertEqual(bundle.getnames(), ["amail", "README.md", "LICENSE"])
+            readme = bundle.extractfile("README.md").read().decode("utf-8")
+            for required in ("unpublished staging candidate", "defaults\nto production", "AMAIL_HOME",
+                             ".temp/amail-staging-acceptance", "https://mail-staging.moesegfault.dev",
+                             "https://identity-staging.moesegfault.dev", "amail-cli-staging",
+                             "http://127.0.0.1/callback", "separate realm", "OpenRouter", "--semantic"):
+                self.assertIn(required, readme)
+            self.assertEqual((self.root / "README.md").read_text(), "README.md")
             # chmod on Windows does not model Unix executable permissions.
             if os.name != "nt":
                 self.assertEqual(bundle.getmember("amail").mode & 0o111, 0o111)
