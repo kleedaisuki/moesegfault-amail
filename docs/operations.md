@@ -9,7 +9,7 @@ snapshots as present policy or dispatch authority.
 | Component | Source/configuration | Boundary |
 | --- | --- | --- |
 | Public API mail.moesegfault.dev | crates/mail-worker/wrangler.toml + entry/api.mjs | HTTP/RPC, no Cron |
-| Private maintenance | crates/mail-worker/wrangler.maintenance.toml + entry/maintenance.mjs | Scheduled only, no HTTP/RPC/send binding |
+| Private maintenance | crates/mail-worker/wrangler-maintenance.toml + entry/maintenance.mjs | Scheduled only, no HTTP/RPC/send binding |
 | Email ingress | workers/mail-ingress | Bounded MIME to private API binding |
 | Lifecycle consumer | workers/mail-events | Delivery/bounce/complaint Queue to Mail D1 |
 | Private trace sink | workers/trace-sink | Queue only; exact API + maintenance producer pair |
@@ -37,6 +37,15 @@ production-fresh-bootstrap and production-fresh-online.
 The actual workflow input/confirmation schema is authoritative; no historical
 incident document may restore a removed dispatch mode. staging-e2e retains the
 normal native-login/two-SMTP/ZIP/search journey and RUN_STAGING_E2E confirmation.
+
+The retained production and production-api-only-maintenance targets still admit
+the historical held, single-API-producer graph, not the current active split
+graph. Do not dispatch them for ordinary replacement of today's service. Fresh
+bootstrap/online targets are initial-storage transitions, not that workaround.
+Before a future runtime rollout, align the normal lane with the actual split
+graph and preserve sending policy, storage, schedules and exact rollback pins.
+For infrastructure-only changes with unchanged deployed application inputs,
+publish the maintenance changes through main CI and keep live services unchanged.
 
 Keep actual-production-users for separately authorized owned production journeys,
 send-control/attest/direct-contact/role-forwarding/grant workflows for explicit
