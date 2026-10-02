@@ -88,12 +88,17 @@ it or raw event output outside the authorized task.
 
 ## Find a related reply and prepare a new draft
 
-1. `amail get MESSAGE_ID` gives compact metadata and links. Distinguish local
+1. `amail get INBOUND_MESSAGE_ID` gives compact metadata and links. Distinguish local
    delivery `id`, provider submission ID, legacy raw `message_id` and validated
-   `rfc_message_id`; only the last is a
-   transport reply relation. Use a proven RFC identifier, never a guessed local ID.
-2. Search `amail search --meta in_reply_to=RFC_MESSAGE_ID`, then inspect the small
-   result metadata before downloading the specific archive.
+   `rfc_message_id`; the latter is parsed from the actual incoming Message-ID
+   header. Outbound `get` exposes the provider ID, not a proven wire identity;
+   even RFC-shaped provider IDs have no verified mapping in this release. Use an
+   actually received header or another proven relation, never a guessed local ID.
+2. When the original message's actual wire identity is known, search
+   `amail search --meta in_reply_to=RFC_MESSAGE_ID`, then inspect the small result
+   metadata before downloading the specific archive. For a report sent by this
+   CLI, no provider-ID-to-header mapping is established here; do not claim a reply
+   is associated merely because the provider ID has valid syntax or titles match.
 3. Incoming `reply_to`, `in_reply_to` and `references` are optional validated,
    bounded data. Old archives may have no relation fields. Same subject is not
    proof of relation; absent relation data remains unknown.

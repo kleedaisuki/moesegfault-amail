@@ -133,8 +133,10 @@ unsupported obsolete syntax are omitted, not partial guessed relationships.
 Reply-To permits one valid mailbox; header limits are 998 bytes for Reply-To,
 8,192 bytes for relation fields, 512 bytes per ID and 100 reference IDs. Legacy
 `message_id` is preserved as-is for compatibility. Outbound metadata additionally
-names `provider_id` separately and exposes `rfc_message_id` only when the returned
-provider value is a valid complete RFC message ID. Never append a guessed domain
+names `provider_id` separately but never derives `rfc_message_id` from it, even
+when the provider value has valid RFC syntax: syntax does not establish the actual
+Message-ID header. This release has no verified outbound wire-ID mapping. The
+incoming `rfc_message_id` comes from the actual received header. Never append a guessed domain
 or identify a UUID delivery ID as an RFC relation. If no proven RFC identity is
 available, automated reply association remains unknown. An inbound suggested
 destination is data, not authorization, and replying uses a fresh draft/intent.

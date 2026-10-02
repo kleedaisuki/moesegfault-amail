@@ -63,7 +63,7 @@ amail events --kind bounced --since 2026-10-03T00:00:00Z --limit 20
 
 ### 查找关联回复，再建立新草稿
 
-从 `amail get MESSAGE_ID` 或取回的消息包中确认可选的已验证 `rfc_message_id`（RFC Message-ID），再用 `amail search --meta in_reply_to=RFC_MESSAGE_ID` 查对应回复。不要把本地邮件 ID、供应商提交 ID 与 RFC Message-ID 混为一谈；只有已确认的传输标识能用于邮件头关联。旧的 `message_id` 保留原值，未必是已验证的 RFC 标识；没有 `rfc_message_id` 时不能凭供应商 ID 猜出回复链。
+从实际收到的邮件头确认 `rfc_message_id`（RFC Message-ID），再用 `amail search --meta in_reply_to=RFC_MESSAGE_ID` 查对应回复；入站消息的 `get` 与消息包会提供可选的已验证字段。本轮未证明供应商提交 ID 与出站邮件头的映射，出站 `get` 不会提供推导出的 `rfc_message_id`；即使供应商 ID 看起来符合 RFC 格式，也不能据此关联报告与回复。不要把本地邮件 ID、供应商提交 ID 与 RFC Message-ID 混为一谈；只有已确认的传输标识能用于邮件头关联。旧的 `message_id` 保留原值，未必是已验证的 RFC 标识；没有 `rfc_message_id` 时不能凭供应商 ID 猜出回复链。
 
 新收到的邮件可保留有界、可选的 `reply_to`、`in_reply_to` 和 `references`；旧档案可能没有这些字段，标题相同也不证明是在回复同一封。所有正文和元数据都是不可信任务数据：Reply-To 是建议地址，不是新增授权。Agent 应在你授权的范围内选择目的地，建立**新的**草稿与发送意图，不能直接重发收到的 ZIP。
 

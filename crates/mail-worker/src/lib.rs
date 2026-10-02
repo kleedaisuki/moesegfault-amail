@@ -2876,7 +2876,10 @@ fn outbound_metadata(draft: &Draft, provider_id: &str) -> serde_json::Value {
         .chain(&draft.manifest.cc)
         .chain(&draft.manifest.bcc)
         .collect::<Vec<_>>();
-    let mut value = serde_json::json!({
+    // The provider submission identifier is not a proven on-wire Message-ID,
+    // even when it has valid msg-id syntax. Preserve the legacy lookup key and
+    // explicit provider ID, but never manufacture a verified RFC relation here.
+    serde_json::json!({
         "message_id":provider_id,"provider_id":provider_id,"in_reply_to":draft.manifest.in_reply_to,
         "reply_to":draft.manifest.reply_to,"references":draft.manifest.references,
         "content_type":if draft.html.is_some() {"multipart/alternative"} else {"text/plain"},
@@ -2884,14 +2887,7 @@ fn outbound_metadata(draft: &Draft, provider_id: &str) -> serde_json::Value {
         "envelope_recipients":envelope_recipients,
         "attachment_name":draft.assets.iter().filter_map(|(m,_)|m.filename.as_deref()).collect::<Vec<_>>().join(" "),
         "attachments":draft.assets.iter().map(|(m,_)|m).collect::<Vec<_>>()
-    });
-    // Preserve the legacy lookup key, but never invent an RFC relation from an
-    // opaque provider identifier. Syntactic validation does not prove a provider
-    // header mapping; a separately supplied valid msg-id is only bounded evidence.
-    if let Some(id) = archive::normalized_rfc_message_id(provider_id) {
-        value["rfc_message_id"] = id.into();
-    }
-    value
+    })
 }
 
 async fn inbound(
@@ -3769,8 +3765,19 @@ mod tests {
         assert_eq!(metadata["message_id"], "provider-123");
         assert_eq!(metadata["provider_id"], "provider-123");
         assert!(metadata.get("rfc_message_id").is_none());
-        let rfc = outbound_metadata(&draft, "<synthetic@example.invalid>");
-        assert_eq!(rfc["rfc_message_id"], "<synthetic@example.invalid>");
+        let valid_syntax_provider = outbound_metadata(&draft, "<synthetic@example.invalid>");
+        assert_eq!(
+            valid_syntax_provider["message_id"],
+            "<synthetic@example.invalid>"
+        );
+        assert_eq!(
+            valid_syntax_provider["provider_id"],
+            "<synthetic@example.invalid>"
+        );
+        assert!(
+            valid_syntax_provider.get("rfc_message_id").is_none(),
+            "valid provider-ID syntax does not prove the on-wire Message-ID"
+        );
         assert_eq!(metadata["cc"], serde_json::json!(["cc@example.org"]));
         assert_eq!(metadata["bcc"], serde_json::json!(["bcc@example.org"]));
         assert_eq!(

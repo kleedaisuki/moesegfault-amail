@@ -140,7 +140,12 @@ known feedback only if needed -> find a reply by a proven RFC relationship ->
 prepare a fresh authorized reply draft. Acceptance, archive projection, observed
 delivery and human reading are distinct. When no proven RFC identity exists,
 relation lookup remains explicitly unknown rather than being guessed from a
-provider ID or subject. This conditional boundary is a product limitation, not
+provider ID or subject. In this increment **outbound provider-ID-to-wire-header
+mapping remains unknown**, including syntactically valid RFC-shaped provider
+values. Outbound `get` therefore does not manufacture `rfc_message_id`; incoming
+archives expose it only from the actually received Message-ID header. A received
+header or another proven relationship is required before claiming that a response
+belongs to a particular report. This conditional boundary is a product limitation, not
 an excuse to hide the relation space or fabricate a completed workflow.
 
 The next valuable work is bounded acceptance and owner review, not more v0.1.2
@@ -153,6 +158,11 @@ features:
    represented as a new real outgoing-delivery result.
 3. Confirm the actual transport's RFC identity where a related-reply task needs it;
    preserve the optional/unknown fallback and do not invent provider-ID mappings.
+   [Cloudflare's header contract](https://developers.cloudflare.com/email-service/reference/headers/)
+   describes automatically generated Message-ID; the current
+   [Workers sending result](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/)
+   describes `messageId` as a unique email ID, without establishing equality to
+   that wire header. The implementation uses this Workers binding, not REST.
 4. Use one small task probe with a same-subject distractor and hostile incoming
    instruction. Skill guidance is not a proven prompt-injection defense or a
    measured autonomous task-success rate; no new evaluation framework is needed.
