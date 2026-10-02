@@ -29,6 +29,31 @@ Historical held/unreleased snapshots are not current production state.
 
 ## Useful bounded evidence and limits
 
+### v0.1.2 work in progress (not published)
+
+The owner authorized staging testing/deployment only, with public v0.1.0 unchanged.
+Initial hosted [staging inspection 37046570528](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37046570528)
+observed a mixed fetch/scheduled API with five-minute Cron, no maintenance Worker,
+no trace sink or trace queues, and existing private ingress/lifecycle adapters.
+API/ingress/lifecycle capture was positively read off. This establishes the legacy
+predecessor requiring a cutover; it does not prove the v0.1.2 split graph is online.
+
+Local lightweight source/mock checks cover staging context, immutable bounded
+usage models, drift rejection, retained lease/backlog semantics, future split
+replacement without the initial wait, exact adapter graph, candidate provenance
+and site stale-copy rejection. No local Rust/Wasm/browser build, provider mutation,
+mail send or deployment was performed for these checks. The independently reviewed
+immutable usage-model member was corrected to `resources.script_runtime`; its
+positive/negative fixtures are part of hosted admission. Actual hosted checks,
+performance measurements, new graph readback, native journey and site/browser
+acceptance must be added here only after their runs produce evidence.
+The bounded native staging journey was extended to read new owner-visible
+surfaces and correlate its existing second SMTP fixture to the first verified
+DATA receipt. Its local mocked fixtures prove harness ordering/error contracts,
+not actual provider delivery; no live outgoing feedback is claimed under the
+staging global hold. Runtime outbound feedback remains covered by hosted synthetic
+Wasm/D1 tests unless a separately scoped owned canary is actually executed.
+
 Staging [36719116852](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36719116852),
 source `17abe25`, passed one-principal native PKCE/two-message receive/search/ZIP/
 cleanup and two `limit=1` exact-cosine pages:

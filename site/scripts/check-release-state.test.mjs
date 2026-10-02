@@ -22,6 +22,7 @@ function fixture(state) {
     `<a href="/manual/">Manual</a><a href="/changelog/">Changelog</a>
      ${path === 'manual/index' ? '<nav aria-label="用户手册目录"></nav>' : ''}
      ${path === 'changelog/index' ? '<nav aria-label="更新日志目录"></nav>' : ''}
+     ${state === 'candidate' && path === 'changelog/index' ? '<h2 id="v0.1.2">v0.1.2</h2><a href="#v0.1.2">v0.1.2</a>' : ''}
      <p>${state === 'candidate' ? candidate : published}</p>
      ${state === 'candidate' ? `<p>${serviceNotice}</p>` : ''}
      ${state === 'published' && path === 'manual/index' ? releaseDownloads.map((asset) => `<a href="${asset.href}">${asset.label}</a>`).join('') : ''}
@@ -65,6 +66,15 @@ for (const state of ['candidate', 'published']) {
     }
   }
 }
+
+test('v0.1.2 changelog record is present in candidate and absent from published builds', () => {
+  const candidate = fixture('candidate');
+  candidate['changelog/index'] = candidate['changelog/index'].replace('id="v0.1.2"', 'id="old"');
+  assert.throws(() => checkReleaseState('candidate', candidate, headers), /Candidate changelog entry/);
+  const published = fixture('published');
+  published['changelog/index'] += '<h2 id="v0.1.2">Unpublished</h2>';
+  assert.throws(() => checkReleaseState('published', published, headers), /Candidate changelog entry/);
+});
 
 test('published HTML noindex fails on any page', () => {
   for (const path of Object.keys(claims)) {

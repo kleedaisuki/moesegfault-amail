@@ -77,6 +77,11 @@ export function checkReleaseState(state, htmlByPath, headers) {
       !htmlByPath['changelog/index'].includes('aria-label="更新日志目录"')) {
     throw new Error('Manual or changelog table of contents is missing');
   }
+  const candidateEntry = htmlByPath['changelog/index'].includes('id="v0.1.2"');
+  if (candidateEntry !== (state === 'candidate') ||
+      (state === 'candidate' && !hasHref(htmlByPath['changelog/index'], '#v0.1.2'))) {
+    throw new Error('Candidate changelog entry must be visible only in candidate builds');
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -38,6 +38,79 @@ The actual workflow input/confirmation schema is authoritative; no historical
 incident document may restore a removed dispatch mode. staging-e2e retains the
 normal native-login/two-SMTP/ZIP/search journey and RUN_STAGING_E2E confirmation.
 
+### v0.1.2 staging-only candidate
+
+The reviewed branch is `codex/v0.1.2-agent-first-performance`. Dispatch `checks`
+for hosted source/performance checks and downloadable native candidates without
+deployment. `staging-inspect` plus `INSPECT_STAGING_V012` reads only fixed staging
+capabilities; `staging` plus `RUN_STAGING_V012` is the isolated graph writer.
+All staging inspection/deployment/native acceptance runs share the workflow-level
+staging writer lock; same-run resource jobs remain sequential. No tag, Release,
+production deployment, public-site replacement or global-send policy enable is
+part of this lane. Protected staging synthetic identities are not production users.
+
+Actual initial inspection [37046570528](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37046570528)
+found legacy API version `c3f6401a-1e84-4f51-91df-ae77d90683e9` with both fetch and
+scheduled handlers and five-minute Cron; maintenance, trace sink and trace queues
+were absent. Ingress and lifecycle were present. This snapshot is neither a drain
+witness nor proof of a new deployment. Current live reads remain authoritative.
+
+The staging writer accepts either this frozen immutable legacy contract or an
+exact already-active split graph. It restores the same-run tested artifact before
+any provider mutation, keeps global sending held, preserves D1/R2 and additive
+migrations, and deploys the private sink before trace producers. Initial migration
+deploys the API fetch-only with empty Cron and private maintenance paused. It then
+brackets the exact API/paused-maintenance serving versions, empty schedules and
+held policy throughout a monotonic 31-minute observation window. Admission uses
+the pinned old version's immutable `resources.script_runtime.usage_model`; missing,
+unknown or grandfathered Bundled models stop before writes because their duration
+is not bounded by the standard contract.
+
+This bound combines documented [Cron propagation up to 15 minutes](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
+with [scheduled invocation wall time of 15 minutes](https://developers.cloudflare.com/workers/platform/limits/)
+and a one-minute margin. A bare elapsed wait, zero lease count or caller assertion
+is not equivalent evidence. Existing execution leases are read and retained:
+pending work and foreground projection leases are legitimate, not a reason to
+empty a mailbox or clear fences. Old scheduled execution is bounded by the
+provider contract; any residual lease remains the runtime's normal opaque-token
+fence. The same-run witness records the pinned cohort, model, limits, sample count
+and preserved lease counts. Only then is the private five-minute maintenance Cron
+enabled and the exact API + maintenance producer pair read back. Already-split
+ordinary replacements preserve the cadence and do not repeat this initial wait.
+After successful initial readback, retain the returned trace Queue/DLQ identities
+as the reviewed staging environment variables used by later exact-graph runs.
+Do not infer ownership from a matching name or replace these pins on a failed read.
+
+Deploy ingress and lifecycle with captured exact UUIDs, then read their immutable
+same-realm service/D1/vars/secret bindings, private surfaces, Queue/DLQ consumer
+settings and domain-scoped subscription twice. Failed inventory does not authorize
+creation. Ambiguous submits are not retried; keep observed versions and inspect
+the fixed graph before any recovery. Do not use fresh-bootstrap as this migration.
+
+The staging site depends on the runtime graph, renders v0.1.2 candidate copy, and
+gets an exact source-revision header only in its generated staging assets. Smoke
+checks all three pages, v0.1.2 status, noindex/nofollow, source SHA, navigation,
+manual exploration commands and real TOC targets. Public v0.1.0 stays unchanged.
+The existing browser lane's `live-staging` target takes that deployed revision and
+only reads the fixed staging origin; it cannot deploy or open mail authority.
+
+For owner acceptance, download the same-run `cli-candidate-v0.1.2-RUN_ID` artifact
+using GitHub Actions or `gh run download RUN_ID -n cli-candidate-v0.1.2-RUN_ID`.
+Verify `SHA256SUMS` and `candidate.json` before use. The three native candidates
+(Linux x64, Windows x64, macOS ARM64) plus skill are review assets, not the formal
+five-platform release gate. Use staging explicitly for tests; do not accidentally
+use the CLI's stable production defaults. Staging grants, if separately exercised,
+must remain recipient-bound, one-use and attached to owned synthetic fixtures.
+
+The existing `staging-e2e` native-login journey explores the new offline discovery
+topics, reads held policy/owner quota and bounded owner events, and checks a random
+unsubmitted send intent returns typed 404/stop. It retains exactly two real SMTP
+fixtures: only after the first DATA receipt is verified does the second include
+its RFC reply/reference relation; Reply-To is the same run's owned route. Get,
+ZIP and metadata search must preserve and find those relations. Existing route
+cleanup is unchanged. This is not a live outbound provider-feedback canary: no
+fake send/event rows are seeded in staging D1 and general sending remains held.
+
 The retained production and production-api-only-maintenance targets still admit
 the historical held, single-API-producer graph, not the current active split
 graph. Do not dispatch them for ordinary replacement of today's service. Fresh

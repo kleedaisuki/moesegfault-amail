@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 const { chromium } = await import(pathToFileURL(process.env.SITE_BROWSER_MODULE).href);
 const base = process.env.SITE_BROWSER_BASE;
 const output = process.env.SITE_BROWSER_OUTPUT;
-assert.ok(['http://127.0.0.1:4321', 'https://amail.moesegfault.dev'].includes(base));
+assert.ok(['http://127.0.0.1:4321', 'https://amail.moesegfault.dev', 'https://amail-staging.moesegfault.dev'].includes(base));
 await mkdir(output, { recursive: true });
 const report = { source: process.env.EVIDENCE_SHA, target: process.env.TARGET,
   deployedRevision: process.env.CANDIDATE_REVISION || null,
@@ -183,7 +183,7 @@ try {
         assert.equal(response.status(), 200);
         assert.equal(page.url(), `${base}${route}`, 'unexpected redirect');
         assert.match(response.headers()['content-type'], /text\/html/);
-        if (process.env.TARGET === 'live-candidate') {
+        if (['live-candidate', 'live-staging'].includes(process.env.TARGET)) {
           assert.equal(response.headers()['x-amail-candidate-revision'], process.env.CANDIDATE_REVISION);
           assert.match(response.headers()['x-robots-tag'], /noindex/);
           assert.match(response.headers()['x-robots-tag'], /nofollow/);
@@ -195,6 +195,16 @@ try {
           '/changelog/': 'v0.1.2 仍在验收' };
         assert.ok(text.includes(state[route]), 'route-local candidate status missing');
         assert.ok(text.includes('这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。'));
+        if (route === '/manual/') {
+          for (const command of ['amail discover', 'amail send-status', 'amail events']) {
+            assert.ok(text.includes(command), `candidate exploration missing: ${command}`);
+          }
+        }
+        if (route === '/changelog/') {
+          assert.equal(await page.locator('h2[id="v0.1.2"]').count(), 1,
+            'candidate changelog entry must exist independently of page status');
+          assert.equal(await page.locator('.toc a[href="#v0.1.2"]').count(), 1);
+        }
         assert.doesNotMatch(text, /v0\.1\.0 已(?:正式)?发布/);
       });
       await check(result, 'route-local CSS and zero client runtime', async () => {

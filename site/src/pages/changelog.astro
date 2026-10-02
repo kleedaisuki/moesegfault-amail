@@ -5,7 +5,9 @@ import { getCollection, render } from 'astro:content';
 import { candidateServiceNotice, releaseState } from '../releaseState';
 
 /** 中文：版本按发布日期倒序，目录锚点用版本号保持跨次发布稳定。 English: Releases sort newest-first; version-based anchors stay stable across additions. */
-const entries = (await getCollection('releases')).sort((a, b) => b.data.date.getTime() - a.data.date.getTime());
+const entries = (await getCollection('releases'))
+  .filter((entry) => releaseState === 'candidate' || !entry.data.candidateOnly)
+  .sort((a, b) => b.data.date.getTime() - a.data.date.getTime());
 const releases = await Promise.all(entries.map(async (entry) => ({ entry, Content: (await render(entry)).Content })));
 ---
 <BaseLayout title="更新日志 · amail" description="查看 amail 的版本更新和产品变化。" current="changelog">
@@ -14,7 +16,7 @@ const releases = await Promise.all(entries.map(async (entry) => ({ entry, Conten
     <nav class="toc" aria-label="更新日志目录"><p class="toc-title">目录 / Contents</p><ol>{releases.map(({ entry }) => <li><a href={`#${entry.data.version}`}>{entry.data.version} · {entry.data.date.toLocaleDateString('zh-CN', { timeZone: 'UTC' })}</a></li>)}</ol></nav>
     <div class="release-list">
       {releases.map(({ entry, Content }) => <article class="release" aria-labelledby={entry.data.version}>
-        <div class="release-marker"><span class="release-tag">{releaseState === 'published' ? '版本记录日期' : '候选记录日期'}</span><time datetime={entry.data.date.toISOString().slice(0, 10)}>{entry.data.date.toLocaleDateString('zh-CN', { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' })}</time></div>
+        <div class="release-marker"><span class="release-tag">{entry.data.candidateOnly ? '候选记录日期' : '版本记录日期'}</span><time datetime={entry.data.date.toISOString().slice(0, 10)}>{entry.data.date.toLocaleDateString('zh-CN', { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' })}</time></div>
         <h2 id={entry.data.version}>{entry.data.version}</h2><p class="release-summary">{entry.data.summary}</p>
         <div class="prose"><Content /></div>
         {releaseState === 'published' && <p>实际发布日期以 GitHub Release 的发布时间为准。</p>}

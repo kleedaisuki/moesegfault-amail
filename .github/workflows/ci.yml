@@ -1012,20 +1012,37 @@ jobs:
         run: pnpm build
       - name: Verify staging candidate copy before deploy
         run: pnpm check:release-state candidate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Pin only the staging candidate asset responses to this source
+        run: python ../infra/release/candidate_site.py prepare "$GITHUB_SHA" --realm staging
       - name: Deploy isolated staging Worker
         run: pnpm run deploy:staging
-      - name: Smoke test staging launch pages
+      - name: Smoke exact staging candidate pages, source revision and exploration anchors
         working-directory: .
         shell: bash
         run: |
-          curl --fail --silent --show-error --retry 6 --retry-delay 5 https://amail-staging.moesegfault.dev/ > /dev/null
-          curl --fail --silent --show-error https://amail-staging.moesegfault.dev/manual/ > /dev/null
-          curl --fail --silent --show-error https://amail-staging.moesegfault.dev/changelog/ > /dev/null
-          headers=$(curl --fail --silent --show-error --head https://amail-staging.moesegfault.dev/)
-          if ! grep -iq '^x-robots-tag:.*noindex' <<< "$headers"; then
-            echo '::error::Staging launch page must be noindex'
-            exit 1
-          fi
+          set -euo pipefail
+          mkdir -p .temp/staging-site-smoke
+          for route in home manual changelog; do
+            path=/
+            if [ "$route" != home ]; then path="/$route/"; fi
+            curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 \
+              --connect-timeout 10 --max-time 30 \
+              --dump-header ".temp/staging-site-smoke/$route.headers" \
+              --output ".temp/staging-site-smoke/$route.html" \
+              "https://amail-staging.moesegfault.dev$path"
+          done
+          python infra/release/candidate_site.py smoke .temp/staging-site-smoke "$GITHUB_SHA" --realm staging
+      - name: Preserve public candidate route evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-site-smoke-${{ github.run_id }}
+          path: .temp/staging-site-smoke/
+          if-no-files-found: ignore
+          retention-days: 14
 
   staging-worker:
     name: Deploy isolated staging mail API
