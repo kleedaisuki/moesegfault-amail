@@ -67,7 +67,19 @@ def predecessor() -> dict:
 def preflight() -> None:
     """Admit either the exact historical predecessor or the current active split."""
     context()
-    value = inspect()
+    names = ("AMAIL_TRACE_QUEUE_ID", "AMAIL_TRACE_DLQ_ID", "AMAIL_TRACE_TOPOLOGY",
+             "AMAIL_EXPECTED_TRACE_SINK_VERSION")
+    reviewed = {name: os.getenv(name) for name in names}
+    try:
+        value = inspect()
+    finally:
+        # Diagnostic observed IDs must not silently replace reviewed ownership
+        # pins in normal split admission. A resume binds its own immutable IDs.
+        for name, original in reviewed.items():
+            if original is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = original
     api = value["scripts"][API]
     maintenance = value["scripts"][MAINTENANCE]
     if not api.get("capture_off"):
@@ -81,14 +93,44 @@ def preflight() -> None:
         # Grandfathered Bundled Workers have no duration bound. Missing metadata
         # is not proof of the modern bound and must stop before the first write.
         value["old_usage_model"] = usage
-        if (not containment_bindings_match(version, api["version"])
-                or maintenance["present"]
-                or value["scripts"]["amail-trace-sink-staging"]["present"]
+        if not containment_bindings_match(version, api["version"]) or maintenance["present"]:
+            raise ValueError("staging_legacy_graph_unverified")
+        resume = os.getenv("AMAIL_STAGING_RESUME_RUN", "")
+        if resume:
+            from staging_resume import load_resume
+            owned = load_resume(resume)
+            original = owned["predecessor"]
+            if any(value["scripts"][name] != original["scripts"][name] for name in
+                   (API, "amail-inbound-staging", "amail-events-staging")):
+                raise ValueError("staging_resume_old_api_changed")
+            sink = value["scripts"]["amail-trace-sink-staging"]
+            checks = value.get("sink_checks", {})
+            if (checks.get("topology_checked") != "api-only"
+                    or any(checks.get(name) is not True for name in
+                           ("immutable_capabilities", "retained_settings", "private_surfaces", "queue_trigger"))
+                    or not sink.get("present") or sink.get("version") != owned["sink_version"]
+                    or sink.get("deployment") != "73892f24-1e84-406a-b025-3879580597e1"
+                    or sink.get("privacy_safe") is not True or sink.get("handlers") != ["queue"] or sink.get("crons")
+                    or value["queues"]["amail-trace-events-staging"].get("queue_id") != owned["queue"]
+                    or value["queues"]["amail-trace-dlq-staging"].get("queue_id") != owned["dlq"]
+                    or any(row.get("producers") != [] or row.get("bounded_retention") is not True
+                           for row in value["queues"].values())):
+                raise ValueError("staging_resume_partial_graph_unverified")
+            # The immutable old snapshot remains provenance. Current orchestration
+            # has its own source/run identity and never borrows an artifact epoch.
+            value["resume_origin_run"] = resume
+            output("reuse_sink", "true")
+            output("queue_id", owned["queue"])
+            output("dlq_id", owned["dlq"])
+            output("sink_version", owned["sink_version"])
+        elif (value["scripts"]["amail-trace-sink-staging"]["present"]
                 or any(row["present"] for row in value["queues"].values())):
             raise ValueError("staging_legacy_graph_unverified")
         graph.held_send("staging")
         value["rollout"] = "legacy"
     else:
+        if os.getenv("AMAIL_STAGING_RESUME_RUN", ""):
+            raise ValueError("staging_resume_phase_changed")
         if (api["handlers"] != ["fetch"] or api["crons"]
                 or not maintenance["present"] or maintenance["crons"] != list(CADENCE)):
             raise ValueError("staging_split_predecessor_unverified")

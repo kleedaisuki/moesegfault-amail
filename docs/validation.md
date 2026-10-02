@@ -38,6 +38,41 @@ no trace sink or trace queues, and existing private ingress/lifecycle adapters.
 API/ingress/lifecycle capture was positively read off. This establishes the legacy
 predecessor requiring a cutover; it does not prove the v0.1.2 split graph is online.
 
+Source `b2dbd66d786a5a790dc55486ee27ae578690f0ea` in staging run
+[37053907751](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37053907751)
+passed Linux/Windows/macOS CLI, native Worker, Wasm/workerd (112 boundary tests),
+site, infrastructure and Worker performance gates. The overall run is **FAILURE**:
+trace Queue provisioning and sink submission succeeded, but the sink verifier
+incorrectly required the final two-producer graph during the legitimate
+zero-producer preparation phase. API/maintenance/ingress/lifecycle/site deployment
+jobs were skipped. This is partial infrastructure delivery, not an online v0.1.2
+API, candidate site or completed native acceptance.
+
+Fresh staging inspection
+[37055035305](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37055035305)
+confirmed the following non-content pins after that interruption:
+
+| Resource | Observed immutable version / Queue identity | State |
+| --- | --- | --- |
+| API | `c3f6401a-1e84-4f51-91df-ae77d90683e9` | Original fetch + scheduled, five-minute Cron, Standard, capture off |
+| Maintenance | Absent | No new scheduled writer activated |
+| Ingress | `87002211-316c-4b75-8a27-993252e36488` | Original email adapter, capture off |
+| Lifecycle | `8cfecf54-e0a5-44d1-b3b5-69cbbb8f9425` | Original Queue adapter, capture off |
+| Trace sink | `be786239-402d-4e72-89c9-0acbe88b0b86` | Deployment `73892f24-1e84-406a-b025-3879580597e1`, Queue only, empty Cron |
+| Trace Queue | `fcee510036af42c189e28c0b6ff9508e` | Bounded retention, zero producers |
+| Trace DLQ | `f023f804b7bd4d8691fbfcb60416a001` | Bounded retention, zero producers |
+
+The sink intentionally retains sanitized logs: provider capture is not disabled.
+The old inspector's `capture_off=false` therefore must not be interpreted as either
+privacy approval or proof of mail exposure. The corrected inspector keeps
+`capture_off` separate from sink-only `privacy_safe`. Private-surface, immutable
+capability, retention and exact Queue-consumer predicates must pass fresh before
+owned continuation. The bounded resume controller preserves these existing
+resources, pins the failed run's immutable ownership, requires identical runtime
+bytes and reuses current full source gates. No continuation or v0.1.2 online
+acceptance is claimed yet. No production resource, stable release or public site
+was changed by this staging work.
+
 Local lightweight source/mock checks cover staging context, immutable bounded
 usage models, drift rejection, retained lease/backlog semantics, future split
 replacement without the initial wait, exact adapter graph, candidate provenance

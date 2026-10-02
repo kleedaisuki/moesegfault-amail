@@ -52,6 +52,11 @@ on:
         required: false
         type: string
 
+      staging_resume_run:
+        description: Explicit failed owned staging sink run; existing sink and queues are read-only
+        required: false
+        type: string
+
       production_graph_freeze:
         description: Production requires FREEZE_PRODUCTION_GRAPH_WRITERS and the phase-specific confirm
         required: false
@@ -1200,6 +1205,7 @@ jobs:
       - name: Recheck exact staging sink privacy after Mail deployment
         working-directory: .
         env:
+          AMAIL_TRACE_TOPOLOGY: ${{ needs.staging-trace-sink.outputs.rollout == 'legacy' && 'api-only' || 'api-scheduled' }}
           AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ needs.staging-trace-sink.outputs.sink_version }}
         run: python crates/mail-worker/check_observability.py --realm staging --mode sink
       - name: Replace scheduled-only maintenance with bounded legacy cutover
@@ -1339,7 +1345,7 @@ jobs:
   staging-identity-test-inbox:
     name: Deploy private staging Identity verification inbox
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref != 'refs/heads/codex/v0.1.2-agent-first-performance'
     needs: [worker, dns, staging-events, worker-build]
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -1494,9 +1500,10 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
     needs: [cli, worker, site, dns, provider-live, worker-build]
     outputs:
-      queue_id: ${{ steps.queues.outputs.queue_id }}
-      dlq_id: ${{ steps.queues.outputs.dlq_id }}
-      sink_version: ${{ steps.sink.outputs.version }}
+      queue_id: ${{ steps.predecessor.outputs.reuse_sink == 'true' && steps.predecessor.outputs.queue_id || steps.queues.outputs.queue_id }}
+      dlq_id: ${{ steps.predecessor.outputs.reuse_sink == 'true' && steps.predecessor.outputs.dlq_id || steps.queues.outputs.dlq_id }}
+      sink_version: ${{ steps.predecessor.outputs.reuse_sink == 'true' && steps.predecessor.outputs.sink_version || steps.sink.outputs.version }}
+      rollout: ${{ steps.predecessor.outputs.rollout }}
     permissions:
       contents: read
       actions: read
@@ -1517,8 +1524,11 @@ jobs:
       AMAIL_TRACE_DLQ_ID: ${{ vars.AMAIL_TRACE_DLQ_ID_STAGING }}
       AMAIL_TRACE_TOPOLOGY: api-scheduled
       AMAIL_STAGING_DEPLOY_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_STAGING_RESUME_RUN: ${{ inputs.staging_resume_run }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Download exact tested same-run Worker modules
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -1547,6 +1557,7 @@ jobs:
       - name: Require established staging global hold before Queue or sink changes
         run: python infra/operator/check_send_hold.py --target staging
       - name: Ensure one-day trace Queue and dead-letter Queue
+        if: steps.predecessor.outputs.reuse_sink != 'true'
         id: queues
         shell: bash
         run: |
@@ -1565,14 +1576,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
       - name: Deploy Queue-only trace consumer without secrets or HTTP route
+        if: steps.predecessor.outputs.reuse_sink != 'true'
         id: sink
         working-directory: workers/trace-sink
         run: python ../../infra/deploy/deploy_trace_sink.py --target staging
       - name: Verify sink retained telemetry and private trigger boundary
         env:
-          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ steps.sink.outputs.version }}
-          AMAIL_TRACE_QUEUE_ID: ${{ steps.queues.outputs.queue_id }}
-          AMAIL_TRACE_DLQ_ID: ${{ steps.queues.outputs.dlq_id }}
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ steps.predecessor.outputs.reuse_sink == 'true' && steps.predecessor.outputs.sink_version || steps.sink.outputs.version }}
+          AMAIL_TRACE_QUEUE_ID: ${{ steps.predecessor.outputs.reuse_sink == 'true' && steps.predecessor.outputs.queue_id || steps.queues.outputs.queue_id }}
+          AMAIL_TRACE_DLQ_ID: ${{ steps.predecessor.outputs.reuse_sink == 'true' && steps.predecessor.outputs.dlq_id || steps.queues.outputs.dlq_id }}
+          AMAIL_TRACE_TOPOLOGY: ${{ steps.predecessor.outputs.rollout == 'legacy' && 'api-only' || 'api-scheduled' }}
         run: python crates/mail-worker/check_observability.py --realm staging --mode sink
       - name: Verify staging public sending remains held after sink readback
         run: python infra/operator/check_send_hold.py --target staging

@@ -35,6 +35,16 @@ def inspect() -> dict:
             or len({row["id"] for row in inventory}) != len(inventory)):
         raise ValueError("staging_inventory_unverified")
     present = {row["id"] for row in inventory}
+    catalog = queues.inventory(account, token)
+    trace_ids = {}
+    for name in ("amail-trace-events-staging", "amail-trace-dlq-staging"):
+        row = queues.exact_queue(catalog, name)
+        if row is not None:
+            trace_ids[name] = row["queue_id"]
+    # Observed IDs support read-only diagnostics, not resource adoption authority.
+    if len(trace_ids) == 2:
+        os.environ["AMAIL_TRACE_QUEUE_ID"] = trace_ids["amail-trace-events-staging"]
+        os.environ["AMAIL_TRACE_DLQ_ID"] = trace_ids["amail-trace-dlq-staging"]
     result = {"schema": "staging-predecessor/v1", "source_sha": os.getenv("GITHUB_SHA", ""),
               "run_id": os.getenv("GITHUB_RUN_ID", ""), "scripts": {}, "queues": {}}
     for script in SCRIPTS:
@@ -59,6 +69,17 @@ def inspect() -> dict:
         private = capture.effective_api_settings(worker, script, settings, script_settings)
         if script == "amail-trace-sink-staging":
             os.environ["AMAIL_EXPECTED_TRACE_SINK_VERSION"] = before[1]
+            import check_trace_sink_isolation as sink
+            # A sink-only legacy preparation is not the final two-producer graph.
+            topology = "api-scheduled" if "amail-mail-maintenance-staging" in present else "api-only"
+            os.environ["AMAIL_TRACE_TOPOLOGY"] = topology
+            result["sink_checks"] = {
+                "topology_checked": topology,
+                "immutable_capabilities": sink.version_isolated(version, before[1]),
+                "retained_settings": all(capture.safe_settings(value, sink=True) for value in (settings, script_settings)),
+                "private_surfaces": sink.surfaces_private(account, token, script, capture.readback),
+                "queue_trigger": sink.queue_trigger_exact(account, token, "staging", script),
+            }
             private = capture.verify("staging", account, token, sink=True)
         if serving_deployment(capture.readback(account, token, script, "deployments?per_page=1&page=1")) != before:
             raise ValueError("staging_serving_changed")
@@ -66,6 +87,11 @@ def inspect() -> dict:
                                      "handlers": handlers, "crons": [row["cron"] for row in rows],
                                      "usage_model": resources.get("script_runtime", {}).get("usage_model"),
                                      "capture_off": private}
+        if script == "amail-trace-sink-staging":
+            # Sanitized sink logs intentionally remain enabled. Safety of that
+            # private retention is not a claim that provider capture is disabled.
+            result["scripts"][script]["capture_off"] = capture.capture_disabled(worker.get("observability"))
+            result["scripts"][script]["privacy_safe"] = private
     inventory = queues.inventory(account, token)
     for name in ("amail-trace-events-staging", "amail-trace-dlq-staging"):
         row = queues.exact_queue(inventory, name)

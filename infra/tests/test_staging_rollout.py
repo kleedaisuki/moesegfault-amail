@@ -11,6 +11,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/deploy"))
 import staging_rollout as rollout
+import staging_resume as resume
 
 
 class StagingRolloutTests(unittest.TestCase):
@@ -98,6 +99,102 @@ class StagingRolloutTests(unittest.TestCase):
             rollout.cutover()
         deploy.assert_called_once_with(True)
         sleep.assert_not_called()
+
+    def partial_graph(self) -> tuple[dict, dict]:
+        """Use the actual non-content snapshot as synthetic owned phase-zero pins."""
+        api = {"present": True, "deployment": resume.API_DEPLOYMENT, "version": resume.API_VERSION,
+               "handlers": ["fetch", "scheduled"], "crons": ["*/5 * * * *"],
+               "capture_off": True, "usage_model": "standard"}
+        original = {"scripts": {rollout.API: api, "amail-inbound-staging": {"version": "ingress"},
+                               "amail-events-staging": {"version": "events"}}}
+        value = {"source_sha": "a" * 40, "run_id": "123", "scripts": deepcopy(original["scripts"]),
+                 "queues": {}, "sink_checks": {"topology_checked": "api-only",
+                 "immutable_capabilities": True, "retained_settings": True,
+                 "private_surfaces": True, "queue_trigger": True}}
+        value["scripts"][rollout.MAINTENANCE] = {"present": False}
+        value["scripts"]["amail-trace-sink-staging"] = {
+            "present": True, "version": resume.SINK_VERSION,
+            "deployment": "73892f24-1e84-406a-b025-3879580597e1",
+            "handlers": ["queue"], "crons": [], "capture_off": False, "privacy_safe": True}
+        for name, identity in (("amail-trace-events-staging", resume.QUEUE),
+                               ("amail-trace-dlq-staging", resume.DLQ)):
+            value["queues"][name] = {"present": True, "queue_id": identity,
+                                      "bounded_retention": True, "producers": []}
+        owned = {"predecessor": original, "sink_version": resume.SINK_VERSION,
+                 "queue": resume.QUEUE, "dlq": resume.DLQ}
+        return value, owned
+
+    def admit_partial(self, value: dict, owned: dict, confirm: bool = True) -> tuple[dict, dict]:
+        """Exercise preflight with no provider calls, mutations or scratch output."""
+        environment = self.environment()
+        if confirm:
+            environment["AMAIL_STAGING_RESUME_RUN"] = resume.ORIGIN_RUN
+        version = {"resources": {"script_runtime": {"usage_model": "standard"}}}
+        with patch.dict(os.environ, environment, clear=True), \
+             patch.object(rollout, "inspect", return_value=deepcopy(value)), \
+             patch.object(rollout.capture, "readback", return_value=version), \
+             patch.object(rollout, "containment_bindings_match", return_value=True), \
+             patch.object(resume, "load_resume", return_value=owned), \
+             patch.object(rollout.graph, "held_send") as hold, \
+             patch.object(rollout, "write") as write, patch.object(rollout, "output") as output:
+            rollout.preflight()
+            hold.assert_called_once_with("staging")
+            return write.call_args.args[1], dict(call.args for call in output.call_args_list)
+
+    def test_partial_resume_preserves_current_epoch_and_skips_owned_sink_writes(self):
+        """Original ownership permits reuse, never an old artifact identity."""
+        value, owned = self.partial_graph()
+        recorded, output = self.admit_partial(value, owned)
+        self.assertEqual(recorded["source_sha"], "a" * 40)
+        self.assertEqual(recorded["run_id"], "123")
+        self.assertEqual(recorded["resume_origin_run"], resume.ORIGIN_RUN)
+        self.assertEqual(output, {"reuse_sink": "true", "queue_id": resume.QUEUE,
+                                 "dlq_id": resume.DLQ, "sink_version": resume.SINK_VERSION,
+                                 "rollout": "legacy"})
+
+    def test_partial_resume_rejects_phase_drift_and_missing_private_predicates(self):
+        """No producer, private surface, capability or ownership drift is adopted."""
+        value, owned = self.partial_graph()
+        variants = []
+        for name, bad in (("queue_trigger", False), ("private_surfaces", False),
+                          ("retained_settings", False), ("immutable_capabilities", None)):
+            changed = deepcopy(value)
+            changed["sink_checks"][name] = bad
+            variants.append(changed)
+        for field, bad in (("producers", [rollout.API]), ("bounded_retention", False),
+                           ("queue_id", "unowned")):
+            changed = deepcopy(value)
+            changed["queues"]["amail-trace-events-staging"][field] = bad
+            variants.append(changed)
+        changed = deepcopy(value)
+        changed["scripts"][rollout.API]["version"] = "different"
+        variants.append(changed)
+        changed = deepcopy(value)
+        changed["scripts"]["amail-trace-sink-staging"]["version"] = "different"
+        variants.append(changed)
+        changed = deepcopy(value)
+        changed["scripts"]["amail-trace-sink-staging"]["privacy_safe"] = False
+        variants.append(changed)
+        for changed in variants:
+            with self.subTest(value=changed), self.assertRaises(ValueError):
+                self.admit_partial(changed, owned)
+        with self.assertRaises(ValueError):
+            self.admit_partial(value, owned, confirm=False)
+
+    def test_diagnostic_observed_ids_do_not_replace_reviewed_pins(self):
+        """An inspection failure still restores caller-reviewed ownership pins."""
+        environment = self.environment()
+        def observed():
+            """Simulate a failed diagnostic after it projected observed IDs."""
+            os.environ["AMAIL_TRACE_QUEUE_ID"] = "observed-unowned"
+            os.environ["AMAIL_TRACE_DLQ_ID"] = "observed-unowned-dlq"
+            raise ValueError("synthetic_read_failure")
+        with patch.dict(os.environ, environment, clear=True), \
+             patch.object(rollout, "inspect", side_effect=observed):
+            with self.assertRaises(ValueError):
+                rollout.preflight()
+            self.assertEqual(os.environ["AMAIL_TRACE_QUEUE_ID"], environment["AMAIL_TRACE_QUEUE_ID"])
+            self.assertNotIn("AMAIL_TRACE_DLQ_ID", os.environ)
 
 
 if __name__ == "__main__":

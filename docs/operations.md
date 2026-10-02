@@ -87,6 +87,37 @@ settings and domain-scoped subscription twice. Failed inventory does not authori
 creation. Ambiguous submits are not retried; keep observed versions and inspect
 the fixed graph before any recovery. Do not use fresh-bootstrap as this migration.
 
+#### Owned sink-only interruption
+
+Run [37053907751](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37053907751)
+passed its source gates but stopped at sink verification after successfully
+creating both trace Queues and deploying sink version
+`be786239-402d-4e72-89c9-0acbe88b0b86`. The verifier incorrectly demanded the final
+API + maintenance producer pair during sink-only preparation. Initial preparation
+must verify the private sink/DLQ/retention with zero producers; the subsequent
+API-only phase admits the sole API producer, and final activation still requires
+the exact API + maintenance pair. Privacy and Queue consumer assertions remain
+unchanged; this is phase ordering, not a relaxed terminal graph.
+
+Only this reviewed interruption can use `target=staging`,
+`confirm=RUN_STAGING_V012`, `staging_resume_run=37053907751`. The helper verifies
+the original failed run/attempt, every source gate, skipped later writes, immutable
+predecessor and provision artifacts, and the unique successful typed sink submit.
+It requires the exact original runtime tree; only the reviewed controller,
+verification/tests and documentation may differ. The current run still runs full
+source gates and deploys new components from its own same-run tested artifact.
+The old artifact is ownership provenance, never a replacement for current bytes.
+
+Before continuing, live reads must match the original API/ingress/lifecycle pins,
+absent maintenance, global held sending, exact sink version/deployment, all private
+surface/capability/sanitized-retention predicates, and both exact trace Queue IDs
+with zero producers. Only then are Queue creation and sink deployment skipped.
+Any changed pin, attached producer or failed predicate stops without replaying
+those writes. The remaining migration follows the ordinary staging sequence above.
+This input does not recover arbitrary failed runs or ambiguous submissions.
+The v0.1.2 candidate lane also skips the unrelated Identity verification-inbox
+deployment; the original non-candidate staging lane remains available unchanged.
+
 The staging site depends on the runtime graph, renders v0.1.2 candidate copy, and
 gets an exact source-revision header only in its generated staging assets. Smoke
 checks all three pages, v0.1.2 status, noindex/nofollow, source SHA, navigation,
