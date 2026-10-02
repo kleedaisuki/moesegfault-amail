@@ -88,6 +88,17 @@ the hosted preflight failure still requires diagnosis. The optional existing
 inspection lane now checks that same admission with read-only confirmation before
 another expensive full continuation. No online v0.1.2 delivery is claimed.
 
+Read-admission run
+[37057818125](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37057818125)
+identified the remaining failure as `staging_resume_log_download_failed`: live
+graph, runtime tree, origin metadata and immutable artifacts passed before the
+hosted `gh api` job-log download failed. The same endpoint worked with the owner's
+local CLI credentials; that does not establish why the hosted token/CLI failed.
+The narrow repair separates the authenticated GitHub 302 request from its
+allowlisted unauthenticated signed-blob download, retaining the exact typed sink
+submit proof and read-only admission gate. Hosted success is still required before
+another full continuation; no new permission or provider mutation is introduced.
+
 Local lightweight source/mock checks cover staging context, immutable bounded
 usage models, drift rejection, retained lease/backlog semantics, future split
 replacement without the initial wait, exact adapter graph, candidate provenance

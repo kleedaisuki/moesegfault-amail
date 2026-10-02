@@ -44,6 +44,9 @@ FAILURES = frozenset({
     "staging_resume_legacy_api_unverified", "staging_resume_preexisting_resource",
     "staging_resume_queue_ownership_unverified", "staging_resume_artifact_unverified",
     "staging_resume_run_unreviewed", "staging_resume_log_download_failed",
+    "staging_resume_log_credentials_unverified", "staging_resume_log_redirect_unverified",
+    "staging_resume_log_permission_denied", "staging_resume_log_http_unverified",
+    "staging_resume_log_transport_unverified", "staging_resume_log_signed_url_expired",
     "staging_resume_old_api_changed", "staging_resume_partial_graph_unverified", "staging_resume_phase_changed",
 })
 PREDECESSOR = ROOT / ".temp/staging-rollout-predecessor.json"

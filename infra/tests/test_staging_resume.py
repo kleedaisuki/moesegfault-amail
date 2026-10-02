@@ -8,6 +8,8 @@ import subprocess
 import sys
 import unittest
 from unittest.mock import patch
+from unittest.mock import Mock
+from urllib.error import HTTPError
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -162,6 +164,57 @@ class StagingResumeTests(unittest.TestCase):
             with patch.object(resume, "git", side_effect=outputs), self.assertRaises(ValueError):
                 resume.exact_tree(current)
 
+    def log_transport(self, location: str, content: bytes = b"typed log"):
+        """Mock one API redirect and one signed download without retaining secrets."""
+        redirect = HTTPError("https://api.github.com/reviewed", 302, "redirect",
+                             {"Location": location}, io.BytesIO())
+        response = Mock()
+        response.status = 200
+        response.read.return_value = content
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        opener = Mock()
+        opener.open.side_effect = [redirect, response]
+        return opener
+
+    def test_log_redirect_download_never_forwards_bearer(self):
+        """A validated Azure log authority gets a separate unauthenticated request."""
+        opener = self.log_transport("https://productionresultssa15.blob.core.windows.net/logs/fixture?sig=synthetic")
+        with patch.dict(os.environ, {"GH_TOKEN": "synthetic"}), patch.object(resume, "build_opener", return_value=opener):
+            self.assertEqual(resume.job_log(123), b"typed log")
+        first, second = [call.args[0] for call in opener.open.call_args_list]
+        self.assertEqual(first.get_header("Authorization"), "Bearer synthetic")
+        self.assertIsNone(second.get_header("Authorization"))
+
+    def test_log_redirect_rejects_unreviewed_authorities_and_oversized_bytes(self):
+        """No plaintext, credential URL, off-host redirect or second-hop expansion."""
+        for location in ("http://productionresultssa15.blob.core.windows.net/logs?sig=x",
+                         "https://unowned.blob.core.windows.net/logs?sig=x",
+                         "https://productionresultssa15.blob.core.windows.net.evil.invalid/logs?sig=x",
+                         "https://user@productionresultssa15.blob.core.windows.net/logs?sig=x",
+                         "https://productionresultssa15.blob.core.windows.net:444/logs?sig=x"):
+            opener = self.log_transport(location)
+            with patch.dict(os.environ, {"GH_TOKEN": "synthetic"}), \
+                 patch.object(resume, "build_opener", return_value=opener), self.assertRaises(ValueError):
+                resume.job_log(123)
+            self.assertEqual(opener.open.call_count, 1)
+        opener = self.log_transport("https://productionresultssa15.blob.core.windows.net/logs?sig=x", b"x" * 17)
+        with patch.dict(os.environ, {"GH_TOKEN": "synthetic"}), \
+             patch.object(resume, "build_opener", return_value=opener), patch.object(resume, "LOG_LIMIT", 16), \
+             self.assertRaisesRegex(ValueError, "^staging_resume_log_unverified$"):
+            resume.job_log(123)
+
+    def test_log_api_denial_has_fixed_reason_and_never_retries(self):
+        """GITHUB_TOKEN permission failures are actionable without provider prose."""
+        opener = Mock()
+        opener.open.side_effect = HTTPError("https://api.github.com/reviewed", 403,
+                                            "private transport prose", {}, io.BytesIO(b"private body"))
+        with patch.dict(os.environ, {"GH_TOKEN": "synthetic"}), \
+             patch.object(resume, "build_opener", return_value=opener), \
+             self.assertRaisesRegex(ValueError, "^staging_resume_log_permission_denied$"):
+            resume.job_log(123)
+        self.assertEqual(opener.open.call_count, 1)
+
     def test_recover_composes_immutable_evidence(self):
         """The returned receipt retains original epoch separately from orchestration."""
         artifacts = {"total_count": 0, "artifacts": []}
@@ -170,7 +223,7 @@ class StagingResumeTests(unittest.TestCase):
         with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}), patch.object(resume, "exact_tree") as tree, \
              patch.object(resume, "github", side_effect=[self.run_metadata(), self.jobs(), artifacts]), \
              patch.object(resume, "artifact_value", side_effect=[self.predecessor(), queues]), \
-             patch.object(resume.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, self.log(), b"")):
+             patch.object(resume, "job_log", return_value=self.log()):
             value = resume.recover(resume.ORIGIN_RUN)
         tree.assert_called_once_with("a" * 40)
         self.assertEqual(value["source_sha"], resume.ORIGIN_SHA)

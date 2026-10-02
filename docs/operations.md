@@ -120,6 +120,11 @@ Before another full continuation, `target=staging-inspect` with
 the identical read/provenance preflight without deployment authority. The read
 confirmation is not accepted by any writer phase. Failures expose only a closed
 known `staging_*` reason (otherwise `unknown`), never provider response prose.
+The typed sink-submit log is fetched by an explicit authenticated GitHub GET,
+then its short-lived 302 target is restricted to the observed GitHub Actions Azure
+log account family and downloaded without bearer credentials or redirects, at an
+eight-MiB bound. This is transport separation, not a weaker ownership proof or
+additional token authority; API permission denial stops the read admission.
 The v0.1.2 candidate lane also skips the unrelated Identity verification-inbox
 deployment; the original non-candidate staging lane remains available unchanged.
 

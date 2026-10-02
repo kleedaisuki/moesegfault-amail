@@ -12,6 +12,9 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/ci"))
@@ -39,6 +42,67 @@ CONTROL = {".github/workflows/ci.yml", "infra/deploy/staging_rollout.py",
            "infra/tests/test_staging_resume.py", "infra/tests/test_staging_rollout.py"}
 STATE = ROOT / ".temp/staging-resume.json"
 LIMIT = 65_536
+LOG_LIMIT = 8 * 1024 * 1024
+
+
+class NoLogRedirect(HTTPRedirectHandler):
+    """Keep the API bearer token out of the separately signed blob request."""
+
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        """Reject automatic redirects; the caller validates the single Location."""
+        return None
+
+
+def job_log(job_id: int) -> bytes:
+    """Read the reviewed job log with separate authenticated and signed requests.
+
+    GitHub returns a short-lived 302 URL. Only its observed Actions log Azure
+    account family is admitted, and the download never carries the API token.
+    Neither URL, response body nor transport exception is copied into diagnostics.
+    This read does not retry or weaken the unique typed-submit ownership proof.
+    """
+    token = os.getenv("GH_TOKEN", "")
+    if type(job_id) is not int or job_id <= 0 or not token:
+        raise ValueError("staging_resume_log_credentials_unverified")
+    opener = build_opener(NoLogRedirect())
+    request = Request(f"https://api.github.com/repos/{REPO}/actions/jobs/{job_id}/logs",
+                      headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                               "X-GitHub-Api-Version": "2022-11-28"})
+    try:
+        with opener.open(request, timeout=30):
+            raise ValueError("staging_resume_log_redirect_unverified")
+    except HTTPError as error:
+        if error.code in (401, 403):
+            error.close()
+            raise ValueError("staging_resume_log_permission_denied") from None
+        if error.code != 302:
+            error.close()
+            raise ValueError("staging_resume_log_http_unverified") from None
+        location = error.headers.get("Location", "")
+        error.close()
+    except (URLError, TimeoutError, OSError):
+        raise ValueError("staging_resume_log_transport_unverified") from None
+    parsed = urlsplit(location)
+    if (parsed.scheme != "https" or parsed.username is not None or parsed.password is not None
+            or parsed.port not in (None, 443) or parsed.fragment
+            or not re.fullmatch(r"productionresultssa[0-9]+\.blob\.core\.windows\.net", parsed.hostname or "")
+            or not parsed.path.startswith("/") or not parsed.query):
+        raise ValueError("staging_resume_log_redirect_unverified")
+    try:
+        # No bearer header crosses this boundary; additional redirects fail shut.
+        with opener.open(Request(location), timeout=30) as response:
+            if response.status != 200:
+                raise ValueError("staging_resume_log_http_unverified")
+            raw = response.read(LOG_LIMIT + 1)
+    except HTTPError as error:
+        reason = "staging_resume_log_signed_url_expired" if error.code in (401, 403) else "staging_resume_log_http_unverified"
+        error.close()
+        raise ValueError(reason) from None
+    except (URLError, TimeoutError, OSError):
+        raise ValueError("staging_resume_log_transport_unverified") from None
+    if not 0 < len(raw) <= LOG_LIMIT:
+        raise ValueError("staging_resume_log_unverified")
+    return raw
 
 
 def git(*arguments: str) -> bytes:
@@ -172,11 +236,7 @@ def recover(run_id: str) -> dict:
     listing = rows(github(f"runs/{run_id}/artifacts?per_page=100"), "artifacts")
     old = predecessor(artifact_value(listing, f"staging-rollout-predecessor-{run_id}", "staging-rollout-predecessor.json"))
     provision(artifact_value(listing, f"trace-queue-provision-staging-{run_id}-1", "trace-queue-provision-staging.json"))
-    result = subprocess.run(["gh", "api", f"repos/{REPO}/actions/jobs/{sink['id']}/logs"],
-                            capture_output=True, timeout=60, check=False)
-    if result.returncode:
-        raise ValueError("staging_resume_log_download_failed")
-    version = sink_log(result.stdout)
+    version = sink_log(job_log(sink["id"]))
     return {"origin_run": run_id, "source_sha": ORIGIN_SHA, "current_sha": current_sha,
             "predecessor": old, "queue": QUEUE, "dlq": DLQ, "sink_version": version}
 
