@@ -27,6 +27,7 @@ OWNED_SQL = SQL + (
     " AND COALESCE(canary_expires_at,0)<=unixepoch()"
     " AND EXISTS(SELECT 1 FROM addresses WHERE address=?6 AND owner_iss=?1"
     " AND owner_sub=?2 AND state='active' AND needs_reconcile=0 AND cf_rule_id=?7)"
+    " RETURNING id"
 )
 
 
@@ -72,7 +73,11 @@ def grant_staging_owned(account: str, token: str, address: str, subject: str, ca
         raise ValueError("staging_canary_route_unverified")
     digest = hashlib.sha256(address.encode("ascii")).hexdigest()
     result = database.query(OWNED_SQL, [issuer, subject, digest, f"github:{actor}", case, address, rule_id])
-    if result.get("meta", {}).get("changes") != 1:
+    # D1 meta.changes includes audit-trigger writes. RETURNING identifies only
+    # the guarded top-level gate row, without widening atomic slot admission.
+    rows = result.get("results")
+    if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
+            or set(rows[0]) != {"id"} or type(rows[0]["id"]) is not int or rows[0]["id"] != 1):
         raise ValueError("staging_canary_live_slot_or_hold_changed")
     grant = one_row(database.query("SELECT canary_owner_iss,canary_owner_sub,canary_recipient_sha256,"
         "canary_used_by,case_ref,actor,canary_expires_at>unixepoch() AS live,"

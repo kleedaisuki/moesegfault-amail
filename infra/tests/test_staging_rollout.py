@@ -21,6 +21,24 @@ import check_staging_adapters as adapters
 class StagingRolloutTests(unittest.TestCase):
     """The provider bound never degenerates into a sleep or a backlog purge."""
 
+    def test_canary_read_projection_contains_only_fixed_predicates(self):
+        """Remote owner/hash/case values cannot leak into the public snapshot."""
+        sys.path.insert(0, str(ROOT / "infra/operator"))
+        import direct_contact_health as health
+        row = {key: 1 for key in ("gate_present", "global_held", "live", "unused",
+               "case_prefix_owned", "recent_failed_grant_window", "audit_match_latest")}
+        row.update({"expires_remaining_seconds": 42, "owner_sub": "private", "case_ref": "private"})
+        with patch.object(health, "DatabaseClient") as client:
+            client.return_value.query.return_value = {"results": [row]}
+            result = inspector.canary_diagnostic("a" * 32, "synthetic")
+            self.assertEqual(set(result), {"available", *row.keys()} - {"owner_sub", "case_ref"})
+            self.assertTrue(result["audit_match_latest"])
+            self.assertNotIn("private", json.dumps(result))
+            self.assertTrue(client.return_value.query.call_args.args[0].lstrip().startswith("SELECT"))
+            row["live"] = "private"
+            self.assertEqual(inspector.canary_diagnostic("a" * 32, "synthetic"),
+                             {"available": False, "reason": "canary_read_unverified"})
+
     def environment(self) -> dict:
         """Build only synthetic fixed realm coordinates."""
         return {"GITHUB_REF": rollout.BRANCH, "GITHUB_ACTIONS": "true",

@@ -47,6 +47,43 @@ def routing_diagnostic(account: str) -> dict:
     return {"available": True, "rows": len(rows), "matchers": shapes}
 
 
+def canary_diagnostic(account: str, token: str) -> dict:
+    """Read existing grant/audit predicates only; never expose ownership values.
+
+    The fixed UTC window identifies the failed grant request's observation, not
+    authority to replace its slot or submit its lost private intent.
+    """
+    sys.path.insert(0, str(ROOT / "infra/operator"))
+    from direct_contact_health import DatabaseClient, HealthError, one_row
+    sql = """
+    SELECT 1 AS gate_present,
+      (SELECT COUNT(*)=1 FROM send_policy WHERE scope='global' AND owner_iss='*'
+       AND owner_sub='*' AND state='held') AS global_held,
+      COALESCE(canary_expires_at>unixepoch(),0) AS live,
+      canary_used_by IS NULL AS unused,
+      (length(case_ref)=30 AND case_ref GLOB 'staging-owned-*') AS case_prefix_owned,
+      updated_at BETWEEN unixepoch('2026-10-02 22:37:00') AND unixepoch('2026-10-02 22:38:00') AS recent_failed_grant_window,
+      COALESCE((SELECT canary_owner_iss IS g.canary_owner_iss AND canary_owner_sub IS g.canary_owner_sub
+       AND canary_recipient_sha256 IS g.canary_recipient_sha256 AND canary_expires_at IS g.canary_expires_at
+       AND canary_used_by IS g.canary_used_by AND actor IS g.actor AND case_ref IS g.case_ref
+       AND changed_at IS g.updated_at FROM send_release_gate_audit ORDER BY id DESC LIMIT 1),0) AS audit_match_latest,
+      MAX(0,MIN(900,COALESCE(canary_expires_at-unixepoch(),0))) AS expires_remaining_seconds
+    FROM send_release_gates AS g WHERE id=1
+    """
+    flags = ("gate_present", "global_held", "live", "unused", "case_prefix_owned",
+             "recent_failed_grant_window", "audit_match_latest")
+    try:
+        row = one_row(DatabaseClient(account, token, "staging").query(sql))
+        remaining = row.get("expires_remaining_seconds")
+        if (any(type(row.get(key)) is not int or row[key] not in (0, 1) for key in flags)
+                or type(remaining) is not int or not 0 <= remaining <= 900):
+            raise ValueError("canary_shape_unverified")
+    except (ValueError, KeyError, TypeError, OSError, HealthError):
+        return {"available": False, "reason": "canary_read_unverified"}
+    return {"available": True, **{key: bool(row[key]) for key in flags},
+            "expires_remaining_seconds": remaining}
+
+
 def split_diagnostic(result: dict) -> dict:
     """Read the full observed active graph; diagnostics never confer ownership."""
     import check_mail_split_graph as graph
@@ -105,6 +142,7 @@ def inspect() -> dict:
               "run_id": os.getenv("GITHUB_RUN_ID", ""), "scripts": {}, "queues": {},
               "legacy_role_present": "amail-role-monitor-staging" in present}
     result["routing_checks"] = routing_diagnostic(account)
+    result["canary_checks"] = canary_diagnostic(account, token)
     if result["legacy_role_present"]:
         script = "amail-role-monitor-staging"
         before = serving_deployment(capture.readback(account, token, script, "deployments?per_page=1&page=1"))

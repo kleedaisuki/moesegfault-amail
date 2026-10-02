@@ -21,14 +21,10 @@ class StagingCanaryTests(unittest.TestCase):
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         self.addCleanup(self.connection.close)
-        self.connection.executescript("""
-          CREATE TABLE send_policy(scope,owner_iss,owner_sub,state);
-          INSERT INTO send_policy VALUES('global','*','*','held');
-          CREATE TABLE addresses(address,owner_iss,owner_sub,state,needs_reconcile,cf_rule_id);
-          CREATE TABLE send_release_gates(id INTEGER,canary_owner_iss,canary_owner_sub,
-            canary_recipient_sha256,canary_expires_at INTEGER,canary_used_by,actor,case_ref,updated_at);
-          INSERT INTO send_release_gates(id,canary_expires_at) VALUES(1,0);
-        """)
+        migration = (ROOT / "crates/mail-worker/migrations/0006_outbound_abuse.sql").read_text()
+        self.connection.executescript(migration[:migration.index("-- Account-local")])
+        self.connection.execute("CREATE TABLE addresses(address,owner_iss,owner_sub,state,needs_reconcile,cf_rule_id)")
+        self.connection.execute("UPDATE send_release_gates SET canary_expires_at=0 WHERE id=1")
         self.address = "send-" + "a" * 16 + "@mail-staging.moesegfault.dev"
         self.connection.execute("INSERT INTO addresses VALUES(?,?,?,?,?,?)",
             [self.address, grant.DATABASES["staging"][1], "synthetic-sub", "active", 0, "b" * 32])
@@ -42,11 +38,12 @@ class StagingCanaryTests(unittest.TestCase):
 
     def query(self, sql: str, params=None) -> dict:
         """Return D1's single statement batch shape without network IO."""
+        before = self.connection.total_changes
         cursor = self.connection.execute(sql, params or [])
+        results = [dict(row) for row in cursor.fetchall()]
         if sql.startswith("UPDATE"):
             self.writes += 1
-            return {"meta": {"changes": cursor.rowcount}, "results": []}
-        return {"results": [dict(row) for row in cursor.fetchall()]}
+        return {"meta": {"changes": self.connection.total_changes - before}, "results": results}
 
     def invoke(self):
         """Run only the new guarded mode; original operator main is untouched."""
@@ -62,6 +59,19 @@ class StagingCanaryTests(unittest.TestCase):
         self.assertEqual((result["held"], result["live"]), (1, 1))
         self.assertIsNone(result["canary_used_by"])
         self.assertEqual(self.writes, 1)
+
+    def test_real_audit_trigger_total_changes_does_not_identify_gate_row(self):
+        """One returned gate row survives two total writes; a live retry returns none."""
+        before = self.connection.total_changes
+        audits = self.connection.execute("SELECT COUNT(*) FROM send_release_gate_audit").fetchone()[0]
+        self.invoke()
+        self.assertEqual(self.connection.total_changes - before, 2)
+        self.assertEqual(self.connection.execute("SELECT changes()").fetchone()[0], 1)
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM send_release_gate_audit").fetchone()[0], audits + 1)
+        before = self.connection.total_changes
+        with self.assertRaisesRegex(ValueError, "live_slot_or_hold_changed"):
+            self.invoke()
+        self.assertEqual(self.connection.total_changes, before)
 
     def test_live_slot_is_atomically_refused_without_overwrite(self):
         """Even the same owner cannot reset a still-live one-use grant."""
