@@ -2046,9 +2046,18 @@ fn summary(row: &MessageRow, score: Option<f64>) -> serde_json::Value {
     value
 }
 
+/// Detail, archive and mark need metadata or the R2 key, never indexed text or
+/// vectors. Keep the shared row shape without transferring those unused fields;
+/// actual content remains in the immutable archive and search has its own query.
+const MESSAGE_DETAIL_SQL: &str = "SELECT id,address,direction,sender,recipients_json,subject,'' AS body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,NULL AS embedding_json FROM messages WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted')";
+
 async fn one_message(env: &Env, user: &Principal, id: &str) -> AppResult<MessageRow> {
-    db(env)?.prepare("SELECT id,address,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,embedding_json FROM messages WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted')")
-        .bind(&[bind_str(id),bind_str(&user.iss),bind_str(&user.sub)])?.first::<MessageRow>(None).await?.ok_or_else(AppError::not_found)
+    db(env)?
+        .prepare(MESSAGE_DETAIL_SQL)
+        .bind(&[bind_str(id), bind_str(&user.iss), bind_str(&user.sub)])?
+        .first::<MessageRow>(None)
+        .await?
+        .ok_or_else(AppError::not_found)
 }
 
 async fn get_message(

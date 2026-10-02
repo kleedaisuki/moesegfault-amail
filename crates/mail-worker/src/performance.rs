@@ -111,7 +111,37 @@ fn idempotent_mark_preserves_generation_and_ownership() {
     db.execute_batch(include_str!("../migrations/0005_search_jobs.sql"))
         .unwrap();
     db.execute("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES('a@mail.example.test','a','i','s',0,'active',0)", []).unwrap();
-    db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES('m','a@mail.example.test','i','s','inbound','b@example.test','[]','Synthetic','','{}',0,0,1,0,'synthetic',1)", []).unwrap();
+    let metadata = r#"{"attachments":[{"filename":"synthetic.txt"}],"reply_to":"b@example.test"}"#;
+    let embedding = serde_json::to_string(&vec![0.25f32; 256]).unwrap();
+    db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes,embedding_json) VALUES('m','a@mail.example.test','i','s','inbound','b@example.test','[]','Synthetic',?1,?2,0,1,1,1,'synthetic',1,?3)", rusqlite::params!["x".repeat(2_200_000), metadata, embedding]).unwrap();
+    // Real detail SQL preserves body flags and metadata but not search payloads.
+    let detail: (String, Option<String>, i64, i64, String, String) = db
+        .query_row(
+            MESSAGE_DETAIL_SQL,
+            rusqlite::params!["m", "i", "s"],
+            |row| {
+                Ok((
+                    row.get("body_text")?,
+                    row.get("embedding_json")?,
+                    row.get("has_html")?,
+                    row.get("has_text")?,
+                    row.get("metadata_json")?,
+                    row.get("r2_key")?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        detail,
+        (
+            String::new(),
+            None,
+            1,
+            1,
+            metadata.to_owned(),
+            "synthetic".into()
+        )
+    );
     let generation = || {
         db.query_row(
             "SELECT generation FROM search_generations WHERE owner_iss='i' AND owner_sub='s'",
