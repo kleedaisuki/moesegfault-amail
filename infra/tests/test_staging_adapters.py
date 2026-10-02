@@ -1,5 +1,8 @@
 """Focused staging adapter contracts, fail-closed provisioning and submit safety."""
 from copy import deepcopy
+import contextlib
+import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -10,6 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/deploy"))
 import check_staging_adapters as check
+import inspect_staging as inspector
 import deploy_staging_adapter as deploy
 import ensure_email_events as events
 
@@ -73,6 +77,16 @@ class AdapterTests(unittest.TestCase):
         rows[1]["service"] = "amail-mail-staging"
         rows.append({"name": "EXTRA", "type": "secret_text"})
         self.assertFalse(check.bindings_match(value, VERSION, expected))
+
+    def test_inspector_preserves_exact_observed_adapter_pins_and_safe_failure(self):
+        """Diagnosing a live failure neither adopts resources nor relaxes verification."""
+        snapshot = {"scripts": {check.INGRESS: {"version": VERSION}, check.EVENTS_WORKER: {"version": VERSION}}}
+        with patch.object(check, "verify", side_effect=ValueError("adapter_consumer_unverified")) as verify, \
+             patch.object(check, "diagnostic_facts", return_value={"sourceaccount_match": True}):
+            result = inspector.adapter_diagnostic(snapshot)
+        verify.assert_called_once_with(VERSION, VERSION)
+        self.assertEqual(result, {"exact_graph": False, "reason": "adapter_consumer_unverified",
+                                  "facts": {"sourceaccount_match": True}})
 
     def snapshot(self, details=None, subscriptions=None):
         """Exercise real topology predicates with fixture provider reads only."""
@@ -166,6 +180,57 @@ class DeployTests(unittest.TestCase):
         with patch.object(deploy, "submit") as submit, self.assertRaises(ValueError):
             deploy.deploy("events")
         submit.assert_not_called()
+
+
+class DiagnosticTests(unittest.TestCase):
+    """Infrastructure diagnostics cannot disclose arbitrary provider content."""
+
+    def test_closed_failure_reason(self):
+        self.assertEqual(check.failure_reason(ValueError("adapter_consumer_unverified")), "adapter_consumer_unverified")
+        for error in (ValueError("PRIVATE provider recipient"), RuntimeError("adapter_consumer_unverified"),
+                      KeyError("secret"), ValueError({"secret": "private"})):
+            self.assertEqual(check.failure_reason(error), "adapter_readback_unverified")
+
+    def test_sanitized_lifecycle_projection(self):
+        catalog, details, subscriptions = lifecycle()
+        consumer = details[QUEUE_ID]["consumers"][0]
+        consumer.pop("type")
+        consumer.update(subject="PRIVATE subject", recipient="PRIVATE address", script_name="PRIVATE script")
+        consumer["settings"].update(max_concurrency=7, retry_delay="PRIVATE response", batch_size=True)
+        subscriptions[0].update(name="PRIVATE subscription", events=["PRIVATE event"])
+        details[QUEUE_ID].update(producers=[{"type": "PRIVATE kind", "script": "PRIVATE producer"}], producers_total_count=1)
+        with patch.object(check.queues, "inventory", return_value=catalog), \
+             patch.object(check.queues, "request", side_effect=lambda account, token, path: {"result": details[path.split("/")[-1]]}), \
+             patch.object(check.forwarding, "pages", return_value=subscriptions):
+            facts = check.diagnostic_facts(ACCOUNT, "PRIVATE token")
+        self.assertNotIn("PRIVATE", json.dumps(facts))
+        self.assertTrue(facts["sourceaccount_match"])
+        self.assertTrue(facts["main_queue"]["identity_match"])
+        self.assertTrue(facts["main_queue"]["producers"]["count_complete"])
+        self.assertEqual(facts["main_queue"]["producers"]["itemtypes"]["unknown"], 1)
+        self.assertEqual(facts["main_queue"]["consumers"]["itemtypes"]["missing"], 1)
+        self.assertEqual(facts["main_queue"]["mainconsumer"]["settings"]["max_concurrency"], 7)
+        self.assertEqual(facts["main_queue"]["mainconsumer"]["settings"]["retry_delay"], "invalid")
+        self.assertEqual(facts["main_queue"]["mainconsumer"]["settings"]["batch_size"], "invalid")
+        self.assertFalse(facts["main_queue"]["mainconsumer"]["script_match"])
+        self.assertEqual(facts["subscription"]["related_count"], 1)
+        self.assertFalse(facts["subscription"]["name_match"])
+
+    def test_failed_inventory_is_not_absence(self):
+        with patch.object(check.queues, "inventory", side_effect=ValueError("PRIVATE provider prose")):
+            facts = check.diagnostic_facts(ACCOUNT, "token")
+        self.assertNotIn("main_queue", facts)
+        self.assertNotIn("queue_inventory_complete", facts)
+        self.assertEqual(facts["read_failure"], "adapter_readback_unverified")
+
+    def test_default_failure_output_unchanged(self):
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["checker", "--source-only"]), \
+             patch.object(check, "source_configs", side_effect=ValueError("PRIVATE provider prose")), \
+             patch.object(check, "diagnostic_facts") as diagnostic, contextlib.redirect_stdout(output):
+            self.assertEqual(check.main(), 1)
+        self.assertEqual(output.getvalue(), "staging_adapters=UNVERIFIED\n")
+        diagnostic.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -44,6 +44,23 @@ def split_diagnostic(result: dict) -> dict:
     return {"exact_graph": True, "reason": "verified"}
 
 
+def adapter_diagnostic(result: dict) -> dict:
+    """Read existing exact adapter pins and report only safe structural facts."""
+    import check_staging_adapters as adapters
+    scripts = result["scripts"]
+    outcome = {"exact_graph": True, "reason": "verified"}
+    try:
+        adapters.verify(scripts[adapters.INGRESS]["version"], scripts[adapters.EVENTS_WORKER]["version"])
+    except (ValueError, KeyError, TypeError, OSError, adapters.forwarding.ProvisionError) as error:
+        outcome = {"exact_graph": False, "reason": adapters.failure_reason(error)}
+    try:
+        outcome["facts"] = adapters.diagnostic_facts(os.getenv("CLOUDFLARE_ACCOUNT_ID", ""),
+                                                      os.getenv("CLOUDFLARE_API_TOKEN", ""))
+    except (ValueError, KeyError, TypeError, OSError, adapters.forwarding.ProvisionError):
+        outcome["facts"] = {"read": "unverified"}
+    return outcome
+
+
 def inspect() -> dict:
     """Bracket reviewed serving pins and explicitly project non-content facts."""
     check()
@@ -145,6 +162,8 @@ def inspect() -> dict:
     if all(result["scripts"][name]["present"] for name in
            ("amail-mail-staging", "amail-mail-maintenance-staging", "amail-trace-sink-staging")):
         result["split_checks"] = split_diagnostic(result)
+    if all(result["scripts"][name]["present"] for name in ("amail-inbound-staging", "amail-events-staging")):
+        result["adapter_checks"] = adapter_diagnostic(result)
     return result
 
 

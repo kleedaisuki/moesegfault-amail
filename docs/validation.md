@@ -135,6 +135,18 @@ same-run tested bytes. Fresh complete read admission must pass before proceeding
 No completed native/site acceptance or justification for replaying successful
 API/maintenance submissions follows from these facts.
 
+Continuation [37065145834](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37065145834)
+at source `4f30e0274827c934feea57b75f8a29a9fbc9b597` passed every source gate,
+owned API/maintenance/sink reuse and the complete active Mail graph. It submitted
+ingress `09c34d0f-1147-467c-85f0-e7711d96d8fd` and lifecycle consumer
+`63733c7c-6238-4522-be0f-befb5e8c4799`, and completed subscription reconciliation.
+The subsequent complete adapter readback failed; site deployment was skipped.
+These successful submits must not be blindly replayed. Current adapter diagnostic
+reads preserve the exact version pins and project Queue consumer/settings/producer
+shape and subscription predicates without message content or raw provider prose.
+No predicate is relaxed before the actual failure shape is understood; the native
+journey and candidate site acceptance remain incomplete.
+
 Local lightweight source/mock checks cover staging context, immutable bounded
 usage models, drift rejection, retained lease/backlog semantics, future split
 replacement without the initial wait, exact adapter graph, candidate provenance

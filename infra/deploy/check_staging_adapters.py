@@ -7,6 +7,7 @@ HTTP probe, dequeue, replay or production selection is available.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
@@ -28,6 +29,111 @@ EVENTS_WORKER = "amail-events-staging"
 QUEUE = "amail-sending-events-staging"
 DLQ = "amail-sending-events-dlq-staging"
 DOMAIN = "mail-staging.moesegfault.dev"
+FAILURE_REASONS = frozenset({
+    "adapter_source_unreviewed", "adapter_staging_resources_unreviewed", "adapter_script_unreviewed",
+    "adapter_serving_unverified", "adapter_public_surface_unverified", "adapter_zones_unverified",
+    "adapter_queue_missing", "adapter_queue_unverified", "adapter_queue_ownership_unverified",
+    "adapter_consumer_unverified", "adapter_subscription_unverified", "adapter_coordinates_unverified",
+    "adapter_capabilities_unverified", "adapter_capture_or_surface_unverified", "adapter_graph_changed",
+    "adapter_readback_unverified",
+})
+
+
+def failure_reason(error: Exception) -> str:
+    """Project only source-owned closed reasons; never stringify provider errors."""
+    reason = error.args[0] if isinstance(error, ValueError) and len(error.args) == 1 else None
+    return reason if isinstance(reason, str) and reason in FAILURE_REASONS else "adapter_readback_unverified"
+
+
+def diagnostic_facts(account: str, token: str) -> dict:
+    """Read bounded infrastructure facts, not admission or private provider content.
+
+    Failed reads remain explicitly unavailable. Only closed labels, counts,
+    booleans and bounded numeric settings are returned; no names, identifiers,
+    domain values, event payloads or unknown provider fields leave this boundary.
+    """
+    facts = {}
+    try:
+        configs = source_configs()
+        facts["sourceaccount_match"] = account == configs[EVENTS_WORKER]["vars"]["CF_ACCOUNT_ID"]
+        if ACCOUNT.fullmatch(account) is None or not token:
+            raise ValueError("adapter_coordinates_unverified")
+        catalog = queues.inventory(account, token)
+        found = {name: queues.exact_queue(catalog, name) for name in (QUEUE, DLQ)}
+        facts["queue_inventory_complete"] = True
+    except (ValueError, KeyError, TypeError, OSError, forwarding.ProvisionError) as error:
+        return {**facts, "read_failure": failure_reason(error)}
+
+    def number(value):
+        """Provider numerics are typed and bounded; arbitrary strings stay private."""
+        return value if value is None or type(value) is int and 0 <= value <= 1_000_000_000 else "invalid"
+
+    def item_facts(value):
+        """Count fixed identity kinds, distinguishing an omitted optional type."""
+        if not isinstance(value, list) or len(value) > 10000:
+            return {"shape_valid": False}
+        kinds = {kind: 0 for kind in ("worker", "http_pull", "r2_bucket", "missing", "unknown")}
+        for item in value:
+            if isinstance(item, dict) and "type" not in item:
+                kinds["missing"] += 1
+                continue
+            kind = item.get("type") if isinstance(item, dict) else None
+            kinds[kind if isinstance(kind, str) and kind in kinds else "unknown"] += 1
+        return {"shape_valid": True, "count": len(value), "itemtypes": kinds}
+
+    for name, label in ((QUEUE, "main_queue"), (DLQ, "dlq")):
+        row = found[name]
+        projected = {"present": row is not None}
+        facts[label] = projected
+        if row is None:
+            continue
+        try:
+            detail = queues.request(account, token, f"queues/{row['queue_id']}").get("result")
+            if not isinstance(detail, dict):
+                raise ValueError("adapter_queue_unverified")
+            projected["identity_match"] = detail.get("queue_name") == name and detail.get("queue_id") == row["queue_id"]
+            for field in ("consumers", "producers"):
+                items = item_facts(detail.get(field))
+                count = detail.get(f"{field}_total_count")
+                items["reported_count"] = number(count) if count is not None else "invalid"
+                items["count_complete"] = type(count) is int and items.get("count") == count
+                projected[field] = items
+            consumers = detail.get("consumers")
+            if name == QUEUE and isinstance(consumers, list) and len(consumers) == 1 and isinstance(consumers[0], dict):
+                consumer = consumers[0]
+                settings = consumer.get("settings")
+                projected["mainconsumer"] = {"script_match": consumer.get("script_name") == EVENTS_WORKER,
+                    "dlq_match": consumer.get("dead_letter_queue") == DLQ, "settings_valid": isinstance(settings, dict),
+                    "settings": {key: number(settings.get(key)) if isinstance(settings, dict) and key in settings else "invalid"
+                        for key in ("batch_size", "max_wait_time_ms", "max_retries", "retry_delay", "max_concurrency")}}
+        except (ValueError, KeyError, TypeError, OSError) as error:
+            projected["read_failure"] = failure_reason(error)
+    try:
+        rows = forwarding.pages(forwarding.Client(token=token, account=account),
+                                f"/accounts/{account}/event_subscriptions/subscriptions")
+        identities = [row.get("id") for row in rows]
+        identity_valid = all(isinstance(value, str) and 1 <= len(value) <= 256 for value in identities)
+        ids = {row["queue_id"] for row in found.values() if row is not None}
+        related = [row for row in rows if isinstance(row.get("source"), dict) and isinstance(row.get("destination"), dict)
+                   and (row["source"].get("type") == "email.sending" and row["source"].get("domain") == DOMAIN
+                        or row["destination"].get("queue_id") in ids)]
+        subscription = {"inventory_complete": True, "identity_valid": identity_valid,
+                        "identity_unique": identity_valid and len(set(identities)) == len(identities),
+                        "related_count": len(related)}
+        facts["subscription"] = subscription
+        if len(related) == 1:
+            row, source, destination = related[0], related[0]["source"], related[0]["destination"]
+            events = row.get("events")
+            subscription.update(name_match=row.get("name") == "amail-sending-lifecycle-staging", enabled=row.get("enabled") is True,
+                source_type_match=source.get("type") == "email.sending", zone_match=source.get("zone_id") == ZONE,
+                domain_match=source.get("domain") == DOMAIN,
+                source_exact=source == {"type": "email.sending", "zone_id": ZONE, "domain": DOMAIN},
+                destination_exact=found[QUEUE] is not None and destination == {"type": "queues.queue", "queue_id": found[QUEUE]["queue_id"]},
+                events_match=isinstance(events, list) and len(events) == len(EVENTS.split(","))
+                    and all(isinstance(event, str) for event in events) and set(events) == set(EVENTS.split(",")))
+    except (ValueError, KeyError, TypeError, OSError, forwarding.ProvisionError) as error:
+        facts["subscription"] = {"read_failure": failure_reason(error)}
+    return facts
 
 
 def source_configs() -> dict[str, dict]:
@@ -222,13 +328,17 @@ def main() -> int:
     """Print only a fixed result; provider bodies never reach public CI output."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-only", action="store_true")
+    parser.add_argument("--diagnostic", action="store_true")
     parser.add_argument("--ingress-version", default=os.getenv("AMAIL_EXPECTED_INGRESS_VERSION", ""))
     parser.add_argument("--events-version", default=os.getenv("AMAIL_EXPECTED_EVENTS_VERSION", ""))
     args = parser.parse_args()
     try:
         source_configs() if args.source_only else verify(args.ingress_version, args.events_version)
-    except (ValueError, KeyError, TypeError, OSError, forwarding.ProvisionError):
+    except (ValueError, KeyError, TypeError, OSError, forwarding.ProvisionError) as error:
         print("staging_adapters=UNVERIFIED")
+        if args.diagnostic:
+            print(json.dumps({"reason": failure_reason(error), "facts": diagnostic_facts(
+                os.getenv("CLOUDFLARE_ACCOUNT_ID", ""), os.getenv("CLOUDFLARE_API_TOKEN", ""))}, sort_keys=True))
         return 1
     print("staging_adapters=source_checked" if args.source_only else "staging_adapters=exact_selected_graph")
     return 0

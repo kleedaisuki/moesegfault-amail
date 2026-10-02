@@ -131,6 +131,15 @@ write steps are skipped; remaining ingress/lifecycle/site deployment consumes th
 current run's tested artifact. The original wait/witness is not replayed or
 relabeled as current execution. Normal future split replacements still require
 reviewed Queue/DLQ variables; observed names never supply writer ownership.
+If later adapter verification fails after a confirmed submit, inspect the current
+immutable adapter versions, lifecycle Queue shape and exact subscription before
+continuing. The inspection artifact carries closed adapter failure labels and
+non-content numeric/type/predicate facts; it is not permission to redeploy the
+adapters. [Cloudflare consumer settings](https://developers.cloudflare.com/api/resources/queues/subresources/consumers/)
+define null maximum concurrency as automatic platform scaling; do not treat an
+arbitrary explicit limit as equivalent merely to pass a gate. Lifecycle producer
+and subscription ownership must likewise follow the actual reviewed graph, not
+a guessed provider response shape.
 Before another full continuation, `target=staging-inspect` with
 `confirm=INSPECT_STAGING_V012` and the same explicit `staging_resume_run` can run
 the identical read/provenance preflight without deployment authority. The read
