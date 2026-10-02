@@ -113,9 +113,10 @@ with same-subject distractors, lost output and delayed provider feedback.
 
 Assessment on 2026-10-03: **the implemented interface is sufficiently agent-first
 for the bounded, authorized transactional-mail tool role**. It now supports a
-recoverable task rather than merely exposing mail commands. This is not a claim
-that the staging rollout, every live transport relationship or unattended agent
-task has passed acceptance. External scheduling and agent judgment remain outside
+recoverable task rather than merely exposing mail commands. The scoped staging
+journey below now has live acceptance evidence; it does not establish every
+transport relationship or unattended agent task. Publication still awaits owner
+review. External scheduling and agent judgment remain outside
 the tool; a web inbox, MCP layer or autonomous daemon is not needed to close this
 increment.
 
@@ -123,8 +124,10 @@ increment.
 | --- | --- |
 | Implemented | Offline `discover` index and targeted schema topics; opt-in `machine` control records; remote send receipts and bounded local acceptance history; owner outcomes/events/policy queries; optional validated reply relations and searchable metadata. Ordinary summaries/stdout remain small. |
 | Source-validated | `discovery.rs`, `machine.rs`, `send_state.rs`, `feedback.rs` and `archive.rs` encode actionable recovery and owner/deletion boundaries. Independent review corrections cover accepted-but-index-pending sends, unknown send 5xx, invalid input and expired event cursors. Narrow feedback visibility checks project one integer rather than mail content. |
-| Hosted-validated | [Checks 37049571290](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37049571290) passed three CLI platforms, native Worker contracts, Wasm compilation, candidate packaging and both site states. Its Workerd feedback test failed because a synthetic foreign-owner event incorrectly reused the original owner's message ID; that fixture is corrected in current source and the actual-migration SQLite probe separates outcomes. Do not label the corrected Workerd test passed until a subsequent hosted run does so. |
-| Staging-unverified | This assessment has no completed v0.1.2 live deployment/native-journey result. Runtime graph, owner feedback reads, live relation retrieval and the exact deployed candidate still need the parent-owned staging acceptance record in [validation](validation.md). Older production evidence is not v0.1.2 staging acceptance. |
+| Hosted-validated | Subsequent same-runtime checks, including [37068720900](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37068720900), passed all three CLI platforms, native Worker contracts, Wasm compilation and 112 actual Workerd boundary tests. The earlier invalid foreign-owner and oversized-body fixtures are corrected; their failures are not current runtime-test status. Synthetic feedback/recovery coverage is not a new real provider-delivery result. |
+| Staging-validated, bounded | [Native journey 37069775670](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37069775670) verified release-candidate Windows login/discovery, held policy, event/absent-intent reads, two SMTP-to-ZIP receipts, incoming relation search and cleanup. Its extra grant step stopped and **send was never invoked**. A second failed native run (`37072844102`) installed an audited slot but falsely rejected total D1 changes that included the trigger write; [readback 37074323728](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37074323728) confirmed that run's intact gates/audit/window. The old slot stayed protected until natural expiry. The helper-only fix uses `RETURNING id`, without relaxing product authorization. |
+| Final deployed site and runtime validated | [Staging producer 37072106319](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37072106319) succeeded for `25f22cd`. [Final browser acceptance 37072847760](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37072847760) passed 12 live-staging cases against that revision with zero client scripts and representative visual acceptance. [Helper-only producer 37074671896](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37074671896), source `2ea0d09`, passed all gates, three CLI platforms and 112 actual Workerd tests; the product runtime is unchanged. |
+| Native end-to-end acceptance passed | [Native run 37075181256](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37075181256) succeeded using the actual Windows release candidate from producer `37074671896`, source `2ea0d09`, artifact `11256560216`. It verified discovery/policy/events/absent intent, two SMTP-to-ZIP fixtures and related-reply search/cleanup, then one controlled self-send: lost stdout -> remote and local receipt recovery -> identical ZIP replay under the same UUID with unchanged local/provider IDs -> delivered outcomes/events -> actual incoming RFC header -> exact owned cleanup. Global sending remained held. Its explicit `provider_to_rfc_mapping_not_asserted` marker prevents extrapolating the observed fixture into a provider-wide wire-ID mapping, model task-success rate or prompt-injection guarantee. |
 
 The progressive-disclosure test is positive at the interface level: the offline
 root tells an agent **which spaces exist**; a selected topic/schema describes
@@ -140,32 +143,35 @@ known feedback only if needed -> find a reply by a proven RFC relationship ->
 prepare a fresh authorized reply draft. Acceptance, archive projection, observed
 delivery and human reading are distinct. When no proven RFC identity exists,
 relation lookup remains explicitly unknown rather than being guessed from a
-provider ID or subject. In this increment **outbound provider-ID-to-wire-header
-mapping remains unknown**, including syntactically valid RFC-shaped provider
+provider ID or subject. In this increment **the general outbound provider-ID-to-wire-header
+mapping remains unverified**, including syntactically valid RFC-shaped provider
 values. Outbound `get` therefore does not manufacture `rfc_message_id`; incoming
 archives expose it only from the actually received Message-ID header. A received
 header or another proven relationship is required before claiming that a response
 belongs to a particular report. This conditional boundary is a product limitation, not
 an excuse to hide the relation space or fabricate a completed workflow.
 
-The next valuable work is bounded acceptance and owner review, not more v0.1.2
-features:
+The implementation and scoped staging acceptance are closed; the next step is
+owner review, not another feature increment or acceptance framework. Retain these
+product boundaries during review and any later release:
 
-1. Finish the corrected hosted Workerd check and exact-source staging graph/native
-   journey; passing source checks alone do not establish the deployed capability.
-2. During the already scoped acceptance, exercise same-intent lost-result recovery
-   and available feedback. Staging held policy or synthetic feedback must not be
-   represented as a new real outgoing-delivery result.
-3. Confirm the actual transport's RFC identity where a related-reply task needs it;
-   preserve the optional/unknown fallback and do not invent provider-ID mappings.
+1. Review the staged candidate CLI/Skill and site, then publish only on the owner's
+   explicit instruction. Reuse the completed runtime/browser/native evidence;
+   do not replay installed components or send another fixture just to repeat it.
+2. The controlled one-intent self-send proves bounded live receipt/replay/feedback
+   behavior, not unrestricted sending or a latency/reliability SLA. Keep global
+   held policy distinct from that narrowly granted test.
+3. Use an actual received RFC identity where a related-reply task needs it;
+   preserve the optional/unknown fallback. One observed self-send does not establish
+   a general provider-ID mapping.
    [Cloudflare's header contract](https://developers.cloudflare.com/email-service/reference/headers/)
    describes automatically generated Message-ID; the current
    [Workers sending result](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/)
    describes `messageId` as a unique email ID, without establishing equality to
    that wire header. The implementation uses this Workers binding, not REST.
-4. Use one small task probe with a same-subject distractor and hostile incoming
-   instruction. Skill guidance is not a proven prompt-injection defense or a
-   measured autonomous task-success rate; no new evaluation framework is needed.
+4. Skill guidance is not a proven prompt-injection defense or a measured autonomous
+   task-success rate. If later agent use reveals a concrete authority or selection
+   problem, use a small targeted task probe rather than adding a universal framework.
 5. Preserve task UUID/ZIP context across runtime restart. Local receipts retain
    only 100 accepted intents and events 90 days; missing retained evidence is not
    permission to resend. These disclosed bounds do not require an infinite ledger.

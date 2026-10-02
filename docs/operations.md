@@ -49,6 +49,23 @@ staging writer lock; same-run resource jobs remain sequential. No tag, Release,
 production deployment, public-site replacement or global-send policy enable is
 part of this lane. Protected staging synthetic identities are not production users.
 
+Current deployed site source `25f22cd79a68452c73ff63e3ed695bcb1cbfde19` completed
+[staging 37072106319](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37072106319).
+The unchanged installed Mail runtime and exact active graph were admitted before
+only the staging site was deployed. The final user-facing unpublished three-platform
+CLI/skill bundle is
+[candidate artifact 11256560216](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37074671896/artifacts/11256560216)
+from successful checks producer `37074671896`, source
+`2ea0d09febcaa51c276de0e82e1bdf5074d16f17`. This later helper-only correction did
+not redeploy the Mail runtime or site. Actual deployed
+site browser acceptance [37072847760](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37072847760)
+passed all twelve cases with zero client scripts. Native owner acceptance [37075181256](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37075181256)
+passed against that exact checks producer, including one scoped real self-send,
+receipt recovery/replay/delivered feedback and exact owned cleanup. The complete
+scope and prior failed acknowledgments are in [validation](validation.md), not
+inferred from deployment. Keep component provenance separate: deployed site
+revision remains `25f22cd79a68452c73ff63e3ed695bcb1cbfde19`.
+
 Actual initial inspection [37046570528](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37046570528)
 found legacy API version `c3f6401a-1e84-4f51-91df-ae77d90683e9` with both fetch and
 scheduled handlers and five-minute Cron; maintenance, trace sink and trace queues
@@ -180,6 +197,12 @@ checks all three pages, v0.1.2 status, noindex/nofollow, source SHA, navigation,
 manual exploration commands and real TOC targets. Public v0.1.0 stays unchanged.
 The existing browser lane's `live-staging` target takes that deployed revision and
 only reads the fixed staging origin; it cannot deploy or open mail authority.
+The generated staging-only host headers additionally use `public, max-age=0,
+must-revalidate, no-transform` to prevent automatic provider analytics injection
+without touching public-site or zone-wide settings. After one successful submit,
+semantic readiness is polled with public GETs for at most 120 seconds: all three
+routes must simultaneously satisfy the exact revision/header/content contracts.
+HTTP 200 alone is insufficient, and propagation never authorizes another submit.
 
 For owner acceptance, download the same-run `cli-candidate-v0.1.2-RUN_ID` artifact
 using GitHub Actions or `gh run download RUN_ID -n cli-candidate-v0.1.2-RUN_ID`.
@@ -213,7 +236,11 @@ synthetic self-notification after the original two-message cleanup. The existing
 operator canary helper's staging-only guarded mode requires this run's private
 nonce, exact owned active alias/rule and GitHub actor. Its conditional UPDATE
 preserves global hold and atomically refuses any still-live grant; the established
-main/production wrapper remains unchanged. The grant targets one hashed self
+main/production wrapper remains unchanged. Its `RETURNING id` must contain exactly
+one integer gate ID 1 before exact owner/recipient/case/hold readback. D1 aggregate
+`meta.changes` includes audit-trigger writes and is not single-row admission.
+Lost/failed grant acknowledgment may still have installed an unused live slot;
+inspect its safe predicates/audit and allow normal expiry, never overwrite it. The grant targets one hashed self
 recipient for 15 minutes and is consumed by the original persisted send UUID.
 Ambiguous grant writes or provider submissions are not retried. The probe discards
 first stdout, retrieves server/local receipt, and replays the identical ZIP/key

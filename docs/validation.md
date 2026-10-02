@@ -29,158 +29,148 @@ Historical held/unreleased snapshots are not current production state.
 
 ## Useful bounded evidence and limits
 
-### v0.1.2 work in progress (not published)
+### v0.1.2 staging candidate (not published)
 
-The owner authorized staging testing/deployment only, with public v0.1.0 unchanged.
-Initial hosted [staging inspection 37046570528](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37046570528)
-observed a mixed fetch/scheduled API with five-minute Cron, no maintenance Worker,
-no trace sink or trace queues, and existing private ingress/lifecycle adapters.
-API/ingress/lifecycle capture was positively read off. This establishes the legacy
-predecessor requiring a cutover; it does not prove the v0.1.2 split graph is online.
+The owner authorized staging testing/deployment only. Public production, stable
+v0.1.0 Release/downloads and production sending policy were not changed. The final
+site source is `25f22cd79a68452c73ff63e3ed695bcb1cbfde19`; the final user CLI
+candidate/acceptance producer is helper-only source
+`2ea0d09febcaa51c276de0e82e1bdf5074d16f17`. Mail runtime inputs are unchanged.
 
-Source `b2dbd66d786a5a790dc55486ee27ae578690f0ea` in staging run
-[37053907751](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37053907751)
-passed Linux/Windows/macOS CLI, native Worker, Wasm/workerd (112 boundary tests),
-site, infrastructure and Worker performance gates. The overall run is **FAILURE**:
-trace Queue provisioning and sink submission succeeded, but the sink verifier
-incorrectly required the final two-producer graph during the legitimate
-zero-producer preparation phase. API/maintenance/ingress/lifecycle/site deployment
-jobs were skipped. This is partial infrastructure delivery, not an online v0.1.2
-API, candidate site or completed native acceptance.
-
-Fresh staging inspection
-[37055035305](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37055035305)
-confirmed the following non-content pins after that interruption:
-
-| Resource | Observed immutable version / Queue identity | State |
+| Outcome | Actual evidence | Scope / limitation |
 | --- | --- | --- |
-| API | `c3f6401a-1e84-4f51-91df-ae77d90683e9` | Original fetch + scheduled, five-minute Cron, Standard, capture off |
-| Maintenance | Absent | No new scheduled writer activated |
-| Ingress | `87002211-316c-4b75-8a27-993252e36488` | Original email adapter, capture off |
-| Lifecycle | `8cfecf54-e0a5-44d1-b3b5-69cbbb8f9425` | Original Queue adapter, capture off |
-| Trace sink | `be786239-402d-4e72-89c9-0acbe88b0b86` | Deployment `73892f24-1e84-406a-b025-3879580597e1`, Queue only, empty Cron |
-| Trace Queue | `fcee510036af42c189e28c0b6ff9508e` | Bounded retention, zero producers |
-| Trace DLQ | `f023f804b7bd4d8691fbfcb60416a001` | Bounded retention, zero producers |
+| Final staging deployment | [37072106319](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37072106319), overall SUCCESS | Linux/Windows/macOS CLI, native Worker, Wasm/workerd (112 boundary tests), both site states, infrastructure and performance gates; installed runtime reused after exact owned graph admission; candidate site deployed and semantically verified |
+| Staging-run candidate | [Artifact 11255765702](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37072106319/artifacts/11255765702) | Immutable same-run three-platform native archives, skill and checksums; manifest/source/checksums verified locally; `unpublished-candidate`, not the formal five-platform release gate |
+| Final live browser | [37072847760](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37072847760), overall SUCCESS | Exact source and deployed revision; all 12 home/manual/changelog cases at 320/390/768/1440 px pass, zero client scripts and zero failed checks |
+| First native candidate-byte journey | [37069775670](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37069775670), overall FAILURE | Same-source successful producer 37068720900 admitted the Windows release executable; normal login/discovery/policy/events/missing-intent and two-SMTP reply/ZIP/search/delete/owned-route cleanup passed; extra outbound probe stopped before send; guarded grant SQL may already have committed |
+| Second native candidate-byte journey | [37072844102](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37072844102) | Overall FAILURE at `owned_send_grant_staging_canary_live_slot_or_hold_changed`; normal inbound journey passed again; guarded grant UPDATE executed, send not called; no outbound acceptance/feedback claim |
+| Recovery checks producer | [37074671896](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37074671896), overall SUCCESS | Helper-only source `2ea0d09febcaa51c276de0e82e1bdf5074d16f17`; full source gates and [candidate artifact 11256560216](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37074671896/artifacts/11256560216); no provider/site deployment |
+| Controlled native recovery journey | [37075181256](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37075181256), overall SUCCESS | Exact candidate bytes from successful same-source producer 37074671896; normal inbound journey plus one held-policy owned self-send, lost-stdout receipt recovery, exact same-key replay, delivered feedback/owner event, inbound archive and exact cleanup |
 
-The sink intentionally retains sanitized logs: provider capture is not disabled.
-The old inspector's `capture_off=false` therefore must not be interpreted as either
-privacy approval or proof of mail exposure. The corrected inspector keeps
-`capture_off` separate from sink-only `privacy_safe`. Private-surface, immutable
-capability, retention and exact Queue-consumer predicates must pass fresh before
-owned continuation. The bounded resume controller preserves these existing
-resources, pins the failed run's immutable ownership, requires identical runtime
-bytes and reuses current full source gates. No continuation or v0.1.2 online
-acceptance is claimed yet. No production resource, stable release or public site
-was changed by this staging work.
+The final browser report is preserved locally under
+`.temp/site-browser-37072847760/site-browser-evidence/report.json`; all twelve
+`loading.scripts` counts are zero. The owner also visually reviewed representative
+1440/320 home and 1440/390 manual screenshots from the earlier successful actual
+staging browser run [37071618309](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37071618309),
+finding no clipping, missing CJK glyphs or privacy-notice rendering problems.
+Automated geometry/focus checks and bounded representative visual review are not
+an exhaustive accessibility audit.
 
-Continuation [37056569732](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37056569732)
-at source `6608d176897731851e8f01a85f47864b784e74af` passed the full source gates
-but failed preflight before every provider-write step. Existing sink/Queues were
-not replayed or replaced. Corrected inspection
-[37057224593](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37057224593)
-then confirmed all four sink privacy/capability/retention/Queue predicates, the
-API-only preparation topology, `privacy_safe=true` separately from
-`capture_off=false`, and the unchanged exact predecessor/Queue pins with zero
-producers. Actual GitHub ownership recovery and tracked runtime comparison pass
-locally, including the complete real job log and immutable artifacts. These facts
-exclude graph drift and the tested provenance/dictionary shape as known causes;
-the hosted preflight failure still requires diagnosis. The optional existing
-inspection lane now checks that same admission with read-only confirmation before
-another expensive full continuation. No online v0.1.2 delivery is claimed.
+The final native log records candidate admission/extraction,
+`progressive_discovery_policy_events_missing_intent_verified`, the two-SMTP
+ZIP/reply/search/delete journey, `staging_owned_send_mapping_observed_for_fixture`,
+`staging_owned_send_provider_to_rfc_mapping_not_asserted`, and
+`staging_owned_send_receipt_replay_feedback_and_inbound_verified`. The optional
+self-send used one fresh persisted UUID/ZIP only after a positive scoped grant and
+held-policy readback. First stdout was deliberately discarded; server/local
+receipt recovery then permitted only identical byte/key replay, preserving the
+local/provider identifiers. Actual delivered outcome and owner-visible event,
+self-received native ZIP/header/body, and exact task-created message/alias cleanup
+passed. There were no no-resend or cleanup-failure markers. The existing grant
+slot's atomic guard was retained; the prior unused slot expired normally, not by
+an overwrite. Global public sending remained held. This is one owned synthetic
+fixture, not a general deliverability SLA, a new send campaign, or production
+mail acceptance. Its private provider-to-wire equality observation is not exposed
+as raw identifiers or asserted as a global RFC identity contract.
 
-Read-admission run
-[37057818125](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37057818125)
-identified the remaining failure as `staging_resume_log_download_failed`: live
-graph, runtime tree, origin metadata and immutable artifacts passed before the
-hosted `gh api` job-log download failed. The same endpoint worked with the owner's
-local CLI credentials; that does not establish why the hosted token/CLI failed.
-The narrow repair separates the authenticated GitHub 302 request from its
-allowlisted unauthenticated signed-blob download, retaining the exact typed sink
-submit proof and read-only admission gate. Hosted success is still required before
-another full continuation; no new permission or provider mutation is introduced.
+The first browser run exposed provider-injected Web Analytics in browser-UA HTML,
+although built assets contained no scripts, plus a keyboard Enter/hash observation
+race. Staging-only generated headers now use
+`Cache-Control: public, max-age=0, must-revalidate, no-transform`, the documented
+[Cloudflare Web Analytics exclusion](https://developers.cloudflare.com/web-analytics/get-started/),
+without changing public site headers or zone-wide analytics. The harness waits
+for the exact `#main` URL before preserving its original main-focus assertion.
+Run [37070636987](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37070636987)
+submitted the corrected site but failed its immediate stale-revision smoke; that
+failed run is not relabeled green. The final lane polls public GETs for at most
+120 seconds, requiring all three exact revision/header/content/TOC contracts in
+the same cycle. It never repeats a deploy to wait for CDN readiness.
 
-Read-admission [37058454601](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37058454601)
-at source `4732325020ffc7447242a1601d08ebfd8e47d6b2` passed. The same-source
-continuation [37058617870](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37058617870)
-passed all source/packaging gates, reused the owned sink/Queues, submitted
-fetch-only API `01f14a8e-d5b1-41f9-9f8c-325c2e288ba7`, and completed the initial
-scheduled-cohort cutover: 1,864.625790695 monotonic seconds, 30 pinned samples,
-Standard old runtime, and both observed execution-lease counts zero and preserved.
-Paused maintenance `bc616834-035f-4bb7-88d6-e29ce1ab5867` was replaced with active
-scheduled-only `3d23d537-6379-4fcb-84c2-2c1b8a9f4857` and individually verified.
+The bounded graph now online is:
 
-The run remains **FAILURE** at the subsequent complete split-graph check; remaining
-ingress/lifecycle/site jobs were skipped. Fresh inspection
-[37062907729](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37062907729)
-confirmed those exact API/maintenance versions, API empty Cron, maintenance
-five-minute Cron, both capture off, unchanged private sink, and the exact two
-API + maintenance trace producers (DLQ has none). All sink predicates passed.
-Diagnostic inspection
-[37063591034](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37063591034)
-confirmed the exact failure `split_role_absence_unverified`: the historical
-staging contact Worker exists with email/scheduled handlers and five-minute Cron,
-but has no Mail database, API/maintenance service, Mail body bucket or trace Queue
-capability edge. The owner chose to retain it unchanged rather than deleting or
-pausing unrelated contact operations to satisfy a name-only absence check.
-The staging graph now brackets its immutable capability/serving/Cron snapshot
-and rejects any Mail DB/R2/API/maintenance/sink service or trace main/DLQ edge.
-Production still requires role absence. This proves the bounded Mail graph
-separation, not population isolation or independent contact-monitor correctness.
+| Component | Serving version / Queue identity | Accepted boundary |
+| --- | --- | --- |
+| API | `01f14a8e-d5b1-41f9-9f8c-325c2e288ba7` | Fetch only, empty Cron, capture off |
+| Maintenance | `3d23d537-6379-4fcb-84c2-2c1b8a9f4857` | Scheduled only, five-minute Cron, capture off |
+| Ingress | `09c34d0f-1147-467c-85f0-e7711d96d8fd` | Email only, private same-realm API binding, capture off |
+| Lifecycle | `63733c7c-6238-4522-be0f-befb5e8c4799` | Queue only, same-realm D1, capture off; exact domain/event subscription |
+| Trace sink | `be786239-402d-4e72-89c9-0acbe88b0b86` | Queue only, empty Cron, separate `privacy_safe=true`; sanitized logs intentionally retained, `capture_off=false` |
+| Trace Queue | `fcee510036af42c189e28c0b6ff9508e` | Bounded retention, exact API + maintenance producer pair |
+| Trace DLQ | `f023f804b7bd4d8691fbfcb60416a001` | Bounded retention, no producers |
 
-An explicitly owned second continuation binds run `37058617870`, full source
-gates, the API/paused/active typed submits and immutable 31-minute witness. It
-reuses the existing API/maintenance/sink/Queues without schema/provider-policy
-rewrites or another cutover wait; only the remaining adapters/site use current
-same-run tested bytes. Fresh complete read admission must pass before proceeding.
-No completed native/site acceptance or justification for replaying successful
-API/maintenance submissions follows from these facts.
+Staging D1/R2/Identity remain separate from production; general sending remains
+held and no fake send/provider-feedback rows were seeded in live D1. Each native
+journey verified PKCE login, progressive discovery, held policy/quota, owner events
+and typed 404/stop for an unsubmitted intent. Its second SMTP fixture references
+only the first fixture's proven DATA receipt; ZIP/metadata/search preserve the
+RFC reply relation and exact fixture/route cleanup.
 
-Continuation [37065145834](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37065145834)
-at source `4f30e0274827c934feea57b75f8a29a9fbc9b597` passed every source gate,
-owned API/maintenance/sink reuse and the complete active Mail graph. It submitted
-ingress `09c34d0f-1147-467c-85f0-e7711d96d8fd` and lifecycle consumer
-`63733c7c-6238-4522-be0f-befb5e8c4799`, and completed subscription reconciliation.
-The subsequent complete adapter readback failed; site deployment was skipped.
-These successful submits must not be blindly replayed. Current adapter diagnostic
-reads preserve the exact version pins and project Queue consumer/settings/producer
-shape and subscription predicates without message content or raw provider prose.
-No predicate is relaxed before the actual failure shape is understood; the native
-journey and candidate site acceptance remain incomplete.
+The two prior native failures were before send, not proof of absent grant writes.
+The second failed at `owned_send_grant_staging_canary_live_slot_or_hold_changed`
+after its guarded UPDATE. A routing read found ten list-matcher rules, excluding
+the suspected null-shape cause from the observed inventory. No such speculative
+normalization was made and no unknown provider submission was replayed.
+The [D1 API metadata contract](https://developers.cloudflare.com/api/resources/d1/)
+defines `meta.changes` through SQLite total changes, which include trigger writes.
+A native SQLite 3.50.4 probe using the actual migration's gate/policy audit triggers
+observed one direct gate UPDATE but total-change delta two, and no changes for a
+second still-live conditional UPDATE. This exposed the helper's incorrect `meta.changes == 1`
+acknowledgment check. The staging-owned UPDATE now returns its top-level gate ID
+and requires exactly one integer ID 1, then the existing exact-scope readback;
+aggregate counts do not identify the gate row. Actual-migration regression tests
+also require a still-live second grant to return zero rows with zero mutations.
+The original operator SQL is unchanged. These local results do not by themselves
+prove either remote grant state: inspect the existing live grant/audit and allow
+normal expiry, never overwrite it, before another authorized send attempt.
+Actual inspection [37074323728](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37074323728)
+then confirmed gate present, global held, live and unused grant, owned-case prefix,
+exact latest matching audit, and the failed request's 22:37 UTC update window, with
+323 seconds remaining. The failed acknowledgment had installed the grant and its
+audit; no send followed. This closes the concrete aggregate-count diagnosis, not
+outbound delivery acceptance. That unused slot was retained until normal expiry.
 
-Read diagnostics [37066934636](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37066934636)
-isolated `adapter_subscription_unverified`: Queue ownership/consumer/settings,
-account, the sole subscription's name/enabled/type/zone/domain/destination/events
-all matched, but source-object equality did not. Bounded follow-up schema
-inspection [37067988366](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37067988366)
-identified the sole additive key `name`, without exposing its value. The pinned
-Wrangler source defines only type/zone_id/domain as Email Sending selectors.
-The narrow correction admits an optional bounded string display label `name`,
-retains all three exact selectors and rejects every other extra field or bad type.
-No Queue/consumer/config assertion was loosened and no provider property changed.
-The fixed third continuation `37065145834` proves its two successful adapter
-submits and original graph/cutover ownership, then reuses all installed runtime
-components only after current strict graph and adapter reads pass; only the site
-writer remains. Its fresh hosted read admission and final acceptance are pending.
+#### Migration and interruption evidence
 
-Local lightweight source/mock checks cover staging context, immutable bounded
-usage models, drift rejection, retained lease/backlog semantics, future split
-replacement without the initial wait, exact adapter graph, candidate provenance
-and site stale-copy rejection. No local Rust/Wasm/browser build, provider mutation,
-mail send or deployment was performed for these checks. The independently reviewed
-immutable usage-model member was corrected to `resources.script_runtime`; its
-positive/negative fixtures are part of hosted admission. Actual hosted checks,
-performance measurements, new graph readback, native journey and site/browser
-acceptance must be added here only after their runs produce evidence.
-The bounded native staging journey was extended to read new owner-visible
-surfaces and correlate its existing second SMTP fixture to the first verified
-DATA receipt. Its local mocked fixtures prove harness ordering/error contracts,
-not actual provider delivery; no live outgoing feedback is claimed under the
-staging global hold. A separately confirmed one-use owned self-send probe is now
-prepared, including atomic live-grant refusal, first-output loss recovery, exact
-same-key replay, actual outcomes/events and retained unknown intent ZIP. Its local
-mock/SQLite tests prove harness and grant predicates, not delivery. Runtime outbound
-feedback remains covered by hosted synthetic Wasm/D1 tests until that authorized
-real canary is actually executed and its evidence recorded here.
+The following history explains the retained ownership/witness, not repeated runtime
+writes or competing current-state snapshots:
+
+| Run | Actual result and retained evidence |
+| --- | --- |
+| [37046570528](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37046570528) | Initial legacy API `c3f6401a-1e84-4f51-91df-ae77d90683e9` fetch + scheduled/five-minute Cron, no maintenance/sink/trace Queues; existing private adapters |
+| [37053907751](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37053907751) | Full source gates passed, trace Queues and sink submitted; failed because verifier demanded final producer pair in legitimate zero-producer preparation phase; remaining writes skipped |
+| [37055035305](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37055035305), [37057224593](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37057224593) | Fresh exact private sink/Queue pins, zero producers, separate retained-log privacy predicate; no application activation |
+| [37056569732](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37056569732), [37057818125](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37057818125) | Source/provenance checks passed but hosted job-log download failed before every provider write; actual CLI/token root cause not established |
+| [37058454601](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37058454601) | Read admission passed after authenticated GitHub 302 and allowlisted unauthenticated signed-log download were separated; exact typed ownership proof retained |
+| [37058617870](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37058617870) | API fetch-only and paused/active maintenance submitted; 1,864.625790695 monotonic seconds, 30 pinned Standard-model samples and both execution-lease counts zero/preserved; failed final graph's unrelated role-absence predicate |
+| [37063591034](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37063591034) | Confirmed retained historical contact Worker has no Mail D1/R2/API-or-maintenance-or-sink service/trace Queue capability edge |
+| [37065145834](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37065145834) | Full source and active graph gates passed; ingress/lifecycle submits and subscription succeeded; exact source-object equality rejected additive display metadata; site skipped |
+| [37067988366](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37067988366) | Bounded schema diagnostic isolated the sole extra source key `name`; exact type/zone_id/domain selectors unchanged |
+| [37068720900](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37068720900) | First complete successful staging continuation; all installed graph resources reused, candidate site deployed; followed by native/browser findings above |
+| [37071404266](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37071404266) | Full read/provenance admission and routing diagnostic passed before final source producer; no provider mutation |
+
+The initial drain witness combines documented Cron propagation up to 15 minutes,
+Standard scheduled invocation wall time up to 15 minutes and a one-minute margin.
+Immutable `resources.script_runtime.usage_model`, continuous version/Cron/hold
+brackets and retained execution fences are required; elapsed time alone is not a
+proof. Pending mailbox work was not cleared. Already-split reuse did not repeat
+that initial wait or submit already accepted runtime versions.
+
+The historical staging contact Worker was deliberately retained unchanged after
+before/after serving/Cron/capability verification excluded all listed Mail edges.
+Production still requires its original role absence. This is bounded capability
+graph separation, not population/network isolation or contact-monitor correctness.
+The lifecycle source matcher follows
+[pinned Wrangler EmailSendingEventSource](https://github.com/cloudflare/workers-sdk/blob/wrangler%404.142.0/packages/wrangler/src/queues/subscription-types.ts):
+exact type/zone_id/domain selectors plus only an optional bounded string display
+`name`; unknown extras/wrong scope/type still fail. Queue defaults/configuration
+were not changed to conceal a failed predicate.
+
+Hosted synthetic Wasm/D1 tests cover broader outbound receipt/replay/outcome
+contracts; actual native run `37075181256` additionally proves the bounded real
+self-send receipt/replay/delivered-feedback journey described above. Its observed
+provider-to-RFC comparison applies only to that synthetic fixture, never a global
+provider identifier contract. No heavy local Rust/Wasm/browser build or local
+provider/mail write was performed during this staging work.
 
 Staging [36719116852](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36719116852),
 source `17abe25`, passed one-principal native PKCE/two-message receive/search/ZIP/
