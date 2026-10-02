@@ -1090,16 +1090,32 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .temp/staging-site-smoke
-          for route in home manual changelog; do
-            path=/
-            if [ "$route" != home ]; then path="/$route/"; fi
-            curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 \
-              --connect-timeout 10 --max-time 30 \
-              --dump-header ".temp/staging-site-smoke/$route.headers" \
-              --output ".temp/staging-site-smoke/$route.html" \
-              "https://amail-staging.moesegfault.dev$path"
+          # A successful submit is not global CDN readiness. Poll only public
+          # GETs; all three content/header contracts must pass in the same cycle.
+          deadline=$((SECONDS + 120))
+          while ((SECONDS < deadline)); do
+            ready=true
+            for route in home manual changelog; do
+              path=/
+              if [ "$route" != home ]; then path="/$route/"; fi
+              remaining=$((deadline - SECONDS))
+              if ((remaining <= 0)); then ready=false; break; fi
+              maximum=$((remaining < 15 ? remaining : 15))
+              if ! curl --fail --silent --show-error --connect-timeout 10 --max-time "$maximum" \
+                --user-agent 'Mozilla/5.0 (compatible; AmailStagingAcceptance/0.1.2)' \
+                --dump-header ".temp/staging-site-smoke/$route.headers" \
+                --output ".temp/staging-site-smoke/$route.html" \
+                "https://amail-staging.moesegfault.dev$path"; then ready=false; fi
+            done
+            if "$ready" && python infra/release/candidate_site.py smoke .temp/staging-site-smoke "$GITHUB_SHA" --realm staging; then
+              exit 0
+            fi
+            remaining=$((deadline - SECONDS))
+            if ((remaining <= 0)); then break; fi
+            sleep "$((remaining < 3 ? remaining : 3))"
           done
-          python infra/release/candidate_site.py smoke .temp/staging-site-smoke "$GITHUB_SHA" --realm staging
+          echo '::error::Staging candidate semantic readiness timed out without replaying deployment'
+          exit 1
       - name: Preserve public candidate route evidence
         if: always()
         uses: actions/upload-artifact@v4
