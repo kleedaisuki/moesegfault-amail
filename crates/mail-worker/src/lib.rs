@@ -2115,8 +2115,16 @@ async fn mark_message(
         .await
         .map_err(|_| AppError::bad("invalid_json"))?;
     one_message(env, user, id).await?;
-    db(env)?.prepare(MARK_MESSAGE_SQL)
-        .bind(&[bind_num(input.read as i64),bind_str(id),bind_str(&user.iss),bind_str(&user.sub)])?.run().await?;
+    db(env)?
+        .prepare(MARK_MESSAGE_SQL)
+        .bind(&[
+            bind_num(input.read as i64),
+            bind_str(id),
+            bind_str(&user.iss),
+            bind_str(&user.sub),
+        ])?
+        .run()
+        .await?;
     get_message(env, user, id, request_id).await
 }
 

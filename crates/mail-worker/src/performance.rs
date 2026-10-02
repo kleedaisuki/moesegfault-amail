@@ -110,6 +110,7 @@ fn idempotent_mark_preserves_generation_and_ownership() {
         .unwrap();
     db.execute_batch(include_str!("../migrations/0005_search_jobs.sql"))
         .unwrap();
+    db.execute("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES('a@mail.example.test','a','i','s',0,'active',0)", []).unwrap();
     db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES('m','a@mail.example.test','i','s','inbound','b@example.test','[]','Synthetic','','{}',0,0,1,0,'synthetic',1)", []).unwrap();
     let generation = || {
         db.query_row(
