@@ -197,6 +197,16 @@ try {
         assert.ok(text.includes('这是候选版本说明，不表示邮件服务或发送已开放。'));
         assert.doesNotMatch(text, /v0\.1\.0 已(?:正式)?发布/);
       });
+      await check(result, 'route-local CSS and zero client runtime', async () => {
+        result.loading = await page.evaluate(() => ({
+          styles: [...document.styleSheets].map((sheet) => sheet.href).filter(Boolean),
+          scripts: document.querySelectorAll('script').length,
+        }));
+        const components = result.loading.styles.some((href) =>
+          new URL(href).pathname === '/vendor/moesegfault-style/v0.1.2/css/components.css');
+        assert.equal(components, route === '/', 'unused component CSS must not block guide routes');
+        assert.equal(result.loading.scripts, 0, 'static guide must not ship a client runtime');
+      });
       await check(result, 'no page horizontal overflow', async () => {
         const bounds = await page.evaluate(() => ({ width: innerWidth,
           content: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) }));

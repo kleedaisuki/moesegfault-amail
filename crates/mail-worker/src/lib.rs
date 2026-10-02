@@ -6,8 +6,11 @@ mod archive;
 mod archive_read;
 mod auth;
 mod database;
+mod exact_cosine;
 mod feedback;
 mod maintenance;
+#[cfg(test)]
+mod performance;
 mod platform;
 mod search_jobs;
 mod telemetry_read;
@@ -2097,6 +2100,9 @@ struct MarkRequest {
     read: bool,
 }
 
+/// Skip idempotent marks: no changed state means no search-generation mutation.
+const MARK_MESSAGE_SQL: &str = "UPDATE messages SET is_read=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND deleted_at IS NULL AND is_read!=?1";
+
 async fn mark_message(
     req: &mut Request,
     env: &Env,
@@ -2109,7 +2115,7 @@ async fn mark_message(
         .await
         .map_err(|_| AppError::bad("invalid_json"))?;
     one_message(env, user, id).await?;
-    db(env)?.prepare("UPDATE messages SET is_read=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND deleted_at IS NULL")
+    db(env)?.prepare(MARK_MESSAGE_SQL)
         .bind(&[bind_num(input.read as i64),bind_str(id),bind_str(&user.iss),bind_str(&user.sub)])?.run().await?;
     get_message(env, user, id, request_id).await
 }
@@ -2727,7 +2733,10 @@ async fn send_message(
         reserve_outbound_budget(&database, user, &draft, &idem, inserted_new).await?;
     }
     let r2_key = format!("messages/{id}.zip");
-    if let Err(err) = reserve_storage(&database, &id, user, bytes.len() as i64).await {
+    // The archive is no longer needed after the R2 write; keep its size, not a
+    // second potentially 5 MiB allocation, across the provider exchange.
+    let archive_size = bytes.len();
+    if let Err(err) = reserve_storage(&database, &id, user, archive_size as i64).await {
         // A full mailbox is definitive: retain charged quota but not a fresh
         // never-submitted idempotency row that could accumulate every day.
         // 邮箱满为确定性拒绝：额度照常消耗，但不永久保留尚未提交的新幂等记录。
@@ -2740,7 +2749,7 @@ async fn send_message(
     let started = js_sys::Date::now();
     let archive_write = env
         .bucket("MAIL_BODIES")?
-        .put(&r2_key, bytes.clone())
+        .put(&r2_key, bytes)
         .execute()
         .await;
     trace.phase(
@@ -2798,7 +2807,7 @@ async fn send_message(
             hash: &payload_hash,
             provider: &provider_id,
             created_at,
-            bytes: bytes.len(),
+            bytes: archive_size,
         },
         &draft,
     )
@@ -3106,25 +3115,9 @@ fn acknowledge_telemetry(
 }
 
 /// Compute exact cosine over all 256 persisted f32 coordinates, including their actual norms. / 基于持久化的全部 256 个 f32 坐标及其实际范数计算精确余弦。
+#[cfg(test)]
 fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
-    if left.len() != 256 || right.len() != 256 || left.iter().chain(right).any(|x| !x.is_finite()) {
-        return None;
-    }
-    let mut dot = 0.0f64;
-    let mut left_norm = 0.0f64;
-    let mut right_norm = 0.0f64;
-    for (a, b) in left.iter().zip(right) {
-        let a = *a as f64;
-        let b = *b as f64;
-        dot += a * b;
-        left_norm += a * a;
-        right_norm += b * b;
-    }
-    let denominator = (left_norm * right_norm).sqrt();
-    if denominator <= 0.0 || !denominator.is_finite() {
-        return None;
-    }
-    Some((dot / denominator).clamp(-1.0, 1.0))
+    exact_cosine::QueryCosine::new(left)?.score(right)
 }
 
 #[cfg(test)]

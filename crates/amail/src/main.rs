@@ -8,6 +8,8 @@ mod config;
 mod discovery;
 mod local_store;
 mod machine;
+#[cfg(test)]
+mod performance;
 mod send_state;
 mod telemetry;
 

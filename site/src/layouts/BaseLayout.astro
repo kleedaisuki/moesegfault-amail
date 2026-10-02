@@ -6,9 +6,11 @@ interface Props {
   title: string;
   description: string;
   current?: 'home' | 'manual' | 'changelog';
+  /** Load the public component library only when the page uses its components. */
+  components?: boolean;
 }
 
-const { title, description, current } = Astro.props;
+const { title, description, current, components = false } = Astro.props;
 const canonical = new URL(Astro.url.pathname, Astro.site);
 const nav = [
   { href: '/', label: '首页', id: 'home' },
@@ -31,7 +33,7 @@ const nav = [
     <!-- 中文：固定版本并自托管 MoeSegfault Style 的公共 CSS，避免运行时跨站依赖。 English: Pin and self-host public MoeSegfault Style CSS, avoiding a cross-site runtime dependency. -->
     <link rel="stylesheet" href="/vendor/moesegfault-style/v0.1.2/css/tokens.css" />
     <link rel="stylesheet" href="/vendor/moesegfault-style/v0.1.2/css/foundation.css" />
-    <link rel="stylesheet" href="/vendor/moesegfault-style/v0.1.2/css/components.css" />
+    {components && <link rel="stylesheet" href="/vendor/moesegfault-style/v0.1.2/css/components.css" />}
     <link rel="canonical" href={canonical.toString()} />
     <link rel="icon" type="image/svg+xml" href="/vendor/moesegfault-style/v0.1.2/assets/icons/brand.svg" />
     <title>{title}</title>
