@@ -75,21 +75,26 @@ class DirectContactWorkflowTests(unittest.TestCase):
                           "continue-on-error:", "|| true", "send_control.py"):
             self.assertNotIn(forbidden, block)
 
-    def test_human_attestation_requires_exact_contract_and_explicit_phrase(self):
-        """Revocation defaults false and requires no affirmative coverage input."""
+    def test_contact_attestation_wires_distinct_optional_evidence_bases(self):
+        """Receipt evidence is not a coverage promise; revoke remains default."""
         text = source("direct-contact-attest.yml")
         block = job_block(text, "attest")
         self.assertIn("default: 'false'", text)
         self.assertIn("options: ['false', 'true']", text)
         self.assertIn("ACCEPT_INBOX_JUNK_AND_24H_CLOUDFLARE_RESPONSE", text)
+        self.assertIn("VERIFIED_DESTINATION_AND_ROLE_RECEIPTS", text)
+        for key in ("contact_coverage", "contact_evidence"):
+            self.assertRegex(text, rf"(?m)^      {key}:\n(?:        .+\n)*        required: false$")
         self.assertIn("INPUT_GATE: abuse_contact_verified", block)
         self.assertIn("INPUT_CONTACT_CONTRACT_ID: ${{ inputs.contact_contract_id }}", block)
         self.assertIn("INPUT_CONTACT_COVERAGE: ${{ inputs.contact_coverage }}", block)
+        self.assertIn("INPUT_CONTACT_EVIDENCE: ${{ inputs.contact_evidence }}", block)
         self.assertIn("INPUT_VERIFIED: ${{ inputs.verified }}", block)
         self.assertIn("run: python infra/operator/attest_gate.py", block)
-        # The original generic workflow cannot manufacture missing human evidence.
+        # The original generic workflow cannot manufacture either contact basis.
         legacy = source("attest-send-gate.yml")
         self.assertNotIn("INPUT_CONTACT_COVERAGE:", legacy)
+        self.assertNotIn("INPUT_CONTACT_EVIDENCE:", legacy)
         self.assertNotIn("INPUT_CONTACT_CONTRACT_ID:", legacy)
 
     def test_hourly_refresh_is_production_only_or_explicit_manual_realm(self):

@@ -19,6 +19,21 @@ GATES = frozenset(("feedback_verified", "abuse_contact_verified", "delivery_cana
 
 CONTRACT = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 CONTACT_COVERAGE = "ACCEPT_INBOX_JUNK_AND_24H_CLOUDFLARE_RESPONSE"
+CONTACT_EVIDENCE = "VERIFIED_DESTINATION_AND_ROLE_RECEIPTS"
+
+
+def contact_basis(coverage: str, evidence: str) -> str | None:
+    """Accept exactly one reviewed basis without inventing a human commitment.
+
+    Receipt evidence means the operator checked a verified destination and the
+    user's actual receipts for all four reserved roles. The legacy phrase still
+    asserts Inbox/Junk monitoring and 24-hour response coverage, not just receipt.
+    """
+    if coverage == CONTACT_COVERAGE and not evidence:
+        return "human_coverage"
+    if evidence == CONTACT_EVIDENCE and not coverage:
+        return "verified_destination_and_role_receipts"
+    return None
 
 
 def statement(gate: str) -> str:
@@ -45,12 +60,12 @@ def main() -> int:
     if target not in DATABASES or gate not in GATES or verified not in ("true", "false") or not CASE.fullmatch(case) or not actor or not account or not token:
         print("release_gate=invalid_request", file=sys.stderr)
         return 2
-    if gate == "abuse_contact_verified" and verified == "true" and (
-        not CONTRACT.fullmatch(contract)
-        or os.getenv("INPUT_CONTACT_COVERAGE", "") != CONTACT_COVERAGE
-    ):
-        print("release_gate=contact_coverage_not_confirmed", file=sys.stderr)
-        return 2
+    basis = "revoked"
+    if gate == "abuse_contact_verified" and verified == "true":
+        basis = contact_basis(os.getenv("INPUT_CONTACT_COVERAGE", ""), os.getenv("INPUT_CONTACT_EVIDENCE", ""))
+        if not CONTRACT.fullmatch(contract) or basis is None:
+            print("release_gate=contact_coverage_not_confirmed", file=sys.stderr)
+            return 2
     db, _ = DATABASES[target]
     params = [1 if verified == "true" else 0, f"github:{actor}", case]
     if gate == "abuse_contact_verified":
@@ -71,7 +86,8 @@ def main() -> int:
     if not result.get("success") or not result.get("result") or not result["result"][0].get("success") or not result["result"][0].get("meta", {}).get("changes"):
         print("release_gate=query_failed", file=sys.stderr)
         return 1
-    print(f"release_gate=recorded target={target} gate={gate} verified={verified} case={case}")
+    suffix = f" contact_basis={basis}" if gate == "abuse_contact_verified" else ""
+    print(f"release_gate=recorded target={target} gate={gate} verified={verified} case={case}{suffix}")
     return 0
 
 
