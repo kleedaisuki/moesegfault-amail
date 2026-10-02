@@ -115,6 +115,11 @@ with zero producers. Only then are Queue creation and sink deployment skipped.
 Any changed pin, attached producer or failed predicate stops without replaying
 those writes. The remaining migration follows the ordinary staging sequence above.
 This input does not recover arbitrary failed runs or ambiguous submissions.
+Before another full continuation, `target=staging-inspect` with
+`confirm=INSPECT_STAGING_V012` and the same explicit `staging_resume_run` can run
+the identical read/provenance preflight without deployment authority. The read
+confirmation is not accepted by any writer phase. Failures expose only a closed
+known `staging_*` reason (otherwise `unknown`), never provider response prose.
 The v0.1.2 candidate lane also skips the unrelated Identity verification-inbox
 deployment; the original non-candidate staging lane remains available unchanged.
 

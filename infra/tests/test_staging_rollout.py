@@ -1,5 +1,7 @@
 """Synthetic staging admission, one-shot cutover and preserved backlog contracts."""
 from copy import deepcopy
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -38,6 +40,33 @@ class StagingRolloutTests(unittest.TestCase):
             with patch.dict(os.environ, dict(self.environment(), **{field: value}), clear=True):
                 with self.assertRaises(ValueError):
                     rollout.context()
+
+    def test_read_confirmation_cannot_enter_any_writer_phase(self):
+        """Inspection confirmation is independently admitted, never a write token."""
+        environment = self.environment()
+        environment.pop("AMAIL_STAGING_DEPLOY_CONFIRM")
+        environment.update({"AMAIL_STAGING_INSPECT_CONFIRM": rollout.INSPECT_CONFIRM,
+                            "AMAIL_STAGING_RESUME_RUN": resume.ORIGIN_RUN})
+        with patch.dict(os.environ, environment, clear=True):
+            rollout.context(read_only=True)
+            for operation in (rollout.context, rollout.before_api, rollout.cutover):
+                with self.assertRaises(ValueError):
+                    operation()
+        environment["AMAIL_STAGING_RESUME_RUN"] = "unreviewed"
+        with patch.dict(os.environ, environment, clear=True), self.assertRaises(ValueError):
+            rollout.context(read_only=True)
+
+    def test_main_logs_only_closed_failure_reason_and_read_dispatch(self):
+        """Unknown provider prose never enters logs and inspection selects only reads."""
+        for error, expected in ((ValueError("staging_resume_dirty_tracked_tree"), "staging_resume_dirty_tracked_tree"),
+                                (ValueError("private arbitrary provider text"), "unknown"),
+                                (RuntimeError("staging_resume_dirty_tracked_tree"), "unknown")):
+            output = io.StringIO()
+            with patch.object(sys, "argv", ["staging_rollout.py", "inspect-preflight"]), \
+                 patch.object(rollout, "preflight", side_effect=error) as preflight, redirect_stdout(output):
+                self.assertEqual(rollout.main(), 1)
+            preflight.assert_called_once_with(read_only=True)
+            self.assertEqual(output.getvalue(), f"staging_rollout_inspect-preflight=UNVERIFIED reason={expected}\n")
 
     def test_immutable_runtime_model_supplies_the_positive_bound(self):
         """Use the documented version schema without requiring mutable settings."""

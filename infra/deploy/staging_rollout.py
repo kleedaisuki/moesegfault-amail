@@ -30,6 +30,22 @@ from worker_deploy_result import DeploymentFailure, submit
 
 BRANCH = "refs/heads/codex/v0.1.2-agent-first-performance"
 CONFIRM = "RUN_STAGING_V012"
+INSPECT_CONFIRM = "INSPECT_STAGING_V012"
+# Closed diagnostic vocabulary: arbitrary exception/provider text never escapes.
+FAILURES = frozenset({
+    "staging_context_unverified", "staging_api_privacy_unverified", "staging_legacy_graph_unverified",
+    "staging_split_predecessor_unverified", "staging_old_invocation_bound_unverified",
+    "staging_predecessor_unverified", "staging_predecessor_changed", "staging_predecessor_schedule_changed",
+    "staging_cutover_api_changed", "staging_maintenance_secrets_missing", "staging_inspect_resume_unverified",
+    "staging_resume_tree_unverified", "staging_resume_checkout_unverified", "staging_resume_runtime_changed",
+    "staging_resume_unreviewed_change", "staging_resume_dirty_tracked_tree", "staging_resume_origin_unverified",
+    "staging_resume_job_boundary_unverified", "staging_resume_sink_submit_unverified", "staging_resume_log_unverified",
+    "staging_resume_typed_submit_unverified", "staging_resume_predecessor_unverified",
+    "staging_resume_legacy_api_unverified", "staging_resume_preexisting_resource",
+    "staging_resume_queue_ownership_unverified", "staging_resume_artifact_unverified",
+    "staging_resume_run_unreviewed", "staging_resume_log_download_failed",
+    "staging_resume_old_api_changed", "staging_resume_partial_graph_unverified", "staging_resume_phase_changed",
+})
 PREDECESSOR = ROOT / ".temp/staging-rollout-predecessor.json"
 WITNESS = ROOT / ".temp/staging-cutover.json"
 PROPAGATION_SECONDS = 15 * 60
@@ -40,12 +56,15 @@ API = "amail-mail-staging"
 MAINTENANCE = "amail-mail-maintenance-staging"
 
 
-def context() -> None:
+def context(*, read_only: bool = False) -> None:
     """Require the fixed hosted branch, confirmation and realm before any mutation."""
+    confirmed = (os.getenv("AMAIL_STAGING_INSPECT_CONFIRM") == INSPECT_CONFIRM if read_only
+                 else os.getenv("AMAIL_STAGING_DEPLOY_CONFIRM") == CONFIRM)
     if (os.getenv("GITHUB_REF") != BRANCH or os.getenv("GITHUB_ACTIONS") != "true"
-            or os.getenv("AMAIL_STAGING_DEPLOY_CONFIRM") != CONFIRM
-            or not os.getenv("GITHUB_OUTPUT")):
+            or not confirmed or not os.getenv("GITHUB_OUTPUT")):
         raise ValueError("staging_context_unverified")
+    if read_only and os.getenv("AMAIL_STAGING_RESUME_RUN") != "37053907751":
+        raise ValueError("staging_inspect_resume_unverified")
 
 
 def write(path: Path, value: dict) -> None:
@@ -64,9 +83,11 @@ def predecessor() -> dict:
     return value
 
 
-def preflight() -> None:
+def preflight(*, read_only: bool = False) -> None:
     """Admit either the exact historical predecessor or the current active split."""
-    context()
+    # This function has no provider writes; inspection confirmation never grants
+    # entry to before_api(), cutover() or either deployment submit path.
+    context(read_only=read_only)
     names = ("AMAIL_TRACE_QUEUE_ID", "AMAIL_TRACE_DLQ_ID", "AMAIL_TRACE_TOPOLOGY",
              "AMAIL_EXPECTED_TRACE_SINK_VERSION")
     reviewed = {name: os.getenv(name) for name in names}
@@ -270,12 +291,16 @@ def cutover() -> None:
 def main() -> int:
     """One closed phase; failures do not retry a submit or authorize recovery."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("preflight", "before-api", "cutover"))
+    parser.add_argument("phase", choices=("preflight", "inspect-preflight", "before-api", "cutover"))
     args = parser.parse_args()
     try:
-        {"preflight": preflight, "before-api": before_api, "cutover": cutover}[args.phase]()
-    except Exception:
-        print(f"staging_rollout_{args.phase}=UNVERIFIED")
+        if args.phase == "inspect-preflight":
+            preflight(read_only=True)
+        else:
+            {"preflight": preflight, "before-api": before_api, "cutover": cutover}[args.phase]()
+    except Exception as error:
+        reason = str(error) if isinstance(error, ValueError) and str(error) in FAILURES else "unknown"
+        print(f"staging_rollout_{args.phase}=UNVERIFIED reason={reason}")
         return 1
     print(f"staging_rollout_{args.phase}=verified")
     return 0

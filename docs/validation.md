@@ -73,6 +73,21 @@ bytes and reuses current full source gates. No continuation or v0.1.2 online
 acceptance is claimed yet. No production resource, stable release or public site
 was changed by this staging work.
 
+Continuation [37056569732](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37056569732)
+at source `6608d176897731851e8f01a85f47864b784e74af` passed the full source gates
+but failed preflight before every provider-write step. Existing sink/Queues were
+not replayed or replaced. Corrected inspection
+[37057224593](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37057224593)
+then confirmed all four sink privacy/capability/retention/Queue predicates, the
+API-only preparation topology, `privacy_safe=true` separately from
+`capture_off=false`, and the unchanged exact predecessor/Queue pins with zero
+producers. Actual GitHub ownership recovery and tracked runtime comparison pass
+locally, including the complete real job log and immutable artifacts. These facts
+exclude graph drift and the tested provenance/dictionary shape as known causes;
+the hosted preflight failure still requires diagnosis. The optional existing
+inspection lane now checks that same admission with read-only confirmation before
+another expensive full continuation. No online v0.1.2 delivery is claimed.
+
 Local lightweight source/mock checks cover staging context, immutable bounded
 usage models, drift rejection, retained lease/backlog semantics, future split
 replacement without the initial wait, exact adapter graph, candidate provenance

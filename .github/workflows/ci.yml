@@ -357,14 +357,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: staging
+    permissions:
+      contents: read
+      actions: read
     concurrency:
       group: staging-native-mail-acceptance
       cancel-in-progress: false
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      AMAIL_STAGING_INSPECT_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_STAGING_RESUME_RUN: ${{ inputs.staging_resume_run }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -377,6 +385,10 @@ jobs:
           path: .temp/staging-predecessor.json
           if-no-files-found: error
           retention-days: 14
+
+      - name: Read exact owned continuation admission without deployment authority
+        if: inputs.staging_resume_run != ''
+        run: python infra/deploy/staging_rollout.py inspect-preflight
 
   staging-e2e:
     name: Hosted Windows native PKCE and SMTP to ZIP/search
