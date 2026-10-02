@@ -77,7 +77,7 @@ jobs:
             server_pid=$!
             trap 'kill "$server_pid"' EXIT
             export SITE_BROWSER_BASE=http://127.0.0.1:4321
-            for attempt in {1..20}; do
+            for _attempt in {1..20}; do
               if curl --fail --silent "$SITE_BROWSER_BASE/" > /dev/null; then break; fi
               sleep 0.5
             done
