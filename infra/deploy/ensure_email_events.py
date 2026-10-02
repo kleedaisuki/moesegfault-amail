@@ -12,6 +12,8 @@ import subprocess
 import sys
 from typing import Any
 
+import ensure_trace_queues as queues
+
 ZONE = "6edff81c6ed02f412e70868076411a5e"
 EVENTS = (
     "message.delivered,message.deferred,message.bounced,"
@@ -40,8 +42,13 @@ def objects(value: Any):
 
 
 def ensure_queue(name: str) -> None:
-    """Create a missing named queue; never overwrite or purge an existing one. / 创建缺失队列；绝不覆盖或清空既有队列。"""
-    if run("info", name, check=False).returncode == 0:
+    """Create only after a successful complete catalog proves exact-name absence.
+
+    An unavailable/auth-denied Wrangler info call is not evidence of absence.
+    Reuse the bounded account Queue reader; never overwrite or purge queues.
+    """
+    rows = queues.inventory(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"])
+    if queues.exact_queue(rows, name) is not None:
         return
     run("create", name)
 
@@ -88,8 +95,8 @@ def main() -> int:
             ensure_queue(queue)
         else:
             ensure_subscription(queue, f"amail-sending-lifecycle{suffix}", domain)
-    except (RuntimeError, json.JSONDecodeError) as exc:
-        print(f"email events provisioning failed: {exc}", file=sys.stderr)
+    except (RuntimeError, ValueError, KeyError, OSError, subprocess.TimeoutExpired):
+        print("email events provisioning failed: read_or_write_unverified", file=sys.stderr)
         return 1
     print(f"email events {args.phase} ready: {args.target}")
     return 0

@@ -80,8 +80,9 @@ queue = "amail-trace-events-staging"
 binding = "VERSION_METADATA"
 
 [env.staging.triggers]
-# Activation requires reviewed source cadence and separate realm authorization.
-crons = []
+# The v0.1.2 staging writer first deploys this private Worker paused, then activates
+# only after the pinned legacy Cron cohort is bounded and existing leases fenced.
+crons = ["*/5 * * * *"]
 
 [env.staging.observability]
 enabled = false

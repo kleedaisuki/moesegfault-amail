@@ -5,11 +5,11 @@ import { releaseDownloads } from '../src/releaseDownloads.mjs';
 
 const tagUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0';
 const releasesUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases';
-const serviceNotice = '这是候选版本说明，不表示邮件服务或发送已开放。';
+const serviceNotice = '这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。';
 const pages = [
-  { path: 'index', label: 'home', candidate: 'v0.1.0 尚未发布', published: 'v0.1.0 已发布' },
-  { path: 'manual/index', label: 'manual', candidate: 'v0.1.0 尚未开放下载', published: 'v0.1.0 已发布' },
-  { path: 'changelog/index', label: 'changelog', candidate: 'v0.1.0 仍在验收', published: 'v0.1.0 已正式发布' },
+  { path: 'index', label: 'home', candidate: 'v0.1.2 尚未发布', published: 'v0.1.0 已发布' },
+  { path: 'manual/index', label: 'manual', candidate: 'v0.1.2 尚未开放下载', published: 'v0.1.0 已发布' },
+  { path: 'changelog/index', label: 'changelog', candidate: 'v0.1.2 仍在验收', published: 'v0.1.0 已正式发布' },
 ];
 
 /** Match an actual anchor destination, not URL text elsewhere in the document. */

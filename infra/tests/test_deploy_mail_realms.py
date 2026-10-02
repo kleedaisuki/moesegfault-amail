@@ -27,13 +27,13 @@ class MailDeployTests(unittest.TestCase):
     def environment(self, target: str, output: Path) -> dict:
         """Provide synthetic realm-selected credentials through the workflow contract."""
         return {
-            "GITHUB_REF": "refs/heads/main" if target == "production" else "refs/heads/codex/amail-v0.1.0",
+            "GITHUB_REF": "refs/heads/main" if target == "production" else "refs/heads/codex/v0.1.2-agent-first-performance",
             "GITHUB_OUTPUT": str(output),
             "OPENROUTER_API_KEY": f"{target}-synthetic-openrouter",
             "CF_EMAIL_ROUTING_TOKEN": f"{target}-synthetic-routing",
             "INGRESS_SECRET": f"{target}-synthetic-ingress",
-            "AMAIL_STAGING_MAIL_DEPLOY_CONFIRM": "RUN_STAGING_TRACE_SINK_ROLLOUT",
-            "AMAIL_TRACE_TOPOLOGY": "api-only",
+            "AMAIL_STAGING_MAIL_DEPLOY_CONFIRM": "RUN_STAGING_V012",
+            "AMAIL_TRACE_TOPOLOGY": "api-scheduled",
             "AMAIL_TRACE_QUEUE_ID": "b" * 32,
         }
 
@@ -112,7 +112,7 @@ class MailDeployTests(unittest.TestCase):
         """Explicit staging selection cannot reach production by fallback or guesswork."""
         cases = (
             ("staging", "GITHUB_REF", "refs/heads/main"),
-            ("production", "GITHUB_REF", "refs/heads/codex/amail-v0.1.0"),
+            ("production", "GITHUB_REF", "refs/heads/codex/v0.1.2-agent-first-performance"),
             ("staging", "AMAIL_STAGING_MAIL_DEPLOY_CONFIRM", "wrong"),
             ("staging", "AMAIL_TRACE_TOPOLOGY", "api-role"),
             ("staging", "AMAIL_TRACE_QUEUE_ID", "missing"),

@@ -5,7 +5,7 @@ name: CI and deploy
 on:
   pull_request:
   push:
-    branches: [main, codex/amail-v0.1.0]
+    branches: [main, codex/amail-v0.1.0, codex/v0.1.2-agent-first-performance]
     # Skip only non-build documentation; PR/manual/release checks remain independent.
     # A skipped push supplies no exact-SHA CI result or acceptance/release artifact.
     paths-ignore:
@@ -54,7 +54,7 @@ permissions:
 # Checks can supersede obsolete checks; shared-state manual operations never cancel each other.
 # Keep the existing manual group so in-flight acceptance remains mutually exclusive.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
@@ -254,7 +254,7 @@ jobs:
           shared-key: cli-dependencies-v1
           cache-bin: false
           cache-workspace-crates: false
-          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') }}
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance') }}
       - name: Check formatting
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
@@ -262,6 +262,80 @@ jobs:
         run: cargo test -p amail --locked --all-targets
       - name: Check CLI help
         run: cargo run -p amail --locked -- --help
+      - name: Build native release candidate for staging acceptance
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        run: cargo build -p amail --locked --release
+      - uses: actions/setup-python@v5
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        with:
+          python-version: '3.12'
+      - name: Restore verified published v0.1.0 CLI baseline on the same hosted runner
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .temp/perf-baseline
+          gh release download v0.1.0 --repo "$GITHUB_REPOSITORY" --dir .temp/perf-baseline \
+            --pattern amail-v0.1.0-x86_64-unknown-linux-gnu.tar.gz --pattern SHA256SUMS
+          cd .temp/perf-baseline
+          grep -E '^[0-9a-f]{64}  amail-v0\.1\.0-x86_64-unknown-linux-gnu\.tar\.gz$' SHA256SUMS > selected.sha256
+          test "$(wc -l < selected.sha256)" -eq 1
+          sha256sum --check selected.sha256
+          tar -xzf amail-v0.1.0-x86_64-unknown-linux-gnu.tar.gz amail
+          ./amail --version
+      - name: Measure bounded CLI startup and long-tail synthetic ZIP cases
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        shell: bash
+        run: |
+          mkdir -p .temp/performance
+          python scripts/performance.py --binary target/release/amail --baseline .temp/perf-baseline/amail --output .temp/performance/cli.json
+          cargo test -p amail --locked --release performance_microbench -- --ignored --nocapture | tee .temp/performance/cli-microbench.log
+      - name: Preserve bounded CLI performance measurements
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-cli-${{ github.run_id }}
+          path: .temp/performance/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Package version-checked native CLI candidate
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        run: python infra/ci/cli_candidate.py binary
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        with:
+          name: cli-candidate-native-${{ runner.os }}
+          path: .temp/ci/cli-candidate/*
+          if-no-files-found: error
+          retention-days: 14
+
+  cli-candidate:
+    name: Assemble unpublished v0.1.2 staging acceptance bundle
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+    needs: cli
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: cli-candidate-native-*
+          path: .temp/ci/cli-candidate
+          merge-multiple: true
+      - name: Verify native producer provenance and package the agent skill
+        run: python infra/ci/cli_candidate.py assemble
+      - name: Upload acceptance downloads without creating a Release or tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-candidate-v0.1.2-${{ github.run_id }}
+          path: .temp/ci/cli-candidate/*
+          if-no-files-found: error
+          retention-days: 14
+
   staging-inspect:
     name: Read isolated staging rollout predecessor
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging-inspect' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'INSPECT_STAGING_V012'
@@ -294,7 +368,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.target == 'staging-e2e' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0')
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance')
     runs-on: windows-latest
     environment: staging
     timeout-minutes: 40
@@ -371,7 +445,7 @@ jobs:
           shared-key: worker-dependencies-v1
           cache-bin: false
           cache-workspace-crates: false
-          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') }}
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance') }}
       - name: Fingerprint the pinned public bundler compiler
         id: compiler
         shell: bash
@@ -435,7 +509,7 @@ jobs:
         working-directory: workers/role-monitor
         run: worker-build --release
       - name: Save trusted pinned check bundler
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0') && steps.worker-bundler-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance') && steps.worker-bundler-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .cache/worker-build-check
@@ -445,6 +519,20 @@ jobs:
         # Preserve the deleted Python runner's bounded wait using the platform.
         timeout-minutes: 15
         run: pnpm test
+      - name: Measure bounded Worker search and ZIP microbenchmarks
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        shell: bash
+        run: |
+          mkdir -p .temp/performance
+          cargo test -p amail-worker --locked --release performance_microbench -- --ignored --nocapture | tee .temp/performance/worker-microbench.log
+      - name: Preserve bounded Worker performance measurements
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-worker-${{ github.run_id }}
+          path: .temp/performance/
+          if-no-files-found: error
+          retention-days: 14
       - name: Assemble same-run public generated-module artifact
         run: python infra/ci/worker_artifact.py create
       - name: Publish modules for native tests, not release admission
@@ -505,12 +593,27 @@ jobs:
         run: pnpm build
       - name: Check default candidate copy and navigation
         run: pnpm check:release-state candidate
+      - name: Measure bounded candidate site payload budget
+        run: |
+          mkdir -p ../.temp/performance
+          node --test scripts/measure-performance.test.mjs
+          node scripts/measure-performance.mjs > ../.temp/performance/site-candidate.json
       - name: Build published-state site without deploying
         env:
           AMAIL_RELEASE_STATE: published
         run: pnpm build
       - name: Check published copy and navigation
         run: pnpm check:release-state published
+
+      - name: Measure bounded published compatibility site payload budget
+        run: node scripts/measure-performance.mjs > ../.temp/performance/site-published.json
+      - name: Preserve site payload budgets
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-site-${{ github.run_id }}
+          path: .temp/performance/
+          if-no-files-found: error
+          retention-days: 14
 
   dns:
     name: Infrastructure probe unit tests
@@ -875,8 +978,8 @@ jobs:
   staging-site:
     name: Deploy isolated staging release site
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
-    needs: site
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
+    needs: [site, staging-events]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: staging
@@ -926,13 +1029,16 @@ jobs:
 
   staging-worker:
     name: Deploy isolated staging mail API
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/amail-v0.1.0' && inputs.confirm == 'RUN_STAGING_TRACE_SINK_ROLLOUT'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
     needs: [cli, worker, site, dns, provider-live, staging-trace-sink, worker-build]
     permissions:
       contents: read
       actions: read
+    outputs:
+      api_version: ${{ steps.api.outputs.version }}
+      maintenance_version: ${{ steps.maintenance.outputs.maintenance_version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     environment: staging
     concurrency:
       group: staging-native-mail-acceptance
@@ -954,8 +1060,9 @@ jobs:
       CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
       INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
       MAIL_SENDING_DOMAIN: mail-staging.moesegfault.dev
-      AMAIL_TRACE_TOPOLOGY: api-only
+      AMAIL_TRACE_TOPOLOGY: api-scheduled
       AMAIL_STAGING_MAIL_DEPLOY_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_STAGING_DEPLOY_CONFIRM: ${{ inputs.confirm }}
     steps:
       - name: Verify staging secrets before installing tools
         working-directory: .
@@ -1001,8 +1108,14 @@ jobs:
       - name: Verify staging runtime Email Routing Rules read access
         working-directory: .
         run: python infra/provider/probe_routing.py
-      - name: Require immutable API capture-off containment attestation
-        run: python ../../infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION" --kind "$AMAIL_TRACE_CONTAINMENT_KIND"
+      - name: Restore same-run staging predecessor before scheduling cutover
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: staging-rollout-predecessor-${{ github.run_id }}
+          path: .temp
+      - name: Recheck exact predecessor API before schema and provider writes
+        working-directory: .
+        run: python infra/deploy/staging_rollout.py before-api
       - name: Apply staging D1 migrations only
         run: wrangler d1 migrations apply MAIL_DB --remote --env staging
       - name: Recheck staging global hold immediately before Mail replacement
@@ -1012,9 +1125,6 @@ jobs:
         id: api
         working-directory: .
         run: python infra/deploy/deploy_production_mail.py --target staging
-      - name: Verify private trace producer and consumer ownership
-        working-directory: .
-        run: python infra/deploy/ensure_trace_queues.py --target staging --phase readback --topology api-only
       - name: Pin new staging Mail immutable bindings and capture-off state
         working-directory: .
         env:
@@ -1028,6 +1138,28 @@ jobs:
         env:
           AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ needs.staging-trace-sink.outputs.sink_version }}
         run: python crates/mail-worker/check_observability.py --realm staging --mode sink
+      - name: Replace scheduled-only maintenance with bounded legacy cutover
+        id: maintenance
+        working-directory: .
+        env:
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ steps.api.outputs.version }}
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ needs.staging-trace-sink.outputs.sink_version }}
+        run: python infra/deploy/staging_rollout.py cutover
+      - name: Verify exact active API and scheduled-maintenance trace producer graph
+        working-directory: .
+        env:
+          AMAIL_EXPECTED_WORKER_VERSION: ${{ steps.api.outputs.version }}
+          AMAIL_EXPECTED_MAINTENANCE_VERSION: ${{ steps.maintenance.outputs.maintenance_version }}
+          AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ needs.staging-trace-sink.outputs.sink_version }}
+        run: python infra/deploy/check_mail_split_graph.py --realm staging --state active
+      - name: Preserve bounded legacy cutover witness without mailbox data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-cutover-${{ github.run_id }}
+          path: .temp/staging-cutover.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Verify staging public sending remains held after graph readback
         working-directory: .
         run: python infra/operator/check_send_hold.py --target staging
@@ -1041,10 +1173,12 @@ jobs:
   staging-ingress:
     name: Deploy isolated Rust staging SMTP ingress
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
     needs: [staging-worker, worker, worker-build]
+    outputs:
+      version: ${{ steps.ingress.outputs.version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 75
     environment: staging
     concurrency:
       group: staging-native-mail-acceptance
@@ -1056,6 +1190,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
+      AMAIL_STAGING_DEPLOY_CONFIRM: ${{ inputs.confirm }}
     steps:
       - uses: actions/checkout@v4
       - name: Download exact tested same-run Worker modules
@@ -1073,24 +1208,21 @@ jobs:
       - name: Install pinned Wrangler
         run: |
           npm install --global wrangler@4.142.0
-      - name: Deploy staging Rust Email-event Worker
-        shell: bash
-        run: |
-          test -n "$INGRESS_SECRET"
-          umask 077
-          mkdir -p ../../.temp
-          trap 'rm -f ../../.temp/ingress-staging-secrets.json' EXIT
-          node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/ingress-staging-secrets.json", JSON.stringify({INGRESS_SECRET: process.env.INGRESS_SECRET}));'
-          wrangler deploy --env staging --secrets-file ../../.temp/ingress-staging-secrets.json
+      - name: Deploy staging Rust Email-event Worker with exact recovery pin
+        id: ingress
+        working-directory: .
+        run: python infra/deploy/deploy_staging_adapter.py --component ingress
 
   staging-events:
     name: Deploy isolated Rust staging lifecycle consumer
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
     # Serialize same-run resource writers; GitHub otherwise replaces pending siblings.
     needs: [staging-ingress, worker, worker-build]
+    outputs:
+      version: ${{ steps.events.outputs.version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 75
     environment: staging
     concurrency:
       group: staging-native-mail-acceptance
@@ -1101,6 +1233,7 @@ jobs:
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      AMAIL_STAGING_DEPLOY_CONFIRM: ${{ inputs.confirm }}
     steps:
       - uses: actions/checkout@v4
       - name: Download exact tested same-run Worker modules
@@ -1124,19 +1257,28 @@ jobs:
       - name: Ensure staging lifecycle Queue and DLQ
         working-directory: .
         run: python infra/deploy/ensure_email_events.py --target staging --phase queues
-      - name: Deploy staging lifecycle consumer
-        run: wrangler deploy --env staging
+      - name: Deploy staging lifecycle consumer with exact recovery pin
+        id: events
+        working-directory: .
+        run: python infra/deploy/deploy_staging_adapter.py --component events
       - name: Ensure staging Email Sending Event Subscription
         working-directory: .
         run: python infra/deploy/ensure_email_events.py --target staging --phase subscription
 
+      - name: Read back immutable ingress and lifecycle realm isolation
+        working-directory: .
+        env:
+          AMAIL_EXPECTED_INGRESS_VERSION: ${{ needs.staging-ingress.outputs.version }}
+          AMAIL_EXPECTED_EVENTS_VERSION: ${{ steps.events.outputs.version }}
+        run: python infra/deploy/check_staging_adapters.py
+
   staging-identity-test-inbox:
     name: Deploy private staging Identity verification inbox
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
     needs: [worker, dns, staging-events, worker-build]
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 75
     environment: staging
     concurrency:
       group: staging-native-mail-acceptance
@@ -1285,8 +1427,8 @@ jobs:
 
   staging-trace-sink:
     name: Deploy private staging privacy trace sink
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/amail-v0.1.0' && inputs.confirm == 'RUN_STAGING_TRACE_SINK_ROLLOUT'
-    needs: [worker, dns, worker-build]
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
+    needs: [cli, worker, site, dns, provider-live, worker-build]
     outputs:
       queue_id: ${{ steps.queues.outputs.queue_id }}
       dlq_id: ${{ steps.queues.outputs.dlq_id }}
@@ -1309,7 +1451,8 @@ jobs:
       AMAIL_TRACE_CONTAINMENT_VERSION: ${{ inputs.expected_worker_version }}
       AMAIL_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_STAGING }}
       AMAIL_TRACE_DLQ_ID: ${{ vars.AMAIL_TRACE_DLQ_ID_STAGING }}
-      AMAIL_TRACE_TOPOLOGY: api-only
+      AMAIL_TRACE_TOPOLOGY: api-scheduled
+      AMAIL_STAGING_DEPLOY_CONFIRM: ${{ inputs.confirm }}
     steps:
       - uses: actions/checkout@v4
       - name: Download exact tested same-run Worker modules
@@ -1324,8 +1467,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Require immutable API capture-off containment attestation
-        run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION" --kind "$AMAIL_TRACE_CONTAINMENT_KIND"
+      - name: Admit exact isolated staging predecessor before mutation
+        id: predecessor
+        run: python infra/deploy/staging_rollout.py preflight
+      - name: Preserve same-run staging rollout predecessor
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-rollout-predecessor-${{ github.run_id }}
+          path: .temp/staging-rollout-predecessor.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Install pinned private sink deployment tools
         run: |
           npm install --global wrangler@4.142.0
@@ -1333,7 +1484,14 @@ jobs:
         run: python infra/operator/check_send_hold.py --target staging
       - name: Ensure one-day trace Queue and dead-letter Queue
         id: queues
-        run: python infra/deploy/ensure_trace_queues.py --target staging --phase queues --topology api-only
+        shell: bash
+        run: |
+          if [ "${{ steps.predecessor.outputs.rollout }}" = legacy ]; then
+            python infra/deploy/ensure_trace_queues.py --target staging --phase queues --topology api-only
+          else
+            python infra/deploy/ensure_trace_queues.py --target staging --phase readback --topology api-scheduled
+            printf 'queue_id=%s\ndlq_id=%s\n' "$AMAIL_TRACE_QUEUE_ID" "$AMAIL_TRACE_DLQ_ID" >> "$GITHUB_OUTPUT"
+          fi
       - name: Preserve partial provisioning identity without payloads
         if: always()
         uses: actions/upload-artifact@v4
@@ -1354,5 +1512,3 @@ jobs:
         run: python crates/mail-worker/check_observability.py --realm staging --mode sink
       - name: Verify staging public sending remains held after sink readback
         run: python infra/operator/check_send_hold.py --target staging
-      - name: Recheck containment pin after sink deployment
-        run: python infra/deploy/require_trace_containment.py --run "$AMAIL_TRACE_CONTAINMENT_RUN" --version "$AMAIL_TRACE_CONTAINMENT_VERSION" --kind "$AMAIL_TRACE_CONTAINMENT_KIND"

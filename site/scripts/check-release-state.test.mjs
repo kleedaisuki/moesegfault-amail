@@ -7,12 +7,12 @@ import { releaseDownloads } from '../src/releaseDownloads.mjs';
 
 const tagUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0';
 const releasesUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases';
-const serviceNotice = '这是候选版本说明，不表示邮件服务或发送已开放。';
+const serviceNotice = '这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。';
 const headers = readFileSync(new URL('../public/_headers', import.meta.url), 'utf8');
 const claims = {
-  index: ['v0.1.0 尚未发布', 'v0.1.0 已发布'],
-  'manual/index': ['v0.1.0 尚未开放下载', 'v0.1.0 已发布'],
-  'changelog/index': ['v0.1.0 仍在验收', 'v0.1.0 已正式发布'],
+  index: ['v0.1.2 尚未发布', 'v0.1.0 已发布'],
+  'manual/index': ['v0.1.2 尚未开放下载', 'v0.1.0 已发布'],
+  'changelog/index': ['v0.1.2 仍在验收', 'v0.1.0 已正式发布'],
 };
 
 /** Build minimal rendered-page fixtures, including each page's release link. */

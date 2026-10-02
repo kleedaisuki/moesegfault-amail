@@ -86,6 +86,35 @@ Self-hosted `css/tokens.css`, `css/foundation.css`, `css/components.css` and
 GPL-3.0-or-later attribution/version pin; do not import private upstream paths.
 Host CSS uses semantic `--moe-*` tokens and public `.moe-button` classes.
 
+The base layout always loads tokens and foundation; pages opt into component CSS
+with `<BaseLayout components ...>` only when they use public components. Today
+only the homepage uses `.moe-button`. Manual/changelog keep their existing host
+styles without loading the unused 58,817-byte component library. Keep upstream
+vendored bytes unchanged; do not introduce selector-purging or asynchronous CSS
+that risks changing the cascade, first paint or keyboard behavior.
+
+## Small hosted performance check
+
+After each existing candidate/published Astro build, run:
+
+```sh
+node --test scripts/measure-performance.test.mjs
+node scripts/measure-performance.mjs > ../.temp/site-performance.json
+```
+
+Create the root `.temp` directory before redirecting. The dependency-free report
+records route HTML bytes, inline CSS bytes, linked CSS requests/raw/gzip bytes,
+and script counts from the actual `dist` output. It also fails if component CSS
+leaks back onto the guide routes or a client runtime is introduced. Existing
+browser acceptance checks the same loading contract in the actual browser,
+alongside its navigation, focus, overflow, mobile and fragment checks.
+
+This is a deterministic loading-cost check, not a claim about Core Web Vitals.
+Gzip is an estimate using Node defaults, not the server's observed encoding.
+Do not introduce fragile hosted wall-clock budgets or rebuild a baseline on every
+run. Compare JSON reports from admitted builds if future loading changes warrant
+it; measure paint latency only when an actual rendering regression needs diagnosis.
+
 Static rendering needs no authenticated API or Worker request handler. The manual
 discloses intended address limits, forwarding boundary, automatic third-party
 semantic indexing and operational retention; the candidate service disclaimer

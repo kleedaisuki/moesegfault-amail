@@ -51,7 +51,7 @@ def inspect() -> dict:
             raise ValueError("staging_handlers_unverified")
         schedules = capture.readback(account, token, script, "schedules")
         rows = schedules.get("schedules")
-        if not isinstance(rows, list) or any(not isinstance(row.get("cron"), str) for row in rows):
+        if not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get("cron"), str) for row in rows):
             raise ValueError("staging_schedules_unverified")
         settings = capture.readback(account, token, script, "settings")
         script_settings = capture.readback(account, token, script, "script-settings")
@@ -64,6 +64,7 @@ def inspect() -> dict:
             raise ValueError("staging_serving_changed")
         result["scripts"][script] = {"present": True, "deployment": before[0], "version": before[1],
                                      "handlers": handlers, "crons": [row["cron"] for row in rows],
+                                     "usage_model": resources.get("script_runtime", {}).get("usage_model"),
                                      "capture_off": private}
     inventory = queues.inventory(account, token)
     for name in ("amail-trace-events-staging", "amail-trace-dlq-staging"):
