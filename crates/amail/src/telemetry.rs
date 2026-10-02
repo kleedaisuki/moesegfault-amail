@@ -251,6 +251,10 @@ impl<'a> RequestSpan<'a> {
 /// Report lost diagnostics on stderr without changing the command's result.
 /// Library error text can contain private paths, so retain structured codes only.
 pub fn report_loss(stage: &str, error: &anyhow::Error) {
+    if crate::machine::enabled() {
+        crate::machine::event("diagnostic_unavailable", serde_json::json!({"stage":stage}));
+        return;
+    }
     if let Some(rusqlite::Error::SqliteFailure(code, _)) = error.downcast_ref::<rusqlite::Error>() {
         eprintln!(
             "amail: telemetry unavailable stage={stage} sqlite_code={:?} extended_code={}",

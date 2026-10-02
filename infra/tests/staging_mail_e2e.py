@@ -699,6 +699,7 @@ def verify_fixture(row: dict, oracle: dict, address: str, target: str, realm: Ac
     metadata = row.get("metadata")
     check(isinstance(metadata, dict) and metadata.get("message_id") == receipt,
           "provider_message_id_mismatch")
+    check(metadata.get("rfc_message_id") == receipt, "rfc_message_id_mismatch")
     rich = oracle["subject"].endswith("-Signal")
     check(row.get("id") == target and row.get("mailbox") == address
           and row.get("direction") == "inbound" and row.get("subject") == oracle["subject"]
@@ -729,6 +730,7 @@ def verify_archive(dest: Path, oracle: dict, address: str, target: str, row: dic
         "version": 1, "id": target, "direction": "inbound", "from": realm.sender,
         "to": [address], "subject": oracle["subject"],
         "received_at": row["received_at"], "message_id": oracle["provider_message_id"],
+        "rfc_message_id": oracle["provider_message_id"],
         "assets": assets,
     }
     check(manifest == expected, "archive_receipt_mismatch")

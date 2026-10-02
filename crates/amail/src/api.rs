@@ -12,10 +12,13 @@ use std::{fmt, time::Duration};
 
 /// Preserve the public CLI error text while retaining a typed retry discriminator.
 #[derive(Debug)]
-struct ApiFailure {
-    status: StatusCode,
-    code: String,
-    message: String,
+pub(crate) struct ApiFailure {
+    pub(crate) status: StatusCode,
+    pub(crate) code: String,
+    pub(crate) request_id: Option<String>,
+    /// Stable operation category, never URL or private arguments.
+    pub(crate) operation: String,
+    pub(crate) message: String,
 }
 
 impl fmt::Display for ApiFailure {
@@ -300,7 +303,13 @@ impl<'a> Api<'a> {
                     telemetry::Phase::Auth,
                     Some("credential_unavailable"),
                 );
-                return Err(err);
+                return Err(crate::machine::Failure {
+                    code: "credential_unavailable",
+                    next_action: "login",
+                    data: serde_json::json!({}),
+                    message: err.to_string(),
+                }
+                .into());
             }
         };
         let mut request: RequestBuilder = self
@@ -340,10 +349,20 @@ impl<'a> Api<'a> {
                     telemetry::Phase::Transport,
                     Some(transport_kind(&err)),
                 );
-                bail!(
-                    "mail API {operation} transport failed: kind={}",
-                    transport_kind(&err)
-                );
+                return Err(crate::machine::Failure {
+                    code: "transport_failed",
+                    next_action: if operation == "messages.send" {
+                        "query_send_status"
+                    } else {
+                        "retry_later"
+                    },
+                    data: serde_json::json!({"operation":operation,"kind":transport_kind(&err)}),
+                    message: format!(
+                        "mail API {operation} transport failed: kind={}",
+                        transport_kind(&err)
+                    ),
+                }
+                .into());
             }
         };
         let status = response.status();
@@ -369,10 +388,19 @@ impl<'a> Api<'a> {
         );
         let body = body
             .map_err(|err| {
-                anyhow::anyhow!(
-                    "mail API {operation} body read failed: kind={}",
-                    transport_kind(&err)
-                )
+                anyhow::Error::from(crate::machine::Failure {
+                    code: "response_incomplete",
+                    next_action: if operation == "messages.send" {
+                        "query_send_status"
+                    } else {
+                        "retry_later"
+                    },
+                    data: serde_json::json!({"operation":operation}),
+                    message: format!(
+                        "mail API {operation} body read failed: kind={}",
+                        transport_kind(&err)
+                    ),
+                })
             })?
             .to_vec();
         if !status.is_success() {
@@ -400,6 +428,8 @@ impl<'a> Api<'a> {
             return Err(ApiFailure {
                 status,
                 code: code.to_owned(),
+                request_id: correlation,
+                operation: operation.to_owned(),
                 message: prefix,
             }
             .into());
@@ -524,6 +554,68 @@ impl<'a> Api<'a> {
         )
     }
 
+    /// Query a logical send intent without retrying submission.
+    pub fn send_status(&self, id: &str) -> Result<Value> {
+        if uuid::Uuid::parse_str(id).is_err() {
+            return Err(crate::machine::invalid_input(
+                "idempotency key must be a UUID",
+            ));
+        }
+        self.json(
+            Method::GET,
+            &format!("/v1/sends/{}", segment(id)),
+            "sends.get",
+            None,
+        )
+    }
+
+    /// Query policy/quota facts applicable to this authenticated owner.
+    pub fn sending_status(&self) -> Result<Value> {
+        self.json(Method::GET, "/v1/sending/status", "sending.status", None)
+    }
+
+    /// Request provider feedback only when the task needs delivery information.
+    pub fn outcomes(&self, id: &str) -> Result<Value> {
+        self.json(
+            Method::GET,
+            &format!("/v1/messages/{}/outcomes", segment(id)),
+            "messages.outcomes",
+            None,
+        )
+    }
+
+    /// Explore bounded lifecycle pages with server-owned cursor and filter validation.
+    pub fn events(
+        &self,
+        message: Option<&str>,
+        kind: Option<&str>,
+        since: Option<&str>,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<Value> {
+        if !(1..=100).contains(&limit) {
+            return Err(crate::machine::invalid_input("limit must be 1..100"));
+        }
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query.append_pair("limit", &limit.to_string());
+        for (name, value) in [
+            ("message_id", message),
+            ("kind", kind),
+            ("since", since),
+            ("cursor", cursor),
+        ] {
+            if let Some(value) = value {
+                query.append_pair(name, value);
+            }
+        }
+        self.json(
+            Method::GET,
+            &format!("/v1/events?{}", query.finish()),
+            "events.list",
+            None,
+        )
+    }
+
     /// Fetch a ZIP without changing read state / 获取 ZIP 且不改变已读状态。
     pub fn archive(&self, id: &str) -> Result<Vec<u8>> {
         self.execute(
@@ -567,7 +659,22 @@ impl<'a> Api<'a> {
             Some(bytes),
             Some(key),
         )?;
-        serde_json::from_slice(&response).context("invalid send response")
+        let invalid = || crate::machine::Failure {
+            code: "invalid_send_response",
+            next_action: "query_send_status",
+            data: serde_json::json!({"idempotency_key":key}),
+            message: "invalid send response".into(),
+        };
+        let value: Value = serde_json::from_slice(&response).map_err(|_| invalid())?;
+        if value
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .is_none()
+        {
+            return Err(invalid().into());
+        }
+        Ok(value)
     }
 }
 
@@ -731,6 +838,8 @@ mod tests {
         ApiFailure {
             status,
             code: code.to_owned(),
+            request_id: None,
+            operation: "messages.list".into(),
             message: format!(
                 "mail API messages.list failed: HTTP {status}, code={code}, correlation_id=none"
             ),

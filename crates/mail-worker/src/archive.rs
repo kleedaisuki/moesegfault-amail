@@ -11,6 +11,9 @@ use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 pub const MAX_ZIP: usize = 5 * 1024 * 1024;
 const MAX_EXPANDED: usize = 12 * 1024 * 1024;
 const MAX_FILES: usize = 40;
+const MAX_RELATION_HEADER: usize = 8192;
+const MAX_RELATION_IDS: usize = 100;
+const MAX_MESSAGE_ID: usize = 512;
 
 /// One referenced attachment or inline asset. / 一个附件或内联资源。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,8 +65,153 @@ struct InboundManifest<'a> {
     to: &'a [String],
     subject: &'a str,
     received_at: &'a str,
+    /// Legacy raw header value; callers must not infer validated RFC identity.
     message_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rfc_message_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_to: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_reply_to: Option<&'a str>,
+    #[serde(skip_serializing_if = "empty_references")]
+    references: &'a [String],
     assets: &'a [AssetMeta],
+}
+
+/// Omit an unknown reference chain rather than asserting an empty relationship.
+fn empty_references(value: &[String]) -> bool {
+    value.is_empty()
+}
+
+/// Accept one bounded header only; duplicates are ambiguous, not a reason to
+/// reject an otherwise receivable message. Mailparse unfolds header whitespace.
+fn relation_header(parsed: &ParsedMail<'_>, name: &str, limit: usize) -> Option<String> {
+    let mut values = parsed.headers.get_all_values(name).into_iter();
+    let value = values.next()?;
+    (values.next().is_none() && value.len() <= limit).then_some(value)
+}
+
+/// Preserve a suggested destination only when it is exactly one usable mailbox.
+/// A Reply-To value is untrusted data and does not authorize sending to it.
+fn inbound_reply_to(parsed: &ParsedMail<'_>) -> Option<String> {
+    let value = relation_header(parsed, "Reply-To", 998)?;
+    let addresses = mailparse::addrparse(&value).ok()?;
+    if addresses.len() != 1 {
+        return None;
+    }
+    match &addresses[0] {
+        mailparse::MailAddr::Single(mailbox) if crate::valid_address(&mailbox.addr) => {
+            Some(mailbox.addr.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Read modern RFC 5322 message IDs, preserving order and brackets. Unsupported
+/// obsolete syntax, malformed tokens or excessive chains remain unknown; no
+/// provider ID, subject or partial chain is substituted for missing evidence.
+fn relation_ids(value: &str) -> Option<Vec<String>> {
+    if value.len() > MAX_RELATION_HEADER || !value.is_ascii() {
+        return None;
+    }
+    let mut rest = value;
+    let mut ids = Vec::new();
+    loop {
+        rest = skip_relation_cfws(rest)?;
+        if rest.is_empty() {
+            return (!ids.is_empty()).then_some(ids);
+        }
+        let mut literal = false;
+        let end = rest.bytes().position(|byte| {
+            match byte {
+                b'[' => literal = true,
+                b']' => literal = false,
+                _ => {}
+            }
+            byte == b'>' && !literal
+        })? + 1;
+        let id = &rest[..end];
+        if ids.len() == MAX_RELATION_IDS || !valid_relation_id(id) {
+            return None;
+        }
+        ids.push(id.to_owned());
+        rest = &rest[end..];
+    }
+}
+
+/// Normalize exactly one syntactically proven RFC 5322 message ID, retaining
+/// brackets while removing external comments/whitespace. Opaque provider IDs
+/// and ambiguous multi-ID values cannot establish a reply relationship.
+pub(crate) fn normalized_rfc_message_id(value: &str) -> Option<String> {
+    relation_ids(value)
+        .filter(|ids| ids.len() == 1)
+        .and_then(|ids| ids.into_iter().next())
+}
+
+/// Skip folding whitespace and bounded nested comments outside message IDs.
+fn skip_relation_cfws(mut value: &str) -> Option<&str> {
+    loop {
+        value = value.trim_start_matches([' ', '\t']);
+        if !value.starts_with('(') {
+            return Some(value);
+        }
+        let mut depth = 0;
+        let mut escaped = false;
+        let mut end = None;
+        for (index, byte) in value.bytes().enumerate() {
+            if byte.is_ascii_control() && byte != b'\t' {
+                return None;
+            }
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escaped = true,
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            if depth > 8 {
+                return None;
+            }
+            if depth == 0 {
+                end = Some(index + 1);
+                break;
+            }
+        }
+        value = &value[end?..];
+    }
+}
+
+/// RFC 5322 section 3.6.4 modern msg-id: dot-atom left, dot-atom or no-fold
+/// domain literal right. The size cap matches the existing outbound contract.
+fn valid_relation_id(id: &str) -> bool {
+    if id.len() > MAX_MESSAGE_ID {
+        return false;
+    }
+    let Some(inner) = id.strip_prefix('<').and_then(|s| s.strip_suffix('>')) else {
+        return false;
+    };
+    let Some((left, right)) = inner.split_once('@') else {
+        return false;
+    };
+    let literal = right.strip_prefix('[').and_then(|s| s.strip_suffix(']'));
+    valid_id_atom(left)
+        && literal.map_or_else(
+            || valid_id_atom(right),
+            |s| s.bytes().all(|b| matches!(b, 33..=90 | 94..=126)),
+        )
+}
+
+/// A dot atom has nonempty segments and only RFC atext bytes.
+fn valid_id_atom(value: &str) -> bool {
+    value.split('.').all(|part| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~".contains(&b))
+    })
 }
 
 /// Parse an untrusted ZIP with path, ratio and shape bounds. / 在路径、压缩比和结构限制下解析不可信 ZIP。
@@ -262,6 +410,14 @@ pub fn inbound_archive(
         .headers
         .get_first_value("Message-ID")
         .unwrap_or_default();
+    let reply_to = inbound_reply_to(&parsed);
+    let rfc_message_id = relation_header(&parsed, "Message-ID", MAX_RELATION_HEADER)
+        .and_then(|value| normalized_rfc_message_id(&value));
+    let in_reply_to = relation_header(&parsed, "In-Reply-To", MAX_RELATION_HEADER)
+        .and_then(|value| normalized_rfc_message_id(&value));
+    let references = relation_header(&parsed, "References", MAX_RELATION_HEADER)
+        .and_then(|value| relation_ids(&value))
+        .unwrap_or_default();
     let mut text = None;
     let mut html = None;
     let mut assets = Vec::new();
@@ -284,6 +440,10 @@ pub fn inbound_archive(
         subject: &subject,
         received_at,
         message_id: &message_id,
+        rfc_message_id: rfc_message_id.as_deref(),
+        reply_to: reply_to.as_deref(),
+        in_reply_to: in_reply_to.as_deref(),
+        references: &references,
         assets: &asset_meta,
     };
     let manifest_toml = toml::to_string(&manifest).map_err(|_| "manifest_encode")?;
@@ -322,12 +482,24 @@ pub fn inbound_archive(
         }
         writer.finish().map_err(|_| "zip_write")?;
     }
-    let metadata = serde_json::json!({
+    let mut metadata = serde_json::json!({
         "message_id":message_id,
         "content_type":parsed.ctype.mimetype,
         "attachment_name":asset_meta.iter().filter_map(|m|m.filename.as_deref()).collect::<Vec<_>>().join(" "),
         "attachments":asset_meta,
     });
+    if let Some(value) = rfc_message_id {
+        metadata["rfc_message_id"] = value.into();
+    }
+    if let Some(value) = reply_to {
+        metadata["reply_to"] = value.into();
+    }
+    if let Some(value) = in_reply_to {
+        metadata["in_reply_to"] = value.into();
+    }
+    if !references.is_empty() {
+        metadata["references"] = serde_json::json!(references);
+    }
     Ok((
         out.into_inner(),
         sender,
@@ -404,6 +576,146 @@ fn collect_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Receipt fixtures exercise both indexed metadata and the immutable ZIP.
+    fn receipt(headers: &str) -> (serde_json::Value, toml::Value) {
+        let raw = format!("From: sender@example.org\r\nTo: receiver@example.org\r\nSubject: report\r\nMessage-ID: <receipt@example.org>\r\n{headers}\r\nbody");
+        let result = inbound_archive(raw.as_bytes(), "opaque-id", "2026-10-03T00:00:00Z").unwrap();
+        let mut zip = ZipArchive::new(Cursor::new(result.0)).unwrap();
+        let mut manifest = String::new();
+        zip.by_name("manifest.toml")
+            .unwrap()
+            .read_to_string(&mut manifest)
+            .unwrap();
+        (result.7, toml::from_str(&manifest).unwrap())
+    }
+
+    /// A distinct suggested mailbox and folded relation chain survive receipt;
+    /// immutable archives still contain no mutable read state or provider ID.
+    #[test]
+    fn preserves_inbound_reply_context() {
+        let (metadata, manifest) = receipt("Reply-To: Replies <reply@example.org>\r\nIn-Reply-To: (parent) <report@example.org>\r\nReferences: <root@example.org>\r\n\t<report@example.org>\r\n");
+        assert_eq!(metadata["reply_to"], "reply@example.org");
+        assert_eq!(metadata["in_reply_to"], "<report@example.org>");
+        assert_eq!(
+            metadata["references"],
+            serde_json::json!(["<root@example.org>", "<report@example.org>"])
+        );
+        assert_eq!(manifest["reply_to"].as_str(), Some("reply@example.org"));
+        assert_eq!(
+            manifest["in_reply_to"].as_str(),
+            Some("<report@example.org>")
+        );
+        assert_eq!(manifest["references"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            manifest["message_id"].as_str(),
+            Some("<receipt@example.org>")
+        );
+        assert!(manifest.get("read").is_none());
+        assert_eq!(metadata["rfc_message_id"], "<receipt@example.org>");
+        assert_eq!(
+            manifest["rfc_message_id"].as_str(),
+            Some("<receipt@example.org>")
+        );
+    }
+
+    /// Proven RFC identity is additive: legacy raw identity remains available,
+    /// while absent, malformed and duplicate headers cannot fabricate identity.
+    #[test]
+    fn preserves_only_proven_rfc_message_identity() {
+        for (header, legacy) in [
+            ("", ""),
+            ("Message-ID: opaque-provider-id\r\n", "opaque-provider-id"),
+            (
+                "Message-ID: <a@example.org> <b@example.org>\r\n",
+                "<a@example.org> <b@example.org>",
+            ),
+            (
+                "Message-ID: <a@example.org>\r\nMessage-ID: <b@example.org>\r\n",
+                "<a@example.org>",
+            ),
+        ] {
+            let raw = format!(
+                "From: a@example.org\r\nTo: b@example.org\r\nSubject: test\r\n{header}\r\nbody"
+            );
+            let result =
+                inbound_archive(raw.as_bytes(), "opaque-id", "2026-10-03T00:00:00Z").unwrap();
+            assert!(result.7.get("rfc_message_id").is_none(), "{header}");
+            assert_eq!(result.7["message_id"], legacy);
+            let mut zip = ZipArchive::new(Cursor::new(result.0)).unwrap();
+            let mut manifest = String::new();
+            zip.by_name("manifest.toml")
+                .unwrap()
+                .read_to_string(&mut manifest)
+                .unwrap();
+            let manifest: toml::Value = toml::from_str(&manifest).unwrap();
+            assert!(manifest.get("rfc_message_id").is_none());
+            assert_eq!(manifest["message_id"].as_str(), Some(legacy));
+        }
+        assert_eq!(
+            normalized_rfc_message_id(" (source) <a@example.org> (tail) "),
+            Some("<a@example.org>".into())
+        );
+        assert!(normalized_rfc_message_id("opaque-provider-id").is_none());
+    }
+
+    /// Malformed, missing and ambiguous relationships remain absent; delivery
+    /// is accepted and no same-subject or provider identity fallback is invented.
+    #[test]
+    fn omits_unknown_inbound_reply_context() {
+        for headers in [
+            "",
+            "Reply-To: a@example.org, b@example.org\r\nIn-Reply-To: provider-id\r\nReferences: <ok@example.org> invalid\r\n",
+            "Reply-To: Team: a@example.org;\r\nIn-Reply-To: <a@example.org> <b@example.org>\r\nReferences: <bad..id@example.org>\r\n",
+            "Reply-To: a@example.org\r\nReply-To: b@example.org\r\nIn-Reply-To: <a@example.org>\r\nIn-Reply-To: <b@example.org>\r\nReferences: <a@example.org>\r\nReferences: <b@example.org>\r\n",
+        ] {
+            let (metadata, manifest) = receipt(headers);
+            for key in ["reply_to", "in_reply_to", "references"] {
+                assert!(metadata.get(key).is_none(), "{key}: {headers}");
+                assert!(manifest.get(key).is_none(), "{key}: {headers}");
+            }
+        }
+    }
+
+    /// Strict modern IDs and bounded comments/chains prevent malformed relation
+    /// data from becoming partial, apparently trustworthy threading evidence.
+    #[test]
+    fn bounds_relation_headers() {
+        for id in ["<a.b@example.org>", "<a@[127.0.0.1]>", "<a@[IPv6:::1]>"] {
+            assert!(valid_relation_id(id), "{id}");
+        }
+        for id in [
+            "<@example.org>",
+            "<a@>",
+            "<a@@example.org>",
+            "<a..b@example.org>",
+            "<a@bad..org>",
+            "<a b@example.org>",
+            "<a@example.org>extra",
+            "<a@[bad\\literal]>",
+        ] {
+            assert!(!valid_relation_id(id), "{id}");
+        }
+        assert!(relation_ids(&"<a@example.org> ".repeat(MAX_RELATION_IDS)).is_some());
+        assert!(relation_ids(&"<a@example.org> ".repeat(MAX_RELATION_IDS + 1)).is_none());
+        assert!(relation_ids(&format!("<{}@example.org>", "a".repeat(MAX_MESSAGE_ID))).is_none());
+        assert!(relation_ids(&" ".repeat(MAX_RELATION_HEADER + 1)).is_none());
+        assert!(relation_ids("(unclosed <a@example.org>").is_none());
+        assert_eq!(
+            relation_ids("<a@[literal>text]>"),
+            Some(vec!["<a@[literal>text]>".into()])
+        );
+        assert!(relation_ids("(((((((((too deep))))))))) <a@example.org>").is_none());
+        assert_eq!(
+            relation_ids("(parent (nested)) <a@example.org>(tail)"),
+            Some(vec!["<a@example.org>".into()])
+        );
+        let (metadata, _) = receipt(&format!(
+            "References: {}\r\n",
+            "<a@example.org> ".repeat(MAX_RELATION_IDS + 1)
+        ));
+        assert!(metadata.get("references").is_none());
+    }
 
     /// ZIP traversal must never reach an agent-selected extraction directory. / ZIP 路径穿越不得越出代理所选目录。
     #[test]

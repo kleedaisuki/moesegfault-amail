@@ -5,7 +5,9 @@ mod archive;
 mod auth;
 mod command_journal;
 mod config;
+mod discovery;
 mod local_store;
+mod machine;
 mod send_state;
 mod telemetry;
 
@@ -40,6 +42,9 @@ struct Cli {
     /// Human-readable output, with terminal color when supported.
     #[arg(long, global = true)]
     human: bool,
+    /// Versioned structured stderr; stdout keeps the established JSONL contract.
+    #[arg(long, global = true, conflicts_with = "human")]
+    machine: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -48,6 +53,37 @@ struct Cli {
 /// 所有邮件状态变更均为显式操作；读取不会自动标记已读。
 #[derive(Subcommand)]
 enum Command {
+    /// Explore a concise offline capability index or one child topic.
+    Discover { topic: Option<String> },
+    /// Query an owner-scoped logical send intent, without resubmitting mail.
+    SendStatus {
+        id: String,
+        /// Read an accepted local receipt only; this is not current delivery state.
+        #[arg(long)]
+        local: bool,
+    },
+    /// List recent accepted local intent receipts for lost-output recovery.
+    SendReceipts {
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
+    /// Query current owner-visible sending policy and quotas.
+    SendingStatus,
+    /// Query provider feedback for one owned outbound message.
+    Outcomes { id: String },
+    /// Explore owner-visible lifecycle event pages only when needed.
+    Events {
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        #[arg(long)]
+        cursor: Option<String>,
+    },
     /// Authenticate through the system browser.
     Auth {
         #[command(subcommand)]
@@ -116,7 +152,7 @@ enum Command {
     Send {
         archive: PathBuf,
         /// Stable UUID to reuse when retrying an uncertain send.
-        #[arg(long)]
+        #[arg(long, visible_alias = "intent")]
         idempotency_key: Option<String>,
     },
     /// Show non-secret configuration paths and values.
@@ -182,7 +218,7 @@ struct SearchArgs {
     to: Option<String>,
     #[arg(long)]
     body: Option<String>,
-    /// KEY=VALUE filter (message_id, in_reply_to, content_type, attachment_name); distinct keys may repeat this flag.
+    /// KEY=VALUE filter; discover search lists metadata keys. Distinct keys may repeat this flag.
     #[arg(long = "meta")]
     metadata: Vec<String>,
     /// Send this query to OpenRouter for semantic search; background mail indexing happens even without this option.
@@ -362,12 +398,18 @@ fn human_heading(value: &str) {
 fn metadata(args: &SearchArgs) -> Result<BTreeMap<String, String>> {
     let mut map = BTreeMap::new();
     for item in &args.metadata {
-        let (key, value) = item.split_once('=').context("--meta requires KEY=VALUE")?;
-        ensure!(!key.is_empty(), "metadata key cannot be empty");
+        let (key, value) = item
+            .split_once('=')
+            .ok_or_else(|| machine::invalid_input("--meta requires KEY=VALUE"))?;
+        if key.is_empty() {
+            return Err(machine::invalid_input("metadata key cannot be empty"));
+        }
         // The API represents metadata as a map, so another value for this key
         // cannot express conjunction and must never silently replace a filter.
         // Never echo caller-supplied metadata into stderr or Agent logs.
-        ensure!(!map.contains_key(key), "duplicate --meta key");
+        if map.contains_key(key) {
+            return Err(machine::invalid_input("duplicate --meta key"));
+        }
         map.insert(key.to_owned(), value.to_owned());
     }
     Ok(map)
@@ -554,23 +596,57 @@ fn run_search(api: &api::Api<'_>, args: &SearchArgs, human: bool) -> Result<()> 
                 if let Some(existing) = &active_id {
                     ensure!(existing == &job_id, "search job id changed during polling");
                 } else {
-                    eprintln!("amail: search job {job_id} running; polling (resume with `amail search --resume {job_id}`)");
+                    if machine::enabled() {
+                        machine::event(
+                            "search_running",
+                            json!({"job_id":job_id,"next_action":"resume_search"}),
+                        );
+                    } else {
+                        eprintln!("amail: search job {job_id} running; polling (resume with `amail search --resume {job_id}`)");
+                    }
                     active_id = Some(job_id.clone());
                 }
                 if started.elapsed() >= deadline {
-                    bail!("search job {job_id} still running; resume with `amail search --resume {job_id}`");
+                    return Err(machine::Failure {
+                        code: "search_running", next_action: "resume_search",
+                        data: json!({"job_id":job_id}),
+                        message: format!("search job {job_id} still running; resume with `amail search --resume {job_id}`"),
+                    }.into());
                 }
                 std::thread::sleep(retry_after.min(deadline.saturating_sub(started.elapsed())));
                 reply = api
                     .poll_search_job(&job_id)
-                    .map_err(|err| anyhow::anyhow!("search job {job_id}: {err}"))?;
+                    .with_context(|| format!("search job {job_id}"))?;
             }
         }
     }
 }
 
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            error.exit()
+        }
+        Err(error) if machine::enabled() => {
+            return Err(machine::Failure {
+                code: "invalid_arguments",
+                next_action: "fix_input",
+                data: json!({}),
+                message: error.to_string(),
+            }
+            .into())
+        }
+        Err(error) => error.exit(),
+    };
+    if let Command::Discover { topic } = &cli.command {
+        return emit(&discovery::topic(topic.as_deref())?, cli.human);
+    }
     let cfg = config::Runtime::load()?;
     // Diagnostics are best effort; command state initializes in its owning API.
     if !matches!(&cli.command, Command::TelemetryFlush { .. }) {
@@ -587,7 +663,13 @@ fn run() -> Result<()> {
 fn command_kind(command: &Command) -> Option<command_journal::CommandKind> {
     use command_journal::CommandKind as K;
     Some(match command {
-        Command::TelemetryFlush { .. } => return None,
+        Command::TelemetryFlush { .. }
+        | Command::Discover { .. }
+        | Command::SendStatus { .. }
+        | Command::SendReceipts { .. }
+        | Command::SendingStatus
+        | Command::Outcomes { .. }
+        | Command::Events { .. } => return None,
         Command::Config => K::Config,
         Command::Pack { .. } => K::Pack,
         Command::Unpack { .. } => K::Unpack,
@@ -624,6 +706,13 @@ fn command_kind(command: &Command) -> Option<command_journal::CommandKind> {
 /// Execute the unchanged public behavior inside a best-effort completion boundary.
 fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> Result<()> {
     match cli.command {
+        Command::Discover { topic } => emit(&discovery::topic(topic.as_deref())?, cli.human)?,
+        Command::SendReceipts { limit } => {
+            emit_items(&send_state::receipts(cfg, limit)?, cli.human, &["receipts"])?
+        }
+        Command::SendStatus { id, local: true } => {
+            emit(&send_state::receipt(cfg, &id)?, cli.human)?
+        }
         Command::Config => emit(
             &json!({"api_base":cfg.api_base,"issuer":cfg.issuer,"client_id":cfg.client_id,
             "redirect_uri":cfg.redirect_uri,"home":cfg.home,"telemetry_enabled":std::env::var("AMAIL_TELEMETRY").ok().as_deref()!=Some("off")}),
@@ -634,7 +723,12 @@ fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> R
         }
         Command::Auth { command } => match command {
             AuthCommand::Login { no_browser } => {
-                auth::login(&cfg, no_browser)?;
+                auth::login(&cfg, no_browser).map_err(|error| machine::Failure {
+                    code: "authentication_failed",
+                    next_action: "login",
+                    data: json!({}),
+                    message: error.to_string(),
+                })?;
                 emit(&json!({"authenticated":true}), cli.human)?;
             }
             AuthCommand::Status => {
@@ -650,7 +744,12 @@ fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> R
             }
         },
         Command::Login { no_browser } => {
-            auth::login(&cfg, no_browser)?;
+            auth::login(&cfg, no_browser).map_err(|error| machine::Failure {
+                code: "authentication_failed",
+                next_action: "login",
+                data: json!({}),
+                message: error.to_string(),
+            })?;
             emit(&json!({"authenticated":true}), cli.human)?;
         }
         Command::Logout => {
@@ -669,26 +768,64 @@ fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> R
             archive: path,
             idempotency_key,
         } => {
-            let bytes = archive::outbound_bytes(&path)?;
+            let bytes = archive::outbound_bytes(&path).map_err(|error| machine::Failure {
+                code: "invalid_draft",
+                next_action: "fix_input",
+                data: json!({}),
+                message: error.to_string(),
+            })?;
             let digest = Sha256::digest(&bytes);
             let hash: String = digest.iter().map(|b| format!("{b:02x}")).collect();
             let key = if let Some(key) = idempotency_key {
-                ensure!(
-                    uuid::Uuid::parse_str(&key).is_ok(),
-                    "idempotency key must be a UUID"
-                );
+                if uuid::Uuid::parse_str(&key).is_err() {
+                    return Err(machine::invalid_input("idempotency key must be a UUID"));
+                }
                 key
             } else {
                 let random = uuid::Uuid::new_v4().to_string();
                 send_state::send_key(&cfg, &hash, &random)?
             };
+            machine::event(
+                "send_intent",
+                json!({"idempotency_key":key,"next_action":"query_send_status"}),
+            );
             let result = api::Api::for_command(&cfg, command_id)?.send(&bytes, &key)?;
-            send_state::accepted(&cfg, &hash)?;
+            // Persist acceptance before stdout; release only this matching unresolved intent.
+            send_state::record_accepted(&cfg, &hash, &key, &result).map_err(|error| {
+                machine::Failure {
+                    code: "accepted_receipt_unavailable",
+                    next_action: "query_send_status",
+                    data: json!({"idempotency_key":key}),
+                    message: format!("send accepted but local receipt unavailable: {error}"),
+                }
+            })?;
             emit(&result, cli.human)?;
         }
         command => {
             let api = api::Api::for_command(&cfg, command_id)?;
             match command {
+                Command::SendStatus { id, local: false } => {
+                    emit(&api.send_status(&id)?, cli.human)?
+                }
+                Command::SendingStatus => emit(&api.sending_status()?, cli.human)?,
+                Command::Outcomes { id } => emit(&api.outcomes(&id)?, cli.human)?,
+                Command::Events {
+                    message,
+                    kind,
+                    since,
+                    limit,
+                    cursor,
+                } => emit_items(
+                    &api.events(
+                        message.as_deref(),
+                        kind.as_deref(),
+                        since.as_deref(),
+                        limit,
+                        cursor.as_deref(),
+                    )?,
+                    cli.human,
+                    &["events"],
+                )?,
                 Command::Address { command } => match command {
                     AddressCommand::List => {
                         emit_items(&api.addresses()?, cli.human, &["addresses", "items"])?
@@ -730,10 +867,15 @@ fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> R
 }
 
 fn main() {
+    machine::enable(machine::requested(std::env::args_os()));
     if let Err(error) = run() {
         // Debug chains can contain HTTP URLs or provider payloads; print only the top-level error.
         // 调试错误链可能包含 URL 或提供者载荷，因此只打印顶层错误。
-        eprintln!("amail: {error}");
+        if machine::enabled() {
+            machine::event("error", machine::error_record(&error));
+        } else {
+            eprintln!("amail: {error}");
+        }
         std::process::exit(1);
     }
 }
@@ -890,6 +1032,40 @@ mod tests {
         }
         assert!(!output.contains('\u{001b}'));
         assert!(output.contains("\\u001b"));
+    }
+
+    #[test]
+    fn progressive_commands_and_machine_flag_parse() {
+        let cli = Cli::try_parse_from([
+            "amail",
+            "--machine",
+            "events",
+            "--message",
+            "m1",
+            "--kind",
+            "delivered",
+            "--limit",
+            "3",
+        ])
+        .unwrap();
+        assert!(cli.machine);
+        assert!(matches!(cli.command, Command::Events { limit: 3, .. }));
+        assert!(Cli::try_parse_from(["amail", "--machine", "--human", "discover"]).is_err());
+        let cli = Cli::try_parse_from([
+            "amail",
+            "send",
+            "draft.zip",
+            "--intent",
+            "123e4567-e89b-42d3-a456-426614174000",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Send {
+                idempotency_key: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
