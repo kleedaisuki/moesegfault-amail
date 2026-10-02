@@ -1,5 +1,34 @@
 # Infrastructure foundation
 
+## Authoritative delivery checkpoint — 2026-10-02
+
+**v0.1.0 is publicly delivered. Everything below this checkpoint is a historical
+snapshot; its pending-PR/preserve-hold instructions do not describe current state
+or authorize a new mutation.** Existing emergency holds and safety contracts remain.
+
+* Production online graph [36938451911](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36938451911)
+  and real two-owned-account mail journey [36942533661](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36942533661)
+  passed receive/send/reply, text/HTML/assets, filters/semantic indexing, read state,
+  archive export, deletion/isolation and delivered feedback for the same two sends.
+* Verified destination plus four actual role receipts were recorded in [36954714726](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36954714726);
+  normal contact health and the opt-in schedule are active. Public sending was explicitly
+  allowed in [36954757295](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36954757295), without inventing a human response commitment.
+* Public tag/artifact source is `9ffb3284ddaec485a61b1efb93e4d26141b670cb`.
+  Original tagged run [36954856681](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36954856681)
+  built all five platforms and the bundle; operator recovery main is separately
+  `6414b2038e45a56ac7a5cd710c2fef21266eb678`. The tag/assets/provenance were not replaced.
+* [Release v0.1.0](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0)
+  has seven files. In continuation [36957203738](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/36957203738),
+  public-byte job110682831501 verified all six archives against the original manifest;
+  the site was deployed as version `1d89ad97-3046-456e-b008-97078a8db677`.
+* Ordinary public access subsequently verified [home](https://amail.moesegfault.dev/),
+  [manual](https://amail.moesegfault.dev/manual/) and [changelog](https://amail.moesegfault.dev/changelog/):
+  HTTP200, published copy, exact Release links, no candidate copy/noindex; the manual
+  has seven direct downloads and14 fragment links, the changelog two fragment links.
+  The continuation remains **FAILURE**: its first smoke ran only0.420s after
+  deployment and did not confirm published-copy readiness. Later real access, not a repeated deploy or a rewritten
+  all-green run, closes the public-site acceptance.
+
 Status: implementation in progress. This document is the current infrastructure
 plan and acceptance ledger, not a claim that production is deployed. On 2026-10-01
 the owner explicitly prioritized infrastructure and debt repayment before further
