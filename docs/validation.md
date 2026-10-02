@@ -64,6 +64,6 @@ modules; actionlint v1.7.11 accepted retained workflows (local shellcheck/pyflak
 disabled; normal hosted checks remain). The 52 focused infrastructure safety tests
 and 22 Mail API privacy tests passed. A separate synthetic ZIP probe accepted
 current six-tree and historical seven-tree bootstrap artifacts. Native JavaScript
-syntax and local imports passed; the changed hosted Rust/Wasm/runtime pipeline
-has not been executed for this cleanup. No provider access/deployment or heavy
-local Rust/Wasm build occurred.
+syntax and local imports passed. This initial local verification did not execute
+the hosted Rust/Wasm/runtime pipeline; premerge CI is a separate check. No provider
+access/deployment or heavy local Rust/Wasm build occurred.
