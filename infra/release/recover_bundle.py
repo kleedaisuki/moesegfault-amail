@@ -1,4 +1,4 @@
-"""Admit only an unpublished, successfully assembled bundle of the existing tag.
+"""Admit a successful original tagged bundle for publication or site continuation.
 
 Run from the main-only release recovery job. This reads GitHub metadata only;
 artifact download and byte validation remain separate existing workflow steps.
@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 
-from verify_published_assets import REPOSITORY, SOURCE_DIGEST, TAG, TARGETS
+from verify_published_assets import REPOSITORY, SOURCE_DIGEST, TAG, TARGETS, expected_names
 
 
 def validate(run: dict, jobs: list[dict], artifacts: list[dict], repository: str, tag: str, source: str, run_id: int) -> int:
@@ -44,15 +44,29 @@ def api(path: str, *, pages: bool = False):
     return json.loads(subprocess.check_output(command, stderr=subprocess.DEVNULL, timeout=60))
 
 
-def require_absent_release(repository: str, tag: str) -> None:
-    """Require an actual HTTP404; authorization or transport failures are not absence."""
+def published_release_exists(repository: str, tag: str) -> bool:
+    """Accept HTTP404 or exact public asset metadata, never claim byte integrity."""
     result = subprocess.run(["gh", "api", f"repos/{repository}/releases/tags/{tag}", "--include"], capture_output=True, text=True, timeout=60)
-    if result.returncode != 1 or not re.match(r"HTTP/[0-9.]+ 404\b", result.stdout):
-        raise ValueError("release absence not established")
+    if result.returncode == 1 and re.match(r"HTTP/[0-9.]+ 404\b", result.stdout):
+        return False
+    if result.returncode != 0 or not re.match(r"HTTP/[0-9.]+ 200\b", result.stdout):
+        raise ValueError("release state not established")
+    parts = result.stdout.replace("\r\n", "\n").split("\n\n", 1)
+    if len(parts) != 2:
+        raise ValueError("release response malformed")
+    release = json.loads(parts[1])
+    if not isinstance(release, dict) or release.get("tag_name") != tag or release.get("draft") is not False or release.get("prerelease") is not False:
+        raise ValueError("release metadata mismatch")
+    assets = release.get("assets")
+    if not isinstance(assets, list) or len(assets) != 7 or any(not isinstance(asset, dict) or not isinstance(asset.get("name"), str) for asset in assets):
+        raise ValueError("release assets malformed")
+    if {asset["name"] for asset in assets} != expected_names(tag) | {"SHA256SUMS"}:
+        raise ValueError("release asset names mismatch")
+    return True
 
 
 def main() -> int:
-    """Export only the admitted artifact ID for the existing download action."""
+    """Export the artifact ID and existence flag; byte verification stays mandatory."""
     run_id = os.getenv("RECOVER_RUN_ID", "")
     repository = os.getenv("GITHUB_REPOSITORY", "")
     tag = os.getenv("RELEASE_TAG", "")
@@ -67,10 +81,11 @@ def main() -> int:
         jobs = [job for page in api(f"{base}/jobs?filter=latest&per_page=100", pages=True) for job in page["jobs"]]
         artifacts = [artifact for page in api(f"{base}/artifacts?per_page=100", pages=True) for artifact in page["artifacts"]]
         artifact_id = validate(run, jobs, artifacts, repository, tag, source, int(run_id))
-        require_absent_release(repository, tag)
+        exists = published_release_exists(repository, tag)
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             output.write(f"artifact_id={artifact_id}\n")
-    except (ValueError, KeyError, TypeError, AttributeError, OSError, subprocess.SubprocessError):
+            output.write(f"release_exists={str(exists).lower()}\n")
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError, OSError, subprocess.SubprocessError):
         print("release_recovery=denied", file=sys.stderr)
         return 1
     print("release_recovery=admitted")
