@@ -33,6 +33,8 @@ class StagingSiteTests(unittest.TestCase):
         self.assertIn(f"X-Amail-Candidate-Revision: {SHA}", staging)
         self.assertNotIn("https://amail.moesegfault.dev", staging)
         self.assertIn("https://amail.moesegfault.dev", site.revision_headers(SHA))
+        self.assertIn("Cache-Control: public, max-age=0, must-revalidate, no-transform", staging)
+        self.assertNotIn("no-transform", site.revision_headers(SHA))
 
     def test_current_candidate_routes_and_manual_exploration_pass(self):
         """Check real navigation and the candidate section in all three routes."""

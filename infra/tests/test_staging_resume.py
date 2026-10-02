@@ -158,9 +158,14 @@ class StagingResumeTests(unittest.TestCase):
             return [current.encode() + b"\n", b"", runtime, changed, dirty]
         with patch.object(resume, "git", side_effect=values()):
             resume.exact_tree(current)
+        with patch.object(resume, "git", side_effect=values(changed=resume.BROWSER_HARNESS.encode() + b"\0",
+                                                           runtime=resume.BROWSER_HARNESS.encode() + b"\0")):
+            resume.exact_tree(current)
         for outputs in (values(runtime=b"workers/trace-sink/src/lib.rs\0"),
                         values(changed=b"infra/operator/check_send_hold.py\0"),
-                        values(dirty=b"Cargo.toml\0"), values(changed=b".cargo/config.toml\0")):
+                        values(dirty=b"Cargo.toml\0"), values(changed=b".cargo/config.toml\0"),
+                        values(changed=b"site/scripts/other-test.mjs\0", runtime=b"site/scripts/other-test.mjs\0"),
+                        values(runtime=b"site/src/pages/index.astro\0")):
             with patch.object(resume, "git", side_effect=outputs), self.assertRaises(ValueError):
                 resume.exact_tree(current)
 

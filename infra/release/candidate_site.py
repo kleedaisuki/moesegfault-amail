@@ -73,7 +73,9 @@ def revision_headers(revision, realm="production"):
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("candidate revision must be a full lowercase source SHA")
     if realm == "staging":
-        return STAGING_HEADERS + f"  X-Amail-Candidate-Revision: {revision}\n"
+        # The provider must serve the tested static bytes, not inject its browser
+        # analytics runtime. Preserve freshness; this rule never targets production.
+        return STAGING_HEADERS + "  Cache-Control: public, max-age=0, must-revalidate, no-transform\n" + f"  X-Amail-Candidate-Revision: {revision}\n"
     if realm != "production":
         raise ValueError("candidate realm must be production or staging")
     return STAGING_HEADERS + (

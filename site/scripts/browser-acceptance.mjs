@@ -232,6 +232,9 @@ try {
         assert.ok(box.y >= 0 && box.x >= 0 && box.x + box.width <= width);
         await page.screenshot({ path: `${output}/${stem}-skip-focus.png` });
         await page.keyboard.press('Enter');
+        // A remote browser may acknowledge the key before the fragment commit.
+        // Wait for the real navigation contract, without relaxing focus assertions.
+        await page.waitForURL((url) => url.hash === '#main', { timeout: 2000 });
         assert.equal(new URL(page.url()).hash, '#main');
         await page.keyboard.press('Tab');
         result.mainContinuationFocus = await focusedOutline(page);

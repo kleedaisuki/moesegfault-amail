@@ -56,10 +56,12 @@ SKIPPED = {"Deploy isolated staging mail API", "Deploy isolated Rust staging SMT
            "Deploy private staging Identity verification inbox"}
 RUNTIME = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain", ".cargo",
            "crates", "workers", "site", "infra/tests/worker-boundary")
+BROWSER_HARNESS = "site/scripts/browser-acceptance.mjs"
 CONTROL = {".github/workflows/ci.yml", "infra/deploy/staging_rollout.py",
            "infra/deploy/inspect_staging.py", "infra/deploy/staging_resume.py",
            "infra/deploy/check_mail_split_graph.py",
            "infra/deploy/check_staging_adapters.py", "infra/tests/test_staging_adapters.py",
+           "infra/release/candidate_site.py", "infra/tests/test_candidate_site_staging.py", BROWSER_HARNESS,
            "infra/tests/test_staging_resume.py", "infra/tests/test_staging_rollout.py"}
 STATE = ROOT / ".temp/staging-resume.json"
 LIMIT = 65_536
@@ -143,7 +145,10 @@ def exact_tree(current_sha: str, source_sha: str = ORIGIN_SHA) -> None:
     if source_sha not in (ORIGIN_SHA, ACTIVE_SHA, ADAPTER_SHA):
         raise ValueError("staging_resume_source_unreviewed")
     git("cat-file", "-e", source_sha + "^{commit}")
-    if git("diff", "--name-only", "-z", source_sha, current_sha, "--", *RUNTIME):
+    runtime = git("diff", "--name-only", "-z", source_sha, current_sha, "--", *RUNTIME).decode().split("\0")
+    # This exact hosted-only harness imports Node/Playwright and is not bundled
+    # into Astro output. No product source, asset or other site script is exempt.
+    if any(name and name != BROWSER_HARNESS for name in runtime):
         raise ValueError("staging_resume_runtime_changed")
     changed = git("diff", "--name-only", "-z", source_sha, current_sha).decode().split("\0")
     if any(name and name not in CONTROL and not (name.startswith("docs/") and name.endswith(".md"))
