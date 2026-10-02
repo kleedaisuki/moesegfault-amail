@@ -481,13 +481,74 @@ class DirectContactProviderTest(unittest.TestCase):
                 health.snapshot(client, "a" * 32, policy(), DESTINATION)
 
     def test_old_generic_attestation_cannot_claim_coverage(self):
-        """Without explicit Inbox/Junk/24h acceptance no provider call occurs."""
+        """Without an exact contract and reviewed basis no provider call occurs."""
         env = {"INPUT_TARGET": "staging", "INPUT_GATE": "abuse_contact_verified", "INPUT_VERIFIED": "true",
             "INPUT_CASE_REF": "CASE_1", "GITHUB_ACTOR": "operator", "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
             "CLOUDFLARE_API_TOKEN": "synthetic"}
         with patch.dict("os.environ", env, clear=True), patch.object(attest_gate.urllib.request, "urlopen") as request:
             self.assertEqual(attest_gate.main(), 2)
             request.assert_not_called()
+
+    def test_contact_attestation_accepts_one_basis_without_unhold_or_health(self):
+        """Both evidence paths bind the same contract and retain distinct logs."""
+        for coverage, evidence, basis in (
+            (attest_gate.CONTACT_COVERAGE, "", "human_coverage"),
+            ("", attest_gate.CONTACT_EVIDENCE, "verified_destination_and_role_receipts"),
+        ):
+            db = database()
+            adopt(db)
+            env = {"INPUT_TARGET": "production", "INPUT_GATE": "abuse_contact_verified", "INPUT_VERIFIED": "true",
+                "INPUT_CONTACT_CONTRACT_ID": CONTRACT, "INPUT_CONTACT_COVERAGE": coverage, "INPUT_CONTACT_EVIDENCE": evidence,
+                "INPUT_CASE_REF": "CASE_1", "GITHUB_ACTOR": "operator", "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+                "CLOUDFLARE_API_TOKEN": "synthetic"}
+
+            def record(request, timeout):
+                """Execute the unchanged SQL against synthetic migrations only."""
+                body = json.loads(request.data)
+                self.assertEqual(body["params"], [1, "github:operator", "CASE_1", CONTRACT])
+                changes = db.execute(body["sql"], body["params"]).rowcount
+                return io.BytesIO(json.dumps({"success": True, "result": [{"success": True, "meta": {"changes": changes}}]}).encode())
+
+            with self.subTest(basis=basis), patch.dict("os.environ", env, clear=True), patch.object(attest_gate.urllib.request, "urlopen", side_effect=record) as request, patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                self.assertEqual(attest_gate.main(), 0)
+                request.assert_called_once()
+                self.assertIn(f"contact_basis={basis}", stdout.getvalue())
+                self.assertNotIn(CONTRACT, stdout.getvalue())
+            self.assertEqual(db.execute("SELECT abuse_contact_verified,abuse_contact_contract_id FROM send_release_gates").fetchone(), (1, CONTRACT))
+            self.assertEqual(db.execute("SELECT state FROM send_policy WHERE scope='global'").fetchone()[0], "held")
+            self.assertEqual(db.execute("SELECT count(*) FROM role_contact_health").fetchone()[0], 0)
+
+    def test_contact_attestation_rejects_ambiguous_unknown_or_missing_basis(self):
+        """Exactly one canonical path and a valid contract precede any request."""
+        for contract, coverage, evidence in (
+            (CONTRACT, "", ""), (CONTRACT, "unknown", ""), (CONTRACT, "", "unknown"),
+            (CONTRACT, attest_gate.CONTACT_COVERAGE, attest_gate.CONTACT_EVIDENCE),
+            (CONTRACT, attest_gate.CONTACT_COVERAGE, "unknown"),
+            (CONTRACT, "unknown", attest_gate.CONTACT_EVIDENCE),
+            (CONTRACT, "", attest_gate.CONTACT_EVIDENCE.lower()),
+            ("", "", attest_gate.CONTACT_EVIDENCE),
+            ("invalid", attest_gate.CONTACT_COVERAGE, ""),
+        ):
+            env = {"INPUT_TARGET": "production", "INPUT_GATE": "abuse_contact_verified", "INPUT_VERIFIED": "true",
+                "INPUT_CONTACT_CONTRACT_ID": contract, "INPUT_CONTACT_COVERAGE": coverage, "INPUT_CONTACT_EVIDENCE": evidence,
+                "INPUT_CASE_REF": "CASE_1", "GITHUB_ACTOR": "operator", "CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+                "CLOUDFLARE_API_TOKEN": "synthetic"}
+            with self.subTest(contract=contract, coverage=coverage, evidence=evidence), patch.dict("os.environ", env, clear=True), patch.object(attest_gate.urllib.request, "urlopen") as request, patch("sys.stderr", new_callable=io.StringIO):
+                self.assertEqual(attest_gate.main(), 2)
+                request.assert_not_called()
+
+    def test_contact_revocation_ignores_evidence_and_contract_inputs(self):
+        """Revocation remains unconditional even when affirmative fields conflict."""
+        env = {"INPUT_TARGET": "production", "INPUT_GATE": "abuse_contact_verified", "INPUT_VERIFIED": "false",
+            "INPUT_CONTACT_CONTRACT_ID": "invalid", "INPUT_CONTACT_COVERAGE": attest_gate.CONTACT_COVERAGE,
+            "INPUT_CONTACT_EVIDENCE": attest_gate.CONTACT_EVIDENCE, "INPUT_CASE_REF": "CASE_1", "GITHUB_ACTOR": "operator",
+            "CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "synthetic"}
+        response = io.BytesIO(b'{"success":true,"result":[{"success":true,"meta":{"changes":1}}]}')
+        with patch.dict("os.environ", env, clear=True), patch.object(attest_gate.urllib.request, "urlopen", return_value=response) as request, patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            self.assertEqual(attest_gate.main(), 0)
+            request.assert_called_once()
+            self.assertEqual(json.loads(request.call_args.args[0].data)["params"][0], 0)
+            self.assertIn("contact_basis=revoked", stdout.getvalue())
 
     def test_routing_client_cannot_mutate_or_redirect(self):
         """The health helper has a fixed GET-only surface and rejects redirects."""

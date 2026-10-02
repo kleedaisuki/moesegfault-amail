@@ -1,17 +1,33 @@
 # Direct-forward contact operational workflows
 
-Date: 2026-10-01. **Source wiring only, not operational adoption or activation.**
-The owner's continuing Inbox/Junk review and Cloudflare-notice response within
-24 hours remain pending. Actual contact adoption, affirmative attestation and
-public unhold remain **NO-GO**. No private destination, receipt, provider reply
-or mailbox content belongs in this document or Actions inputs/artifacts.
+Updated: 2026-10-02. Contact verification accepts either a verified destination
+plus the user's actual receipts for all four reserved roles, or the legacy
+explicit human coverage commitment. These are different facts, not interchangeable
+claims. The receipt basis does not assert continuing mailbox monitoring or a
+24-hour response promise; an extra personal promise is not an amail software
+release prerequisite. No private destination, provider reply or mailbox content
+belongs in this document or Actions inputs/artifacts.
+
+[Cloudflare's abuse report obligations](https://developers.cloudflare.com/fundamentals/reference/report-abuse/abuse-report-obligations/)
+still require an actively managed/monitored contact and a response to abuse
+notifications within 24 hours. These remain ongoing operational responsibilities,
+not evidence that the user has signed the legacy commitment. Keep Inbox/Junk
+review, trusted complaint intervention, and official notice replies in the runbook;
+use the existing hold/revoke controls promptly when contact handling is compromised.
+
+Production adoption36940922751 and health36941850224 succeeded. A fresh normal
+health observation36954329540 returned `direct_contact_health=healthy_recorded`,
+and root confirmed `AMAIL_CONTACT_HEALTH_ACTIVE=true`. The verified destination,
+four received role letters and safe-sender setup are existing operator/user facts;
+no new messages or adoption are needed. Recording the exact contact basis and
+global public allow remain separate explicit operator operations.
 
 This document extends the held-only contract implemented in `a93fe58` and
 `212cfe0`, not the earlier rejected two-mode architecture. See
 [implementation](direct-forward-role-release-gate-implementation.md) and
 [independent contact-gate review](review-direct-forward-contact-gate-a93fe58.md).
 
-## Current default-branch and first manual health evidence
+## Historical registration and first manual health evidence
 
 [PR #1](https://github.com/kleedaisuki/moesegfault-amail/pull/1) registered these
 workflows on `main` at `de2caf2e7d63c492b75ad7bddf89c0a8892e647b`.
@@ -37,26 +53,39 @@ merged the default-off schedule gate into `main` at
 `AMAIL_CONTACT_HEALTH_ACTIVE=true`; manual dispatch stays independently gated.
 This records source admission behavior, not the live variable value or a
 successful observation. Keep recurring access inactive until the readiness
-conditions below are genuinely met. Public sending remains held; Issues-off
-privacy evidence remains unknown and no genuine release exists. See the
-[current release-gate map](release-gap-audit.md#current-release-gate-delta-2026-10-01-asiasingapore).
+conditions below are genuinely met. At that historical checkpoint, public
+sending remained held and Issues-off evidence was unknown. The current facts
+above supersede that checkpoint, not its recorded failure.
 
 ## Deliberately separate capabilities
 
 | Workflow | Entry and capability | What it cannot establish |
 | --- | --- | --- |
-| `direct-contact-adopt.yml` | Explicit `main` manual dispatch; protected staging/production Environment; exact current contract (`NONE` for absence), provider destination ID and four rule IDs. New UUID, held state, stale-input rejection. | No human commitment, provider configuration proof, deployment, route mutation or public allow. |
-| `direct-contact-attest.yml` | Explicit `main` manual dispatch; same protected Environment. Verification requires exact adopted UUID and `ACCEPT_INBOX_JUNK_AND_24H_CLOUDFLARE_RESPONSE`; default is unconditional revoke. | The phrase records a human assertion, not proof of mailbox visits. No machine lease, route repair or public allow. |
+| `direct-contact-adopt.yml` | Explicit `main` manual dispatch; protected staging/production Environment; exact current contract (`NONE` for absence). Supply all five provider pins or omit all five to discover the unique verified destination and four exact roles using existing Secrets. New UUID, held state, stale-input rejection. | No human commitment, deployment, route mutation or public allow. |
+| `direct-contact-attest.yml` | Explicit `main` manual dispatch; same protected Environment. Exact adopted UUID plus exactly one canonical evidence input; default is unconditional revoke. | Receipt evidence is not continuing human coverage. Neither path creates a machine lease, repairs routes or allows public sending. |
 | `direct-contact-health.yml` | Opt-in hourly production observation at UTC minute 17 only when repository variable `AMAIL_CONTACT_HEALTH_ACTIVE=true`; optional manual staging/production observation on `main` regardless of that variable. GET-only bounded routing/destination reads and scoped D1 health update. | No human acceptance, mailbox access, verification request, routing write, SMTP probe, deployment or automatic unhold. |
 
-All three use existing **repository-level Secrets**. Manual jobs retain the
-existing Environment protection boundary, but this source does not prove that
-required reviewers or deployment branch restrictions are configured. Do not
-create/move/duplicate Secrets into Environments; an existing same-named
-Environment override must be resolved before operational execution. The hourly
-checker deliberately has no approval-dependent Environment: it must not queue
-for a human review each hour. Its authorization is the trusted default-branch
-code and existing repository Secrets, not a new approval or new credential.
+All three use existing realm Secrets through the selected Environment, including
+hourly production health. Current production has branch/tag restrictions but no
+reviewer or wait rule; future protection changes may delay health and cannot
+renew its bounded TTL. Do not copy/migrate Secrets or add a new approval portal.
+
+For `verified=true`, supply the exact adopted `contact_contract_id`, an opaque
+`case_ref`, and **exactly one** of:
+
+* `contact_evidence=VERIFIED_DESTINATION_AND_ROLE_RECEIPTS`, leaving
+  `contact_coverage` blank. The operator must have checked the verified destination
+  and actual user confirmation of receipt for all four reserved role addresses.
+  Success emits `contact_basis=verified_destination_and_role_receipts`.
+* Legacy `contact_coverage=ACCEPT_INBOX_JUNK_AND_24H_CLOUDFLARE_RESPONSE`, leaving
+  `contact_evidence` blank. This retains its original assertion of Inbox/Junk
+  monitoring and 24-hour response coverage, and emits `contact_basis=human_coverage`.
+
+Missing, unknown or conflicting affirmative inputs fail before any provider
+request. Historical human commitments are not reclassified as receipt evidence.
+Both paths bind the same exact contract and existing audit actor/case; neither
+renews health or unholds sending. `verified=false` remains unconditional and
+requires neither contract nor evidence, emitting `contact_basis=revoked`.
 
 Hourly health takes only `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`,
 `CF_EMAIL_ROUTING_TOKEN` and `ROLE_FORWARD_DESTINATION`. The destination stays
@@ -73,13 +102,13 @@ The `refresh` job admits scheduled events only when
 events still require `refs/heads/main`. Set this **repository-level Actions
 variable**, not a Secret or an Environment variable, to the canonical string
 `true` only after production migration/schema and global-held readback are
-confirmed, and the owner has established continuing Inbox/Junk review and
-24-hour Cloudflare-notice response coverage. Obtain a successful controlled
-manual production health observation before activating recurring refresh.
+confirmed and a successful controlled manual production health observation
+has established the adopted contract's current configuration. An extra human
+monitoring/24-hour commitment is not required to activate health refresh.
 Missing readiness or unresolved failures mean keep the variable absent or
 `false`; staging readiness alone does not authorize the production schedule.
 This variable is operational scheduling permission, not contact adoption,
-human attestation, release permission or evidence of provider health.
+contact attestation, release permission or evidence of provider health.
 
 GitHub returns an empty string for an unset configuration variable, so absence
 is default-off. Reserve this name for repository activation; if a same-named
@@ -135,7 +164,7 @@ attention or Inbox delivery.
 ## Provider mutation containment and shared exclusion
 
 All six contact-related workflows share `amail-direct-contact-{realm}`:
-adoption, coverage attest/revoke, health refresh, old send control, old release
+adoption, contact attest/revoke, health refresh, old send control, old release
 attestation, and reserved role forwarding (fixed production). They use
 workflow-level `cancel-in-progress: false`; non-contact gates/account-control
 also share this lock conservatively. Staging and production remain separate.
@@ -143,8 +172,8 @@ No lock includes a workflow name that would accidentally split writers.
 
 Reserved role forwarding now requires an opaque `case_ref` before either
 `apply` **or** `request-verification`. The reviewed D1 invalidation helper runs
-before any provider mutation; it clears adopted contact health and human
-acceptance, establishes global held and demands scoped
+before any provider mutation; it clears adopted contact health and contact
+verification, establishes global held and demands scoped
 readback before continuing. Failure/ambiguous invalidation denies before the
 provider step. `audit` remains GET-only and skips invalidation.
 
@@ -152,15 +181,15 @@ This intentionally changes the unsafe pre-0009 mutation path: `apply` and
 `request-verification` require the supported direct-contact migration and D1
 credentials; unavailable schema/credentials deny rather than mutate under an
 old fresh lease. Historical routes and code are not deleted. Policy identity
-pins remain: a changed destination/rule identity or operational commitment
+pins remain: a changed destination/rule identity
 requires explicit new adoption and a fresh UUID; an equivalent no-change
 operation can retain that contract. Both cases require new machine health
-and explicit human acceptance, never automatically restored. Failed/canceled
+and explicit contact verification, never automatically restored. Failed/canceled
 mutations remain held/invalidated.
 Never blindly retry ambiguous provider side effects.
 
 The old `attest-send-gate.yml` interface remains unchanged: contact verification
-without the new exact contract/coverage fields fails closed in the helper;
+without the exact contract and one recognized evidence basis fails closed in the helper;
 other gates and unconditional revocation retain their original interface.
 The old send-control interface remains the only explicit unhold path, now
 serialized with contact mutations and protected by the direct SQL predicate.
@@ -196,31 +225,33 @@ already in-flight send.
    prove the positive unadopted-held idle result; it is not adoption or health
    evidence. Activate recurring refresh only after the readiness conditions in
    **Default-off schedule activation** above are satisfied.
-4. **Stop here while human coverage is pending.** Registration is not adoption.
-   After explicit owner acceptance and independent operational review, select
-   exact existing rule/destination record IDs privately and dispatch adoption
+4. Registration is not adoption. Review the existing verified destination and
+   four role receipts. Select exact rule/destination IDs privately, or use the
+   existing all-pins-omitted discovery, and dispatch adoption
    with the current contract ID (`NONE` only if truly absent), opaque case and
    `ADOPT_DIRECT_CONTACT_HELD`. Read the new UUID through the authorized private
    D1 operator path; do not add it to public logs or request the mailbox again.
-5. Obtain exact-contract machine health and evidence for the human obligations:
-   Inbox and Junk review, notice-response ownership within 24 hours, attribution,
-   intervention and separate official replies. Record the exact contract/phrase
-   only after that evidence/commitment exists. Configuration success does not
-   substitute for the four historical receipts or the missing human commitment.
+5. Obtain exact-contract machine health and record the verified destination/four
+   receipt basis using `contact_evidence`, or the legacy commitment only when it
+   actually exists. Do not re-adopt an already healthy contract, repeat received
+   test letters or manufacture a human promise. Retain ongoing Inbox/Junk and
+   24-hour notice-response responsibilities separately from release evidence.
 6. Preserve held until every independent privacy/outbound/publication/topology
    gate passes. Public allow remains a distinct explicit operator action. A
    held-only old-binary rollback must not inherit permission to send.
 
-## Acceptance evidence still required
+## Source verification boundary
 
 Added `infra/tests/test_direct_contact_workflows.py` to existing hosted infra
 discovery. Source contracts cover main-only protected manual entry, exact env
-wiring, coverage/revoke separation, hourly production fallback, noncanceling
+wiring, distinct receipt/coverage bases, unconditional revoke, hourly production fallback, noncanceling
 shared locks, no broad failure suppression, privacy exports and invalidation
 before provider mutation. The operator suite separately covers actual SQL,
 safe idle discrimination and conditional contract replacement/invalidation.
 
-**No local tests/builds, hosted dispatch, live provider calls, policy adoption,
-attestation, mailbox retrieval, routing changes, send, deployment or unhold was
-performed for this wiring.** Static source inspection is not a claim of hosted
-test success, scheduled execution or actual Environment protection.
+This policy correction adds no migration, Worker deployment, provider probe or
+new mail campaign. Source tests run in the existing hosted infra lane; static
+inspection is not runtime acceptance. Historical review documents retain their
+original evidence boundaries. The current operational facts are recorded above;
+receipt-basis attestation and public allow must still be explicitly executed by
+the authorized operator, not inferred from these source changes.

@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   refresh:
-    # Opt in only after production migration and coverage; manual diagnostics stay available.
+    # Opt in after production adoption and healthy readback; no extra human promise is required.
     if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.AMAIL_CONTACT_HEALTH_ACTIVE == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
