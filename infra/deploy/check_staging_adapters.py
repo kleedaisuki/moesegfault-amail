@@ -131,6 +131,10 @@ def diagnostic_facts(account: str, token: str) -> dict:
                 destination_exact=found[QUEUE] is not None and destination == {"type": "queues.queue", "queue_id": found[QUEUE]["queue_id"]},
                 events_match=isinstance(events, list) and len(events) == len(EVENTS.split(","))
                     and all(isinstance(event, str) for event in events) and set(events) == set(EVENTS.split(",")))
+            extra = {key: value for key, value in source.items() if key not in {"type", "zone_id", "domain"}}
+            subscription.update(extra_source_field_count=len(extra), extra_source_fields_all_null=all(value is None for value in extra.values()),
+                                source_has_account_id="account_id" in source, source_account_match=source.get("account_id") == account,
+                                source_has_zone_name="zone_name" in source)
     except (ValueError, KeyError, TypeError, OSError, forwarding.ProvisionError) as error:
         facts["subscription"] = {"read_failure": failure_reason(error)}
     return facts
