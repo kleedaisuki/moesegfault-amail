@@ -15,6 +15,14 @@ import staging_owned_send as probe
 class OwnedSendTests(unittest.TestCase):
     """Use fake subprocesses only; no provider or mail calls are made."""
 
+    def test_grant_failure_reason_never_copies_provider_or_owner_values(self):
+        """Known source guards and exception classes are sufficient diagnostics."""
+        self.assertEqual(probe.grant_failure_reason(ValueError("staging_canary_owner_unverified")),
+                         "owned_send_grant_staging_canary_owner_unverified")
+        self.assertEqual(probe.grant_failure_reason(TypeError("private rule value")), "owned_send_grant_shape_unverified")
+        self.assertEqual(probe.grant_failure_reason(TimeoutError("private signed URL")), "owned_send_grant_transport_unverified")
+        self.assertEqual(probe.grant_failure_reason(ValueError("private recipient")), "owned_send_grant_unverified")
+
     def test_mapping_observation_is_bounded_and_preserves_original_recovery(self):
         """Record only two booleans, without guessing a global transport identity."""
         self.assertEqual(probe.mapping_observation("id@example", "<id@example>"),

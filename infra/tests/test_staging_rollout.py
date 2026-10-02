@@ -241,6 +241,15 @@ class StagingRolloutTests(unittest.TestCase):
                  patch.object(rollout.graph, "verify", side_effect=ValueError(failure)):
                 self.assertEqual(inspector.split_diagnostic(value), {"exact_graph": False, "reason": expected})
 
+    def test_routing_diagnostic_projects_only_matcher_shapes(self):
+        """The existing exact-zone reader produces no recipients/actions/identifiers."""
+        import ensure_role_forwarding as forwarding
+        rows = [{"matchers": None, "private": "private value"}, {}, {"matchers": []}, {"matchers": "private value"}]
+        with patch.dict(os.environ, {"CF_EMAIL_ROUTING_TOKEN": "synthetic"}), \
+             patch.object(forwarding, "rules", return_value=rows):
+            self.assertEqual(inspector.routing_diagnostic("account"), {"available": True, "rows": 4,
+                "matchers": {"null": 1, "missing": 1, "list": 1, "invalid": 1}})
+
     def test_legacy_role_projection_contains_capabilities_not_private_values(self):
         """Independent role DB is not Mail DB; no secret values enter artifacts."""
         bindings = [{"type": "d1", "database_id": "unrelated-role-database"},

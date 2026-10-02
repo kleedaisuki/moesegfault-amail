@@ -29,6 +29,24 @@ def role_capabilities(version: dict) -> dict:
     return project(version)
 
 
+def routing_diagnostic(account: str) -> dict:
+    """Project matcher shapes from the existing zone reader, never route values."""
+    import ensure_role_forwarding as forwarding
+    token = os.getenv("CF_EMAIL_ROUTING_TOKEN", "")
+    if not token:
+        return {"available": False, "reason": "routing_credentials_unavailable"}
+    try:
+        rows = forwarding.rules(forwarding.Client(token=token, account=account))
+    except (ValueError, KeyError, TypeError, OSError, forwarding.ProvisionError):
+        return {"available": False, "reason": "routing_read_unverified"}
+    shapes = {name: 0 for name in ("null", "missing", "list", "invalid")}
+    for row in rows:
+        key = ("invalid" if not isinstance(row, dict) else "missing" if "matchers" not in row
+               else "null" if row["matchers"] is None else "list" if isinstance(row["matchers"], list) else "invalid")
+        shapes[key] += 1
+    return {"available": True, "rows": len(rows), "matchers": shapes}
+
+
 def split_diagnostic(result: dict) -> dict:
     """Read the full observed active graph; diagnostics never confer ownership."""
     import check_mail_split_graph as graph
@@ -86,6 +104,7 @@ def inspect() -> dict:
     result = {"schema": "staging-predecessor/v1", "source_sha": os.getenv("GITHUB_SHA", ""),
               "run_id": os.getenv("GITHUB_RUN_ID", ""), "scripts": {}, "queues": {},
               "legacy_role_present": "amail-role-monitor-staging" in present}
+    result["routing_checks"] = routing_diagnostic(account)
     if result["legacy_role_present"]:
         script = "amail-role-monitor-staging"
         before = serving_deployment(capture.readback(account, token, script, "deployments?per_page=1&page=1"))

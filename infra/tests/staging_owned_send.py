@@ -323,6 +323,26 @@ def cleanup(binary: Path, env: dict[str, str], zone: str, route_token: str, acco
         raise primary
 
 
+def grant_failure_reason(error: Exception) -> str:
+    """Retain closed canary guards or transport/shape categories, never remote text."""
+    guards = {"staging_canary_context_unverified", "staging_canary_owner_unverified",
+              "staging_canary_route_unverified", "staging_canary_live_slot_or_hold_changed",
+              "staging_canary_readback_unverified"}
+    value = error.args[0] if isinstance(error, ValueError) and len(error.args) == 1 else None
+    if isinstance(value, str) and value in guards:
+        return "owned_send_grant_" + value
+    if isinstance(error, (TypeError, KeyError)):
+        return "owned_send_grant_shape_unverified"
+    if isinstance(error, (TimeoutError, OSError)):
+        return "owned_send_grant_transport_unverified"
+    # The grant imports its reader before use. Do not import another dependency
+    # while classifying a failure; diagnostics must not replace the original error.
+    forwarding = sys.modules.get("ensure_role_forwarding")
+    if forwarding is not None and isinstance(error, forwarding.ProvisionError):
+        return "owned_send_grant_route_read_unverified"
+    return "owned_send_grant_unverified"
+
+
 def execute(binary: Path, home: Path, run_dir: Path, nonce: str) -> None:
     """Run at most one new provider submission under the guarded self-only grant."""
     mail.check(os.environ.get("AMAIL_STAGING_CANARY_CONFIRM") == "RUN_STAGING_OWNED_SEND_V012",
@@ -366,8 +386,8 @@ def execute(binary: Path, home: Path, run_dir: Path, nonce: str) -> None:
         from grant_canary import grant_staging_owned
         try:
             grant_staging_owned(account, token, address, subject, f"staging-owned-{nonce}")
-        except Exception:
-            raise mail.ProbeFailure("owned_send_grant_unverified") from None
+        except Exception as error:
+            raise mail.ProbeFailure(grant_failure_reason(error)) from None
         submitted = True
         send_lost_output(binary, env, key, archive)
         receipt = await_projection(binary, env, key)

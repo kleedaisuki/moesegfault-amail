@@ -366,6 +366,7 @@ jobs:
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       GH_TOKEN: ${{ github.token }}
       AMAIL_STAGING_INSPECT_CONFIRM: ${{ inputs.confirm }}
       AMAIL_STAGING_RESUME_RUN: ${{ inputs.staging_resume_run }}

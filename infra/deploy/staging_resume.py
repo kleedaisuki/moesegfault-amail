@@ -62,6 +62,7 @@ CONTROL = {".github/workflows/ci.yml", "infra/deploy/staging_rollout.py",
            "infra/deploy/check_mail_split_graph.py",
            "infra/deploy/check_staging_adapters.py", "infra/tests/test_staging_adapters.py",
            "infra/release/candidate_site.py", "infra/tests/test_candidate_site_staging.py", BROWSER_HARNESS,
+           "infra/tests/staging_owned_send.py", "infra/tests/test_staging_owned_send.py",
            "infra/tests/test_staging_resume.py", "infra/tests/test_staging_rollout.py"}
 STATE = ROOT / ".temp/staging-resume.json"
 LIMIT = 65_536
