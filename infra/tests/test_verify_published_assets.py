@@ -123,7 +123,9 @@ class PublishedAssetIntegrityTest(unittest.TestCase):
         self.assertIn("needs.assemble.result == 'success' || needs.recover-bundle.result == 'success'", publish)
         self.assertIn("gh release create", publish)
         self.assertIn("verify_published_assets.py", job_block(text, "verify-published"))
-        self.assertIn("needs: verify-published", job_block(text, "launch-site"))
+        launch = job_block(text, "launch-site")
+        self.assertIn("needs: [preflight, verify-published]", launch)
+        self.assertIn("if: needs.preflight.outputs.publish == 'true'", launch)
 
     def test_complete_bundle_passes(self) -> None:
         """The six expected archives and manifest verify without provider access."""

@@ -278,8 +278,8 @@ jobs:
 
   launch-site:
     name: Launch public site after release assets
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: verify-published
+    if: needs.preflight.outputs.publish == 'true'
+    needs: [preflight, verify-published]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
