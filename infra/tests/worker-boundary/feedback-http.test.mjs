@@ -13,6 +13,7 @@ const worker = path.join(root, "crates/mail-worker");
 const issuer = "https://identity-staging.moesegfault.dev";
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const id = "a0000000-0000-4000-8000-000000000001";
+const foreignId = "a0000000-0000-4000-8000-000000000002";
 const key = "b0000000-0000-4000-8000-000000000001";
 
 /** Authenticate actual APIs through the production verifier with local signed tokens. */
@@ -48,6 +49,10 @@ test("feedback spaces preserve owner isolation, bounded discovery and stable con
     await applyMigrations(db, path.join(worker, "migrations"));
     await db.prepare("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES('owner@mail-staging.moesegfault.dev','owner',?1,'owner',0,'active',0)").bind(issuer).run();
     await db.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES(?1,'owner@mail-staging.moesegfault.dev',?2,'owner','outbound','owner@mail-staging.moesegfault.dev','[\"recipient@example.invalid\"]','private subject','private body','{}',1,0,1,0,'synthetic',1)").bind(id, issuer).run();
+    // A local message ID has exactly one immutable owner. A foreign event must
+    // reference a different owned message, not forge ownership of this message.
+    await db.prepare("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES('foreign@mail-staging.moesegfault.dev','foreign',?1,'foreign',0,'active',0)").bind(issuer).run();
+    await db.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES(?1,'foreign@mail-staging.moesegfault.dev',?2,'foreign','outbound','foreign@mail-staging.moesegfault.dev','[\"recipient@example.invalid\"]','foreign subject','foreign body','{}',1,0,1,0,'foreign-synthetic',1)").bind(foreignId, issuer).run();
     // SQL admission is a separately exercised mutation boundary. Seed synthetic
     // preexisting receipts without authorizing any provider send in this read test.
     await db.exec("DROP TRIGGER send_request_policy_guard");
@@ -56,7 +61,7 @@ test("feedback spaces preserve owner isolation, bounded discovery and stable con
     const event = async (eventId, kind, owner = "owner", message = id) => db.prepare("INSERT INTO provider_events(event_id,provider_id,local_message_id,owner_iss,owner_sub,recipient,kind,occurred_at,received_at) VALUES(?1,'private-provider-id',?2,?3,?4,'recipient@example.invalid',?5,?6,?6)").bind(eventId, message, issuer, owner, kind, at).run();
     await event("event-a", "deferred");
     await event("event-b", "delivered");
-    await event("foreign-event", "failed", "foreign");
+    await event("foreign-event", "failed", "foreign", foreignId);
 
     /** Dispatch JSON reads and preserve HTTP status for typed-error assertions. */
     const get = async (url, owner = "owner") => {
@@ -75,6 +80,11 @@ test("feedback spaces preserve owner isolation, bounded discovery and stable con
     const known = await get(`/v1/messages/${id}/outcomes`);
     assert.equal(known.body.outcomes[0].kind, "delivered", "deferred does not regress known delivery");
     assert.equal((await get(`/v1/messages/${id}/outcomes`, "foreign")).status, 404);
+    const foreignKnown = await get(`/v1/messages/${foreignId}/outcomes`, "foreign");
+    assert.equal(foreignKnown.status, 200);
+    assert.equal(foreignKnown.body.outcomes[0].kind, "failed", "same recipient across distinct owners' messages has independent outcomes");
+    assert.equal((await get(`/v1/messages/${foreignId}/outcomes`)).status, 404);
+    assert.deepEqual((await get("/v1/events", "foreign")).body.events.map((e) => e.message_id), [foreignId]);
     const details = await get(`/v1/messages/${id}`);
     assert.ok(details.body.links.events);
     assert.equal(details.body.events, undefined, "get advertises the space without embedding history");
