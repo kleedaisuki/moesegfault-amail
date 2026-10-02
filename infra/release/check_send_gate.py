@@ -17,6 +17,7 @@ API = "https://api.cloudflare.com/client/v4"
 MAIL_HEALTH = "https://mail.moesegfault.dev/health"
 PRODUCTION_D1_ID = "d9be9bb4-5a73-4223-85d6-b04763e6f03b"
 MAX_REPLY = 65536
+USER_AGENT = "amail-release-check/0.1.0"
 READINESS_SQL = """
 SELECT
   (SELECT COUNT(*) FROM send_policy WHERE scope='global') AS global_rows,
@@ -84,7 +85,7 @@ def run() -> None:
     if len(account) != 32 or not token:
         raise GateError("production gate credentials are unavailable")
 
-    health = _json_request(urllib.request.Request(MAIL_HEALTH))
+    health = _json_request(urllib.request.Request(MAIL_HEALTH, headers={"User-Agent": USER_AGENT}))
     if health.get("status") != "ok":
         raise GateError("production mail health is not OK")
 
@@ -97,6 +98,7 @@ def run() -> None:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )
