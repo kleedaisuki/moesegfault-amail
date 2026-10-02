@@ -179,12 +179,14 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      release_exists: ${{ steps.recovery.outputs.release_exists }}
     permissions:
       contents: read
       actions: read
     steps:
       - uses: actions/checkout@v4
-      - name: Admit same-tag successful original bundle and absent Release
+      - name: Admit same-tag successful original bundle and read Release state
         id: recovery
         env:
           GH_TOKEN: ${{ github.token }}
@@ -242,6 +244,7 @@ jobs:
           name: release-bundle-${{ needs.preflight.outputs.tag }}
           path: dist
       - name: Create immutable GitHub Release
+        if: needs.recover-bundle.outputs.release_exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -249,7 +252,7 @@ jobs:
 
   verify-published:
     name: Verify published Release asset bytes
-    if: needs.preflight.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.publish.result == 'success' && needs.preflight.outputs.publish == 'true' }}
     needs: [preflight, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -278,7 +281,7 @@ jobs:
 
   launch-site:
     name: Launch public site after release assets
-    if: needs.preflight.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.verify-published.result == 'success' && needs.preflight.outputs.publish == 'true' }}
     needs: [preflight, verify-published]
     runs-on: ubuntu-latest
     timeout-minutes: 20

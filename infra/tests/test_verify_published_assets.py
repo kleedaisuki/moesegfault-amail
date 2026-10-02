@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import copy
+import json
 import importlib.util
 import pathlib
 import sys
@@ -78,17 +79,28 @@ class PublishedAssetIntegrityTest(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 RECOVERY.validate(run, altered_jobs, altered_artifacts, repository, TAG, source, run_id)
 
-    def test_recovery_requires_positive_release_absence(self) -> None:
-        """Only an HTTP404 response, not transport/auth failure, means unpublished."""
+    def test_recovery_requires_positive_release_state_without_claiming_bytes(self) -> None:
+        """Only HTTP404 or exact public metadata admits the preserved bundle."""
         with patch.object(RECOVERY.subprocess, "run") as request:
             request.return_value.returncode = 1
             request.return_value.stdout = "HTTP/2.0 404 Not Found\n\n{}"
-            RECOVERY.require_absent_release("owner/repo", TAG)
+            self.assertFalse(RECOVERY.published_release_exists("owner/repo", TAG))
             for code, status in ((0, 200), (1, 403), (1, 500), (1, 0)):
                 request.return_value.returncode = code
                 request.return_value.stdout = f"HTTP/2.0 {status} unavailable"
                 with self.subTest(status=status), self.assertRaises(ValueError):
-                    RECOVERY.require_absent_release("owner/repo", TAG)
+                    RECOVERY.published_release_exists("owner/repo", TAG)
+            release = {"tag_name": TAG, "draft": False, "prerelease": False,
+                "assets": [{"name": name} for name in sorted(MODULE.expected_names(TAG) | {"SHA256SUMS"})]}
+            request.return_value.returncode = 0
+            request.return_value.stdout = "HTTP/2.0 200 OK\r\n\r\n" + json.dumps(release)
+            self.assertTrue(RECOVERY.published_release_exists("owner/repo", TAG))
+            for field, value in (("tag_name", "v0.2.0"), ("draft", True), ("prerelease", True),
+                                 ("assets", release["assets"][:-1]), ("assets", release["assets"] + [release["assets"][0]]),
+                                 ("assets", [{"name": "unexpected"}] * 7), ("assets", ["malformed"] * 7)):
+                request.return_value.stdout = "HTTP/2.0 200 OK\n\n" + json.dumps(dict(release, **{field: value}))
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    RECOVERY.published_release_exists("owner/repo", TAG)
 
     def test_recovery_invalid_entry_is_denied_before_metadata_requests(self) -> None:
         """Numeric IDs and trusted main manual entry precede every GitHub read."""
@@ -117,15 +129,24 @@ class PublishedAssetIntegrityTest(unittest.TestCase):
         self.assertIn("artifact-ids: ${{ steps.recovery.outputs.artifact_id }}", recovery)
         self.assertIn("run-id: ${{ inputs.recover_run_id }}", recovery)
         self.assertIn("--trusted-manifest dist/SHA256SUMS", recovery)
+        self.assertIn("release_exists: ${{ steps.recovery.outputs.release_exists }}", recovery)
         self.assertNotIn("cargo", recovery)
         publish = job_block(text, "publish")
         self.assertIn("needs.send-release-gate.result == 'success'", publish)
         self.assertIn("needs.assemble.result == 'success' || needs.recover-bundle.result == 'success'", publish)
         self.assertIn("gh release create", publish)
-        self.assertIn("verify_published_assets.py", job_block(text, "verify-published"))
+        self.assertIn("if: needs.recover-bundle.outputs.release_exists != 'true'", publish)
+        verification = job_block(text, "verify-published")
+        self.assertIn("verify_published_assets.py", verification)
+        self.assertIn("!cancelled()", verification)
+        self.assertIn("needs.preflight.result == 'success'", verification)
+        self.assertIn("needs.publish.result == 'success'", verification)
         launch = job_block(text, "launch-site")
         self.assertIn("needs: [preflight, verify-published]", launch)
-        self.assertIn("if: needs.preflight.outputs.publish == 'true'", launch)
+        self.assertIn("!cancelled()", launch)
+        self.assertIn("needs.preflight.outputs.publish == 'true'", launch)
+        self.assertIn("needs.preflight.result == 'success'", launch)
+        self.assertIn("needs.verify-published.result == 'success'", launch)
 
     def test_complete_bundle_passes(self) -> None:
         """The six expected archives and manifest verify without provider access."""
