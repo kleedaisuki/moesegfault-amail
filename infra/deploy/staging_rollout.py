@@ -50,6 +50,9 @@ FAILURES = frozenset({
     "staging_resume_source_unreviewed", "staging_resume_phase_step_unverified",
     "staging_resume_active_submits_unverified", "staging_resume_cutover_witness_unverified",
     "staging_resume_cutover_leases_unverified",
+    "staging_resume_adapter_boundary_unverified", "staging_resume_adapter_job_unverified",
+    "staging_resume_adapter_component_unreviewed", "staging_resume_adapter_submit_unverified",
+    "staging_resume_adapter_graph_unverified",
     "staging_resume_old_api_changed", "staging_resume_partial_graph_unverified", "staging_resume_phase_changed",
 })
 PREDECESSOR = ROOT / ".temp/staging-rollout-predecessor.json"
@@ -69,7 +72,7 @@ def context(*, read_only: bool = False) -> None:
     if (os.getenv("GITHUB_REF") != BRANCH or os.getenv("GITHUB_ACTIONS") != "true"
             or not confirmed or not os.getenv("GITHUB_OUTPUT")):
         raise ValueError("staging_context_unverified")
-    if read_only and os.getenv("AMAIL_STAGING_RESUME_RUN") not in ("37053907751", "37058617870"):
+    if read_only and os.getenv("AMAIL_STAGING_RESUME_RUN") not in ("37053907751", "37058617870", "37065145834"):
         raise ValueError("staging_inspect_resume_unverified")
 
 
@@ -164,9 +167,18 @@ def preflight(*, read_only: bool = False) -> None:
         if resume:
             from staging_resume import load_resume
             owned = load_resume(resume)
-            if (any(value["scripts"][name] != owned["predecessor"]["scripts"][name]
-                    for name in ("amail-inbound-staging", "amail-events-staging"))
-                    or owned.get("phase") != "active" or api["version"] != owned["api_version"]
+            phase = owned.get("phase")
+            if phase == "active":
+                if any(value["scripts"][name] != owned["predecessor"]["scripts"][name]
+                       for name in ("amail-inbound-staging", "amail-events-staging")):
+                    raise ValueError("staging_resume_partial_graph_unverified")
+            elif phase == "adapters":
+                for script, key, deployment in (("amail-inbound-staging", "ingress_version", "6059657f-0e89-43e5-98a9-f604952c2a56"),
+                                                ("amail-events-staging", "events_version", "d65dc034-3aa9-4b94-948a-d495b367cd08")):
+                    if (value["scripts"][script]["version"] != owned[key]
+                            or value["scripts"][script]["deployment"] != deployment):
+                        raise ValueError("staging_resume_partial_graph_unverified")
+            if (phase not in ("active", "adapters") or api["version"] != owned["api_version"]
                     or api["deployment"] != "7c6c70e5-d617-4119-9dff-846f5f204a3c"
                     or maintenance["version"] != owned["maintenance_version"]
                     or maintenance["deployment"] != "ad083bc6-e1c0-4ee6-81af-d19c4261ec50"
@@ -183,6 +195,15 @@ def preflight(*, read_only: bool = False) -> None:
                            "AMAIL_TRACE_TOPOLOGY": "api-scheduled"})
         graph.verify("staging", "active")
         if resume:
+            if phase == "adapters":
+                from check_staging_adapters import forwarding, verify
+                try:
+                    verify(owned["ingress_version"], owned["events_version"])
+                except (ValueError, KeyError, TypeError, OSError, forwarding.ProvisionError):
+                    raise ValueError("staging_resume_adapter_graph_unverified") from None
+                output("reuse_adapters", "true")
+                output("ingress_version", owned["ingress_version"])
+                output("events_version", owned["events_version"])
             output("reuse_sink", "true")
             output("reuse_api", "true")
             for key in ("api_version", "maintenance_version", "sink_version"):

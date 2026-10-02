@@ -1261,9 +1261,9 @@ jobs:
     name: Deploy isolated Rust staging SMTP ingress
     # Staging is an explicit promotion, never a side effect of a source push.
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
-    needs: [staging-worker, worker, worker-build]
+    needs: [staging-worker, staging-trace-sink, worker, worker-build]
     outputs:
-      version: ${{ steps.ingress.outputs.version }}
+      version: ${{ needs.staging-trace-sink.outputs.reuse_adapters == 'true' && needs.staging-trace-sink.outputs.ingress_version || steps.ingress.outputs.version }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
     environment: staging
@@ -1296,6 +1296,7 @@ jobs:
         run: |
           npm install --global wrangler@4.142.0
       - name: Deploy staging Rust Email-event Worker with exact recovery pin
+        if: needs.staging-trace-sink.outputs.reuse_adapters != 'true'
         id: ingress
         working-directory: .
         run: python infra/deploy/deploy_staging_adapter.py --component ingress
@@ -1305,9 +1306,9 @@ jobs:
     # Staging is an explicit promotion, never a side effect of a source push.
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
     # Serialize same-run resource writers; GitHub otherwise replaces pending siblings.
-    needs: [staging-ingress, worker, worker-build]
+    needs: [staging-ingress, staging-trace-sink, worker, worker-build]
     outputs:
-      version: ${{ steps.events.outputs.version }}
+      version: ${{ needs.staging-trace-sink.outputs.reuse_adapters == 'true' && needs.staging-trace-sink.outputs.events_version || steps.events.outputs.version }}
     runs-on: ubuntu-latest
     timeout-minutes: 75
     environment: staging
@@ -1342,13 +1343,16 @@ jobs:
         run: |
           npm install --global wrangler@4.142.0
       - name: Ensure staging lifecycle Queue and DLQ
+        if: needs.staging-trace-sink.outputs.reuse_adapters != 'true'
         working-directory: .
         run: python infra/deploy/ensure_email_events.py --target staging --phase queues
       - name: Deploy staging lifecycle consumer with exact recovery pin
+        if: needs.staging-trace-sink.outputs.reuse_adapters != 'true'
         id: events
         working-directory: .
         run: python infra/deploy/deploy_staging_adapter.py --component events
       - name: Ensure staging Email Sending Event Subscription
+        if: needs.staging-trace-sink.outputs.reuse_adapters != 'true'
         working-directory: .
         run: python infra/deploy/ensure_email_events.py --target staging --phase subscription
 
@@ -1356,7 +1360,7 @@ jobs:
         working-directory: .
         env:
           AMAIL_EXPECTED_INGRESS_VERSION: ${{ needs.staging-ingress.outputs.version }}
-          AMAIL_EXPECTED_EVENTS_VERSION: ${{ steps.events.outputs.version }}
+          AMAIL_EXPECTED_EVENTS_VERSION: ${{ needs.staging-trace-sink.outputs.reuse_adapters == 'true' && needs.staging-trace-sink.outputs.events_version || steps.events.outputs.version }}
         run: python infra/deploy/check_staging_adapters.py
 
   staging-identity-test-inbox:
@@ -1522,6 +1526,9 @@ jobs:
       sink_version: ${{ steps.predecessor.outputs.reuse_sink == 'true' && steps.predecessor.outputs.sink_version || steps.sink.outputs.version }}
       rollout: ${{ steps.predecessor.outputs.rollout }}
       reuse_api: ${{ steps.predecessor.outputs.reuse_api }}
+      reuse_adapters: ${{ steps.predecessor.outputs.reuse_adapters }}
+      ingress_version: ${{ steps.predecessor.outputs.ingress_version }}
+      events_version: ${{ steps.predecessor.outputs.events_version }}
       api_version: ${{ steps.predecessor.outputs.api_version }}
       maintenance_version: ${{ steps.predecessor.outputs.maintenance_version }}
     permissions:

@@ -339,6 +339,87 @@ class StagingResumeTests(unittest.TestCase):
         self.assertEqual(value["maintenance_version"], resume.ACTIVE_MAINTENANCE)
 
 
+    def adapter_jobs(self):
+        """Successful active reuse precedes the final adapter readback failure."""
+        jobs = self.active_jobs()
+        for row in jobs["jobs"]:
+            if row["name"] in (resume.SINK_JOB, resume.API_JOB, resume.INGRESS_JOB, resume.EVENTS_JOB):
+                row.update({"id": 789 + len(row["name"]), "run_id": int(resume.ADAPTER_RUN), "head_sha": resume.ADAPTER_SHA})
+        api = next(row for row in jobs["jobs"] if row["name"] == resume.API_JOB)
+        api["conclusion"] = "success"
+        for step in api["steps"]:
+            step["conclusion"] = "success" if step["name"] == resume.GRAPH_STEP else "skipped"
+        for name, state, steps in ((resume.INGRESS_JOB, "success", ((resume.INGRESS_STEP, "success"),)),
+                                  (resume.EVENTS_JOB, "failure", ((resume.EVENTS_STEP, "success"),
+                                   (resume.SUBSCRIPTION_STEP, "success"), (resume.ADAPTER_CHECK_STEP, "failure")))):
+            row = next(row for row in jobs["jobs"] if row["name"] == name)
+            row.update({"conclusion": state, "steps": [{"name": step, "status": "completed", "conclusion": result}
+                                                       for step, result in steps]})
+        return jobs
+
+    def adapter_run(self):
+        """Third epoch does not alter the original and cutover provenance chains."""
+        return dict(self.run_metadata(), id=int(resume.ADAPTER_RUN), head_sha=resume.ADAPTER_SHA)
+
+    def adapter_log(self, component):
+        """One adapter submit retains source, component, version and job identity."""
+        row = resume.submit_records(self.log())[0]
+        row.update({"source_sha": resume.ADAPTER_SHA, "run_id": resume.ADAPTER_RUN,
+                    "component": "mail-" + component, "job": "staging-" + component,
+                    "version": resume.ADAPTER_INGRESS if component == "ingress" else resume.ADAPTER_EVENTS})
+        return json.dumps(row).encode()
+
+    def test_adapter_origin_requires_reuse_graph_and_post_subscription_failure(self):
+        """Neither repeated API writes nor ambiguous adapter submits fit this phase."""
+        jobs = self.adapter_jobs()
+        self.assertIn("ingress_job_id", resume.origin(self.adapter_run(), jobs, resume.ADAPTER_RUN))
+        for name, step, invalid in ((resume.API_JOB, resume.API_STEP, "success"),
+                                    (resume.API_JOB, resume.GRAPH_STEP, "failure"),
+                                    (resume.INGRESS_JOB, resume.INGRESS_STEP, "failure"),
+                                    (resume.EVENTS_JOB, resume.EVENTS_STEP, "failure"),
+                                    (resume.EVENTS_JOB, resume.SUBSCRIPTION_STEP, "failure"),
+                                    (resume.EVENTS_JOB, resume.ADAPTER_CHECK_STEP, "success")):
+            changed = deepcopy(jobs)
+            row = next(row for row in changed["jobs"] if row["name"] == name)
+            next(row for row in row["steps"] if row["name"] == step)["conclusion"] = invalid
+            with self.subTest(step=step), self.assertRaises(ValueError):
+                resume.origin(self.adapter_run(), changed, resume.ADAPTER_RUN)
+        changed = deepcopy(jobs)
+        next(row for row in changed["jobs"] if row["name"] == "Deploy isolated staging release site")["conclusion"] = "success"
+        with self.assertRaises(ValueError):
+            resume.origin(self.adapter_run(), changed, resume.ADAPTER_RUN)
+
+    def test_single_typed_adapter_submit_rejects_other_epoch_or_component(self):
+        """Version prose, repeats and cross-adapter receipts cannot grant ownership."""
+        for component, version in (("ingress", resume.ADAPTER_INGRESS), ("events", resume.ADAPTER_EVENTS)):
+            raw = self.adapter_log(component)
+            self.assertEqual(resume.adapter_log(raw, component), version)
+            for invalid in (raw + b"\n" + raw, raw.replace(resume.ADAPTER_RUN.encode(), resume.ACTIVE_RUN.encode()),
+                            raw.replace(b'"process_exit_code": 0', b'"process_exit_code": 1')):
+                with self.assertRaises(ValueError):
+                    resume.adapter_log(invalid, component)
+        with self.assertRaises(ValueError):
+            resume.adapter_log(self.adapter_log("events"), "ingress")
+
+    def test_adapter_recover_reuses_provenance_without_recursing_or_new_artifact(self):
+        """Third recovery extends existing active proof and preserves original predecessor."""
+        owned = {"predecessor": self.predecessor(), "queue": resume.QUEUE, "dlq": resume.DLQ,
+                 "sink_version": resume.SINK_VERSION, "api_version": resume.ACTIVE_API,
+                 "maintenance_version": resume.ACTIVE_MAINTENANCE, "cutover": self.witness()}
+        with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}), patch.object(resume, "exact_tree") as tree, \
+             patch.object(resume, "active_ownership", return_value=owned) as active, \
+             patch.object(resume, "github", side_effect=[self.adapter_run(), self.adapter_jobs()]) as github, \
+             patch.object(resume, "job_log", side_effect=[self.adapter_log("ingress"), self.adapter_log("events")]):
+            value = resume.recover(resume.ADAPTER_RUN)
+        tree.assert_called_once_with("a" * 40, resume.ADAPTER_SHA)
+        active.assert_called_once_with()
+        self.assertEqual(github.call_count, 2)
+        self.assertEqual(value["phase"], "adapters")
+        self.assertEqual(value["predecessor"]["source_sha"], resume.ORIGIN_SHA)
+        self.assertEqual(value["ingress_version"], resume.ADAPTER_INGRESS)
+        self.assertEqual(value["events_version"], resume.ADAPTER_EVENTS)
+
+
 
 if __name__ == "__main__":
     unittest.main()

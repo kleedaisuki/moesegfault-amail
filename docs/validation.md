@@ -147,6 +147,21 @@ shape and subscription predicates without message content or raw provider prose.
 No predicate is relaxed before the actual failure shape is understood; the native
 journey and candidate site acceptance remain incomplete.
 
+Read diagnostics [37066934636](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37066934636)
+isolated `adapter_subscription_unverified`: Queue ownership/consumer/settings,
+account, the sole subscription's name/enabled/type/zone/domain/destination/events
+all matched, but source-object equality did not. Bounded follow-up schema
+inspection [37067988366](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37067988366)
+identified the sole additive key `name`, without exposing its value. The pinned
+Wrangler source defines only type/zone_id/domain as Email Sending selectors.
+The narrow correction admits an optional bounded string display label `name`,
+retains all three exact selectors and rejects every other extra field or bad type.
+No Queue/consumer/config assertion was loosened and no provider property changed.
+The fixed third continuation `37065145834` proves its two successful adapter
+submits and original graph/cutover ownership, then reuses all installed runtime
+components only after current strict graph and adapter reads pass; only the site
+writer remains. Its fresh hosted read admission and final acceptance are pending.
+
 Local lightweight source/mock checks cover staging context, immutable bounded
 usage models, drift rejection, retained lease/backlog semantics, future split
 replacement without the initial wait, exact adapter graph, candidate provenance

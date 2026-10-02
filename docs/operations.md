@@ -140,6 +140,21 @@ define null maximum concurrency as automatic platform scaling; do not treat an
 arbitrary explicit limit as equivalent merely to pass a gate. Lifecycle producer
 and subscription ownership must likewise follow the actual reviewed graph, not
 a guessed provider response shape.
+The observed subscription read contains optional source display metadata `name`.
+[Pinned Wrangler 4.142.0 EmailSendingEventSource](https://github.com/cloudflare/workers-sdk/blob/wrangler%404.142.0/packages/wrangler/src/queues/subscription-types.ts)
+defines the three selectors type/zone_id/domain. Match those exactly, permit only
+a bounded string `name`, and reject all other additional fields; never replace
+that contract with arbitrary subset matching. Before/after raw snapshots still
+require metadata and selected Queue/subscription state to remain unchanged.
+
+`staging_resume_run=37065145834` selects only the third owned interruption after
+successful ingress/lifecycle submits and before the site writer. It binds full
+source gates, exact typed adapter receipts, original sink/Queue and cutover proof,
+and identical tracked runtime. Fresh immutable ingress/lifecycle pins and their
+complete current private/Queue/subscription graph are mandatory. Successful read
+admission skips both adapter deployments, lifecycle Queue creation and subscription
+reconciliation as well as earlier runtime writes; only the current candidate site
+is deployed. The current run still validates/packages its own tested user bytes.
 Before another full continuation, `target=staging-inspect` with
 `confirm=INSPECT_STAGING_V012` and the same explicit `staging_resume_run` can run
 the identical read/provenance preflight without deployment authority. The read

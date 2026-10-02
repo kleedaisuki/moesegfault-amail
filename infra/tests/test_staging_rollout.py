@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "infra/deploy"))
 import staging_rollout as rollout
 import staging_resume as resume
 import inspect_staging as inspector
+import check_staging_adapters as adapters
 
 
 class StagingRolloutTests(unittest.TestCase):
@@ -336,6 +337,33 @@ class StagingRolloutTests(unittest.TestCase):
         graph.assert_called_once_with("staging", "active")
         deploy.assert_not_called()
         self.assertEqual(dict(call.args for call in output.call_args_list)["reuse_api"], "true")
+
+    def test_adapters_resume_requires_fresh_exact_adapter_verification_before_reuse(self):
+        """Only-site continuation cannot skip the failed boundary's repaired contract."""
+        value, owned = self.partial_graph()
+        owned.update({"phase": "adapters", "api_version": resume.ACTIVE_API,
+                      "maintenance_version": resume.ACTIVE_MAINTENANCE,
+                      "ingress_version": resume.ADAPTER_INGRESS, "events_version": resume.ADAPTER_EVENTS})
+        value["scripts"][rollout.API].update(version=resume.ACTIVE_API,
+          deployment="7c6c70e5-d617-4119-9dff-846f5f204a3c", handlers=["fetch"], crons=[])
+        value["scripts"][rollout.MAINTENANCE] = {"present": True, "version": resume.ACTIVE_MAINTENANCE,
+          "deployment": "ad083bc6-e1c0-4ee6-81af-d19c4261ec50", "crons": ["*/5 * * * *"]}
+        for script, version, deployment in ((adapters.INGRESS, resume.ADAPTER_INGRESS, "6059657f-0e89-43e5-98a9-f604952c2a56"),
+                                            (adapters.EVENTS_WORKER, resume.ADAPTER_EVENTS, "d65dc034-3aa9-4b94-948a-d495b367cd08")):
+            value["scripts"][script] = {"version": version, "deployment": deployment}
+        for failure in (None, ValueError("adapter_subscription_unverified")):
+            with patch.dict(os.environ, dict(self.environment(), AMAIL_STAGING_RESUME_RUN=resume.ADAPTER_RUN), clear=True), \
+                 patch.object(rollout, "inspect", return_value=value), patch.object(resume, "load_resume", return_value=owned), \
+                 patch.object(rollout.graph, "verify"), patch.object(adapters, "verify", side_effect=failure) as verify, \
+                 patch.object(rollout, "write"), patch.object(rollout, "output") as output:
+                if failure:
+                    with self.assertRaisesRegex(ValueError, "^staging_resume_adapter_graph_unverified$"):
+                        rollout.preflight()
+                    output.assert_not_called()
+                else:
+                    rollout.preflight()
+                    self.assertEqual(dict(call.args for call in output.call_args_list)["reuse_adapters"], "true")
+                verify.assert_called_once_with(resume.ADAPTER_INGRESS, resume.ADAPTER_EVENTS)
 
 
 if __name__ == "__main__":

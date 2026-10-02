@@ -101,6 +101,19 @@ class AdapterTests(unittest.TestCase):
     def test_exact_lifecycle_graph(self):
         self.assertEqual(len(self.snapshot()["queues"]), 2)
 
+    def test_returned_source_label_preserves_exact_selector_contract(self):
+        """Display metadata is allowed; missing/wrong selectors or new fields are not."""
+        _, _, subscriptions = lifecycle()
+        source = subscriptions[0]["source"]
+        source["name"] = "Private returned source label"
+        self.assertTrue(check.source_match(source))
+        self.assertEqual(len(self.snapshot(subscriptions=subscriptions)["queues"]), 2)
+        for key, value in (("name", None), ("name", 1), ("name", "x" * 257),
+                           ("zone_id", "other-zone"), ("domain", "other-domain"),
+                           ("type", "r2"), ("unknown_selector", "extra")):
+            self.assertFalse(check.source_match(dict(source, **{key: value})))
+        self.assertFalse(check.source_match({key: value for key, value in source.items() if key != "domain"}))
+
     def test_consumer_cross_realm_count_and_settings_drift(self):
         for change in ("script", "count", "settings", "producer", "dlq"):
             _, details, _ = lifecycle()

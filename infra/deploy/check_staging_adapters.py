@@ -46,6 +46,21 @@ def failure_reason(error: Exception) -> str:
     return reason if isinstance(reason, str) and reason in FAILURE_REASONS else "adapter_readback_unverified"
 
 
+def source_match(value: object) -> bool:
+    """Match exact sending selectors while admitting only the returned display label.
+
+    Pinned Wrangler 4.142.0 EmailSendingEventSource requests type/zone_id/domain.
+    The live read additionally returns name as metadata, never another selector.
+    Its bounded string value is not guessed or printed; every other extra field
+    remains a contract failure. Raw snapshots still bracket metadata stability.
+    """
+    if (not isinstance(value, dict) or set(value) - {"type", "zone_id", "domain", "name"}
+            or any(value.get(key) != expected for key, expected in
+                   {"type": "email.sending", "zone_id": ZONE, "domain": DOMAIN}.items())):
+        return False
+    return "name" not in value or isinstance(value["name"], str) and len(value["name"]) <= 256
+
+
 def diagnostic_facts(account: str, token: str) -> dict:
     """Read bounded infrastructure facts, not admission or private provider content.
 
@@ -128,7 +143,7 @@ def diagnostic_facts(account: str, token: str) -> dict:
             subscription.update(name_match=row.get("name") == "amail-sending-lifecycle-staging", enabled=row.get("enabled") is True,
                 source_type_match=source.get("type") == "email.sending", zone_match=source.get("zone_id") == ZONE,
                 domain_match=source.get("domain") == DOMAIN,
-                source_exact=source == {"type": "email.sending", "zone_id": ZONE, "domain": DOMAIN},
+                source_exact=source_match(source),
                 destination_exact=found[QUEUE] is not None and destination == {"type": "queues.queue", "queue_id": found[QUEUE]["queue_id"]},
                 events_match=isinstance(events, list) and len(events) == len(EVENTS.split(","))
                     and all(isinstance(event, str) for event in events) and set(events) == set(EVENTS.split(",")))
@@ -294,7 +309,7 @@ def lifecycle_snapshot(account: str, token: str) -> dict:
         raise ValueError("adapter_subscription_unverified")
     subscription = related[0]
     if (subscription.get("name") != "amail-sending-lifecycle-staging" or subscription.get("enabled") is not True
-            or subscription["source"] != {"type": "email.sending", "zone_id": ZONE, "domain": DOMAIN}
+            or not source_match(subscription["source"])
             or subscription["destination"] != {"type": "queues.queue", "queue_id": found[QUEUE]["queue_id"]}
             or not isinstance(subscription.get("events"), list)
             or sorted(subscription["events"]) != sorted(EVENTS.split(","))):

@@ -1,4 +1,4 @@
-"""Recover immutable ownership of two reviewed staging interruption boundaries.
+"""Recover immutable ownership of three reviewed staging interruption boundaries.
 
 This is provenance admission, not a provider mutation or live graph attestation.
 The caller must separately bracket the unchanged legacy API, private exact sink,
@@ -26,6 +26,16 @@ ORIGIN_RUN = "37053907751"
 ORIGIN_SHA = "b2dbd66d786a5a790dc55486ee27ae578690f0ea"
 ACTIVE_RUN = "37058617870"
 ACTIVE_SHA = "4732325020ffc7447242a1601d08ebfd8e47d6b2"
+ADAPTER_RUN = "37065145834"
+ADAPTER_SHA = "4f30e0274827c934feea57b75f8a29a9fbc9b597"
+ADAPTER_INGRESS = "09c34d0f-1147-467c-85f0-e7711d96d8fd"
+ADAPTER_EVENTS = "63733c7c-6238-4522-be0f-befb5e8c4799"
+INGRESS_JOB = "Deploy isolated Rust staging SMTP ingress"
+EVENTS_JOB = "Deploy isolated Rust staging lifecycle consumer"
+INGRESS_STEP = "Deploy staging Rust Email-event Worker with exact recovery pin"
+EVENTS_STEP = "Deploy staging lifecycle consumer with exact recovery pin"
+SUBSCRIPTION_STEP = "Ensure staging Email Sending Event Subscription"
+ADAPTER_CHECK_STEP = "Read back immutable ingress and lifecycle realm isolation"
 ACTIVE_API = "01f14a8e-d5b1-41f9-9f8c-325c2e288ba7"
 PAUSED_MAINTENANCE = "bc616834-035f-4bb7-88d6-e29ce1ab5867"
 ACTIVE_MAINTENANCE = "3d23d537-6379-4fcb-84c2-2c1b8a9f4857"
@@ -130,7 +140,7 @@ def exact_tree(current_sha: str, source_sha: str = ORIGIN_SHA) -> None:
     if (not isinstance(current_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", current_sha)
             or git("rev-parse", "HEAD").decode().strip() != current_sha):
         raise ValueError("staging_resume_checkout_unverified")
-    if source_sha not in (ORIGIN_SHA, ACTIVE_SHA):
+    if source_sha not in (ORIGIN_SHA, ACTIVE_SHA, ADAPTER_SHA):
         raise ValueError("staging_resume_source_unreviewed")
     git("cat-file", "-e", source_sha + "^{commit}")
     if git("diff", "--name-only", "-z", source_sha, current_sha, "--", *RUNTIME):
@@ -145,9 +155,9 @@ def exact_tree(current_sha: str, source_sha: str = ORIGIN_SHA) -> None:
 
 def origin(run: object, jobs: object, run_id: str) -> dict:
     """Admit only the terminal failed reviewed run at the sink-only boundary."""
-    source_sha = ORIGIN_SHA if run_id == ORIGIN_RUN else ACTIVE_SHA
+    source_sha = {ORIGIN_RUN: ORIGIN_SHA, ACTIVE_RUN: ACTIVE_SHA, ADAPTER_RUN: ADAPTER_SHA}.get(run_id)
     active = run_id == ACTIVE_RUN
-    if (run_id not in (ORIGIN_RUN, ACTIVE_RUN) or not isinstance(run, dict) or type(run.get("id")) is not int
+    if (run_id not in (ORIGIN_RUN, ACTIVE_RUN, ADAPTER_RUN) or not isinstance(run, dict) or type(run.get("id")) is not int
             or str(run["id"]) != run_id or type(run.get("run_attempt")) is not int
             or run["run_attempt"] != 1 or run.get("status") != "completed"
             or run.get("conclusion") != "failure" or run.get("event") != "workflow_dispatch"
@@ -156,6 +166,8 @@ def origin(run: object, jobs: object, run_id: str) -> dict:
             or not isinstance(run.get("repository"), dict) or run["repository"].get("full_name") != REPO):
         raise ValueError("staging_resume_origin_unverified")
     listing = rows(jobs, "jobs")
+    if run_id == ADAPTER_RUN:
+        return adapters_origin(listing)
     skipped = SKIPPED - {API_JOB} if active else SKIPPED
     for name in required_jobs(listing) | skipped | {SINK_JOB} | ({API_JOB} if active else set()):
         matches = [row for row in listing if row.get("name") == name]
@@ -179,6 +191,42 @@ def origin(run: object, jobs: object, run_id: str) -> dict:
             or sink["id"] <= 0 or sink.get("run_id") != int(run_id) or sink.get("head_sha") != source_sha):
         raise ValueError("staging_resume_sink_submit_unverified")
     return sink
+
+
+
+def adapters_origin(listing: list[dict]) -> dict:
+    """Admit reused active graph plus submitted adapters, before the site writer."""
+    skipped = SKIPPED - {API_JOB, INGRESS_JOB, EVENTS_JOB}
+    selected = {}
+    for name in required_jobs(listing) | skipped | {SINK_JOB, API_JOB, INGRESS_JOB, EVENTS_JOB}:
+        matches = [row for row in listing if row.get("name") == name]
+        expected = "skipped" if name in skipped else "failure" if name == EVENTS_JOB else "success"
+        if len(matches) != 1 or matches[0].get("status") != "completed" or matches[0].get("conclusion") != expected:
+            raise ValueError("staging_resume_adapter_boundary_unverified")
+        selected[name] = matches[0]
+    for name in (SINK_JOB, API_JOB, INGRESS_JOB, EVENTS_JOB):
+        row = selected[name]
+        if (type(row.get("id")) is not int or row["id"] <= 0
+                or row.get("run_id") != int(ADAPTER_RUN) or row.get("head_sha") != ADAPTER_SHA):
+            raise ValueError("staging_resume_adapter_job_unverified")
+    for job, step, conclusion in ((SINK_JOB, DEPLOY_STEP, "skipped"), (API_JOB, API_STEP, "skipped"),
+                                  (API_JOB, CUTOVER_STEP, "skipped"), (API_JOB, GRAPH_STEP, "success"),
+                                  (INGRESS_JOB, INGRESS_STEP, "success"), (EVENTS_JOB, EVENTS_STEP, "success"),
+                                  (EVENTS_JOB, SUBSCRIPTION_STEP, "success"), (EVENTS_JOB, ADAPTER_CHECK_STEP, "failure")):
+        require_step(selected[job], step, conclusion)
+    return {**selected[EVENTS_JOB], "ingress_job_id": selected[INGRESS_JOB]["id"]}
+
+
+def adapter_log(raw: bytes, component: str) -> str:
+    """Require one exact successful adapter submit in its original reviewed job."""
+    if component not in ("ingress", "events"):
+        raise ValueError("staging_resume_adapter_component_unreviewed")
+    version = ADAPTER_INGRESS if component == "ingress" else ADAPTER_EVENTS
+    records = submit_records(raw)
+    if len(records) != 1 or not submit_matches(records[0], ADAPTER_RUN, ADAPTER_SHA,
+                                              "mail-" + component, version, "staging-" + component):
+        raise ValueError("staging_resume_adapter_submit_unverified")
+    return version
 
 
 def submit_records(raw: bytes) -> list[dict]:
@@ -310,24 +358,34 @@ def original_ownership() -> dict:
     return {"predecessor": old, "queue": QUEUE, "dlq": DLQ, "sink_version": version}
 
 
+def active_ownership() -> dict:
+    """Extend original sink ownership with the observed immutable cutover epoch."""
+    value = original_ownership()
+    api = origin(github(f"runs/{ACTIVE_RUN}"), github(f"runs/{ACTIVE_RUN}/attempts/1/jobs?per_page=100"), ACTIVE_RUN)
+    active_log(job_log(api["id"]))
+    listing = rows(github(f"runs/{ACTIVE_RUN}/artifacts?per_page=100"), "artifacts")
+    value["cutover"] = cutover_witness(artifact_value(listing, f"staging-cutover-{ACTIVE_RUN}", "staging-cutover.json"))
+    value.update({"api_version": ACTIVE_API, "maintenance_version": ACTIVE_MAINTENANCE})
+    return value
+
+
 def recover(run_id: str) -> dict:
     """Resolve reviewed phase ownership; current full gates remain caller-owned."""
-    if run_id not in (ORIGIN_RUN, ACTIVE_RUN):
+    if run_id not in (ORIGIN_RUN, ACTIVE_RUN, ADAPTER_RUN):
         raise ValueError("staging_resume_run_unreviewed")
     current_sha = os.getenv("GITHUB_SHA", "")
-    source_sha = ACTIVE_SHA if run_id == ACTIVE_RUN else ORIGIN_SHA
-    if run_id == ACTIVE_RUN:
+    source_sha = {ORIGIN_RUN: ORIGIN_SHA, ACTIVE_RUN: ACTIVE_SHA, ADAPTER_RUN: ADAPTER_SHA}[run_id]
+    if run_id != ORIGIN_RUN:
         exact_tree(current_sha, source_sha)
     else:
         exact_tree(current_sha)
-    value = {"origin_run": run_id, "source_sha": source_sha, "current_sha": current_sha,
-             "phase": "active" if run_id == ACTIVE_RUN else "legacy", **original_ownership()}
-    if run_id == ACTIVE_RUN:
-        api = origin(github(f"runs/{run_id}"), github(f"runs/{run_id}/attempts/1/jobs?per_page=100"), run_id)
-        active_log(job_log(api["id"]))
-        listing = rows(github(f"runs/{run_id}/artifacts?per_page=100"), "artifacts")
-        value["cutover"] = cutover_witness(artifact_value(listing, f"staging-cutover-{run_id}", "staging-cutover.json"))
-        value.update({"api_version": ACTIVE_API, "maintenance_version": ACTIVE_MAINTENANCE})
+    phase = {ORIGIN_RUN: "legacy", ACTIVE_RUN: "active", ADAPTER_RUN: "adapters"}[run_id]
+    value = {"origin_run": run_id, "source_sha": source_sha, "current_sha": current_sha, "phase": phase,
+             **(original_ownership() if run_id == ORIGIN_RUN else active_ownership())}
+    if run_id == ADAPTER_RUN:
+        events = origin(github(f"runs/{run_id}"), github(f"runs/{run_id}/attempts/1/jobs?per_page=100"), run_id)
+        value["ingress_version"] = adapter_log(job_log(events["ingress_job_id"]), "ingress")
+        value["events_version"] = adapter_log(job_log(events["id"]), "events")
     return value
 
 
