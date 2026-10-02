@@ -59,7 +59,10 @@ class DocsPushFilterTests(unittest.TestCase):
                 self.assertNotRegex(source, r"(?m)^\s+paths:")
         release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("tags: ['v*.*.*']", event_block(release, "push"))
-        self.assertEqual(event_block(release, "workflow_dispatch").strip(), "")
+        release_dispatch = event_block(release, "workflow_dispatch")
+        self.assertNotIn("paths:", release_dispatch)
+        self.assertNotIn("paths-ignore:", release_dispatch)
+        self.assertRegex(release_dispatch, r"(?m)^      recover_run_id:\n(?:        .+\n)*        required: false$")
 
     def test_synthetic_docs_only_and_mixed_changes(self) -> None:
         """One non-documentation path keeps automatic full source checks enabled."""
