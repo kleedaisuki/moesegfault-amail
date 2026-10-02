@@ -415,6 +415,8 @@ jobs:
           key: ${{ steps.worker-bundler-cache.outputs.cache-primary-key }}
       - name: Test actual built Worker boundaries in workerd
         working-directory: infra/tests/worker-boundary
+        # Preserve the deleted Python runner's bounded wait using the platform.
+        timeout-minutes: 15
         run: pnpm test
       - name: Assemble same-run public generated-module artifact
         run: python infra/ci/worker_artifact.py create

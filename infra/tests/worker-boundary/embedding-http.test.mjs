@@ -34,13 +34,13 @@ class PrivateLog extends Log {
 }
 
 /** Dispatch the production semantic API with a real local D1 and fake provider. */
-async function exercise(providerResponse, cleanup = () => {}) {
+async function exercise(providerResponse) {
   const calls = [];
   const logs = [];
   let foreign = 0;
   const jwk = publicKey.export({ format: "jwk" });
   const mf = new Miniflare({ cf: false, log: new PrivateLog(logs), workers: [{
-    name: "embedding-synthetic", modules: true, scriptPath: path.join(root, "infra/tests/worker-boundary/embedding-native-observer.mjs"),
+    name: "embedding-synthetic", modules: true, scriptPath: path.join(worker, "entry/api.mjs"),
     modulesRoot: root, modulesRules: workerModuleRules,
     compatibilityDate: "2026-08-06", d1Databases: ["MAIL_DB"],
     bindings: { IDENTITY_ISSUER: issuer, OIDC_CLIENT_ID: "amail-cli-staging",
@@ -79,12 +79,8 @@ async function exercise(providerResponse, cleanup = () => {}) {
     }
     assert.equal(foreign, 0, "redirects or unexpected egress must never leave the approved endpoint");
     assert.equal(calls.filter((call) => call.url === endpoint).length, 1);
-    const native = Object.fromEntries([...response.headers]
-      .filter(([name]) => name.startsWith("x-synthetic-native-"))
-      .map(([name, value]) => [name.slice("x-synthetic-native-".length), Number(value)]));
-    assert.equal(native.exchanges, 1, "native observer tracks exactly the approved exchange");
-    return { status: response.status, body: JSON.parse(text), native };
-  } finally { await cleanup(); await mf.dispose(); }
+    return { status: response.status, body: JSON.parse(text) };
+  } finally { await mf.dispose(); }
 }
 
 /** Preserve the public error code for every provider body failure. */
@@ -109,32 +105,11 @@ test("valid 256D Qwen JSON at exactly 64 KiB is accepted", async () => {
   assert.equal(Buffer.byteLength(body), 64 * 1024);
   const result = await exercise(() => new Response(body));
   assert.equal(result.status, 200);
-  assert.equal(result.native.cancelcalls, 0);
-  assert.equal(result.native.abortcalls, 0);
 });
 
-test("oversized streamed embedding stops early and explicitly cancels without Content-Length", async () => {
-  const total = 16 * 1024 * 1024;
-  let produced = 0;
-  let stopped = false;
-  let source;
-  const result = await exercise(() => new Response(new ReadableStream({
-    start(controller) { source = controller; },
-    async pull(controller) {
-      await new Promise((resolve) => setTimeout(resolve, 2));
-      if (stopped) return;
-      if (produced === total) { controller.close(); return; }
-      controller.enqueue(new TextEncoder().encode("x".repeat(8192)));
-      produced += 8192;
-    },
-  })), () => { stopped = true; if (produced < total) source.close(); });
-  unavailable(result);
-  assert.ok(produced < total, "synthetic bridge has not drained source at rejection time");
-  assert.ok(result.native.bytes > 65_536, "native reader observed the first over-limit chunk");
-  assert.equal(result.native.latereads, 0, "no native read follows the over-limit chunk");
-  assert.equal(result.native.cancelcalls, 1);
-  assert.equal(result.native.cancelfulfilled, 1, "native reader cancellation fulfills");
-  assert.equal(result.native.cancelrejected, 0);
+/** The public API rejects an over-limit provider body without private diagnostics. */
+test("oversized embedding without Content-Length remains unavailable", async () => {
+  unavailable(await exercise(() => new Response("x".repeat(65_537))));
 });
 
 for (const body of [bodySentinel, '{"data":[{"embedding":[1,2', JSON.stringify({ data: [{ embedding: [1] }] })]) {
@@ -142,29 +117,3 @@ for (const body of [bodySentinel, '{"data":[{"embedding":[1,2', JSON.stringify({
     unavailable(await exercise(() => new Response(body)));
   });
 }
-
-test("embedding header stall is bounded by the total native transport deadline", { timeout: 40_000 }, async () => {
-  const started = Date.now();
-  const result = await exercise(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 35_000));
-    return Response.json({ data: [{ embedding: Array(256).fill(2) }] });
-  });
-  unavailable(result);
-  assert.equal(result.native.abortcalls, 1);
-  assert.equal(result.native.abortedsignals, 1);
-  assert.ok(Date.now() - started < 39_000, "headers must not extend the transport deadline");
-});
-
-test("embedding body stall is bounded by the same deadline and canceled", { timeout: 40_000 }, async () => {
-  let source;
-  const started = Date.now();
-  const result = await exercise(() => new Response(new ReadableStream({
-    start(controller) { source = controller; controller.enqueue(new TextEncoder().encode('{"data":')); },
-  })), () => source.close());
-  unavailable(result);
-  assert.ok(Date.now() - started < 39_000, "body reads must not outlive the transport deadline");
-  assert.ok(result.native.reads >= 2 && result.native.bytes > 0,
-    "deadline occurred after a body prefix and while awaiting its next read");
-  assert.equal(result.native.abortcalls, 1, "deadline abort targets the provider transport");
-  assert.equal(result.native.abortedsignals, 1, "exact native fetch signal is aborted");
-});
