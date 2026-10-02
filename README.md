@@ -61,6 +61,7 @@ mail content in the repository or GitHub Actions logs.
 
 | Need | Canonical document |
 | --- | --- |
+| Agent-first product priorities and task acceptance | [Product direction](docs/agent-first-product.md) |
 | Wire/data/ZIP invariants | [Architecture](docs/architecture.md) |
 | Deploy, recover and maintain | [Operations](docs/operations.md) |
 | Delivered release evidence and limits | [Validation](docs/validation.md) |

@@ -7,7 +7,7 @@ import { candidateServiceNotice, releaseState } from '../releaseState';
   <section class="hero">
     <div class="wrap hero-grid">
       <div class="hero-copy">
-        <div class="eyebrow">The agent-native mail client · v0.1.0</div>
+        <div class="eyebrow">The agent-native mail client · {releaseState === 'published' ? 'v0.1.0' : 'v0.1.2 candidate'}</div>
         <h1>邮件工作流，<br /><em>交给 Agent。</em></h1>
         <p class="hero-lead">你只负责登录。地址注册、收件检索、邮件整理和发送，由 Agent 通过 <strong>amail</strong> 完成。没有必须打开的收件箱，也不需要把邮件暴露成聊天上下文。</p>
         <p class="hero-privacy">隐私提醒：邮件主题与正文片段会自动交由第三方模型建立语义索引，即使你不使用语义检索。<a href="/manual/#隐私与边界">了解处理方式 ↗</a></p>
@@ -15,7 +15,7 @@ import { candidateServiceNotice, releaseState } from '../releaseState';
           <a class="moe-button button button-primary" href="/manual/">{releaseState === 'published' ? '开始使用' : '了解候选设计'} <span aria-hidden="true">↗</span></a>
           <a class="moe-button button button-secondary" data-variant="secondary" href="/manual/#安装与首次登录">{releaseState === 'published' ? '选择安装包' : '预览安装指南'} <span aria-hidden="true">↗</span></a>
         </div>
-        <p class="hero-note">为 <code>mail.moesegfault.dev</code> 而生 · Linux / macOS / Windows<br />{releaseState === 'published' ? <>v0.1.0 已发布；<a href="https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0">下载安装包与 Agent Skill ↗</a></> : 'v0.1.0 尚未发布；安装包与 Agent Skill 将在验收后开放。'}</p>
+        <p class="hero-note">为 <code>mail.moesegfault.dev</code> 而生 · Linux / macOS / Windows<br />{releaseState === 'published' ? <>v0.1.0 已发布；<a href="https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0">下载安装包与 Agent Skill ↗</a></> : 'v0.1.2 尚未发布；安装包与 Agent Skill 将在验收后开放。'}</p>
         {releaseState === 'candidate' && <p class="hero-note">{candidateServiceNotice}</p>}
       </div>
       <div class="hero-art" aria-label="amail 工作流示意：检索邮件、交给 Agent 处理并以 ZIP 发送">
