@@ -115,10 +115,25 @@ ingress/lifecycle/site jobs were skipped. Fresh inspection
 confirmed those exact API/maintenance versions, API empty Cron, maintenance
 five-minute Cron, both capture off, unchanged private sink, and the exact two
 API + maintenance trace producers (DLQ has none). All sink predicates passed.
-The earlier source guard rejects even an independent historical staging role
-Worker; capability/inventory diagnosis is required to confirm whether that caused
-the complete-graph failure. No completed native/site acceptance or justification
-for replaying successful API/maintenance submissions follows from these facts.
+Diagnostic inspection
+[37063591034](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37063591034)
+confirmed the exact failure `split_role_absence_unverified`: the historical
+staging contact Worker exists with email/scheduled handlers and five-minute Cron,
+but has no Mail database, API/maintenance service, Mail body bucket or trace Queue
+capability edge. The owner chose to retain it unchanged rather than deleting or
+pausing unrelated contact operations to satisfy a name-only absence check.
+The staging graph now brackets its immutable capability/serving/Cron snapshot
+and rejects any Mail DB/R2/API/maintenance/sink service or trace main/DLQ edge.
+Production still requires role absence. This proves the bounded Mail graph
+separation, not population isolation or independent contact-monitor correctness.
+
+An explicitly owned second continuation binds run `37058617870`, full source
+gates, the API/paused/active typed submits and immutable 31-minute witness. It
+reuses the existing API/maintenance/sink/Queues without schema/provider-policy
+rewrites or another cutover wait; only the remaining adapters/site use current
+same-run tested bytes. Fresh complete read admission must pass before proceeding.
+No completed native/site acceptance or justification for replaying successful
+API/maintenance submissions follows from these facts.
 
 Local lightweight source/mock checks cover staging context, immutable bounded
 usage models, drift rejection, retained lease/backlog semantics, future split

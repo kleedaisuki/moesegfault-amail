@@ -19,7 +19,69 @@ from pin_staging_mail import ACCOUNT, UUID, bindings_match, serving_deployment
 
 FAILURES = frozenset({"split_graph_state_unreviewed", "split_pins_unverified", "split_serving_unverified",
                       "split_hold_unverified", "split_role_absence_unverified", "split_api_unverified",
-                      "split_privacy_unverified", "split_graph_changed", "maintenance_absence_unverified"})
+                      "split_privacy_unverified", "split_graph_changed", "maintenance_absence_unverified",
+                      "split_role_boundary_unverified"})
+
+
+def role_capabilities(version: dict) -> dict:
+    """Project Mail graph edges, never secret values or contact destinations."""
+    resources = version.get("resources", {})
+    bindings = resources.get("bindings")
+    if isinstance(bindings, dict) and set(bindings) == {"result"}:
+        bindings = bindings["result"]
+    handlers = resources.get("script", {}).get("handlers")
+    if (not isinstance(bindings, list) or not all(isinstance(row, dict) for row in bindings)
+            or not isinstance(handlers, list) or any(item not in ("fetch", "scheduled", "email", "queue") for item in handlers)):
+        raise ValueError("split_role_boundary_unverified")
+    for row in bindings:
+        field = {"d1": "database_id", "r2_bucket": "bucket_name", "service": "service"}.get(row.get("type"))
+        if field and (not isinstance(row.get(field), str) or not row[field].strip()):
+            raise ValueError("split_role_boundary_unverified")
+        if row.get("type") != "queue":
+            continue
+        # Version APIs use queue_id or id; name-only views must have passed the
+        # existing catalog normalizer. Missing targets cannot prove separation.
+        targets = [row[key] for key in ("queue_id", "id") if key in row]
+        if (not targets or any(not isinstance(value, str) or ACCOUNT.fullmatch(value) is None for value in targets)
+                or len(set(targets)) != 1 or ("queue_name" in row and
+                (not isinstance(row["queue_name"], str) or not row["queue_name"].strip()))):
+            raise ValueError("split_role_boundary_unverified")
+    queue_ids = {os.getenv(name, "") for name in ("AMAIL_TRACE_QUEUE_ID", "AMAIL_TRACE_DLQ_ID")} - {""}
+    return {
+        "handlers": handlers,
+        "mail_database_bound": any(row.get("type") == "d1" and row.get("database_id") == "74f35f95-42ce-482c-86e6-dffbdd35cbbe" for row in bindings),
+        "mail_service_bound": any(row.get("type") == "service" and row.get("service") in
+                                  ("amail-mail-staging", "amail-mail-maintenance-staging", "amail-trace-sink-staging") for row in bindings),
+        "mail_body_bucket_bound": any(row.get("type") == "r2_bucket" and row.get("bucket_name") == "moesegfault-mail-raw-staging" for row in bindings),
+        "mail_trace_queue_bound": any(row.get("type") == "queue" and
+                                       ((row.get("queue_id") or row.get("id")) in queue_ids or row.get("queue_name") in
+                                        ("amail-trace-events-staging", "amail-trace-dlq-staging")) for row in bindings),
+    }
+
+
+def independent_role_snapshot(account: str, token: str) -> dict:
+    """Bracket the historical independent staging contact Worker without altering it.
+
+    Mail API exact bindings and the sole trace producer pair remain separately
+    mandatory. This proves capability separation, not contact-monitor correctness,
+    general network/population isolation or authority to change its routes/Cron.
+    """
+    script = "amail-role-monitor-staging"
+    before = serving_deployment(capture.readback(account, token, script, "deployments?per_page=1&page=1"))
+    if before is None:
+        raise ValueError("split_role_boundary_unverified")
+    version = capture.readback(account, token, script, f"versions/{before[1]}")
+    if version.get("id") != before[1]:
+        raise ValueError("split_role_boundary_unverified")
+    facts = role_capabilities(version)
+    if any(value is not False for key, value in facts.items() if key != "handlers"):
+        raise ValueError("split_role_boundary_unverified")
+    schedules = capture.readback(account, token, script, "schedules").get("schedules")
+    if not isinstance(schedules, list) or any(not isinstance(row, dict) or not isinstance(row.get("cron"), str) for row in schedules):
+        raise ValueError("split_role_boundary_unverified")
+    if serving_deployment(capture.readback(account, token, script, "deployments?per_page=1&page=1")) != before:
+        raise ValueError("split_role_boundary_unverified")
+    return {"serving": before, "capabilities": facts, "crons": [row["cron"] for row in schedules]}
 
 
 def failure_reason(error: Exception) -> str:
@@ -63,10 +125,11 @@ def direct_forward_snapshot(realm: str, account: str, token: str) -> object:
     rows = role.api_get(f"/accounts/{account}/workers/scripts", token)
     if (not isinstance(rows, list) or len(rows) > 10000
             or not all(isinstance(row, dict) and isinstance(row.get("id"), str) for row in rows)
-            or len({row["id"] for row in rows}) != len(rows)
-            or any(row["id"] == "amail-role-monitor-staging" for row in rows)):
+            or len({row["id"] for row in rows}) != len(rows)):
         raise ValueError("split_role_absence_unverified")
-    return "staging-direct"
+    if any(row["id"] == "amail-role-monitor-staging" for row in rows):
+        return independent_role_snapshot(account, token)
+    return {"role": None}
 
 
 def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = ()) -> dict:

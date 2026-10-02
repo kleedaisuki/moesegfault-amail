@@ -24,25 +24,9 @@ SCRIPTS = ("amail-mail-staging", "amail-mail-maintenance-staging", "amail-inboun
 
 
 def role_capabilities(version: dict) -> dict:
-    """Project capability facts without secret values, destination addresses or mail."""
-    resources = version.get("resources", {})
-    bindings = resources.get("bindings")
-    if isinstance(bindings, dict) and set(bindings) == {"result"}:
-        bindings = bindings["result"]
-    handlers = resources.get("script", {}).get("handlers")
-    if (not isinstance(bindings, list) or not all(isinstance(row, dict) for row in bindings)
-            or not isinstance(handlers, list) or any(item not in ("fetch", "scheduled", "email", "queue") for item in handlers)):
-        raise ValueError("staging_role_metadata_unverified")
-    return {
-        "handlers": handlers,
-        "mail_database_bound": any(row.get("type") == "d1" and row.get("database_id") == "74f35f95-42ce-482c-86e6-dffbdd35cbbe" for row in bindings),
-        "mail_service_bound": any(row.get("type") == "service" and row.get("service") in
-                                  ("amail-mail-staging", "amail-mail-maintenance-staging") for row in bindings),
-        "mail_body_bucket_bound": any(row.get("type") == "r2_bucket" and row.get("bucket_name") == "moesegfault-mail-raw-staging" for row in bindings),
-        "mail_trace_queue_bound": any(row.get("type") == "queue" and
-                                       (row.get("queue_id") == os.getenv("AMAIL_TRACE_QUEUE_ID", "")
-                                        or row.get("queue_name") == "amail-trace-events-staging") for row in bindings),
-    }
+    """Reuse the graph's single non-content capability projection."""
+    from check_mail_split_graph import role_capabilities as project
+    return project(version)
 
 
 def split_diagnostic(result: dict) -> dict:

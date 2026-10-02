@@ -231,6 +231,114 @@ class StagingResumeTests(unittest.TestCase):
         self.assertEqual(value["sink_version"], resume.SINK_VERSION)
         self.assertNotIn("private arbitrary", json.dumps(value))
 
+    def active_jobs(self):
+        """The second interruption followed successful reuse and completed cutover."""
+        jobs = self.jobs()
+        sink = jobs["jobs"][-1]
+        sink.update({"conclusion": "success", "run_id": int(resume.ACTIVE_RUN), "head_sha": resume.ACTIVE_SHA})
+        sink["steps"][0]["conclusion"] = "skipped"
+        api = next(row for row in jobs["jobs"] if row["name"] == resume.API_JOB)
+        api.update({"conclusion": "failure", "id": 456, "run_id": int(resume.ACTIVE_RUN),
+                    "head_sha": resume.ACTIVE_SHA, "steps": [
+                        {"name": name, "status": "completed", "conclusion": state} for name, state in
+                        ((resume.API_STEP, "success"), (resume.CUTOVER_STEP, "success"),
+                         (resume.GRAPH_STEP, "failure"))]})
+        return jobs
+
+    def active_run(self):
+        """Keep the second reviewed source epoch distinct from the original creator."""
+        return dict(self.run_metadata(), id=int(resume.ACTIVE_RUN), head_sha=resume.ACTIVE_SHA)
+
+    def active_log(self):
+        """Model three submits and the separate outer non-submit deployment span."""
+        base = resume.decode(self.log().splitlines()[1].split(b" ", 1)[1])
+        base.update({"source_sha": resume.ACTIVE_SHA, "run_id": resume.ACTIVE_RUN,
+                     "component": "mail_api", "job": "staging-worker"})
+        outer = dict(base, phase="startup")
+        records = [outer] + [dict(base, version=version) for version in
+                            (resume.ACTIVE_API, resume.PAUSED_MAINTENANCE, resume.ACTIVE_MAINTENANCE)]
+        return b"\n".join(json.dumps(row).encode() for row in records)
+
+    def witness(self):
+        """Recorded monotonic samples are independent of present wall-clock age."""
+        return {"schema": "staging-platform-cutover/v1", "source_sha": resume.ACTIVE_SHA,
+                "run_id": resume.ACTIVE_RUN, "old_api_version": resume.API_VERSION,
+                "api_version": resume.ACTIVE_API, "paused_maintenance_version": resume.PAUSED_MAINTENANCE,
+                "old_usage_model": "standard", "propagation_limit_seconds": 900,
+                "invocation_limit_seconds": 900, "observed_monotonic_seconds": 1864.6,
+                "pin_samples": 30, "execution_leases_preserved": {"embedding_leases": 0, "projection_leases": 1}}
+
+    def test_active_origin_requires_completed_cutover_and_failed_final_graph(self):
+        """No earlier ambiguous submit or later writer fits the active boundary."""
+        self.assertEqual(resume.origin(self.active_run(), self.active_jobs(), resume.ACTIVE_RUN)["id"], 456)
+        for name, invalid in ((resume.API_STEP, "failure"), (resume.CUTOVER_STEP, "failure"),
+                              (resume.GRAPH_STEP, "success")):
+            jobs = self.active_jobs()
+            api = next(row for row in jobs["jobs"] if row["name"] == resume.API_JOB)
+            next(row for row in api["steps"] if row["name"] == name)["conclusion"] = invalid
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                resume.origin(self.active_run(), jobs, resume.ACTIVE_RUN)
+        jobs = self.active_jobs()
+        jobs["jobs"][-1]["steps"][0]["conclusion"] = "success"
+        with self.assertRaises(ValueError):
+            resume.origin(self.active_run(), jobs, resume.ACTIVE_RUN)
+
+    def test_active_full_gates_and_all_later_deploys_remain_mandatory(self):
+        """A successful sink is insufficient without complete full-source evidence."""
+        for name in resume.required_jobs([]) | (resume.SKIPPED - {resume.API_JOB}) | {resume.SINK_JOB}:
+            jobs = self.active_jobs()
+            row = next(row for row in jobs["jobs"] if row["name"] == name)
+            row["conclusion"] = "success" if name in resume.SKIPPED else "failure"
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                resume.origin(self.active_run(), jobs, resume.ACTIVE_RUN)
+
+    def test_active_submit_triplet_has_exact_order_and_epoch(self):
+        """Outer spans are not submits; duplicate, failed or mixed submits are rejected."""
+        raw = self.active_log()
+        resume.active_log(raw)
+        for invalid in (raw + b"\n" + raw, raw.replace(resume.ACTIVE_API.encode(), resume.API_VERSION.encode()),
+                        raw.replace(resume.ACTIVE_RUN.encode(), resume.ORIGIN_RUN.encode()),
+                        raw.replace(b'"process_exit_code": 0', b'"process_exit_code": 1'),
+                        raw.replace(b'"version_count": 1', b'"version_count": true')):
+            with self.assertRaises(ValueError):
+                resume.active_log(invalid)
+        records = resume.submit_records(raw)
+        with self.assertRaises(ValueError):
+            resume.active_log(b"\n".join(json.dumps(row).encode() for row in records[::-1]))
+
+    def test_witness_requires_actual_bounded_window_samples_and_pins(self):
+        """Short age, nonfinite time, missing sample or incompatible runtime fail."""
+        self.assertEqual(resume.cutover_witness(self.witness())["pin_samples"], 30)
+        for key, invalid in (("observed_monotonic_seconds", 1859.9), ("observed_monotonic_seconds", float("inf")),
+                             ("observed_monotonic_seconds", float("nan")), ("pin_samples", 1),
+                             ("pin_samples", True), ("old_usage_model", "bundled"),
+                             ("api_version", resume.API_VERSION), ("source_sha", resume.ORIGIN_SHA),
+                             ("propagation_limit_seconds", True)):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                resume.cutover_witness(dict(self.witness(), **{key: invalid}))
+        for leases in ({"embedding_leases": -1, "projection_leases": 0},
+                       {"embedding_leases": True, "projection_leases": 0}, {"embedding_leases": 0}):
+            with self.assertRaises(ValueError):
+                resume.cutover_witness(dict(self.witness(), execution_leases_preserved=leases))
+
+    def test_active_recover_retains_original_ownership_and_separate_phase(self):
+        """No current producer bytes or synthesized predecessor can grant adoption."""
+        owned = {"predecessor": self.predecessor(), "queue": resume.QUEUE,
+                 "dlq": resume.DLQ, "sink_version": resume.SINK_VERSION}
+        with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}), patch.object(resume, "exact_tree") as tree, \
+             patch.object(resume, "original_ownership", return_value=owned), \
+             patch.object(resume, "github", side_effect=[self.active_run(), self.active_jobs(), {"total_count": 0, "artifacts": []}]), \
+             patch.object(resume, "job_log", return_value=self.active_log()), \
+             patch.object(resume, "artifact_value", return_value=self.witness()):
+            value = resume.recover(resume.ACTIVE_RUN)
+        tree.assert_called_once_with("a" * 40, resume.ACTIVE_SHA)
+        self.assertEqual(value["phase"], "active")
+        self.assertEqual(value["predecessor"]["source_sha"], resume.ORIGIN_SHA)
+        self.assertEqual(value["source_sha"], resume.ACTIVE_SHA)
+        self.assertEqual(value["api_version"], resume.ACTIVE_API)
+        self.assertEqual(value["maintenance_version"], resume.ACTIVE_MAINTENANCE)
+
+
 
 if __name__ == "__main__":
     unittest.main()

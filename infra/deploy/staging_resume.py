@@ -1,8 +1,8 @@
-"""Recover immutable ownership of the one reviewed sink-only staging interruption.
+"""Recover immutable ownership of two reviewed staging interruption boundaries.
 
 This is provenance admission, not a provider mutation or live graph attestation.
 The caller must separately bracket the unchanged legacy API, private exact sink,
-zero Queue producers and held sending before continuing with current tested bytes.
+phase-specific Queue producers and held sending before continuing with tested bytes.
 """
 from __future__ import annotations
 
@@ -24,6 +24,15 @@ from mail_lifecycle_receipt import github, REPO
 
 ORIGIN_RUN = "37053907751"
 ORIGIN_SHA = "b2dbd66d786a5a790dc55486ee27ae578690f0ea"
+ACTIVE_RUN = "37058617870"
+ACTIVE_SHA = "4732325020ffc7447242a1601d08ebfd8e47d6b2"
+ACTIVE_API = "01f14a8e-d5b1-41f9-9f8c-325c2e288ba7"
+PAUSED_MAINTENANCE = "bc616834-035f-4bb7-88d6-e29ce1ab5867"
+ACTIVE_MAINTENANCE = "3d23d537-6379-4fcb-84c2-2c1b8a9f4857"
+API_JOB = "Deploy isolated staging mail API"
+API_STEP = "Deploy staging Worker with redacted output and exact recovery version"
+CUTOVER_STEP = "Replace scheduled-only maintenance with bounded legacy cutover"
+GRAPH_STEP = "Verify exact active API and scheduled-maintenance trace producer graph"
 BRANCH = "codex/v0.1.2-agent-first-performance"
 API_VERSION = "c3f6401a-1e84-4f51-91df-ae77d90683e9"
 API_DEPLOYMENT = "8dc8ba02-5c4f-4c53-b0a9-f04b6a25a5cb"
@@ -115,15 +124,17 @@ def git(*arguments: str) -> bytes:
     return result.stdout
 
 
-def exact_tree(current_sha: str) -> None:
+def exact_tree(current_sha: str, source_sha: str = ORIGIN_SHA) -> None:
     """Permit only reviewed orchestration/docs/tests changes, never ancestor trust."""
     if (not isinstance(current_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", current_sha)
             or git("rev-parse", "HEAD").decode().strip() != current_sha):
         raise ValueError("staging_resume_checkout_unverified")
-    git("cat-file", "-e", ORIGIN_SHA + "^{commit}")
-    if git("diff", "--name-only", "-z", ORIGIN_SHA, current_sha, "--", *RUNTIME):
+    if source_sha not in (ORIGIN_SHA, ACTIVE_SHA):
+        raise ValueError("staging_resume_source_unreviewed")
+    git("cat-file", "-e", source_sha + "^{commit}")
+    if git("diff", "--name-only", "-z", source_sha, current_sha, "--", *RUNTIME):
         raise ValueError("staging_resume_runtime_changed")
-    changed = git("diff", "--name-only", "-z", ORIGIN_SHA, current_sha).decode().split("\0")
+    changed = git("diff", "--name-only", "-z", source_sha, current_sha).decode().split("\0")
     if any(name and name not in CONTROL and not (name.startswith("docs/") and name.endswith(".md"))
            for name in changed):
         raise ValueError("staging_resume_unreviewed_change")
@@ -133,32 +144,43 @@ def exact_tree(current_sha: str) -> None:
 
 def origin(run: object, jobs: object, run_id: str) -> dict:
     """Admit only the terminal failed reviewed run at the sink-only boundary."""
-    if (run_id != ORIGIN_RUN or not isinstance(run, dict) or type(run.get("id")) is not int
+    source_sha = ORIGIN_SHA if run_id == ORIGIN_RUN else ACTIVE_SHA
+    active = run_id == ACTIVE_RUN
+    if (run_id not in (ORIGIN_RUN, ACTIVE_RUN) or not isinstance(run, dict) or type(run.get("id")) is not int
             or str(run["id"]) != run_id or type(run.get("run_attempt")) is not int
             or run["run_attempt"] != 1 or run.get("status") != "completed"
             or run.get("conclusion") != "failure" or run.get("event") != "workflow_dispatch"
-            or run.get("head_branch") != BRANCH or run.get("head_sha") != ORIGIN_SHA
+            or run.get("head_branch") != BRANCH or run.get("head_sha") != source_sha
             or run.get("path") != ".github/workflows/ci.yml"
             or not isinstance(run.get("repository"), dict) or run["repository"].get("full_name") != REPO):
         raise ValueError("staging_resume_origin_unverified")
     listing = rows(jobs, "jobs")
-    for name in required_jobs(listing) | SKIPPED | {SINK_JOB}:
+    skipped = SKIPPED - {API_JOB} if active else SKIPPED
+    for name in required_jobs(listing) | skipped | {SINK_JOB} | ({API_JOB} if active else set()):
         matches = [row for row in listing if row.get("name") == name]
-        expected = "skipped" if name in SKIPPED else "failure" if name == SINK_JOB else "success"
+        failed = API_JOB if active else SINK_JOB
+        expected = "skipped" if name in skipped else "failure" if name == failed else "success"
         if (len(matches) != 1 or matches[0].get("status") != "completed"
                 or matches[0].get("conclusion") != expected):
             raise ValueError("staging_resume_job_boundary_unverified")
-    sink = next(row for row in listing if row["name"] == SINK_JOB)
+    selected_job = API_JOB if active else SINK_JOB
+    sink = next(row for row in listing if row["name"] == selected_job)
+    if active:
+        require_step(sink, CUTOVER_STEP, "success")
+        require_step(sink, GRAPH_STEP, "failure")
+        sink_row = next(row for row in listing if row["name"] == SINK_JOB)
+        require_step(sink_row, DEPLOY_STEP, "skipped")
+    deploy_step = API_STEP if active else DEPLOY_STEP
     steps = sink.get("steps")
-    matches = [row for row in steps if isinstance(row, dict) and row.get("name") == DEPLOY_STEP] if isinstance(steps, list) else []
+    matches = [row for row in steps if isinstance(row, dict) and row.get("name") == deploy_step] if isinstance(steps, list) else []
     if (len(matches) != 1 or matches[0].get("status") != "completed"
             or matches[0].get("conclusion") != "success" or type(sink.get("id")) is not int
-            or sink["id"] <= 0 or sink.get("run_id") != int(run_id) or sink.get("head_sha") != ORIGIN_SHA):
+            or sink["id"] <= 0 or sink.get("run_id") != int(run_id) or sink.get("head_sha") != source_sha):
         raise ValueError("staging_resume_sink_submit_unverified")
     return sink
 
 
-def sink_log(raw: bytes) -> str:
+def submit_records(raw: bytes) -> list[dict]:
     """Extract one typed successful submit only; raw GitHub logs never leave here."""
     if not isinstance(raw, bytes) or not 0 < len(raw) <= 8 * 1024 * 1024:
         raise ValueError("staging_resume_log_unverified")
@@ -171,17 +193,66 @@ def sink_log(raw: bytes) -> str:
             row = decode(line[start:])
         except ValueError:
             continue
-        if isinstance(row, dict) and row.get("operation") == "workers.deploy" and row.get("event") == "control_plane_end":
+        if isinstance(row, dict) and row.get("operation") == "workers.deploy" and row.get("event") == "control_plane_end" and row.get("phase") == "submit":
             records.append(row)
+    return records
+
+
+def submit_matches(row: dict, run_id: str, source_sha: str, component: str, version: str, job: str) -> bool:
+    """Keep exact typed coordinates and results shared across reviewed phases."""
     expected = {"schema": "control-plane-span/v1", "event": "control_plane_end",
                 "operation": "workers.deploy", "phase": "submit", "realm": "staging",
-                "component": "trace_sink", "outcome": "success", "version": SINK_VERSION,
-                "version_count": 1, "process_exit_code": 0, "source_sha": ORIGIN_SHA,
-                "run_id": ORIGIN_RUN, "run_attempt": "1", "job": "staging-trace-sink"}
-    if len(records) != 1 or any(records[0].get(key) != value or type(records[0].get(key)) is not type(value)
-                                for key, value in expected.items()):
+                "component": component, "outcome": "success", "version": version,
+                "version_count": 1, "process_exit_code": 0, "source_sha": source_sha,
+                "run_id": run_id, "run_attempt": "1", "job": job}
+    return all(row.get(key) == value and type(row.get(key)) is type(value)
+               for key, value in expected.items())
+
+
+def sink_log(raw: bytes) -> str:
+    """Extract the original single successful submit, without exposing raw logs."""
+    records = submit_records(raw)
+    if len(records) != 1 or not submit_matches(records[0], ORIGIN_RUN, ORIGIN_SHA,
+                                              "trace_sink", SINK_VERSION, "staging-trace-sink"):
         raise ValueError("staging_resume_typed_submit_unverified")
     return records[0]["version"]
+
+
+def require_step(job: dict, name: str, conclusion: str) -> None:
+    """Positive exact step state identifies the reviewed interruption boundary."""
+    steps = job.get("steps")
+    found = [row for row in steps if isinstance(row, dict) and row.get("name") == name] if isinstance(steps, list) else []
+    if len(found) != 1 or found[0].get("status") != "completed" or found[0].get("conclusion") != conclusion:
+        raise ValueError("staging_resume_phase_step_unverified")
+
+
+def active_log(raw: bytes) -> None:
+    """Require precisely API, paused maintenance and active maintenance submits."""
+    records = submit_records(raw)
+    versions = (ACTIVE_API, PAUSED_MAINTENANCE, ACTIVE_MAINTENANCE)
+    if len(records) != 3 or any(not submit_matches(row, ACTIVE_RUN, ACTIVE_SHA, "mail_api", version,
+                                                  "staging-worker") for row, version in zip(records, versions)):
+        raise ValueError("staging_resume_active_submits_unverified")
+
+
+def cutover_witness(value: object) -> dict:
+    """Admit the immutable observed platform window, not elapsed wall-clock age."""
+    expected = {"schema": "staging-platform-cutover/v1", "source_sha": ACTIVE_SHA, "run_id": ACTIVE_RUN,
+                "old_api_version": API_VERSION, "api_version": ACTIVE_API,
+                "paused_maintenance_version": PAUSED_MAINTENANCE, "old_usage_model": "standard",
+                "propagation_limit_seconds": 900, "invocation_limit_seconds": 900}
+    fields = set(expected) | {"observed_monotonic_seconds", "pin_samples", "execution_leases_preserved"}
+    if (not isinstance(value, dict) or set(value) != fields
+            or any(value.get(key) != item or type(value.get(key)) is not type(item) for key, item in expected.items())
+            or type(value.get("observed_monotonic_seconds")) not in (int, float)
+            or not 1860 <= value["observed_monotonic_seconds"] < float("inf")
+            or type(value.get("pin_samples")) is not int or value["pin_samples"] < 2):
+        raise ValueError("staging_resume_cutover_witness_unverified")
+    leases = value["execution_leases_preserved"]
+    if (not isinstance(leases, dict) or set(leases) != {"embedding_leases", "projection_leases"}
+            or any(type(count) is not int or count < 0 for count in leases.values())):
+        raise ValueError("staging_resume_cutover_leases_unverified")
+    return value
 
 
 def predecessor(value: object) -> dict:
@@ -227,19 +298,36 @@ def artifact_value(listing: list[dict], name: str, filename: str) -> object:
     return decode(admitted[filename])
 
 
+def original_ownership() -> dict:
+    """Re-read the original creator; later continuation cannot mint sink ownership."""
+    sink = origin(github(f"runs/{ORIGIN_RUN}"),
+                  github(f"runs/{ORIGIN_RUN}/attempts/1/jobs?per_page=100"), ORIGIN_RUN)
+    listing = rows(github(f"runs/{ORIGIN_RUN}/artifacts?per_page=100"), "artifacts")
+    old = predecessor(artifact_value(listing, f"staging-rollout-predecessor-{ORIGIN_RUN}", "staging-rollout-predecessor.json"))
+    provision(artifact_value(listing, f"trace-queue-provision-staging-{ORIGIN_RUN}-1", "trace-queue-provision-staging.json"))
+    version = sink_log(job_log(sink["id"]))
+    return {"predecessor": old, "queue": QUEUE, "dlq": DLQ, "sink_version": version}
+
+
 def recover(run_id: str) -> dict:
-    """Resolve original ownership; never treat this receipt as a live graph check."""
-    if run_id != ORIGIN_RUN:
+    """Resolve reviewed phase ownership; current full gates remain caller-owned."""
+    if run_id not in (ORIGIN_RUN, ACTIVE_RUN):
         raise ValueError("staging_resume_run_unreviewed")
     current_sha = os.getenv("GITHUB_SHA", "")
-    exact_tree(current_sha)
-    sink = origin(github(f"runs/{run_id}"), github(f"runs/{run_id}/attempts/1/jobs?per_page=100"), run_id)
-    listing = rows(github(f"runs/{run_id}/artifacts?per_page=100"), "artifacts")
-    old = predecessor(artifact_value(listing, f"staging-rollout-predecessor-{run_id}", "staging-rollout-predecessor.json"))
-    provision(artifact_value(listing, f"trace-queue-provision-staging-{run_id}-1", "trace-queue-provision-staging.json"))
-    version = sink_log(job_log(sink["id"]))
-    return {"origin_run": run_id, "source_sha": ORIGIN_SHA, "current_sha": current_sha,
-            "predecessor": old, "queue": QUEUE, "dlq": DLQ, "sink_version": version}
+    source_sha = ACTIVE_SHA if run_id == ACTIVE_RUN else ORIGIN_SHA
+    if run_id == ACTIVE_RUN:
+        exact_tree(current_sha, source_sha)
+    else:
+        exact_tree(current_sha)
+    value = {"origin_run": run_id, "source_sha": source_sha, "current_sha": current_sha,
+             "phase": "active" if run_id == ACTIVE_RUN else "legacy", **original_ownership()}
+    if run_id == ACTIVE_RUN:
+        api = origin(github(f"runs/{run_id}"), github(f"runs/{run_id}/attempts/1/jobs?per_page=100"), run_id)
+        active_log(job_log(api["id"]))
+        listing = rows(github(f"runs/{run_id}/artifacts?per_page=100"), "artifacts")
+        value["cutover"] = cutover_witness(artifact_value(listing, f"staging-cutover-{run_id}", "staging-cutover.json"))
+        value.update({"api_version": ACTIVE_API, "maintenance_version": ACTIVE_MAINTENANCE})
+    return value
 
 
 def load_resume(run_id: str) -> dict:

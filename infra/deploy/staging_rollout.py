@@ -47,6 +47,9 @@ FAILURES = frozenset({
     "staging_resume_log_credentials_unverified", "staging_resume_log_redirect_unverified",
     "staging_resume_log_permission_denied", "staging_resume_log_http_unverified",
     "staging_resume_log_transport_unverified", "staging_resume_log_signed_url_expired",
+    "staging_resume_source_unreviewed", "staging_resume_phase_step_unverified",
+    "staging_resume_active_submits_unverified", "staging_resume_cutover_witness_unverified",
+    "staging_resume_cutover_leases_unverified",
     "staging_resume_old_api_changed", "staging_resume_partial_graph_unverified", "staging_resume_phase_changed",
 })
 PREDECESSOR = ROOT / ".temp/staging-rollout-predecessor.json"
@@ -66,7 +69,7 @@ def context(*, read_only: bool = False) -> None:
     if (os.getenv("GITHUB_REF") != BRANCH or os.getenv("GITHUB_ACTIONS") != "true"
             or not confirmed or not os.getenv("GITHUB_OUTPUT")):
         raise ValueError("staging_context_unverified")
-    if read_only and os.getenv("AMAIL_STAGING_RESUME_RUN") != "37053907751":
+    if read_only and os.getenv("AMAIL_STAGING_RESUME_RUN") not in ("37053907751", "37058617870"):
         raise ValueError("staging_inspect_resume_unverified")
 
 
@@ -154,16 +157,38 @@ def preflight(*, read_only: bool = False) -> None:
         graph.held_send("staging")
         value["rollout"] = "legacy"
     else:
-        if os.getenv("AMAIL_STAGING_RESUME_RUN", ""):
-            raise ValueError("staging_resume_phase_changed")
         if (api["handlers"] != ["fetch"] or api["crons"]
                 or not maintenance["present"] or maintenance["crons"] != list(CADENCE)):
             raise ValueError("staging_split_predecessor_unverified")
+        resume = os.getenv("AMAIL_STAGING_RESUME_RUN", "")
+        if resume:
+            from staging_resume import load_resume
+            owned = load_resume(resume)
+            if (any(value["scripts"][name] != owned["predecessor"]["scripts"][name]
+                    for name in ("amail-inbound-staging", "amail-events-staging"))
+                    or owned.get("phase") != "active" or api["version"] != owned["api_version"]
+                    or api["deployment"] != "7c6c70e5-d617-4119-9dff-846f5f204a3c"
+                    or maintenance["version"] != owned["maintenance_version"]
+                    or maintenance["deployment"] != "ad083bc6-e1c0-4ee6-81af-d19c4261ec50"
+                    or value["scripts"]["amail-trace-sink-staging"]["version"] != owned["sink_version"]
+                    or value["scripts"]["amail-trace-sink-staging"]["deployment"] != "73892f24-1e84-406a-b025-3879580597e1"
+                    or value["queues"]["amail-trace-events-staging"]["queue_id"] != owned["queue"]
+                    or value["queues"]["amail-trace-dlq-staging"]["queue_id"] != owned["dlq"]):
+                raise ValueError("staging_resume_partial_graph_unverified")
+            os.environ.update({"AMAIL_TRACE_QUEUE_ID": owned["queue"], "AMAIL_TRACE_DLQ_ID": owned["dlq"]})
+            value["resume_origin_run"] = resume
         os.environ.update({"AMAIL_EXPECTED_WORKER_VERSION": api["version"],
                            "AMAIL_EXPECTED_MAINTENANCE_VERSION": maintenance["version"],
                            "AMAIL_EXPECTED_TRACE_SINK_VERSION": value["scripts"]["amail-trace-sink-staging"]["version"],
                            "AMAIL_TRACE_TOPOLOGY": "api-scheduled"})
         graph.verify("staging", "active")
+        if resume:
+            output("reuse_sink", "true")
+            output("reuse_api", "true")
+            for key in ("api_version", "maintenance_version", "sink_version"):
+                output(key, owned[key])
+            output("queue_id", owned["queue"])
+            output("dlq_id", owned["dlq"])
         value["rollout"] = "split"
     write(PREDECESSOR, value)
     output("rollout", value["rollout"])

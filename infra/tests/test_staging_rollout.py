@@ -244,7 +244,7 @@ class StagingRolloutTests(unittest.TestCase):
         """Independent role DB is not Mail DB; no secret values enter artifacts."""
         bindings = [{"type": "d1", "database_id": "unrelated-role-database"},
                     {"type": "secret_text", "name": "private-secret-name", "text": "private-secret-value"},
-                    {"type": "queue", "queue_id": "unrelated-queue"}]
+                    {"type": "queue", "queue_id": "c" * 32}]
         version = {"resources": {"bindings": bindings, "script": {"handlers": ["email", "scheduled"]}}}
         with patch.dict(os.environ, {}, clear=True):
             facts = inspector.role_capabilities(version)
@@ -256,7 +256,7 @@ class StagingRolloutTests(unittest.TestCase):
             {"type": "d1", "database_id": "74f35f95-42ce-482c-86e6-dffbdd35cbbe"},
             {"type": "service", "service": "amail-mail-staging"},
             {"type": "r2_bucket", "bucket_name": "moesegfault-mail-raw-staging"},
-            {"type": "queue", "queue_name": "amail-trace-events-staging"}]}
+            {"type": "queue", "queue_name": "amail-trace-events-staging", "queue_id": "c" * 32}]}
         self.assertTrue(all(value for name, value in inspector.role_capabilities(version).items() if name != "handlers"))
 
     def test_graph_default_stdout_contract_is_preserved(self):
@@ -270,6 +270,72 @@ class StagingRolloutTests(unittest.TestCase):
                  redirect_stdout(output):
                 self.assertEqual(rollout.graph.main(), 1)
             self.assertEqual(output.getvalue(), expected)
+
+    def test_independent_role_is_bracketed_and_every_mail_edge_is_rejected(self):
+        """Retaining an independent contact Worker never grants it Mail capabilities."""
+        version_id = "b" * 8 + "-" + "-".join(["b" * 4] * 3) + "-" + "b" * 12
+        deployment = {"deployments": [{"id": "a" * 8 + "-" + "-".join(["a" * 4] * 3) + "-" + "a" * 12,
+                       "strategy": "percentage", "versions": [{"version_id": version_id, "percentage": 100}]}]}
+        version = {"id": version_id, "resources": {"bindings": [{"type": "d1", "database_id": "independent-role-db"}],
+                                                  "script": {"handlers": ["email", "scheduled"]}}}
+        reads = [deployment, version, {"schedules": [{"cron": "*/5 * * * *"}]}, deployment]
+        with patch.object(rollout.capture, "readback", side_effect=reads):
+            result = rollout.graph.independent_role_snapshot("account", "token")
+        self.assertEqual(result["crons"], ["*/5 * * * *"])
+        for binding in ({"type": "d1", "database_id": "74f35f95-42ce-482c-86e6-dffbdd35cbbe"},
+                        {"type": "r2_bucket", "bucket_name": "moesegfault-mail-raw-staging"},
+                        *({"type": "service", "service": name} for name in
+                          ("amail-mail-staging", "amail-mail-maintenance-staging", "amail-trace-sink-staging")),
+                        {"type": "queue", "queue_name": "amail-trace-events-staging", "queue_id": "c" * 32},
+                        {"type": "queue", "queue_name": "amail-trace-dlq-staging", "queue_id": "c" * 32}):
+            changed = deepcopy(version)
+            changed["resources"]["bindings"].append(binding)
+            with patch.object(rollout.capture, "readback", side_effect=[deployment, changed]), self.assertRaises(ValueError):
+                rollout.graph.independent_role_snapshot("account", "token")
+        with patch.object(rollout.capture, "readback", side_effect=reads[:-1] + [{"deployments": []}]), self.assertRaises(ValueError):
+            rollout.graph.independent_role_snapshot("account", "token")
+
+    def test_missing_role_targets_never_prove_independent_capabilities(self):
+        """Both Queue ID spellings are supported, but malformed/conflicting views stop."""
+        def project(binding):
+            return rollout.graph.role_capabilities({"resources": {"bindings": [binding], "script": {"handlers": ["scheduled"]}}})
+        for kind, field in (("d1", "database_id"), ("r2_bucket", "bucket_name"), ("service", "service")):
+            for value in (None, "", "   ", 12):
+                with self.assertRaises(ValueError):
+                    project({"type": kind, field: value})
+            with self.assertRaises(ValueError):
+                project({"type": kind})
+        for binding in ({"type": "queue"}, {"type": "queue", "queue_name": "unresolved-name"},
+                        {"type": "queue", "queue_id": None}, {"type": "queue", "id": 12},
+                        {"type": "queue", "queue_id": "c" * 32, "id": "d" * 32},
+                        {"type": "queue", "queue_id": "c" * 32, "queue_name": ""}):
+            with self.assertRaises(ValueError):
+                project(binding)
+        with patch.dict(os.environ, {"AMAIL_TRACE_QUEUE_ID": "c" * 32}):
+            self.assertTrue(project({"type": "queue", "id": "c" * 32})["mail_trace_queue_bound"])
+            self.assertTrue(project({"type": "queue", "id": "c" * 32, "queue_id": "c" * 32})["mail_trace_queue_bound"])
+
+    def test_active_resume_reuses_proven_api_and_maintenance_under_exact_queue_pins(self):
+        """A completed cutover is not replayed when only remaining adapters/site need writes."""
+        value, owned = self.partial_graph()
+        owned.update({"phase": "active", "api_version": "01f14a8e-d5b1-41f9-9f8c-325c2e288ba7",
+                      "maintenance_version": "3d23d537-6379-4fcb-84c2-2c1b8a9f4857"})
+        value["scripts"][rollout.API].update({"version": owned["api_version"],
+          "deployment": "7c6c70e5-d617-4119-9dff-846f5f204a3c", "handlers": ["fetch"], "crons": []})
+        value["scripts"][rollout.MAINTENANCE] = {"present": True, "version": owned["maintenance_version"],
+          "deployment": "ad083bc6-e1c0-4ee6-81af-d19c4261ec50", "handlers": ["scheduled"],
+          "crons": ["*/5 * * * *"], "capture_off": True}
+        environment = dict(self.environment(), AMAIL_STAGING_RESUME_RUN="37058617870")
+        with patch.dict(os.environ, environment, clear=True), \
+             patch.object(rollout, "inspect", return_value=value), patch.object(resume, "load_resume", return_value=owned), \
+             patch.object(rollout.graph, "verify") as graph, patch.object(rollout, "write"), \
+             patch.object(rollout, "output") as output, patch.object(rollout, "deploy_maintenance") as deploy:
+            rollout.preflight()
+            self.assertEqual(os.environ["AMAIL_TRACE_QUEUE_ID"], resume.QUEUE)
+            self.assertEqual(os.environ["AMAIL_TRACE_DLQ_ID"], resume.DLQ)
+        graph.assert_called_once_with("staging", "active")
+        deploy.assert_not_called()
+        self.assertEqual(dict(call.args for call in output.call_args_list)["reuse_api"], "true")
 
 
 if __name__ == "__main__":

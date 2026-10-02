@@ -115,6 +115,22 @@ with zero producers. Only then are Queue creation and sink deployment skipped.
 Any changed pin, attached producer or failed predicate stops without replaying
 those writes. The remaining migration follows the ordinary staging sequence above.
 This input does not recover arbitrary failed runs or ambiguous submissions.
+The second reviewed boundary is `staging_resume_run=37058617870`: API replacement
+and paused-to-active maintenance cutover completed before the final graph check
+rejected an unrelated historical staging contact Worker by name. Its immutable
+job metadata, three exact successful typed submit receipts and bounded cutover
+witness are mandatory, alongside original owned Queue/sink provenance. Live
+reads must match the exact known API/maintenance/sink deployment/version tuple,
+unchanged ingress/lifecycle, global hold and strict final two-producer graph.
+The old contact Worker is retained only with a serving/Cron/capability bracket
+proving no Mail DB/R2, API/maintenance/sink service or trace main/DLQ Queue edge.
+Production role absence remains mandatory. This does not assert contact-monitor
+correctness or general population isolation, and grants no route/Cron changes.
+After read admission, API, maintenance, sink, Queue, migration and sending-policy
+write steps are skipped; remaining ingress/lifecycle/site deployment consumes the
+current run's tested artifact. The original wait/witness is not replayed or
+relabeled as current execution. Normal future split replacements still require
+reviewed Queue/DLQ variables; observed names never supply writer ownership.
 Before another full continuation, `target=staging-inspect` with
 `confirm=INSPECT_STAGING_V012` and the same explicit `staging_resume_run` can run
 the identical read/provenance preflight without deployment authority. The read
