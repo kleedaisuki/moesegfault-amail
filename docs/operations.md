@@ -125,6 +125,12 @@ then its short-lived 302 target is restricted to the observed GitHub Actions Azu
 log account family and downloaded without bearer credentials or redirects, at an
 eight-MiB bound. This is transport separation, not a weaker ownership proof or
 additional token authority; API permission denial stops the read admission.
+When fetch-only API, scheduled maintenance and sink are present, inspection also
+reads their full active graph with observed immutable pins and reports only a
+closed structural verdict. Historical staging role presence is projected with
+handlers/Cron and boolean Mail database/service/body-bucket/trace-Queue capability
+facts. These read diagnostics are not ownership pins or authority to remove the
+role Worker, accept an unreviewed graph or replay an already successful submit.
 The v0.1.2 candidate lane also skips the unrelated Identity verification-inbox
 deployment; the original non-candidate staging lane remains available unchanged.
 

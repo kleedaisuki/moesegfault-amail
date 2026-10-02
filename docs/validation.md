@@ -99,6 +99,27 @@ allowlisted unauthenticated signed-blob download, retaining the exact typed sink
 submit proof and read-only admission gate. Hosted success is still required before
 another full continuation; no new permission or provider mutation is introduced.
 
+Read-admission [37058454601](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37058454601)
+at source `4732325020ffc7447242a1601d08ebfd8e47d6b2` passed. The same-source
+continuation [37058617870](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37058617870)
+passed all source/packaging gates, reused the owned sink/Queues, submitted
+fetch-only API `01f14a8e-d5b1-41f9-9f8c-325c2e288ba7`, and completed the initial
+scheduled-cohort cutover: 1,864.625790695 monotonic seconds, 30 pinned samples,
+Standard old runtime, and both observed execution-lease counts zero and preserved.
+Paused maintenance `bc616834-035f-4bb7-88d6-e29ce1ab5867` was replaced with active
+scheduled-only `3d23d537-6379-4fcb-84c2-2c1b8a9f4857` and individually verified.
+
+The run remains **FAILURE** at the subsequent complete split-graph check; remaining
+ingress/lifecycle/site jobs were skipped. Fresh inspection
+[37062907729](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37062907729)
+confirmed those exact API/maintenance versions, API empty Cron, maintenance
+five-minute Cron, both capture off, unchanged private sink, and the exact two
+API + maintenance trace producers (DLQ has none). All sink predicates passed.
+The earlier source guard rejects even an independent historical staging role
+Worker; capability/inventory diagnosis is required to confirm whether that caused
+the complete-graph failure. No completed native/site acceptance or justification
+for replaying successful API/maintenance submissions follows from these facts.
+
 Local lightweight source/mock checks cover staging context, immutable bounded
 usage models, drift rejection, retained lease/backlog semantics, future split
 replacement without the initial wait, exact adapter graph, candidate provenance

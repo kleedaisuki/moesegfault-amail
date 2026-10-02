@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/deploy"))
 import staging_rollout as rollout
 import staging_resume as resume
+import inspect_staging as inspector
 
 
 class StagingRolloutTests(unittest.TestCase):
@@ -224,6 +225,51 @@ class StagingRolloutTests(unittest.TestCase):
                 rollout.preflight()
             self.assertEqual(os.environ["AMAIL_TRACE_QUEUE_ID"], environment["AMAIL_TRACE_QUEUE_ID"])
             self.assertNotIn("AMAIL_TRACE_DLQ_ID", os.environ)
+
+    def test_split_diagnostic_emits_closed_reason_without_provider_prose(self):
+        """Observed live pins support diagnosis, not deployment or resource adoption."""
+        value = {"scripts": {name: {"version": version} for name, version in
+                 (("amail-mail-staging", "api"), ("amail-mail-maintenance-staging", "maintenance"),
+                  ("amail-trace-sink-staging", "sink"))}}
+        with patch.dict(os.environ, {}, clear=True), patch.object(rollout.graph, "verify") as verify:
+            self.assertEqual(inspector.split_diagnostic(value), {"exact_graph": True, "reason": "verified"})
+            verify.assert_called_once_with("staging", "active")
+        for failure, expected in (("split_role_absence_unverified", "split_role_absence_unverified"),
+                                  ("arbitrary private provider text", "unknown")):
+            with patch.dict(os.environ, {}, clear=True), \
+                 patch.object(rollout.graph, "verify", side_effect=ValueError(failure)):
+                self.assertEqual(inspector.split_diagnostic(value), {"exact_graph": False, "reason": expected})
+
+    def test_legacy_role_projection_contains_capabilities_not_private_values(self):
+        """Independent role DB is not Mail DB; no secret values enter artifacts."""
+        bindings = [{"type": "d1", "database_id": "unrelated-role-database"},
+                    {"type": "secret_text", "name": "private-secret-name", "text": "private-secret-value"},
+                    {"type": "queue", "queue_id": "unrelated-queue"}]
+        version = {"resources": {"bindings": bindings, "script": {"handlers": ["email", "scheduled"]}}}
+        with patch.dict(os.environ, {}, clear=True):
+            facts = inspector.role_capabilities(version)
+        self.assertEqual(facts, {"handlers": ["email", "scheduled"], "mail_database_bound": False,
+                                 "mail_service_bound": False, "mail_body_bucket_bound": False,
+                                 "mail_trace_queue_bound": False})
+        self.assertNotIn("private", json.dumps(facts))
+        version["resources"]["bindings"] = {"result": bindings + [
+            {"type": "d1", "database_id": "74f35f95-42ce-482c-86e6-dffbdd35cbbe"},
+            {"type": "service", "service": "amail-mail-staging"},
+            {"type": "r2_bucket", "bucket_name": "moesegfault-mail-raw-staging"},
+            {"type": "queue", "queue_name": "amail-trace-events-staging"}]}
+        self.assertTrue(all(value for name, value in inspector.role_capabilities(version).items() if name != "handlers"))
+
+    def test_graph_default_stdout_contract_is_preserved(self):
+        """Only explicit staging diagnostics append the safe structural reason."""
+        for arguments, expected in ((["--realm", "production", "--state", "active"], "mail_split_graph=UNVERIFIED\n"),
+                                    (["--realm", "staging", "--state", "active", "--diagnostic"],
+                                     "mail_split_graph=UNVERIFIED reason=split_role_absence_unverified\n")):
+            output = io.StringIO()
+            with patch.object(sys, "argv", ["check_mail_split_graph.py", *arguments]), \
+                 patch.object(rollout.graph, "verify", side_effect=ValueError("split_role_absence_unverified")), \
+                 redirect_stdout(output):
+                self.assertEqual(rollout.graph.main(), 1)
+            self.assertEqual(output.getvalue(), expected)
 
 
 if __name__ == "__main__":

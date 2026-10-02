@@ -39,6 +39,7 @@ RUNTIME = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain", 
            "crates", "workers", "site", "infra/tests/worker-boundary")
 CONTROL = {".github/workflows/ci.yml", "infra/deploy/staging_rollout.py",
            "infra/deploy/inspect_staging.py", "infra/deploy/staging_resume.py",
+           "infra/deploy/check_mail_split_graph.py",
            "infra/tests/test_staging_resume.py", "infra/tests/test_staging_rollout.py"}
 STATE = ROOT / ".temp/staging-resume.json"
 LIMIT = 65_536

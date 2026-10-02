@@ -23,6 +23,43 @@ SCRIPTS = ("amail-mail-staging", "amail-mail-maintenance-staging", "amail-inboun
            "amail-events-staging", "amail-trace-sink-staging")
 
 
+def role_capabilities(version: dict) -> dict:
+    """Project capability facts without secret values, destination addresses or mail."""
+    resources = version.get("resources", {})
+    bindings = resources.get("bindings")
+    if isinstance(bindings, dict) and set(bindings) == {"result"}:
+        bindings = bindings["result"]
+    handlers = resources.get("script", {}).get("handlers")
+    if (not isinstance(bindings, list) or not all(isinstance(row, dict) for row in bindings)
+            or not isinstance(handlers, list) or any(item not in ("fetch", "scheduled", "email", "queue") for item in handlers)):
+        raise ValueError("staging_role_metadata_unverified")
+    return {
+        "handlers": handlers,
+        "mail_database_bound": any(row.get("type") == "d1" and row.get("database_id") == "74f35f95-42ce-482c-86e6-dffbdd35cbbe" for row in bindings),
+        "mail_service_bound": any(row.get("type") == "service" and row.get("service") in
+                                  ("amail-mail-staging", "amail-mail-maintenance-staging") for row in bindings),
+        "mail_body_bucket_bound": any(row.get("type") == "r2_bucket" and row.get("bucket_name") == "moesegfault-mail-raw-staging" for row in bindings),
+        "mail_trace_queue_bound": any(row.get("type") == "queue" and
+                                       (row.get("queue_id") == os.getenv("AMAIL_TRACE_QUEUE_ID", "")
+                                        or row.get("queue_name") == "amail-trace-events-staging") for row in bindings),
+    }
+
+
+def split_diagnostic(result: dict) -> dict:
+    """Read the full observed active graph; diagnostics never confer ownership."""
+    import check_mail_split_graph as graph
+    scripts = result["scripts"]
+    os.environ.update({"AMAIL_EXPECTED_WORKER_VERSION": scripts["amail-mail-staging"]["version"],
+                       "AMAIL_EXPECTED_MAINTENANCE_VERSION": scripts["amail-mail-maintenance-staging"]["version"],
+                       "AMAIL_EXPECTED_TRACE_SINK_VERSION": scripts["amail-trace-sink-staging"]["version"],
+                       "AMAIL_TRACE_TOPOLOGY": "api-scheduled"})
+    try:
+        graph.verify("staging", "active")
+    except (ValueError, KeyError, TypeError, OSError) as error:
+        return {"exact_graph": False, "reason": graph.failure_reason(error)}
+    return {"exact_graph": True, "reason": "verified"}
+
+
 def inspect() -> dict:
     """Bracket reviewed serving pins and explicitly project non-content facts."""
     check()
@@ -46,7 +83,21 @@ def inspect() -> dict:
         os.environ["AMAIL_TRACE_QUEUE_ID"] = trace_ids["amail-trace-events-staging"]
         os.environ["AMAIL_TRACE_DLQ_ID"] = trace_ids["amail-trace-dlq-staging"]
     result = {"schema": "staging-predecessor/v1", "source_sha": os.getenv("GITHUB_SHA", ""),
-              "run_id": os.getenv("GITHUB_RUN_ID", ""), "scripts": {}, "queues": {}}
+              "run_id": os.getenv("GITHUB_RUN_ID", ""), "scripts": {}, "queues": {},
+              "legacy_role_present": "amail-role-monitor-staging" in present}
+    if result["legacy_role_present"]:
+        script = "amail-role-monitor-staging"
+        before = serving_deployment(capture.readback(account, token, script, "deployments?per_page=1&page=1"))
+        if before is None:
+            raise ValueError("staging_role_metadata_unverified")
+        facts = role_capabilities(capture.readback(account, token, script, f"versions/{before[1]}"))
+        schedules = capture.readback(account, token, script, "schedules").get("schedules")
+        if not isinstance(schedules, list) or any(not isinstance(row, dict) or not isinstance(row.get("cron"), str) for row in schedules):
+            raise ValueError("staging_role_metadata_unverified")
+        facts["crons"] = [row["cron"] for row in schedules]
+        if serving_deployment(capture.readback(account, token, script, "deployments?per_page=1&page=1")) != before:
+            raise ValueError("staging_role_metadata_unverified")
+        result["legacy_role_capabilities"] = facts
     for script in SCRIPTS:
         if script not in present:
             result["scripts"][script] = {"present": False}
@@ -107,6 +158,9 @@ def inspect() -> dict:
             raise ValueError("staging_producer_unreviewed")
         result["queues"][name] = {"present": True, "queue_id": row["queue_id"],
                                   "bounded_retention": queues.bounded_queue(detail), "producers": scripts}
+    if all(result["scripts"][name]["present"] for name in
+           ("amail-mail-staging", "amail-mail-maintenance-staging", "amail-trace-sink-staging")):
+        result["split_checks"] = split_diagnostic(result)
     return result
 
 

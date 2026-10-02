@@ -17,6 +17,15 @@ import ensure_trace_queues as queues
 from check_mail_maintenance import CADENCE, api_config, entry_surface_match, expected_schedules, schedules_match, script_name, verify as maintenance_verify
 from pin_staging_mail import ACCOUNT, UUID, bindings_match, serving_deployment
 
+FAILURES = frozenset({"split_graph_state_unreviewed", "split_pins_unverified", "split_serving_unverified",
+                      "split_hold_unverified", "split_role_absence_unverified", "split_api_unverified",
+                      "split_privacy_unverified", "split_graph_changed", "maintenance_absence_unverified"})
+
+
+def failure_reason(error: Exception) -> str:
+    """Project only known structural labels, never provider bodies or values."""
+    return str(error) if isinstance(error, ValueError) and str(error) in FAILURES else "unknown"
+
 
 def serving(account: str, token: str, pins: dict[str, str]) -> dict:
     """Preserve deployment IDs as well as exact single-version percentages."""
@@ -124,11 +133,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--realm", choices=("production", "staging"), required=True)
     parser.add_argument("--state", choices=("paused", "active", "old-draining", "new-draining"), required=True)
+    parser.add_argument("--diagnostic", action="store_true", help="Emit a closed staging failure reason without provider prose")
     args = parser.parse_args()
+    if args.diagnostic and args.realm != "staging":
+        parser.error("diagnostic is staging-only")
     try:
         verify(args.realm, args.state)
-    except (ValueError, KeyError, TypeError, OSError):
-        print("mail_split_graph=UNVERIFIED")
+    except (ValueError, KeyError, TypeError, OSError) as error:
+        print("mail_split_graph=UNVERIFIED" + (f" reason={failure_reason(error)}" if args.diagnostic else ""))
         return 1
     print("mail_split_graph=exact_selected_graph population_isolation=UNVERIFIED drain=UNVERIFIED")
     return 0

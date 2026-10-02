@@ -92,7 +92,8 @@ def preflight(*, read_only: bool = False) -> None:
     # entry to before_api(), cutover() or either deployment submit path.
     context(read_only=read_only)
     names = ("AMAIL_TRACE_QUEUE_ID", "AMAIL_TRACE_DLQ_ID", "AMAIL_TRACE_TOPOLOGY",
-             "AMAIL_EXPECTED_TRACE_SINK_VERSION")
+             "AMAIL_EXPECTED_TRACE_SINK_VERSION", "AMAIL_EXPECTED_WORKER_VERSION",
+             "AMAIL_EXPECTED_MAINTENANCE_VERSION")
     reviewed = {name: os.getenv(name) for name in names}
     try:
         value = inspect()
