@@ -1,11 +1,15 @@
-# 中文：main 手动运行只验证发布包；仅版本标签可发布并通过出站发布门禁。
-# English: Manual main runs verify bundles; only version tags can pass the send gate and publish.
+# English: Manual main runs verify candidates or recover one existing tagged bundle without rebuilding.
 name: Release amail CLI
 
 on:
   push:
     tags: ['v*.*.*']
   workflow_dispatch:
+    inputs:
+      recover_run_id:
+        description: Optional failed tagged release run whose successful bundle should be published
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -21,6 +25,9 @@ jobs:
     timeout-minutes: 10
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      recover: ${{ steps.version.outputs.recover }}
+      publish: ${{ steps.version.outputs.publish }}
+      source_sha: ${{ steps.version.outputs.source_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,25 +35,42 @@ jobs:
       - name: Require trusted source and matching site/CLI version
         id: version
         shell: bash
+        env:
+          RECOVER_RUN_ID: ${{ inputs.recover_run_id }}
         run: |
           version=$(sed -n '/^\[package\]/,/^\[/{s/^version *= *"\([^"]*\)"/\1/p;}' crates/amail/Cargo.toml | head -n 1)
           test -n "$version"
           site_version=$(python -c 'import json; print(json.load(open("site/package.json"))["version"])')
           test "$site_version" = "$version"
+          recover=false
+          publish=false
+          source_sha="$GITHUB_SHA"
           case "$GITHUB_EVENT_NAME:$GITHUB_REF" in
             push:refs/tags/v*)
               git fetch origin main
               git merge-base --is-ancestor "$GITHUB_SHA" origin/main
               test "v$version" = "$GITHUB_REF_NAME"
+              publish=true
               ;;
-            workflow_dispatch:refs/heads/main) ;;
+            workflow_dispatch:refs/heads/main)
+              if [ -n "$RECOVER_RUN_ID" ]; then
+                [[ "$RECOVER_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+                git fetch origin "refs/tags/v$version:refs/tags/v$version"
+                source_sha=$(git rev-parse "v$version^{commit}")
+                git merge-base --is-ancestor "$source_sha" "$GITHUB_SHA"
+                recover=true
+                publish=true
+              fi
+              ;;
             *) echo '::error::Untrusted release source'; exit 1 ;;
           esac
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          printf 'recover=%s\npublish=%s\nsource_sha=%s\n' "$recover" "$publish" "$source_sha" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.target }}
     needs: preflight
+    if: needs.preflight.outputs.recover != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -107,6 +131,7 @@ jobs:
   assemble:
     name: Assemble and verify release bundle
     needs: [preflight, build]
+    if: needs.preflight.outputs.recover != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -148,9 +173,44 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  recover-bundle:
+    name: Recover verified existing tagged bundle
+    if: needs.preflight.outputs.recover == 'true'
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Admit same-tag successful original bundle and absent Release
+        id: recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVER_RUN_ID: ${{ inputs.recover_run_id }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+        run: python infra/release/recover_bundle.py
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.recovery.outputs.artifact_id }}
+          run-id: ${{ inputs.recover_run_id }}
+          github-token: ${{ github.token }}
+          path: dist
+          merge-multiple: true
+      - name: Verify original bundle names and bytes against its manifest
+        run: python infra/release/verify_published_assets.py dist '${{ needs.preflight.outputs.tag }}' --trusted-manifest dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle-${{ needs.preflight.outputs.tag }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
   send-release-gate:
     name: Require production outbound release attestations
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: needs.preflight.outputs.publish == 'true'
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -169,8 +229,8 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [preflight, assemble, send-release-gate]
+    if: always() && !cancelled() && needs.preflight.outputs.publish == 'true' && needs.preflight.result == 'success' && needs.send-release-gate.result == 'success' && (needs.assemble.result == 'success' || needs.recover-bundle.result == 'success')
+    needs: [preflight, assemble, recover-bundle, send-release-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -189,7 +249,7 @@ jobs:
 
   verify-published:
     name: Verify published Release asset bytes
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: needs.preflight.outputs.publish == 'true'
     needs: [preflight, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -249,7 +309,7 @@ jobs:
       - name: Require deployed mail API before public launch
         working-directory: .
         shell: bash
-        run: curl --fail --silent --show-error --retry 6 --retry-delay 5 https://mail.moesegfault.dev/health > /dev/null
+        run: curl --user-agent amail-release-check/0.1.0 --fail --silent --show-error --retry 6 --retry-delay 5 https://mail.moesegfault.dev/health > /dev/null
       - name: Install locked site dependencies
         run: pnpm install --frozen-lockfile
       - name: Build launch site

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import importlib.util
 import pathlib
 import sys
@@ -17,6 +18,10 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+RECOVERY_SPEC = importlib.util.spec_from_file_location("recover_bundle", SCRIPT.with_name("recover_bundle.py"))
+assert RECOVERY_SPEC and RECOVERY_SPEC.loader
+RECOVERY = importlib.util.module_from_spec(RECOVERY_SPEC)
+RECOVERY_SPEC.loader.exec_module(RECOVERY)
 TAG = "v0.1.0"
 TEMP_ROOT = pathlib.Path(__file__).resolve().parents[2] / ".temp"
 TEMP_ROOT.mkdir(exist_ok=True)
@@ -35,6 +40,90 @@ def write_bundle(directory: pathlib.Path) -> None:
 
 class PublishedAssetIntegrityTest(unittest.TestCase):
     """A complete, canonical, byte-matching bundle is the only passing case."""
+
+    def test_recovery_binds_original_tag_run_complete_jobs_and_live_bundle(self) -> None:
+        """Only the same-repository failed release's complete tagged bundle is reused."""
+        repository, source, run_id = "owner/repo", "a" * 40, 123
+        run = {"id": run_id, "repository": {"full_name": repository}, "head_repository": {"full_name": repository},
+            "path": ".github/workflows/release.yml", "event": "push", "head_branch": TAG, "head_sha": source,
+            "status": "completed", "conclusion": "failure"}
+        names = ["Verify release source", "Assemble and verify release bundle"] + [f"Build {target}" for target, _ in MODULE.TARGETS]
+        jobs = [{"name": name, "status": "completed", "conclusion": "success"} for name in names]
+        artifacts = [{"name": f"release-bundle-{TAG}", "id": 456, "expired": False}]
+        self.assertEqual(RECOVERY.validate(run, jobs, artifacts, repository, TAG, source, run_id), 456)
+        for field, value in (("id", 124), ("path", ".github/workflows/ci.yml"), ("event", "workflow_dispatch"),
+                             ("head_branch", "main"), ("head_sha", "b" * 40), ("status", "in_progress"),
+                             ("conclusion", "success"), ("repository", {"full_name": "other/repo"}),
+                             ("head_repository", {"full_name": "other/repo"})):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                RECOVERY.validate(dict(run, **{field: value}), jobs, artifacts, repository, TAG, source, run_id)
+        for mutation in ("missing", "duplicate", "failed", "running", "published", "expired", "bundle_missing", "bundle_duplicate"):
+            altered_jobs, altered_artifacts = copy.deepcopy(jobs), copy.deepcopy(artifacts)
+            if mutation == "missing":
+                altered_jobs.pop()
+            elif mutation == "duplicate":
+                altered_jobs.append(copy.deepcopy(jobs[0]))
+            elif mutation == "failed":
+                altered_jobs[-1]["conclusion"] = "failure"
+            elif mutation == "running":
+                altered_jobs[-1]["status"] = "in_progress"
+            elif mutation == "published":
+                altered_jobs.append({"name": "Publish GitHub Release", "conclusion": "success"})
+            elif mutation == "expired":
+                altered_artifacts[0]["expired"] = True
+            elif mutation == "bundle_missing":
+                altered_artifacts.clear()
+            else:
+                altered_artifacts.append(copy.deepcopy(artifacts[0]))
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                RECOVERY.validate(run, altered_jobs, altered_artifacts, repository, TAG, source, run_id)
+
+    def test_recovery_requires_positive_release_absence(self) -> None:
+        """Only an HTTP404 response, not transport/auth failure, means unpublished."""
+        with patch.object(RECOVERY.subprocess, "run") as request:
+            request.return_value.returncode = 1
+            request.return_value.stdout = "HTTP/2.0 404 Not Found\n\n{}"
+            RECOVERY.require_absent_release("owner/repo", TAG)
+            for code, status in ((0, 200), (1, 403), (1, 500), (1, 0)):
+                request.return_value.returncode = code
+                request.return_value.stdout = f"HTTP/2.0 {status} unavailable"
+                with self.subTest(status=status), self.assertRaises(ValueError):
+                    RECOVERY.require_absent_release("owner/repo", TAG)
+
+    def test_recovery_invalid_entry_is_denied_before_metadata_requests(self) -> None:
+        """Numeric IDs and trusted main manual entry precede every GitHub read."""
+        env = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
+            "GITHUB_REPOSITORY": "owner/repo", "RECOVER_RUN_ID": "123", "RELEASE_TAG": TAG, "RELEASE_SOURCE_SHA": "a" * 40}
+        for field, value in (("GITHUB_EVENT_NAME", "push"), ("GITHUB_REF", "refs/heads/feature"),
+                             ("RECOVER_RUN_ID", ""), ("RECOVER_RUN_ID", "123/other"), ("RECOVER_RUN_ID", "0")):
+            with self.subTest(field=field, value=value), patch.dict("os.environ", dict(env, **{field: value}), clear=True), patch.object(RECOVERY, "api") as request:
+                self.assertEqual(RECOVERY.main(), 1)
+                request.assert_not_called()
+
+    def test_recovery_workflow_preserves_candidate_and_existing_publish_chain(self) -> None:
+        """Recovery skips rebuilding and never bypasses the real production gate."""
+        from workflow_source import job_block
+        text = (SCRIPT.parents[2] / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        preflight = job_block(text, "preflight")
+        self.assertIn("workflow_dispatch:refs/heads/main)", preflight)
+        self.assertIn('[[ "$RECOVER_RUN_ID" =~ ^[1-9][0-9]*$ ]]', preflight)
+        self.assertIn('git rev-parse "v$version^{commit}"', preflight)
+        self.assertIn('recover=false', preflight)
+        self.assertIn('publish=false', preflight)
+        for name in ("build", "assemble"):
+            self.assertIn("if: needs.preflight.outputs.recover != 'true'", job_block(text, name))
+        recovery = job_block(text, "recover-bundle")
+        self.assertIn("if: needs.preflight.outputs.recover == 'true'", recovery)
+        self.assertIn("artifact-ids: ${{ steps.recovery.outputs.artifact_id }}", recovery)
+        self.assertIn("run-id: ${{ inputs.recover_run_id }}", recovery)
+        self.assertIn("--trusted-manifest dist/SHA256SUMS", recovery)
+        self.assertNotIn("cargo", recovery)
+        publish = job_block(text, "publish")
+        self.assertIn("needs.send-release-gate.result == 'success'", publish)
+        self.assertIn("needs.assemble.result == 'success' || needs.recover-bundle.result == 'success'", publish)
+        self.assertIn("gh release create", publish)
+        self.assertIn("verify_published_assets.py", job_block(text, "verify-published"))
+        self.assertIn("needs: verify-published", job_block(text, "launch-site"))
 
     def test_complete_bundle_passes(self) -> None:
         """The six expected archives and manifest verify without provider access."""

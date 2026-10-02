@@ -68,10 +68,12 @@ class CheckSendGateTest(unittest.TestCase):
             MODULE.run()
         self.assertEqual(fetch.call_count, 2)
         self.assertEqual(fetch.call_args_list[0].args[0].full_url, MODULE.MAIL_HEALTH)
+        self.assertEqual(fetch.call_args_list[0].args[0].get_header("User-agent"), "amail-release-check/0.1.0")
         database_request = fetch.call_args_list[1].args[0]
         self.assertIn(MODULE.PRODUCTION_D1_ID, database_request.full_url)
         self.assertEqual(database_request.get_method(), "POST")
         self.assertIn(b"SELECT", database_request.data)
+        self.assertEqual(database_request.get_header("User-agent"), "amail-release-check/0.1.0")
 
     def test_run_requires_health_and_credentials(self) -> None:
         """无凭据或不健康 API 阻止发布。 / Missing credentials or health deny release."""
