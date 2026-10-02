@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import tomllib
@@ -135,6 +136,10 @@ def diagnostic_facts(account: str, token: str) -> dict:
             subscription.update(extra_source_field_count=len(extra), extra_source_fields_all_null=all(value is None for value in extra.values()),
                                 source_has_account_id="account_id" in source, source_account_match=source.get("account_id") == account,
                                 source_has_zone_name="zone_name" in source)
+            # Provider-owned schema labels only, never source values or prose.
+            subscription["extra_source_fields"] = (sorted(extra) if len(extra) <= 4 and
+                all(isinstance(key, str) and re.fullmatch(r"[a-z_][a-z0-9_]{0,47}", key) for key in extra)
+                else "unavailable")
     except (ValueError, KeyError, TypeError, OSError, forwarding.ProvisionError) as error:
         facts["subscription"] = {"read_failure": failure_reason(error)}
     return facts
