@@ -1,7 +1,7 @@
 /** The only publication states accepted by the static site build. */
 export type ReleaseState = 'candidate' | 'published';
 
-/** Staging version does not change the last published v0.1.0 download contracts. */
+/** Candidate version matches current release coordinates without asserting publication. */
 export const candidateVersion = 'v0.1.2';
 
 /** Candidate documentation never asserts publication or public sending authority. */

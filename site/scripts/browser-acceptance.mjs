@@ -2,15 +2,33 @@
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import { releaseDownloads, releaseVersion, releaseTagUrl } from '../src/releaseDownloads.mjs';
+import { checkPublishedRelease } from './check-release-state.mjs';
 
 const { chromium } = await import(pathToFileURL(process.env.SITE_BROWSER_MODULE).href);
 const base = process.env.SITE_BROWSER_BASE;
 const output = process.env.SITE_BROWSER_OUTPUT;
+const published = process.env.TARGET === 'live-published';
 assert.ok(['http://127.0.0.1:4321', 'https://amail.moesegfault.dev', 'https://amail-staging.moesegfault.dev'].includes(base));
 await mkdir(output, { recursive: true });
 const report = { source: process.env.EVIDENCE_SHA, target: process.env.TARGET,
   deployedRevision: process.env.CANDIDATE_REVISION || null,
   base, started: new Date().toISOString(), cases: [] };
+
+if (published) {
+  assert.equal(base, 'https://amail.moesegfault.dev');
+  assert.match(process.env.CANDIDATE_REVISION ?? '', /^[0-9a-f]{40}$/);
+  const response = await fetch(`https://api.github.com/repos/kleedaisuki/moesegfault-amail/releases/tags/${releaseVersion}`, {
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'amail-site-acceptance',
+      ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}) },
+    signal: AbortSignal.timeout(15000),
+  });
+  assert.equal(response.status, 200, 'published GitHub Release must exist');
+  const release = await response.json();
+  checkPublishedRelease(release);
+  report.release = { tag: release.tag_name, publishedAt: release.published_at,
+    expectedAssets: releaseDownloads.map((asset) => asset.name) };
+}
 
 /** Record independent assertions without hiding later defects after one failure. */
 async function check(result, name, fn) {
@@ -178,11 +196,17 @@ try {
         reducedMotion: 'reduce', colorScheme: 'light', locale: 'zh-CN' });
       const page = await context.newPage();
       page.setDefaultTimeout(10000);
-      await check(result, 'exact route and candidate identity', async () => {
+      await check(result, 'exact route and publication identity', async () => {
         const response = await page.goto(`${base}${route}`, { waitUntil: 'networkidle' });
         assert.equal(response.status(), 200);
         assert.equal(page.url(), `${base}${route}`, 'unexpected redirect');
         assert.match(response.headers()['content-type'], /text\/html/);
+        if (published) {
+          assert.equal(response.headers()['x-amail-release-revision'], process.env.CANDIDATE_REVISION);
+          assert.doesNotMatch(response.headers()['x-robots-tag'] ?? '', /noindex|nofollow/i);
+          assert.equal(response.headers()['x-amail-candidate-revision'], undefined);
+          assert.equal(await page.locator('meta[name="robots"][content*="noindex"]').count(), 0);
+        }
         if (['live-candidate', 'live-staging'].includes(process.env.TARGET)) {
           assert.equal(response.headers()['x-amail-candidate-revision'], process.env.CANDIDATE_REVISION);
           assert.match(response.headers()['x-robots-tag'], /noindex/);
@@ -191,10 +215,23 @@ try {
         await page.evaluate(() => document.fonts.ready);
         assert.equal(await page.locator('main#main').count(), 1);
         const text = await page.locator('main').innerText();
-        const state = { '/': 'v0.1.2 尚未发布', '/manual/': 'v0.1.2 尚未开放下载',
-          '/changelog/': 'v0.1.2 仍在验收' };
-        assert.ok(text.includes(state[route]), 'route-local candidate status missing');
-        assert.ok(text.includes('这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。'));
+        const state = published
+          ? { '/': 'v0.1.2 已发布', '/manual/': 'v0.1.2 已发布', '/changelog/': 'v0.1.2 已正式发布' }
+          : { '/': 'v0.1.2 尚未发布', '/manual/': 'v0.1.2 尚未开放下载', '/changelog/': 'v0.1.2 仍在验收' };
+        assert.ok(text.includes(state[route]), 'route-local publication status missing');
+        if (published) {
+          assert.doesNotMatch(text, /staging 候选|v0\.1\.2 尚未|v0\.1\.2 仍在验收|候选记录日期/);
+          assert.ok(await page.locator(`a[href="${releaseTagUrl}"]`).count() > 0);
+          if (route === '/manual/') {
+            for (const asset of releaseDownloads) {
+              assert.equal(await page.locator(`a[href="${asset.href}"]`).count(), 1,
+                `exact published download missing: ${asset.name}`);
+            }
+          }
+        } else {
+          assert.ok(text.includes('这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。'));
+          for (const asset of releaseDownloads) assert.equal(await page.locator(`a[href="${asset.href}"]`).count(), 0);
+        }
         if (route === '/manual/') {
           for (const command of ['amail discover', 'amail send-status', 'amail events']) {
             assert.ok(text.includes(command), `candidate exploration missing: ${command}`);
@@ -204,8 +241,9 @@ try {
           assert.equal(await page.locator('h2[id="v0.1.2"]').count(), 1,
             'candidate changelog entry must exist independently of page status');
           assert.equal(await page.locator('.toc a[href="#v0.1.2"]').count(), 1);
+          assert.equal(await page.locator('h2[id="v0.1.0"]').count(), 1);
+          assert.equal(await page.locator('.toc a[href="#v0.1.0"]').count(), 1);
         }
-        assert.doesNotMatch(text, /v0\.1\.0 已(?:正式)?发布/);
       });
       await check(result, 'route-local CSS and zero client runtime', async () => {
         result.loading = await page.evaluate(() => ({

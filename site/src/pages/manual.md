@@ -20,9 +20,9 @@ amail 是一个面向 AI Agent 的命令行邮件客户端。你在浏览器里�
 
 > 请确认当前真正公开的 amail 版本，按我的系统选择 CLI 与配套 Agent Skill，使用同一 Release 的 SHA256SUMS 校验后安装；如果尚未完整发布，不要用候选包替代。先说明自动第三方邮件索引的处理方式，再启动 `amail login`，让我自己完成浏览器授权。检查会话与现有地址，优先复用启用的地址。随后只准备我明确授权的任务通知，不要求我学习命令，也不索要口令或令牌。
 
-## v0.1.2 候选：从小入口探索完整工作流
+## 从小入口探索完整工作流
 
-以下是 **staging 候选**的新增能力，不代表 v0.1.2 已正式发布、服务已向公众开放或允许发送。安装来源仍按下方正式发布说明；使用较早版本时，先检查 `amail --version` 和命令帮助，不要把候选命令当作已有能力。
+以下能力随 v0.1.2 提供。页面顶部的发布状态、实际安装版本与服务端策略分别决定安装来源、命令可用性和操作授权；文档本身不开放发送。先检查 `amail --version` 和命令帮助，再用 `amail discover` 探索当前版本支持的工作流。
 
 渐进式披露（Progressive Disclosure）不是删掉复杂能力，而是让 Agent 按任务逐步进入可查询的空间：
 
@@ -75,11 +75,11 @@ amail events --kind bounced --since 2026-10-03T00:00:00Z --limit 20
 
 | 你的设备 | 选择的安装包 |
 | --- | --- |
-| Linux，Intel／AMD 64 位（x86-64） | `amail-v0.1.0-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux，ARM 64 位（AArch64） | `amail-v0.1.0-aarch64-unknown-linux-gnu.tar.gz` |
-| Windows，Intel／AMD 64 位（x86-64） | `amail-v0.1.0-x86_64-pc-windows-msvc.zip` |
-| macOS，Apple 芯片（M 系列） | `amail-v0.1.0-aarch64-apple-darwin.tar.gz` |
-| macOS，Intel 芯片 | `amail-v0.1.0-x86_64-apple-darwin.tar.gz` |
+| Linux，Intel／AMD 64 位（x86-64） | `amail-v0.1.2-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux，ARM 64 位（AArch64） | `amail-v0.1.2-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows，Intel／AMD 64 位（x86-64） | `amail-v0.1.2-x86_64-pc-windows-msvc.zip` |
+| macOS，Apple 芯片（M 系列） | `amail-v0.1.2-aarch64-apple-darwin.tar.gz` |
+| macOS，Intel 芯片 | `amail-v0.1.2-x86_64-apple-darwin.tar.gz` |
 
 这些是**原生**安装包；目前没有 Windows ARM 原生包，也没有 Linux musl 包。Linux 包使用 GNU libc。若不确定 CPU 类型，Linux/macOS 可运行 `uname -m`（`x86_64` 或 `aarch64`／`arm64`）；Windows 在“设置 → 系统 → 系统信息”查看系统类型。安装包和校验文件必须来自**同一个** GitHub Release，不要从聊天消息复制别人提供的散列值。
 
@@ -88,7 +88,7 @@ amail events --kind bounced --since 2026-10-03T00:00:00Z --limit 20
 在下载目录的终端运行；若是 ARM 64 位，将第一行换成表中的 ARM 文件名：
 
 ```sh
-archive=amail-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+archive=amail-v0.1.2-x86_64-unknown-linux-gnu.tar.gz
 awk -v file="$archive" '$2 == file { print }' SHA256SUMS | sha256sum --check -
 ```
 
@@ -108,7 +108,7 @@ amail --version
 Apple 芯片使用下列文件名；Intel Mac 将第一行换成表中的 Intel 文件名：
 
 ```sh
-archive=amail-v0.1.0-aarch64-apple-darwin.tar.gz
+archive=amail-v0.1.2-aarch64-apple-darwin.tar.gz
 awk -v file="$archive" '$2 == file { print }' SHA256SUMS | shasum -a 256 --check -
 ```
 
@@ -129,7 +129,7 @@ amail --version
 
 ```powershell
 & {
-$archive = 'amail-v0.1.0-x86_64-pc-windows-msvc.zip'
+$archive = 'amail-v0.1.2-x86_64-pc-windows-msvc.zip'
 $checksumLines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith("  $archive", [StringComparison]::Ordinal) })
 if ($checksumLines.Count -ne 1) { throw 'SHA256SUMS 中没有唯一的安装包记录' }
 $expected = ($checksumLines[0] -split '\s+')[0]
@@ -148,7 +148,7 @@ amail --version
 
 上面的 SHA-256 校验不通过时，`throw` 会中止该段，不要继续解压。用户 `PATH` 修改会对新开的终端生效；当前终端也已临时加入路径。若 PowerShell 受设备策略限制，请让设备管理员协助，而不是关闭安全策略。
 
-Agent Skill 的文件名为 `amail-agent-skill-v0.1.0.zip`；它应与 CLI 安装包来自同一个 GitHub Release。解压前，按上面的系统校验步骤，将文件名换成 Skill ZIP，核对 `SHA256SUMS` 中对应的唯一记录。Agent 若支持安装 Skill，可将 ZIP 中的 `amail/` 文件夹及其引用文档一并放入其 Skill 目录；具体目录以该 Agent 的安装说明为准。这不是 CLI 的运行依赖，也不要用它替代 CLI 安装包校验。准备好之后，让 Agent **在你的设备上**启动登录：
+Agent Skill 的文件名为 `amail-agent-skill-v0.1.2.zip`；它应与 CLI 安装包来自同一个 GitHub Release。解压前，按上面的系统校验步骤，将文件名换成 Skill ZIP，核对 `SHA256SUMS` 中对应的唯一记录。Agent 若支持安装 Skill，可将 ZIP 中的 `amail/` 文件夹及其引用文档一并放入其 Skill 目录；具体目录以该 Agent 的安装说明为准。这不是 CLI 的运行依赖，也不要用它替代 CLI 安装包校验。准备好之后，让 Agent **在你的设备上**启动登录：
 
 ```sh
 amail login
@@ -198,7 +198,7 @@ amail search --title "release.*" --regex --case-sensitive
 amail search --semantic "讨论发布风险的邮件"
 ```
 
-`--meta` 原有四个键为 `message_id`（原始邮件 ID）、`in_reply_to`（回复关系）、`content_type`（内容类型）和 `attachment_name`（附件名称）。v0.1.2 候选还支持 `rfc_message_id`（已验证 RFC 标识）、`provider_id`（供应商标识）、`reply_to`（建议回复地址）和 `references`（关联链中的单个标识）。可以用多个 `--meta KEY=VALUE` 分别指定不同键，并与其他条件一起筛选；同一个键在一次命令里写两遍会报错，而不会悄悄覆盖前一个条件。
+`--meta` 原有四个键为 `message_id`（原始邮件 ID）、`in_reply_to`（回复关系）、`content_type`（内容类型）和 `attachment_name`（附件名称）。v0.1.2 还支持 `rfc_message_id`（已验证 RFC 标识）、`provider_id`（供应商标识）、`reply_to`（建议回复地址）和 `references`（关联链中的单个标识）。可以用多个 `--meta KEY=VALUE` 分别指定不同键，并与其他条件一起筛选；同一个键在一次命令里写两遍会报错，而不会悄悄覆盖前一个条件。
 
 多个条件一起使用时表示“同时满足”。时间区间的起点包含在内，终点不包含；`--regex` 对文本条件启用正则匹配，`--case-sensitive` 启用区分大小写。语义检索在服务端执行：邮件文本会自动建立索引；使用 `--semantic` 时，检索词也会发送给 OpenRouter。若第一页还有后续结果，服务端会在仅限本账号读取的检索任务中保留该检索词、其查询向量和游标签名密钥，最长 24 小时；后续页面复用同一向量，不会再次把检索词发送给模型。游标过期或邮箱变更时需从第一页重新检索，不能拼接新旧结果。普通条件检索不会额外把检索词发送给模型，但不会停止邮件的自动索引。默认输出是紧凑的 JSON Lines，适合管道捕获和 Agent 进一步筛选；它不是为屏幕阅读设计的邮件视图。
 
@@ -303,7 +303,7 @@ amail --human search --title "release"
 
 amail 会记录用于诊断的本地操作轨迹，并向邮件服务上传脱敏遥测。轨迹不应包含邮件正文、标题、完整地址、令牌、ZIP 路径或搜索词；服务端也只需保留定位故障所需的结构化信息。使用 `amail config` 可查看当前遥测状态；设置环境变量 `AMAIL_TELEMETRY=off` 可停止后续诊断记录与上传，但不会删除已有的本地诊断记录。
 
-删除可见的已发邮件后，消息包会由定期清理移除；但为处理迟到的退信和投诉，受限的发件人、完整收件人名单（包括密送）及投递反馈记录通常会在各自生成后 **90 天**由定期清理移除，积压或故障时可能稍晚。投诉拦截与操作审计记录可能保留到复核处理完成。这些运营记录不含邮件正文或标题，也不会出现在普通 CLI 邮件检索结果或脱敏遥测中。v0.1.2 候选允许原账号按需查询尚可见发件的有界、结构化投递反馈；不会暴露运营备注，也不会通过这些查询找回已删除的消息或其收件人列表。**删除邮件不等于立即删除全部运营记录**。
+删除可见的已发邮件后，消息包会由定期清理移除；但为处理迟到的退信和投诉，受限的发件人、完整收件人名单（包括密送）及投递反馈记录通常会在各自生成后 **90 天**由定期清理移除，积压或故障时可能稍晚。投诉拦截与操作审计记录可能保留到复核处理完成。这些运营记录不含邮件正文或标题，也不会出现在普通 CLI 邮件检索结果或脱敏遥测中。v0.1.2 允许原账号按需查询尚可见发件的有界、结构化投递反馈；不会暴露运营备注，也不会通过这些查询找回已删除的消息或其收件人列表。**删除邮件不等于立即删除全部运营记录**。
 
 站点的 `postmaster` 和 `abuse` 角色邮箱由 Cloudflare 精确转发给受限的**外部邮箱服务商**，由授权运营人员处理；首发版没有自动化举报或案件页面。你发给这些角色的报告可能包含邮件头、标题、正文和附件，不进入普通 amail 邮箱、检索或遥测；外部邮箱中的副本**不属于上文 90 天结构化记录的定期清理范围**。对外宣称联系通道可用之前，必须以真实邮件验证转发和监控。请勿在报告中附上密码或令牌。
 
