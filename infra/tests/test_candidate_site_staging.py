@@ -19,7 +19,7 @@ class StagingSiteTests(unittest.TestCase):
         links = '<a href="/">Home</a><a href="/manual/">Manual</a><a href="/changelog/">Changelog</a>'
         if label is not None:
             links += '<a href="https://github.com/kleedaisuki/moesegfault-amail/releases">Releases</a>'
-            links += f'<nav aria-label="{label}"><a href="#候选工作流">Workflow</a></nav><h2 id="候选工作流">Workflow</h2>'
+            links += f'<nav aria-label="{label}"><a href="#从小入口探索完整工作流">Workflow</a></nav><h2 id="从小入口探索完整工作流">Workflow</h2>'
             if route == "changelog":
                 links = links.replace('</nav>', '<a href="#v0.1.2">v0.1.2</a></nav>')
                 links += '<h2 id="v0.1.2">v0.1.2</h2>'

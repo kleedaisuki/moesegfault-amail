@@ -115,8 +115,8 @@ def check_page(route, html):
         raise ValueError("changelog: current candidate entry or TOC target missing")
     if route == "manual" and (not all(command in text for command in
             ("amail discover", "amail send-status", "amail events"))
-            or not any("候选" in unquote(href[1:]) for href in page.toc_links)):
-        raise ValueError("manual: candidate exploration commands or section anchor missing")
+            or "#从小入口探索完整工作流" not in {unquote(href) for href in page.toc_links}):
+        raise ValueError("manual: exploration commands or current section anchor missing")
 
 
 def check_response_headers(route, headers, revision):
