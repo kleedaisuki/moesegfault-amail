@@ -115,22 +115,40 @@ def retained_snapshot(provider: FreshProvider) -> dict:
     if pins != ADAPTER_PINS:
         raise ValueError("production_retained_adapters_changed")
     from check_staging_adapters import forwarding
+    from ensure_email_events import EVENTS, ZONE
+    queues = retained.readback.complete(provider, f"accounts/{provider.account}/queues", "queue_id", 100)
+    found = {name: [row for row in queues if row.get("queue_name") == name]
+             for name in ("amail-sending-events", "amail-sending-events-dlq")}
+    if any(len(rows) != 1 for rows in found.values()):
+        raise ValueError("production_retained_subscription_unverified")
+    main = found["amail-sending-events"][0]
+    selected = {rows[0]["queue_id"] for rows in found.values()}
     subscriptions = forwarding.pages(forwarding.Client(token=provider.token, account=provider.account),
                                      f"/accounts/{provider.account}/event_subscriptions/subscriptions")
-    related = [row for row in subscriptions if row.get("source", {}).get("type") == "email.sending"
-               and row.get("source", {}).get("domain") == "mail.moesegfault.dev"]
+    seen, related = set(), []
+    for row in subscriptions:
+        identity, source, destination = row.get("id"), row.get("source"), row.get("destination")
+        if (not isinstance(identity, str) or not 1 <= len(identity) <= 256 or identity in seen
+                or not isinstance(source, dict) or not isinstance(destination, dict)):
+            raise ValueError("production_retained_subscription_unverified")
+        seen.add(identity)
+        if (source.get("type") == "email.sending" and source.get("domain") == "mail.moesegfault.dev"
+                or destination.get("queue_id") in selected):
+            related.append(row)
     if len(related) != 1:
         raise ValueError("production_retained_subscription_unverified")
     subscription = related[0]
     source = subscription["source"]
-    from ensure_email_events import EVENTS, ZONE
-    queues = retained.readback.complete(provider, f"accounts/{provider.account}/queues", "queue_id", 100)
-    main = [row for row in queues if row.get("queue_name") == "amail-sending-events"]
-    if (len(main) != 1 or subscription.get("name") != "amail-sending-lifecycle"
-            or subscription.get("enabled") is not True or subscription.get("type") != "queues"
-            or set(source) - {"type", "zone_id", "domain", "name"} or source.get("zone_id") != ZONE
+    # API subscription rows have no top-level type discriminator. The documented
+    # destination.type is queues.queue; neither an invented guard nor a broader
+    # destination alias belongs in the production contract.
+    if (subscription.get("name") != "amail-sending-lifecycle"
+            or subscription.get("enabled") is not True
+            or set(source) - {"type", "zone_id", "domain", "name"}
+            or any(source.get(key) != value for key, value in
+                   {"type": "email.sending", "zone_id": ZONE, "domain": "mail.moesegfault.dev"}.items())
             or "name" in source and (not isinstance(source["name"], str) or len(source["name"]) > 256)
-            or subscription.get("destination") != {"type": "queues", "queue_id": main[0]["queue_id"]}
+            or subscription.get("destination") != {"type": "queues.queue", "queue_id": main["queue_id"]}
             or not isinstance(subscription.get("events"), list)
             or sorted(subscription["events"]) != sorted(EVENTS.split(","))):
         raise ValueError("production_retained_subscription_unverified")
