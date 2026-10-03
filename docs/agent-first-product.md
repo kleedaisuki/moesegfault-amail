@@ -392,6 +392,17 @@ coverage is a product diagnostic, not a claimed population success rate or SLA.
 
 ## Implementation discipline
 
+The v0.1.2 Skill now applies progressive disclosure: its entry is 590 English
+words (554 body words), down from 1,973, with eight task-selected references.
+The public and repository-local nine-document trees are byte-identical. Existing
+archive/search/workflow reference paths remain valid. Privacy and task-authority
+boundaries stay in the entry; detailed procedures and catalogs load only for the
+selected task. Offline checks against the checksum-verified Windows candidate
+covered eight discovery topics and sixteen command-help contracts. This is a
+context-size and usability improvement, not a measured autonomous success rate.
+See [Agent Skills design](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills)
+for the underlying progressive-disclosure mechanism.
+
 Prefer additive metadata, reuse the existing outcome/key stores, and keep old
 CLI/ZIP clients working. Do not create a universal orchestration abstraction,
 duplicate status ledger, broad test framework or new deployment lane for this
