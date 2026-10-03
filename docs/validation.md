@@ -186,6 +186,25 @@ synthetic production journey does not claim the owner's account was exercised.
 Correlation is not a complete native Cloudflare trace waterfall. No measurement
 establishes large-mailbox throughput or an indexing latency SLA.
 
+### Normal production upgrade preparation (not deployed)
+
+The newly authorized v0.1.2 publication requires a normal production upgrade,
+not reuse of a bootstrap/API-only lane. Implementation now binds the original
+successful online receipt from run `36938451911` / artifact `11199880674` and its
+exact deployment/version/store/trace Queue pins. Its retained ingress/events/sink
+and trace-schema component trees were compared against source
+`45f8dc41c82866ce47877601340113e28e8fb99d`; only package version metadata differs.
+This source check is not a fresh production inventory or permission to deploy.
+
+156 focused infrastructure tests passed locally, including seven normal-upgrade
+contracts: allowed/held exact policy reads, read/write authority separation,
+preflight failure before mutation, migration/API/maintenance ordering, ambiguous
+second-submit no retry, retained runtime change rejection and policy drift stop.
+Actionlint and diff whitespace checks passed. No local heavy build, production
+provider mutation, mail action or workflow dispatch was performed. Hosted full CI,
+actual `production-inspect` and normal replacement results remain pending; release
+publication/site evidence must likewise be recorded only after the owner's runs.
+
 ## Verification proportional to value
 
 The owner's preserved local audit records source-level repair candidates outside

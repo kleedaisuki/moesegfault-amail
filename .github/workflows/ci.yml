@@ -18,9 +18,9 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging-inspect, staging, staging-e2e, production, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [checks, staging-inspect, staging, staging-e2e, production-inspect, production, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
-        description: Documented RUN_* confirmation; production bootstrap or api-only maintenance is explicit
+        description: Documented RUN_* or INSPECT_* confirmation; normal split upgrade preserves live policy
         required: false
         type: string
       trace_containment_run:
@@ -69,7 +69,7 @@ permissions:
 # Checks can supersede obsolete checks; shared-state manual operations never cancel each other.
 # Keep the existing manual group so in-flight acceptance remains mutually exclusive.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
@@ -669,6 +669,9 @@ jobs:
         run: pnpm build
       - name: Check published copy and navigation
         run: pnpm check:release-state published
+      - name: Exercise source-pinned script-free production asset preparation
+        working-directory: .
+        run: python infra/release/published_site.py prepare "$GITHUB_SHA" "v$(node -p "require('./site/package.json').version")"
 
       - name: Measure bounded published compatibility site payload budget
         run: node scripts/measure-performance.mjs > ../.temp/performance/site-published.json
@@ -729,6 +732,11 @@ jobs:
     name: Deploy mail API
     if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main'
     needs: [cli, worker, site, dns, provider-live, deploy-trace-sink, worker-build]
+    outputs:
+      api_version: ${{ steps.upgrade.outputs.api_version || steps.api.outputs.version }}
+      maintenance_version: ${{ steps.upgrade.outputs.maintenance_version }}
+      policy_fingerprint: ${{ steps.upgrade.outputs.policy_fingerprint }}
+      external_fingerprint: ${{ steps.upgrade.outputs.external_fingerprint }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: production
@@ -751,6 +759,11 @@ jobs:
       AMAIL_EXPECTED_WORKER_VERSION: ${{ vars.AMAIL_MAIL_VERSION_PRODUCTION }}
       AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ needs.deploy-trace-sink.outputs.sink_version }}
       AMAIL_TRACE_TOPOLOGY: api-only
+      AMAIL_PRODUCTION_ENVIRONMENT: production
+      AMAIL_PRODUCTION_GRAPH_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
+      AMAIL_UPGRADE_POLICY_FINGERPRINT: ${{ needs.deploy-trace-sink.outputs.policy_fingerprint }}
+      AMAIL_UPGRADE_EXTERNAL_FINGERPRINT: ${{ needs.deploy-trace-sink.outputs.external_fingerprint }}
     steps:
       - name: Verify deployment secrets before installing tools
         working-directory: .
@@ -763,6 +776,8 @@ jobs:
             fi
           done
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Download exact tested same-run Worker modules
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -785,27 +800,55 @@ jobs:
       - name: Verify authoritative Email Sending DNS
         working-directory: .
         run: python infra/dns/verify_sending.py
+      - name: Upgrade exact active API and maintenance without changing sending policy
+        if: inputs.target == 'production'
+        id: upgrade
+        working-directory: .
+        run: python infra/deploy/production_upgrade.py upgrade
+      - name: Preserve partial production write coordinates without policy or contact data
+        if: always() && inputs.target == 'production'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-upgrade-partial-${{ github.run_id }}
+          path: |
+            .temp/production-upgrade-partial.jsonl
+            .temp/production-upgrade-capture.jsonl
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Preserve successful normal-upgrade graph and non-content fingerprints
+        if: inputs.target == 'production' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-upgrade-${{ github.run_id }}
+          path: .temp/production-upgrade.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Recheck strict maintenance graph before schema or provider changes
         if: inputs.target == 'production-api-only-maintenance'
         working-directory: .
         run: python infra/deploy/check_production_role_graph.py --phase api-only
       - name: Disable and verify user-domain Email preview and partial suppression drops
+        if: inputs.target == 'production-api-only-maintenance'
         working-directory: .
         run: python infra/provider/configure_sending_privacy.py --target production
       - name: Verify runtime Email Routing Rules read access
+        if: inputs.target == 'production-api-only-maintenance'
         working-directory: .
         run: python infra/provider/probe_routing.py
       - name: Apply remote D1 migrations
+        if: inputs.target == 'production-api-only-maintenance'
         run: wrangler d1 migrations apply MAIL_DB --remote
       - name: Recheck exact maintenance graph immediately before Mail replacement
         if: inputs.target == 'production-api-only-maintenance'
         working-directory: .
         run: python infra/deploy/check_production_role_graph.py --phase api-only
       - name: Deploy mail Worker with redacted output and exact recovery version
+        if: inputs.target == 'production-api-only-maintenance'
         id: api
         working-directory: .
         run: python infra/deploy/deploy_production_mail.py
       - name: Verify exact graph phase, serving bindings, capture and held sending
+        if: inputs.target == 'production-api-only-maintenance'
         working-directory: .
         env:
           AMAIL_EXPECTED_WORKER_VERSION: ${{ steps.api.outputs.version }}
@@ -821,93 +864,62 @@ jobs:
         run: curl --fail --silent --show-error --retry-all-errors --retry 12 --retry-delay 5 --max-time 10 https://mail.moesegfault.dev/health
 
   deploy-ingress:
-    name: Deploy Rust SMTP ingress
+    name: Verify retained production SMTP ingress
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
-    needs: [deploy-worker, worker, worker-build]
+    needs: [deploy-worker, worker-build]
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 15
     environment: production
-    concurrency:
-      group: deploy-ingress-production
-      cancel-in-progress: false
-    defaults:
-      run:
-        working-directory: workers/mail-ingress
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      AMAIL_PRODUCTION_ENVIRONMENT: production
+      AMAIL_PRODUCTION_GRAPH_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
+      AMAIL_UPGRADE_POLICY_FINGERPRINT: ${{ needs.deploy-worker.outputs.policy_fingerprint }}
+      AMAIL_UPGRADE_EXTERNAL_FINGERPRINT: ${{ needs.deploy-worker.outputs.external_fingerprint }}
+      AMAIL_UPGRADE_API_VERSION: ${{ needs.deploy-worker.outputs.api_version }}
+      AMAIL_UPGRADE_MAINTENANCE_VERSION: ${{ needs.deploy-worker.outputs.maintenance_version }}
     steps:
       - uses: actions/checkout@v4
-      - name: Download exact tested same-run Worker modules
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          artifact-ids: ${{ needs.worker-build.outputs.artifact_id }}
-          path: .temp/ci/worker-built
-          merge-multiple: true
-      - name: Verify source run compiler and every generated byte before provider changes
-        working-directory: .
-        run: python infra/ci/worker_artifact.py restore
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install pinned Wrangler
-        run: |
-          npm install --global wrangler@4.142.0
-      - name: Deploy Rust Email-event Worker with shared secret
-        shell: bash
-        run: |
-          test -n "$INGRESS_SECRET"
-          umask 077
-          mkdir -p ../../.temp
-          trap 'rm -f ../../.temp/ingress-secrets.json' EXIT
-          node -e 'const fs = require("fs"); fs.writeFileSync("../../.temp/ingress-secrets.json", JSON.stringify({INGRESS_SECRET: process.env.INGRESS_SECRET}));'
-          wrangler deploy --secrets-file ../../.temp/ingress-secrets.json
-
-  deploy-events:
-    name: Deploy Rust sending lifecycle consumer
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
-    needs: [deploy-worker, worker, worker-build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    environment: production
-    concurrency:
-      group: deploy-events-production
-      cancel-in-progress: false
-    defaults:
-      run:
-        working-directory: workers/mail-events
-    env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download exact tested same-run Worker modules
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          artifact-ids: ${{ needs.worker-build.outputs.artifact_id }}
-          path: .temp/ci/worker-built
-          merge-multiple: true
-      - name: Verify source run compiler and every generated byte before provider changes
-        working-directory: .
-        run: python infra/ci/worker_artifact.py restore
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install pinned Wrangler
-        run: |
-          npm install --global wrangler@4.142.0
-      - name: Ensure production lifecycle Queue and DLQ
-        working-directory: .
-        run: python infra/deploy/ensure_email_events.py --target production --phase queues
-      - name: Deploy production lifecycle consumer
-        run: wrangler deploy
-      - name: Ensure production Email Sending Event Subscription
-        working-directory: .
-        run: python infra/deploy/ensure_email_events.py --target production --phase subscription
+      - name: Verify retained owned adapters and unchanged complete split graph
+        run: python infra/deploy/production_upgrade.py verify
+
+  deploy-events:
+    name: Verify retained production lifecycle consumer
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
+    needs: [deploy-worker, worker-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      AMAIL_PRODUCTION_ENVIRONMENT: production
+      AMAIL_PRODUCTION_GRAPH_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
+      AMAIL_UPGRADE_POLICY_FINGERPRINT: ${{ needs.deploy-worker.outputs.policy_fingerprint }}
+      AMAIL_UPGRADE_EXTERNAL_FINGERPRINT: ${{ needs.deploy-worker.outputs.external_fingerprint }}
+      AMAIL_UPGRADE_API_VERSION: ${{ needs.deploy-worker.outputs.api_version }}
+      AMAIL_UPGRADE_MAINTENANCE_VERSION: ${{ needs.deploy-worker.outputs.maintenance_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify retained owned adapters and unchanged complete split graph
+        run: python infra/deploy/production_upgrade.py verify
 
   release-ready:
     name: Gate public site on verified published release
@@ -983,6 +995,9 @@ jobs:
         run: pnpm build
       - name: Verify published site copy before production deploy
         run: pnpm check:release-state published
+      - name: Prepare exact release revision and script-free production headers
+        working-directory: .
+        run: python infra/release/published_site.py prepare "$GITHUB_SHA" "v$(node -p "require('./site/package.json').version")"
       - name: Deploy Astro assets to Workers
         run: pnpm run deploy
       - name: Smoke test published pages
@@ -993,52 +1008,31 @@ jobs:
           mkdir -p .temp
           smoke_dir=$(mktemp -d .temp/site-smoke.XXXXXX)
           trap 'rm -f -- "$smoke_dir"/*.html "$smoke_dir"/*.headers; rmdir -- "$smoke_dir"' EXIT
-          # One GET per exact public route; curl does not follow redirects.
-          for route in home manual changelog; do
-            path=/
-            if [ "$route" != home ]; then path="/$route/"; fi
-            status=$(curl --fail --silent --show-error --retry 6 --retry-delay 5 \
-              --dump-header "$smoke_dir/$route.headers" --output "$smoke_dir/$route.html" \
-              --write-out '%{http_code}' "https://amail.moesegfault.dev$path")
-            if [ "$status" != 200 ]; then
-              echo "::error::$route: expected HTTP 200, got $status"
-              exit 1
+          tag="v$(node -p "require('./site/package.json').version")"
+          deadline=$((SECONDS + 120))
+          # Public GET readiness only; never replay a successful site submit.
+          while ((SECONDS < deadline)); do
+            ready=true
+            for route in home manual changelog; do
+              path=/
+              if [ "$route" != home ]; then path="/$route/"; fi
+              remaining=$((deadline - SECONDS))
+              if ((remaining <= 0)); then ready=false; break; fi
+              maximum=$((remaining < 15 ? remaining : 15))
+              if ! curl --fail --silent --show-error --connect-timeout 10 --max-time "$maximum" \
+                --user-agent 'Mozilla/5.0 (compatible; AmailPublishedAcceptance/0.1.2)' \
+                --dump-header "$smoke_dir/$route.headers" --output "$smoke_dir/$route.html" \
+                "https://amail.moesegfault.dev$path"; then ready=false; fi
+            done
+            if "$ready" && python infra/release/published_site.py smoke "$smoke_dir" "$GITHUB_SHA" "$tag"; then
+              exit 0
             fi
+            remaining=$((deadline - SECONDS))
+            if ((remaining <= 0)); then break; fi
+            sleep "$((remaining < 3 ? remaining : 3))"
           done
-          python - "$smoke_dir" <<'PY'
-          from html.parser import HTMLParser
-          from pathlib import Path
-          import re
-          import sys
-
-          class Anchors(HTMLParser):
-              """Collect actual anchor href attributes, excluding lookalike attributes."""
-
-              def __init__(self):
-                  super().__init__()
-                  self.hrefs = set()
-
-              def handle_starttag(self, tag, attrs):
-                  if tag == 'a':
-                      self.hrefs.update(value for name, value in attrs if name == 'href')
-
-          pages = {
-              'home': ('v0.1.0 已发布', 'v0.1.0 尚未发布'),
-              'manual': ('v0.1.0 已发布', 'v0.1.0 尚未开放下载'),
-              'changelog': ('v0.1.0 已正式发布', 'v0.1.0 仍在验收'),
-          }
-          tag_url = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0'
-          root = Path(sys.argv[1])
-          for route, (published, candidate) in pages.items():
-              html = (root / f'{route}.html').read_text(encoding='utf-8')
-              headers = (root / f'{route}.headers').read_text(encoding='utf-8')
-              anchors = Anchors()
-              anchors.feed(html)
-              if published not in html or candidate in html or tag_url not in anchors.hrefs:
-                  raise SystemExit(f'::error::{route}: published copy or exact Release href is missing, or candidate copy remains')
-              if re.search('noindex', html, re.IGNORECASE) or re.search(r'^x-robots-tag\s*:[^\r\n]*\bnoindex\b', headers, re.IGNORECASE | re.MULTILINE):
-                  raise SystemExit(f'::error::{route}: production response must be indexable')
-          PY
+          echo '::error::Published site semantic readiness timed out without replaying deployment'
+          exit 1
 
   staging-site:
     name: Deploy isolated staging release site
@@ -1450,14 +1444,47 @@ jobs:
       - name: Read back deployed recipient allowlist and private bucket
         run: python workers/identity-test-inbox/check_config.py --live --deployed
 
+  production-inspect:
+    name: Inspect owned active production upgrade predecessor
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production-inspect' && github.ref == 'refs/heads/main' && inputs.confirm == 'INSPECT_PRODUCTION_V012'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      AMAIL_PRODUCTION_ENVIRONMENT: production
+      AMAIL_PRODUCTION_GRAPH_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read exact serving capabilities and current policy without provider writes
+        run: python infra/deploy/production_upgrade.py inspect
+      - name: Preserve non-content owned predecessor readback
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-upgrade-inspect-${{ github.run_id }}
+          path: .temp/production-upgrade.json
+          if-no-files-found: error
+          retention-days: 30
+
   deploy-trace-sink:
     name: Deploy private production privacy trace sink
     if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main'
     needs: [worker, dns, worker-build]
     outputs:
-      queue_id: ${{ steps.queues.outputs.queue_id }}
-      dlq_id: ${{ steps.queues.outputs.dlq_id }}
-      sink_version: ${{ steps.sink.outputs.version }}
+      queue_id: ${{ steps.upgrade.outputs.queue_id || steps.queues.outputs.queue_id }}
+      dlq_id: ${{ steps.upgrade.outputs.dlq_id || steps.queues.outputs.dlq_id }}
+      sink_version: ${{ steps.upgrade.outputs.sink_version || steps.sink.outputs.version }}
+      policy_fingerprint: ${{ steps.upgrade.outputs.policy_fingerprint }}
+      external_fingerprint: ${{ steps.upgrade.outputs.external_fingerprint }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     environment: production
@@ -1476,8 +1503,11 @@ jobs:
       AMAIL_PRODUCTION_GRAPH_CONFIRM: ${{ inputs.confirm }}
       AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
       AMAIL_TRACE_TOPOLOGY: api-only
+      AMAIL_PRODUCTION_ENVIRONMENT: production
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Download exact tested same-run Worker modules
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -1490,12 +1520,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Admit owned active production predecessor without sink or Queue writes
+        if: inputs.target == 'production'
+        id: upgrade
+        run: python infra/deploy/production_upgrade.py preflight
       - name: Install pinned private sink deployment tools
+        if: inputs.target == 'production-api-only-maintenance'
         run: |
           npm install --global wrangler@4.142.0
       - name: Require explicit graph lifecycle before any production mutation
+        if: inputs.target == 'production-api-only-maintenance'
         run: python infra/deploy/prepare_production_graph.py --phase "${{ inputs.target == 'production-api-only-maintenance' && 'api-only-maintenance' || 'bootstrap' }}"
       - name: Preserve existing strict graph IDs for maintenance; provision only first bootstrap
+        if: inputs.target == 'production-api-only-maintenance'
         id: queues
         shell: bash
         run: |
@@ -1506,7 +1543,7 @@ jobs:
             python infra/deploy/ensure_trace_queues.py --target production --phase queues --topology api-only
           fi
       - name: Preserve partial provisioning identity without payloads
-        if: always()
+        if: always() && inputs.target == 'production-api-only-maintenance'
         uses: actions/upload-artifact@v4
         with:
           name: trace-queue-provision-production-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1517,10 +1554,12 @@ jobs:
         if: inputs.target == 'production-api-only-maintenance'
         run: python infra/deploy/check_production_role_graph.py --phase api-only
       - name: Deploy Queue-only trace consumer without secrets or HTTP route
+        if: inputs.target == 'production-api-only-maintenance'
         id: sink
         working-directory: workers/trace-sink
         run: python ../../infra/deploy/deploy_trace_sink.py --target production
       - name: Verify sink retained telemetry and private trigger boundary
+        if: inputs.target == 'production-api-only-maintenance'
         env:
           AMAIL_EXPECTED_TRACE_SINK_VERSION: ${{ steps.sink.outputs.version }}
           AMAIL_TRACE_QUEUE_ID: ${{ steps.queues.outputs.queue_id }}

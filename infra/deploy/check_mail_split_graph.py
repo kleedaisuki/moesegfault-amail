@@ -20,7 +20,7 @@ from pin_staging_mail import ACCOUNT, UUID, bindings_match, serving_deployment
 FAILURES = frozenset({"split_graph_state_unreviewed", "split_pins_unverified", "split_serving_unverified",
                       "split_hold_unverified", "split_role_absence_unverified", "split_api_unverified",
                       "split_privacy_unverified", "split_graph_changed", "maintenance_absence_unverified",
-                      "split_role_boundary_unverified"})
+                      "split_role_boundary_unverified", "split_policy_unverified"})
 
 
 def role_capabilities(version: dict) -> dict:
@@ -109,6 +109,26 @@ def held_send(realm: str) -> None:
         raise ValueError("split_hold_unverified")
 
 
+def global_policy() -> dict:
+    """Read the exact existing production global policy without changing its state.
+
+    Only normal active-split replacement uses this contract. Historical activation
+    and staging paths continue to require the established held-send guard.
+    """
+    sys.path.insert(0, str(ROOT / "infra/operator"))
+    from direct_contact_health import DatabaseClient, one_row
+    row = one_row(DatabaseClient(os.getenv("CLOUDFLARE_ACCOUNT_ID", ""),
+                                os.getenv("CLOUDFLARE_API_TOKEN", ""), "production")
+                  .query("SELECT * FROM send_policy WHERE scope='global'"))
+    if (set(row) != {"scope", "owner_iss", "owner_sub", "state", "reason_code", "actor", "note_ref", "updated_at"}
+            or row["scope"] != "global" or row["owner_iss"] != "*" or row["owner_sub"] != "*"
+            or row["state"] not in ("allowed", "held") or type(row["updated_at"]) is not int or row["updated_at"] < 0
+            or any(not isinstance(row[key], str) or not 1 <= len(row[key]) <= 256 for key in ("reason_code", "actor"))
+            or row["note_ref"] is not None and (not isinstance(row["note_ref"], str) or len(row["note_ref"]) > 256)):
+        raise ValueError("split_policy_unverified")
+    return row
+
+
 def direct_forward_snapshot(realm: str, account: str, token: str) -> object:
     """Production retains exact four direct forwards; staging uses existing ingress graph.
 
@@ -132,8 +152,18 @@ def direct_forward_snapshot(realm: str, account: str, token: str) -> object:
     return {"role": None}
 
 
-def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = ()) -> dict:
+def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_policy: dict | None = None) -> dict:
     """Require exact selected graph, independent privacy and unchanged serving brackets."""
+    if expected_policy is not None and (realm != "production" or state != "active" or old_crons):
+        raise ValueError("split_policy_unverified")
+
+    def check_policy() -> None:
+        """Preserve every global policy field, or retain the historical hold gate."""
+        if expected_policy is None:
+            held_send(realm)
+        elif global_policy() != expected_policy:
+            raise ValueError("split_policy_unverified")
+
     legacy = state == "legacy-pinned"
     if not legacy:
         expected_schedules(state)
@@ -157,7 +187,7 @@ def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = ()) -> dict:
             or os.getenv("AMAIL_ROLE_ROUTED_COUNT", "") not in ("", "0")):
         raise ValueError("split_pins_unverified")
     before = serving(account, token, pins)
-    held_send(realm)
+    check_policy()
     forwards = direct_forward_snapshot(realm, account, token)
     queues.reconcile(account, token, realm, "readback", topology)
     version = capture.readback(account, token, api, f"versions/{pins[api]}")
@@ -174,7 +204,7 @@ def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = ()) -> dict:
     else:
         maintenance_verify(realm, state, account, token, pins[maintenance], queue, api_crons=api_crons)
     queues.reconcile(account, token, realm, "readback", topology)
-    held_send(realm)
+    check_policy()
     if direct_forward_snapshot(realm, account, token) != forwards or serving(account, token, pins) != before:
         raise ValueError("split_graph_changed")
     return {"pins": before, "api_crons": list(api_crons),

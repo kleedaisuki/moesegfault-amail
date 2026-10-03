@@ -32,7 +32,8 @@ and clients are distinct. HTTP health does not establish message delivery.
 ## Supported hosted lanes
 
 ci.yml pushes/PRs validate source without deployment. Manual targets:
-checks, staging, staging-e2e, production, production-api-only-maintenance,
+checks, staging-inspect, staging, staging-e2e, production-inspect, production,
+production-api-only-maintenance,
 production-fresh-bootstrap and production-fresh-online.
 The actual workflow input/confirmation schema is authoritative; no historical
 incident document may restore a removed dispatch mode. staging-e2e retains the
@@ -259,14 +260,58 @@ not a global identity contract. The outbound RFC field is not fabricated from
 provider-ID syntax. This optional probe is not another sending campaign, a global
 policy enable, or production mail authority.
 
-The retained production and production-api-only-maintenance targets still admit
-the historical held, single-API-producer graph, not the current active split
-graph. Do not dispatch them for ordinary replacement of today's service. Fresh
-bootstrap/online targets are initial-storage transitions, not that workaround.
-Before a future runtime rollout, align the normal lane with the actual split
-graph and preserve sending policy, storage, schedules and exact rollback pins.
-For infrastructure-only changes with unchanged deployed application inputs,
-publish the maintenance changes through main CI and keep live services unchanged.
+### Normal production active-split upgrade
+
+The normal `production` target now requires `RUN_PRODUCTION_SPLIT_UPGRADE` plus
+`FREEZE_PRODUCTION_GRAPH_WRITERS`, trusted main, protected production environment
+and first attempt. Before rollout, use the existing `production-inspect` target
+with `INSPECT_PRODUCTION_V012` and the same freeze for read-only actual admission.
+This lane is implemented but not yet actual production upgrade acceptance; record
+its hosted inspection/deployment evidence in [validation](validation.md).
+
+The source-owned predecessor is successful online run `36938451911`, artifact
+`11199880674`, receipt SHA256
+`f1fa430eb66c13094b7d204ba13afcfb321b7147e15db752eac4ceafac39d18b`.
+Its exact API/maintenance/sink and retained adapter deployment/version UUIDs,
+response-owned production D1/R2 and trace Queue/DLQ IDs are fixed in
+`infra/deploy/production_upgrade.py`. Current names or latest inventory cannot
+adopt another writer epoch. Retained ingress/events/sink sources and trace-schema
+closure must equal the original `45f8dc41c82866ce47877601340113e28e8fb99d`
+component trees except Cargo package.version; their deployed versions, queues and
+lifecycle subscription remain unchanged, not redeployed to stamp a version.
+
+Read admission requires complete active split capabilities/private surfaces,
+API empty Cron, maintenance five-minute Cron, exact API + maintenance trace
+producer pair, original stores, four verified direct forwards and lifecycle
+consumer/subscription. It snapshots the existing global policy, including operator
+metadata, whether allowed or held. Fingerprints bracket that unchanged policy and
+private external graph across jobs; no hold/allow/grant/contact writer runs.
+Historical staging and activation checks still require their original hold.
+
+[Worker versions](https://developers.cloudflare.com/workers/versions-and-deployments/)
+do not version D1/R2 contents. Therefore code replacement/rollback preserves
+stores and assumes compatible persistent formats, rather than treating a code
+UUID as a data rollback.
+
+Full hosted source gates and restored/reverified same-run modules precede any
+schema or runtime write. Apply compatible additive migrations, replace fetch-only
+API, verify against still-active old maintenance, then replace scheduled-only
+maintenance at its existing cadence and verify the complete graph again. This is
+rolling replacement of compatible versions, not old-work drain proof: preserve
+execution fences, pending work, accepted/unknown journals and user aliases.
+There is no pause/reactivation, fresh store, bootstrap, role Worker or 31-minute
+legacy cutover. Effective capture-off is read or narrowly corrected only on the
+exact newly submitted API/maintenance version; private write coordinates and
+returned UUIDs are retained. Failed/ambiguous writes stop without retry.
+
+After success, the emitted non-content upgrade receipt supplies the next reviewed
+writer epoch; the source-owned predecessor must be explicitly updated before a
+future normal upgrade. A partial result requires exact owned reconciliation,
+never another blind normal dispatch. `production-api-only-maintenance` remains the
+historical held single-API graph lane and cannot maintain today's active graph;
+fresh bootstrap/online targets remain separately authorized storage transitions.
+Infrastructure-only changes with unchanged application inputs still need no live
+runtime deployment.
 
 Keep actual-production-users for separately authorized owned production journeys,
 send-control/attest/direct-contact/role-forwarding/grant workflows for explicit
