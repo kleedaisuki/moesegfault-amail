@@ -248,7 +248,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: gh release create "${{ needs.preflight.outputs.tag }}" dist/* --verify-tag --generate-notes --title "${{ needs.preflight.outputs.tag }}"
+        run: gh release create "${{ needs.preflight.outputs.tag }}" dist/* --verify-tag --notes-file "docs/releases/${{ needs.preflight.outputs.tag }}.md" --title "${{ needs.preflight.outputs.tag }}"
 
   verify-published:
     name: Verify published Release asset bytes
@@ -312,7 +312,7 @@ jobs:
       - name: Require deployed mail API before public launch
         working-directory: .
         shell: bash
-        run: curl --user-agent amail-release-check/0.1.0 --fail --silent --show-error --retry 6 --retry-delay 5 https://mail.moesegfault.dev/health > /dev/null
+        run: curl --user-agent amail-release-check --fail --silent --show-error --retry 6 --retry-delay 5 https://mail.moesegfault.dev/health > /dev/null
       - name: Install locked site dependencies
         run: pnpm install --frozen-lockfile
       - name: Build launch site
@@ -321,59 +321,49 @@ jobs:
         run: pnpm build
       - name: Verify published site copy before launch
         run: pnpm check:release-state published
+      - name: Pin published responses to the tested source without provider injection
+        working-directory: .
+        run: python infra/release/published_site.py prepare "${{ needs.preflight.outputs.source_sha }}" "${{ needs.preflight.outputs.tag }}"
       - name: Deploy public launch site
         run: pnpm run deploy
       - name: Smoke test public launch pages
         working-directory: .
         shell: bash
+        env:
+          RELEASE_REVISION: ${{ needs.preflight.outputs.source_sha }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p .temp
           smoke_dir=$(mktemp -d .temp/site-smoke.XXXXXX)
           trap 'rm -f -- "$smoke_dir"/*.html "$smoke_dir"/*.headers; rmdir -- "$smoke_dir"' EXIT
-          # One GET per exact public route; curl does not follow redirects.
-          for route in home manual changelog; do
-            path=/
-            if [ "$route" != home ]; then path="/$route/"; fi
-            status=$(curl --fail --silent --show-error --retry 6 --retry-delay 5 \
-              --dump-header "$smoke_dir/$route.headers" --output "$smoke_dir/$route.html" \
-              --write-out '%{http_code}' "https://amail.moesegfault.dev$path")
-            if [ "$status" != 200 ]; then
-              echo "::error::$route: expected HTTP 200, got $status"
-              exit 1
+          # Only public GETs are retried: never repeat a deployment on stale cache.
+          deadline=$((SECONDS + 120))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            complete=true
+            for route in home manual changelog; do
+              path=/
+              if [ "$route" != home ]; then path="/$route/"; fi
+              remaining=$((deadline - SECONDS))
+              [ "$remaining" -gt 0 ] || { complete=false; break; }
+              timeout=15
+              [ "$remaining" -ge "$timeout" ] || timeout="$remaining"
+              if ! curl --fail --silent --show-error --max-time "$timeout" \
+                --user-agent 'Mozilla/5.0 amail-release-check' \
+                --dump-header "$smoke_dir/$route.headers" --output "$smoke_dir/$route.html" \
+                "https://amail.moesegfault.dev$path"; then
+                complete=false
+                break
+              fi
+            done
+            if [ "$complete" = true ] && python infra/release/published_site.py smoke "$smoke_dir" "$RELEASE_REVISION" "$RELEASE_TAG"; then
+              exit 0
             fi
+            remaining=$((deadline - SECONDS))
+            [ "$remaining" -gt 0 ] || break
+            pause=5
+            [ "$remaining" -ge "$pause" ] || pause="$remaining"
+            sleep "$pause"
           done
-          python - "$smoke_dir" <<'PY'
-          from html.parser import HTMLParser
-          from pathlib import Path
-          import re
-          import sys
-
-          class Anchors(HTMLParser):
-              """Collect actual anchor href attributes, excluding lookalike attributes."""
-
-              def __init__(self):
-                  super().__init__()
-                  self.hrefs = set()
-
-              def handle_starttag(self, tag, attrs):
-                  if tag == 'a':
-                      self.hrefs.update(value for name, value in attrs if name == 'href')
-
-          pages = {
-              'home': ('v0.1.0 已发布', 'v0.1.0 尚未发布'),
-              'manual': ('v0.1.0 已发布', 'v0.1.0 尚未开放下载'),
-              'changelog': ('v0.1.0 已正式发布', 'v0.1.0 仍在验收'),
-          }
-          tag_url = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0'
-          root = Path(sys.argv[1])
-          for route, (published, candidate) in pages.items():
-              html = (root / f'{route}.html').read_text(encoding='utf-8')
-              headers = (root / f'{route}.headers').read_text(encoding='utf-8')
-              anchors = Anchors()
-              anchors.feed(html)
-              if published not in html or candidate in html or tag_url not in anchors.hrefs:
-                  raise SystemExit(f'::error::{route}: published copy or exact Release href is missing, or candidate copy remains')
-              if re.search('noindex', html, re.IGNORECASE) or re.search(r'^x-robots-tag\s*:[^\r\n]*\bnoindex\b', headers, re.IGNORECASE | re.MULTILINE):
-                  raise SystemExit(f'::error::{route}: production response must be indexable')
-          PY
+          echo '::error::Published site did not reach the exact source revision within 120 seconds'
+          exit 1
