@@ -4,7 +4,49 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
-## Delivered v0.1.0
+## Delivered v0.1.2 — current release
+
+The owner authorized formal publication on 2026-10-03. The
+[v0.1.2 Release](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.2)
+is public, nondraft and nonprerelease, published at `2026-10-03T07:04:34Z`.
+The annotated tag, native assets, Skill and deployed site are tied to source
+`805ac273fc00e85f773b9249587581a0dc274ce2`; the site serving version is
+`bdf042b9-a535-4e4e-9a18-7fe25fcd267f`.
+
+| Outcome | Actual evidence | Scope |
+| --- | --- | --- |
+| Accepted source | [PR #110](https://github.com/kleedaisuki/moesegfault-amail/pull/110), [37103712818](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37103712818), [main 37104349476](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37104349476) | Three CLI platforms, native Worker modules, Wasm/workerd, 157 infrastructure tests and both site states; production run independently gates its same-run modules |
+| Owned production predecessor | [37104353086](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37104353086) | Read-only current active graph, allowed policy and retained external graph verified against the original successful production writer |
+| Normal production upgrade | [37104468990](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37104468990), artifact `11267970678` | Additive index migration, exact API then scheduled-maintenance replacement, independent retained-adapter readbacks; overall SUCCESS |
+| Formal Release and public bytes | [37104773263](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37104773263), overall SUCCESS | All five native builds/tests and attestations; Skill; seven public files; archives and public checksum manifest match immutable same-run bundle |
+| Published website | Same successful tagged run | Exact home/manual/changelog HTTP 200, current published claims, all seven downloads, no noindex/candidate state, no-transform and exact release-source header |
+| Actual hosted browser | [37105257856](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37105257856), artifact `11267707672` | All 12 cases at 320/390/768/1440 px pass; real Release metadata, source header, zero scripts, route-local CSS, navigation/focus/geometry |
+
+Production API version is `50bd330d-2f9b-4102-8c8e-9bbaada927fe`
+(deployment `4eee1ec6-8f70-47ee-98d8-e7ba4feb3f19`); maintenance version is
+`293d4049-c56a-40ee-8bc3-ef345a7a4eb7`
+(deployment `411db6fb-3028-44bd-98db-cb354bfbe922`). API Cron remains empty,
+maintenance stays `*/5 * * * *`, and the private trace sink, Queue/DLQ,
+ingress/lifecycle adapters, D1/R2, direct forwards and subscription were retained.
+The complete private policy and external-graph fingerprints match the admitted
+predecessor; allowed sending was preserved, never rewritten or re-granted.
+
+An independent public download check verified all six archive checksums and GitHub
+attestations against the exact tagged source and release workflow. The published
+Skill's nine files match source bytes; the downloaded Windows executable reports
+`amail 0.1.2` and exposes the eight-topic offline discovery index. Skill entry is
+590 English words, with task-specific progressive references and byte-identical
+public/local mirrors. No ordinary production mail was sent for this publication;
+reuse the bounded staging and earlier production journeys below rather than
+claiming a new production delivery test or autonomous-agent success rate.
+
+The downloaded browser report independently confirms twelve cases, zero script
+counts and zero failed checks. Representative 1440/320 home and 1440/390 manual
+viewport screenshots were visually reviewed for release copy, readable CJK,
+privacy notice, downloads and clipping; no new defect was observed. This bounded
+review is not an exhaustive accessibility audit.
+
+## Delivered v0.1.0 — historical release
 
 | Outcome | Actual evidence | Scope |
 | --- | --- | --- |
@@ -29,9 +71,9 @@ Historical held/unreleased snapshots are not current production state.
 
 ## Useful bounded evidence and limits
 
-### v0.1.2 staging candidate (not published)
+### v0.1.2 staging acceptance before publication
 
-The owner authorized staging testing/deployment only. Public production, stable
+At this earlier stage the owner authorized staging testing/deployment only. Public production, stable
 v0.1.0 Release/downloads and production sending policy were not changed. The final
 site source is `25f22cd79a68452c73ff63e3ed695bcb1cbfde19`; the final user CLI
 candidate/acceptance producer is helper-only source
@@ -186,7 +228,7 @@ synthetic production journey does not claim the owner's account was exercised.
 Correlation is not a complete native Cloudflare trace waterfall. No measurement
 establishes large-mailbox throughput or an indexing latency SLA.
 
-### Normal production upgrade preparation (not deployed)
+### Normal production upgrade preparation and initial read-only failure
 
 The newly authorized v0.1.2 publication requires a normal production upgrade,
 not reuse of a bootstrap/API-only lane. Implementation now binds the original
@@ -204,6 +246,7 @@ Actionlint and diff whitespace checks passed. No local heavy build, production
 provider mutation, mail action or workflow dispatch was performed. Hosted full CI,
 actual `production-inspect` and normal replacement results remain pending; release
 publication/site evidence must likewise be recorded only after the owner's runs.
+Those subsequent actual outcomes are now recorded in the current-release section.
 
 Actual production inspection
 [37104009114](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37104009114)
@@ -214,7 +257,8 @@ The narrow repair follows the
 [Cloudflare subscription response contract](https://developers.cloudflare.com/api/resources/queues/subresources/subscriptions/methods/list/),
 retains exact selectors/destination/events, and rejects duplicate identities or
 extra paths related to the production domain/main or DLQ. Eight focused tests and
-157 infrastructure tests pass; corrected actual read admission remains required.
+157 infrastructure tests pass; corrected actual read admission then succeeded in
+`37104353086` before any normal production upgrade was dispatched.
 
 ## Verification proportional to value
 

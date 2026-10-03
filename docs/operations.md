@@ -20,6 +20,14 @@ Production API and maintenance share response-owned fresh Mail D1
 `moesegfault-mail-production-708b6d6c734779d657f5abb3`, and R2
 `moesegfault-mail-raw-production-708b6d6c734779d657f5abb3`.
 Current checked-in configurations are authoritative for bindings.
+The authorized v0.1.2 normal upgrade in run `37104468990` replaced only API
+(`50bd330d-2f9b-4102-8c8e-9bbaada927fe`) and scheduled maintenance
+(`293d4049-c56a-40ee-8bc3-ef345a7a4eb7`), preserving exact live allowed policy
+and the retained external graph. Receipt artifact `11267970678` records deployment
+coordinates. Before a future writer run, explicitly review and advance the
+source-owned predecessor pins; the v0.1.2 controller intentionally refuses to
+repeat an upgrade against the now-replaced original epoch. Do not rerun it to
+reset state or turn an old snapshot into current authority.
 Original production D1 `ad06f7f3-8897-4150-b9a9-7a46a8e55b30` and R2
 `moesegfault-mail-raw-production` were retained, not silently migrated/deleted.
 Staging uses separate D1 `74f35f95-42ce-482c-86e6-dffbdd35cbbe` and R2
