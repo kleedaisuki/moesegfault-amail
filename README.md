@@ -25,7 +25,7 @@ semantic matching. The default CLI output is compact, pipe-friendly text;
 
 ## Install
 
-Download the published `v0.1.0` archive for your platform from
+Download the published `v0.1.2` archive for your platform from
 [GitHub Releases](https://github.com/kleedaisuki/moesegfault-amail/releases).
 Check its digest against `SHA256SUMS` in the same release. Each CLI archive
 contains the `amail` binary and license. Source builds use `cargo build -p amail
@@ -61,6 +61,7 @@ mail content in the repository or GitHub Actions logs.
 
 | Need | Canonical document |
 | --- | --- |
+| Agent-first product priorities and task acceptance | [Product direction](docs/agent-first-product.md) |
 | Wire/data/ZIP invariants | [Architecture](docs/architecture.md) |
 | Deploy, recover and maintain | [Operations](docs/operations.md) |
 | Delivered release evidence and limits | [Validation](docs/validation.md) |

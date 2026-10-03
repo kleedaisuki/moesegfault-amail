@@ -397,12 +397,14 @@ pub(super) fn report(conn: &Connection) -> Result<()> {
         params![evicted, failed, unknown, key],
     )?;
     tx.commit()?;
-    eprintln!(
-        "amail: telemetry diagnostic {}",
-        serde_json::json!({"upload": receipt,
+    let summary = serde_json::json!({"upload": receipt,
         "pending_events":pending,"pending_evicted":evicted,"history_pruned":history,
-        "upload_failed":failed,"upload_unknown":unknown})
-    );
+        "upload_failed":failed,"upload_unknown":unknown});
+    if crate::machine::enabled() {
+        crate::machine::event("diagnostic_status", summary);
+    } else {
+        eprintln!("amail: telemetry diagnostic {summary}");
+    }
     Ok(())
 }
 

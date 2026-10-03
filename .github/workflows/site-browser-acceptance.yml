@@ -7,12 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Preview this source, or read the existing production candidate
+        description: Preview source, or read the existing candidate/staging/published site
         type: choice
         default: source-preview
-        options: [source-preview, live-candidate]
+        options: [source-preview, live-candidate, live-staging, live-published]
       candidate_revision:
-        description: Full deployed source SHA (required for live-candidate, not workflow SHA)
+        description: Full deployed source SHA (required for all live targets, not workflow SHA)
         type: string
         required: false
 
@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   browser:
-    name: Four-width candidate browser acceptance
+    name: Four-width site browser acceptance
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -36,17 +36,17 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
-        if: inputs.target != 'live-candidate'
+        if: inputs.target != 'live-candidate' && inputs.target != 'live-staging' && inputs.target != 'live-published'
         with:
           version: 12.4.1
       - name: Validate live evidence identity before browser installation
-        if: inputs.target == 'live-candidate'
+        if: inputs.target == 'live-candidate' || inputs.target == 'live-staging' || inputs.target == 'live-published'
         env:
           CANDIDATE_REVISION: ${{ inputs.candidate_revision }}
         run: |
           [[ "$CANDIDATE_REVISION" =~ ^[0-9a-f]{40}$ ]]
       - name: Build source preview only on the hosted runner
-        if: inputs.target != 'live-candidate'
+        if: inputs.target != 'live-candidate' && inputs.target != 'live-staging' && inputs.target != 'live-published'
         working-directory: site
         env:
           AMAIL_RELEASE_STATE: candidate
@@ -65,13 +65,16 @@ jobs:
           TARGET: ${{ inputs.target || 'source-preview' }}
           CANDIDATE_REVISION: ${{ inputs.candidate_revision }}
           EVIDENCE_SHA: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           export SITE_BROWSER_MODULE="$PWD/.temp/site-browser-tools/node_modules/playwright/index.mjs"
           export SITE_BROWSER_OUTPUT="$PWD/.temp/site-browser-evidence"
-          if [ "$TARGET" = live-candidate ]; then
+          if [ "$TARGET" = live-candidate ] || [ "$TARGET" = live-published ]; then
             export SITE_BROWSER_BASE=https://amail.moesegfault.dev
+          elif [ "$TARGET" = live-staging ]; then
+            export SITE_BROWSER_BASE=https://amail-staging.moesegfault.dev
           else
             python3 -m http.server 4321 --bind 127.0.0.1 --directory site/dist > .temp/site-browser-server.log 2>&1 &
             server_pid=$!

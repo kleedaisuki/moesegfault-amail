@@ -1,13 +1,14 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import '../styles/home.css';
+import { releaseTagUrl } from '../releaseDownloads.mjs';
 import { candidateServiceNotice, releaseState } from '../releaseState';
 ---
-<BaseLayout title="amail — 让 Agent 真正拥有邮件工作流" description="amail 是面向 AI Agent 的 CLI 邮件软件。用一个可组合的命令行管理地址、检索邮件，并通过 ZIP 交换消息。" current="home">
+<BaseLayout title="amail — 让 Agent 真正拥有邮件工作流" description="amail 是面向 AI Agent 的 CLI 邮件软件。用一个可组合的命令行管理地址、检索邮件，并通过 ZIP 交换消息。" current="home" components>
   <section class="hero">
     <div class="wrap hero-grid">
       <div class="hero-copy">
-        <div class="eyebrow">The agent-native mail client · v0.1.0</div>
+        <div class="eyebrow">The agent-native mail client · {releaseState === 'published' ? 'v0.1.2' : 'v0.1.2 candidate'}</div>
         <h1>邮件工作流，<br /><em>交给 Agent。</em></h1>
         <p class="hero-lead">你只负责登录。地址注册、收件检索、邮件整理和发送，由 Agent 通过 <strong>amail</strong> 完成。没有必须打开的收件箱，也不需要把邮件暴露成聊天上下文。</p>
         <p class="hero-privacy">隐私提醒：邮件主题与正文片段会自动交由第三方模型建立语义索引，即使你不使用语义检索。<a href="/manual/#隐私与边界">了解处理方式 ↗</a></p>
@@ -15,7 +16,7 @@ import { candidateServiceNotice, releaseState } from '../releaseState';
           <a class="moe-button button button-primary" href="/manual/">{releaseState === 'published' ? '开始使用' : '了解候选设计'} <span aria-hidden="true">↗</span></a>
           <a class="moe-button button button-secondary" data-variant="secondary" href="/manual/#安装与首次登录">{releaseState === 'published' ? '选择安装包' : '预览安装指南'} <span aria-hidden="true">↗</span></a>
         </div>
-        <p class="hero-note">为 <code>mail.moesegfault.dev</code> 而生 · Linux / macOS / Windows<br />{releaseState === 'published' ? <>v0.1.0 已发布；<a href="https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0">下载安装包与 Agent Skill ↗</a></> : 'v0.1.0 尚未发布；安装包与 Agent Skill 将在验收后开放。'}</p>
+        <p class="hero-note">为 <code>mail.moesegfault.dev</code> 而生 · Linux / macOS / Windows<br />{releaseState === 'published' ? <>v0.1.2 已发布；<a href={releaseTagUrl}>下载安装包与 Agent Skill ↗</a></> : 'v0.1.2 尚未发布；安装包与 Agent Skill 将在验收后开放。'}</p>
         {releaseState === 'candidate' && <p class="hero-note">{candidateServiceNotice}</p>}
       </div>
       <div class="hero-art" aria-label="amail 工作流示意：检索邮件、交给 Agent 处理并以 ZIP 发送">
@@ -64,5 +65,5 @@ import { candidateServiceNotice, releaseState } from '../releaseState';
     <ol class="steps"><li><span>1</span><div><strong>登录</strong><p>在 <code>login.moesegfault.dev</code> 授权 amail。</p></div></li><li><span>2</span><div><strong>建立地址</strong><p>在 <code>mail.moesegfault.dev</code> 下注册专属邮箱。</p></div></li><li><span>3</span><div><strong>交给 Agent</strong><p>检索、取用、整理，并用 ZIP 准备回复。</p></div></li></ol>
   </div></section>
 
-  <section class="closing"><div class="wrap closing-inner"><div><span class="eyebrow">{releaseState === 'published' ? 'Ready when you are' : 'Candidate under review'}</span><h2>让邮件回到工作流里。</h2><p>从 v0.1.0 开始，把「查找、理解、回复」接成一条线。</p></div><a class="moe-button button button-primary" href="/manual/">打开用户手册 <span aria-hidden="true">↗</span></a></div></section>
+  <section class="closing"><div class="wrap closing-inner"><div><span class="eyebrow">{releaseState === 'published' ? 'Ready when you are' : 'Candidate under review'}</span><h2>让邮件回到工作流里。</h2><p>从 v0.1.2 开始，把「查找、理解、回复」接成一条线。</p></div><a class="moe-button button button-primary" href="/manual/">打开用户手册 <span aria-hidden="true">↗</span></a></div></section>
 </BaseLayout>

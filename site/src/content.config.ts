@@ -8,6 +8,8 @@ const releases = defineCollection({
     version: z.string().regex(/^v\d+\.\d+\.\d+$/),
     date: z.coerce.date(),
     summary: z.string(),
+    /** Unpublished entries are excluded from every published-state build. */
+    candidateOnly: z.boolean().default(false),
   }),
 });
 

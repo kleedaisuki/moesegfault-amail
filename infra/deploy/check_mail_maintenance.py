@@ -106,7 +106,11 @@ def expected_bindings(realm: str, queue_id: str, *, active: bool = False) -> dic
     """Immutable readback checks exact names/types/resources; secret values stay private."""
     if ACCOUNT.fullmatch(queue_id) is None:
         raise ValueError("queue_pin_unreviewed")
-    selected = maintenance_config(realm, active=active)
+    # Pause/activation changes script-level triggers, not immutable capabilities.
+    # Validate the checked source cadence independently from the selected runtime
+    # state; verify() below reads the exact live schedule for that state.
+    desired = config_realm(ROOT / "crates/mail-worker/wrangler-maintenance.toml", realm)
+    selected = maintenance_config(realm, active=desired.get("triggers") == {"crons": list(CADENCE)})
     database, bucket = mail_resources(selected)
     return {"MAIL_DB": ("d1", database), "MAIL_BODIES": ("r2_bucket", bucket),
             "TRACE_EVENTS": ("queue", queue_id), "VERSION_METADATA": ("version_metadata", None),

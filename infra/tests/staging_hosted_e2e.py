@@ -28,6 +28,18 @@ class HostedProbeError(Exception):
     """A fixed, nonsensitive failure label safe for the hosted job log."""
 
 
+def selected_binary() -> Path:
+    """Use only the admitted release copy or the unchanged legacy debug location."""
+    override = os.environ.get("AMAIL_STAGING_TEST_BINARY", "")
+    if not override:
+        return BUILT_BINARY
+    expected = ROOT / ".temp/staging-cli/amail.exe"
+    selected = Path(override)
+    if selected.is_symlink() or selected.resolve() != expected.resolve() or expected.parent.is_symlink():
+        raise HostedProbeError("hosted_cli_candidate_path_unverified")
+    return expected
+
+
 def safe_stage_code(error: Exception) -> str:
     """Keep only bounded harness-owned snake-case diagnostic labels.
 
@@ -61,7 +73,7 @@ def validate_environment() -> tuple[str, str]:
         raise HostedProbeError("staging_routing_token_missing")
     if not os.environ.get("CLOUDFLARE_API_TOKEN"):
         raise HostedProbeError("staging_smtp_token_missing")
-    if not BUILT_BINARY.is_file():
+    if not selected_binary().is_file():
         raise HostedProbeError("hosted_cli_binary_missing")
     return username, password
 
@@ -108,7 +120,7 @@ def execute() -> None:
         import staging_mail_e2e
 
         binary = run_dir / "amail.exe"
-        shutil.copy2(BUILT_BINARY, binary)
+        shutil.copy2(selected_binary(), binary)
         try:
             store_credential(run_dir, username, password)
             native_login(run_dir, binary)
@@ -133,6 +145,15 @@ def execute() -> None:
                 raise HostedProbeError(f"mail_{safe_stage_code(error)}") from None
             if outcome != 0:
                 raise HostedProbeError("inbound_acceptance_failed")
+            send_confirmation = os.environ.get("AMAIL_STAGING_CANARY_CONFIRM", "")
+            if send_confirmation:
+                if send_confirmation != "RUN_STAGING_OWNED_SEND_V012":
+                    raise HostedProbeError("owned_send_confirmation_invalid")
+                import staging_owned_send
+                try:
+                    staging_owned_send.execute(binary, home, run_dir, nonce)
+                except staging_mail_e2e.ProbeFailure as error:
+                    raise HostedProbeError(f"mail_{safe_stage_code(error)}") from None
         finally:
             sys.argv = argv
             os.environ.pop("AMAIL_TEST_SMTP_TOKEN", None)

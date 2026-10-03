@@ -1,8 +1,11 @@
 /** The only publication states accepted by the static site build. */
 export type ReleaseState = 'candidate' | 'published';
 
-/** Candidate documentation never asserts that Mail or public sending is live. */
-export const candidateServiceNotice = '这是候选版本说明，不表示邮件服务或发送已开放。';
+/** Candidate version matches current release coordinates without asserting publication. */
+export const candidateVersion = 'v0.1.2';
+
+/** Candidate documentation never asserts publication or public sending authority. */
+export const candidateServiceNotice = '这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。';
 
 /**
  * Resolve publication state at build time. Missing state is deliberately a

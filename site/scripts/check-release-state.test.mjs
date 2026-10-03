@@ -2,18 +2,28 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { checkReleaseState } from './check-release-state.mjs';
-import { releaseDownloads } from '../src/releaseDownloads.mjs';
+import { checkReleaseState, checkPublishedRelease } from './check-release-state.mjs';
+import { releaseDownloads, releaseTagUrl as tagUrl } from '../src/releaseDownloads.mjs';
 
-const tagUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.0';
 const releasesUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases';
-const serviceNotice = '这是候选版本说明，不表示邮件服务或发送已开放。';
+const serviceNotice = '这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。';
 const headers = readFileSync(new URL('../public/_headers', import.meta.url), 'utf8');
 const claims = {
-  index: ['v0.1.0 尚未发布', 'v0.1.0 已发布'],
-  'manual/index': ['v0.1.0 尚未开放下载', 'v0.1.0 已发布'],
-  'changelog/index': ['v0.1.0 仍在验收', 'v0.1.0 已正式发布'],
+  index: ['v0.1.2 尚未发布', 'v0.1.2 已发布'],
+  'manual/index': ['v0.1.2 尚未开放下载', 'v0.1.2 已发布'],
+  'changelog/index': ['v0.1.2 仍在验收', 'v0.1.2 已正式发布'],
 };
+
+test('live release requires actual publication and all seven exact public assets', () => {
+  const release = { tag_name: 'v0.1.2', draft: false, prerelease: false,
+    published_at: '2026-10-03T00:00:00Z', html_url: tagUrl,
+    assets: releaseDownloads.map((asset) => ({ name: asset.name, browser_download_url: asset.href, size: 1 })) };
+  assert.doesNotThrow(() => checkPublishedRelease(release));
+  for (const change of [{ draft: true }, { prerelease: true }, { published_at: null },
+    { tag_name: 'v0.1.0' }, { assets: release.assets.slice(1) }]) {
+    assert.throws(() => checkPublishedRelease({ ...release, ...change }));
+  }
+});
 
 /** Build minimal rendered-page fixtures, including each page's release link. */
 function fixture(state) {
@@ -22,6 +32,7 @@ function fixture(state) {
     `<a href="/manual/">Manual</a><a href="/changelog/">Changelog</a>
      ${path === 'manual/index' ? '<nav aria-label="用户手册目录"></nav>' : ''}
      ${path === 'changelog/index' ? '<nav aria-label="更新日志目录"></nav>' : ''}
+     ${path === 'changelog/index' ? '<h2 id="v0.1.2">v0.1.2</h2><a href="#v0.1.2">v0.1.2</a><h2 id="v0.1.0">v0.1.0</h2><a href="#v0.1.0">v0.1.0</a>' : ''}
      <p>${state === 'candidate' ? candidate : published}</p>
      ${state === 'candidate' ? `<p>${serviceNotice}</p>` : ''}
      ${state === 'published' && path === 'manual/index' ? releaseDownloads.map((asset) => `<a href="${asset.href}">${asset.label}</a>`).join('') : ''}
@@ -45,10 +56,10 @@ for (const state of ['candidate', 'published']) {
       const pages = fixture(state);
       if (state === 'published') {
         pages[path] = pages[path].replace(`href="${tagUrl}"`, `href="${tagUrl}-wrong"`);
-        assert.throws(() => checkReleaseState(state, pages, headers), /exact v0.1.0 Release link/);
+        assert.throws(() => checkReleaseState(state, pages, headers), /exact v0.1.2 Release link/);
       } else if (path === 'index') {
         pages[path] += `<a href="${tagUrl}">premature</a>`;
-        assert.throws(() => checkReleaseState(state, pages, headers), /unpublished v0.1.0 Release link/);
+        assert.throws(() => checkReleaseState(state, pages, headers), /unpublished v0.1.2 Release link/);
       } else {
         pages[path] = pages[path].replace(`href="${releasesUrl}"`, `href="${releasesUrl}/wrong"`);
         assert.throws(() => checkReleaseState(state, pages, headers), /generic candidate Releases link/);
@@ -65,6 +76,24 @@ for (const state of ['candidate', 'published']) {
     }
   }
 }
+
+test('current and historical changelog records and TOCs are required in both states', () => {
+  for (const state of ['candidate', 'published']) {
+    for (const version of ['v0.1.2', 'v0.1.0']) {
+      for (const marker of [`id="${version}"`, `href="#${version}"`]) {
+        const pages = fixture(state);
+        pages['changelog/index'] = pages['changelog/index'].replace(marker, 'removed');
+        assert.throws(() => checkReleaseState(state, pages, headers), /changelog entry/);
+      }
+    }
+  }
+});
+
+test('published current changelog cannot retain staging claims', () => {
+  const pages = fixture('published');
+  pages['changelog/index'] += '<p>staging 候选</p>';
+  assert.throws(() => checkReleaseState('published', pages, headers), /candidate claims/);
+});
 
 test('published HTML noindex fails on any page', () => {
   for (const path of Object.keys(claims)) {

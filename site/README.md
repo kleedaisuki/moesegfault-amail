@@ -8,9 +8,9 @@ navigation and stable version-based changelog navigation.
 The repository contains the CLI, Mail backend, versioned Agent Skill and release
 pipeline. The site itself remains a static public guide, not a web inbox.
 Hosting its candidate mode does not publish the CLI or authorize public sending.
-v0.1.0 is now published; [current acceptance](../docs/validation.md) records
-the delivered Release and real public-route outcome. Candidate mode remains an
-isolated compatibility build, not the site's present release status.
+The current release coordinates are v0.1.2. Production published builds require
+an actual nondraft Release and all seven assets; source/candidate builds do not
+assert publication. Historical v0.1.0 records remain in the changelog.
 
 ## Hosted checks and guarded deployment
 
@@ -25,7 +25,8 @@ and lockfile remain those imported from reviewed source.
 
 `AMAIL_RELEASE_STATE` is typed and fail-closed: unset or `candidate` renders
 pre-release copy; `published` renders public-release copy and the seven exact
-Release downloads. Unknown values fail the build. Source checks exercise both
+v0.1.2 Release downloads. Both build states retain the current and historical
+changelog entries; candidate headers and global copy remain state-specific. Unknown values fail the build. Source checks exercise both
 states without deploying. The tag release workflow deploys published state only
 after the existing production gate, Release publication and published-byte check.
 
@@ -56,7 +57,7 @@ Green build checks are not live acceptance.
 
 `.github/workflows/release.yml` is the actual publication path. A manual main run
 only prepares candidate bundles. After authorized production acceptance and all
-genuine send attestations, a `v0.1.0` tag on the final accepted main source starts
+genuine send attestations, a `v0.1.2` tag on the final accepted main source starts
 five platform builds/tests, the Skill bundle and checksums. The existing production
 gate must pass before GitHub Release creation. Its published assets are then
 downloaded and compared with the same-run trusted checksum manifest before the
@@ -86,6 +87,35 @@ Self-hosted `css/tokens.css`, `css/foundation.css`, `css/components.css` and
 GPL-3.0-or-later attribution/version pin; do not import private upstream paths.
 Host CSS uses semantic `--moe-*` tokens and public `.moe-button` classes.
 
+The base layout always loads tokens and foundation; pages opt into component CSS
+with `<BaseLayout components ...>` only when they use public components. Today
+only the homepage uses `.moe-button`. Manual/changelog keep their existing host
+styles without loading the unused 58,817-byte component library. Keep upstream
+vendored bytes unchanged; do not introduce selector-purging or asynchronous CSS
+that risks changing the cascade, first paint or keyboard behavior.
+
+## Small hosted performance check
+
+After each existing candidate/published Astro build, run:
+
+```sh
+node --test scripts/measure-performance.test.mjs
+node scripts/measure-performance.mjs > ../.temp/site-performance.json
+```
+
+Create the root `.temp` directory before redirecting. The dependency-free report
+records route HTML bytes, inline CSS bytes, linked CSS requests/raw/gzip bytes,
+and script counts from the actual `dist` output. It also fails if component CSS
+leaks back onto the guide routes or a client runtime is introduced. Existing
+browser acceptance checks the same loading contract in the actual browser,
+alongside its navigation, focus, overflow, mobile and fragment checks.
+
+This is a deterministic loading-cost check, not a claim about Core Web Vitals.
+Gzip is an estimate using Node defaults, not the server's observed encoding.
+Do not introduce fragile hosted wall-clock budgets or rebuild a baseline on every
+run. Compare JSON reports from admitted builds if future loading changes warrant
+it; measure paint latency only when an actual rendering regression needs diagnosis.
+
 Static rendering needs no authenticated API or Worker request handler. The manual
 discloses intended address limits, forwarding boundary, automatic third-party
 semantic indexing and operational retention; the candidate service disclaimer
@@ -95,3 +125,15 @@ References: [Workers Static Assets](https://developers.cloudflare.com/workers/st
 [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/),
 [Static Asset headers](https://developers.cloudflare.com/workers/static-assets/headers/),
 [Astro Markdown](https://docs.astro.build/en/guides/markdown-content/).
+
+## Published browser acceptance
+
+The hosted `Site browser acceptance` workflow supports `live-published`, alongside
+source preview and existing live candidate/staging targets. Set `candidate_revision`
+to the exact deployed source SHA (the input is shared by all live modes). This is
+read-only verification, not deployment or publication. The published target first
+requires the nondraft, nonprerelease GitHub v0.1.2 Release with all seven exact
+nonempty assets, then checks published status and Release links on all three
+routes, seven downloads on the manual, absence of candidate/noindex output, and
+`X-Amail-Release-Revision` matching that deployed SHA. All modes retain the same
+12 route/viewport geometry, focus, fragment, loading and screenshot checks.

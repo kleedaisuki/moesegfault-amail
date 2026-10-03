@@ -836,6 +836,18 @@ async fn scan_batch(
     let (after, before) = dates(input)?;
     let limit = input.limit.unwrap_or(20);
     let semantic = input.semantic.is_some();
+    // Query coordinates are immutable throughout this batch. Validate and sum
+    // their norm once, while preserving exact persisted-coordinate score bits.
+    let query_cosine = state
+        .query_vector
+        .as_deref()
+        .map(|query| {
+            exact_cosine::QueryCosine::new(query).ok_or(AppError {
+                status: 503,
+                code: "semantic_index_corrupt",
+            })
+        })
+        .transpose()?;
     let mut calls = 0usize;
     let mut transfer = 0usize;
     let mut body_bytes = 0usize;
@@ -890,7 +902,7 @@ async fn scan_batch(
                 }
                 row.body_text.clear();
             }
-            let score = if let Some(query) = state.query_vector.as_ref() {
+            let score = if let Some(query) = query_cosine.as_ref() {
                 // A model/configuration transition must fail closed rather than
                 // compare vectors from different spaces. Old jobs without a model
                 // checkpoint are explicitly incomplete and can be restarted.
@@ -908,7 +920,7 @@ async fn scan_batch(
                     status: 503,
                     code: "semantic_index_corrupt",
                 })?;
-                Some(cosine_exact(query, &vector).ok_or(AppError {
+                Some(query.score(&vector).ok_or(AppError {
                     status: 503,
                     code: "semantic_index_corrupt",
                 })?)

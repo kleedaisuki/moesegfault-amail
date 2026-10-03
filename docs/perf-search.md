@@ -28,3 +28,7 @@ journey evidence; it is not a throughput benchmark. No large-corpus measurements
 justify ANN, a vector database, a scheduler service or a per-patch oracle campaign.
 Prefer bounded top-K memory and existing D1 keyset indexes first. Change representation
 only after a measured dominant bottleneck, preserving exactness and old wire behavior.
+
+The bounded hosted CPU cases and CLI/frontend measurement contract are documented
+in [workflow performance](performance.md). Native cosine/top-K/text/ZIP timings
+identify constants; they do not substitute for D1/network or Wasm measurements.

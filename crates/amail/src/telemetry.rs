@@ -45,33 +45,49 @@ fn db(cfg: &Runtime) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Serialize the legacy schema check and ALTER across concurrent CLI processes.
-fn ensure_event_columns(conn: &mut Connection) -> Result<()> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let names = tx
+/// Required additive columns; older CLI versions share this database.
+const EVENT_COLUMNS: [(&str, &str); 6] = [
+    ("span_id", "ALTER TABLE events ADD COLUMN span_id TEXT"),
+    (
+        "command_id",
+        "ALTER TABLE events ADD COLUMN command_id TEXT",
+    ),
+    (
+        "started_at_ms",
+        "ALTER TABLE events ADD COLUMN started_at_ms INTEGER",
+    ),
+    (
+        "elapsed_ms",
+        "ALTER TABLE events ADD COLUMN elapsed_ms INTEGER",
+    ),
+    ("phase", "ALTER TABLE events ADD COLUMN phase TEXT"),
+    (
+        "error_kind",
+        "ALTER TABLE events ADD COLUMN error_kind TEXT",
+    ),
+];
+
+/// Read the schema without reserving SQLite's single writer on normal opens.
+fn event_column_names(conn: &Connection) -> Result<Vec<String>> {
+    Ok(conn
         .prepare("PRAGMA table_info(events)")?
         .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    for (name, declaration) in [
-        ("span_id", "ALTER TABLE events ADD COLUMN span_id TEXT"),
-        (
-            "command_id",
-            "ALTER TABLE events ADD COLUMN command_id TEXT",
-        ),
-        (
-            "started_at_ms",
-            "ALTER TABLE events ADD COLUMN started_at_ms INTEGER",
-        ),
-        (
-            "elapsed_ms",
-            "ALTER TABLE events ADD COLUMN elapsed_ms INTEGER",
-        ),
-        ("phase", "ALTER TABLE events ADD COLUMN phase TEXT"),
-        (
-            "error_kind",
-            "ALTER TABLE events ADD COLUMN error_kind TEXT",
-        ),
-    ] {
+        .collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+/// Modern journals need only a read; legacy upgrades lock and recheck the schema.
+/// The second check is essential: another CLI may migrate while we wait.
+fn ensure_event_columns(conn: &mut Connection) -> Result<()> {
+    let names = event_column_names(conn)?;
+    if EVENT_COLUMNS
+        .iter()
+        .all(|(name, _)| names.iter().any(|column| column == name))
+    {
+        return Ok(());
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let names = event_column_names(&tx)?;
+    for (name, declaration) in EVENT_COLUMNS {
         if !names.iter().any(|column| column == name) {
             tx.execute(declaration, [])?;
         }
@@ -251,6 +267,10 @@ impl<'a> RequestSpan<'a> {
 /// Report lost diagnostics on stderr without changing the command's result.
 /// Library error text can contain private paths, so retain structured codes only.
 pub fn report_loss(stage: &str, error: &anyhow::Error) {
+    if crate::machine::enabled() {
+        crate::machine::event("diagnostic_unavailable", serde_json::json!({"stage":stage}));
+        return;
+    }
     if let Some(rusqlite::Error::SqliteFailure(code, _)) = error.downcast_ref::<rusqlite::Error>() {
         eprintln!(
             "amail: telemetry unavailable stage={stage} sqlite_code={:?} extended_code={}",
@@ -331,6 +351,50 @@ pub fn flush_pending(cfg: &Runtime, attempt_id: Option<&uuid::Uuid>) -> Result<(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A complete schema must not contend with an unrelated reserved writer.
+    #[test]
+    fn modern_schema_check_does_not_reserve_writer() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir_in(root).unwrap();
+        let path = temp.path().join("telemetry.sqlite3");
+        let mut writer = Connection::open(&path).unwrap();
+        writer
+            .execute_batch("CREATE TABLE events(id INTEGER PRIMARY KEY)")
+            .unwrap();
+        ensure_event_columns(&mut writer).unwrap();
+        let _reserved = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let mut reader = Connection::open(&path).unwrap();
+        reader.busy_timeout(Duration::ZERO).unwrap();
+        ensure_event_columns(&mut reader).unwrap();
+    }
+
+    /// Same-file legacy/current comparison, excluding file creation and migration.
+    #[test]
+    #[ignore = "opt-in hosted release performance measurement"]
+    fn performance_microbench_schema() {
+        assert!(!cfg!(debug_assertions), "microbench requires --release");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir_in(root).unwrap();
+        let mut conn = Connection::open(temp.path().join("telemetry.sqlite3")).unwrap();
+        conn.execute_batch("CREATE TABLE events(id INTEGER PRIMARY KEY)")
+            .unwrap();
+        ensure_event_columns(&mut conn).unwrap();
+        crate::performance::measure("telemetry_schema_legacy_writer", 128, || {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            std::hint::black_box(event_column_names(&tx).unwrap());
+            tx.commit().unwrap();
+        });
+        crate::performance::measure("telemetry_schema_read_fast_path", 128, || {
+            ensure_event_columns(std::hint::black_box(&mut conn)).unwrap();
+        });
+    }
 
     /// The real spawn error path stores a safe OS code and does not fabricate child duration.
     #[test]

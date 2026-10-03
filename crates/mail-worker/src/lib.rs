@@ -6,7 +6,11 @@ mod archive;
 mod archive_read;
 mod auth;
 mod database;
+mod exact_cosine;
+mod feedback;
 mod maintenance;
+#[cfg(test)]
+mod performance;
 mod platform;
 mod search_jobs;
 mod telemetry_read;
@@ -1246,6 +1250,21 @@ async fn dispatch(
         (Method::Post, ["v1", "messages", "send"]) => {
             send_message(&mut req, &env, &user, request_id, trace).await
         }
+        (Method::Get, ["v1", "sends", key]) => {
+            feedback::send_receipt(&env, &user, key, request_id).await
+        }
+        (Method::Get, ["v1", "sending", "status"]) => {
+            feedback::sending_status(&env, &user, request_id).await
+        }
+        (Method::Get, ["v1", "events"]) => {
+            feedback::events(&req, &env, &user, None, request_id).await
+        }
+        (Method::Get, ["v1", "messages", id, "events"]) => {
+            feedback::events(&req, &env, &user, Some(id), request_id).await
+        }
+        (Method::Get, ["v1", "messages", id, "outcomes"]) => {
+            feedback::outcomes(&env, &user, id, request_id).await
+        }
         (Method::Get, ["v1", "messages", id]) => get_message(&env, &user, id, request_id).await,
         (Method::Get, ["v1", "messages", id, "archive"]) => get_archive(&env, &user, id).await,
         (Method::Patch, ["v1", "messages", id]) => {
@@ -1289,6 +1308,11 @@ fn operation_for(method: Method, segments: &[&str]) -> Operation {
         (Method::Get, ["v1", "messages", "search", "jobs", _]) => Operation::SearchPoll,
         (Method::Post, ["v1", "messages", "send"]) => Operation::MessagesSend,
         (Method::Get, ["v1", "messages", _, "archive"]) => Operation::MessagesArchive,
+        (Method::Get, ["v1", "sends", _])
+        | (Method::Get, ["v1", "sending", "status"])
+        | (Method::Get, ["v1", "events"])
+        | (Method::Get, ["v1", "messages", _, "events"])
+        | (Method::Get, ["v1", "messages", _, "outcomes"]) => Operation::MessagesGet,
         (Method::Get, ["v1", "messages", _]) => Operation::MessagesGet,
         (Method::Patch, ["v1", "messages", _]) => Operation::MessagesMark,
         (Method::Delete, ["v1", "messages", _]) => Operation::MessagesDelete,
@@ -1488,44 +1512,26 @@ async fn check_send_policy(
     idem: &str,
 ) -> AppResult<()> {
     #[derive(Deserialize)]
-    struct PolicyRow {
-        state: String,
-    }
-    #[derive(Deserialize)]
     struct CanaryRow {
         canary_recipient_sha256: String,
         canary_used_by: Option<String>,
     }
-    let global = database
-        .prepare("SELECT state FROM send_policy WHERE scope='global' AND owner_iss='*' AND owner_sub='*'")
-        .first::<PolicyRow>(None)
-        .await?;
-    let global = global.ok_or(AppError {
+    let policy = feedback::sending_policy(database, user).await?;
+    let global_state = policy.global_state.ok_or(AppError {
         status: 403,
         code: "send_held",
     })?;
-    let account = database
-        .prepare(
-            "SELECT state FROM send_policy WHERE scope='account' AND owner_iss=?1 AND owner_sub=?2",
-        )
-        .bind(&[bind_str(&user.iss), bind_str(&user.sub)])?
-        .first::<PolicyRow>(None)
-        .await?;
-    if account.is_some_and(|row| row.state != "allowed") {
+    if !policy.account_allowed {
         return Err(AppError {
             status: 403,
             code: "send_held",
         });
     }
-    let verified = database.prepare("SELECT 1 AS verified FROM send_release_gates WHERE id=1 AND feedback_verified=1 AND abuse_contact_verified=1 AND delivery_canary_verified=1 AND preview_reviewed=1")
-        .first::<serde_json::Value>(None).await?.is_some();
-    let public_ready =
-        global.state == "allowed" && verified && direct_role_contact_ready(database).await;
-    if !public_ready {
+    if !policy.public_allowed {
         // The SQL canary guard consumes a key only under a global hold. If the
         // contact check expires after a public launch, do not bypass it with an
         // unconsumed grant; first return the global switch to held.
-        if !canary_fallback_available(&global.state) {
+        if !canary_fallback_available(&global_state) {
             return Err(AppError {
                 status: 403,
                 code: "send_held",
@@ -2040,9 +2046,18 @@ fn summary(row: &MessageRow, score: Option<f64>) -> serde_json::Value {
     value
 }
 
+/// Detail, archive and mark need metadata or the R2 key, never indexed text or
+/// vectors. Keep the shared row shape without transferring those unused fields;
+/// actual content remains in the immutable archive and search has its own query.
+const MESSAGE_DETAIL_SQL: &str = "SELECT id,address,direction,sender,recipients_json,subject,'' AS body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,NULL AS embedding_json FROM messages WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted')";
+
 async fn one_message(env: &Env, user: &Principal, id: &str) -> AppResult<MessageRow> {
-    db(env)?.prepare("SELECT id,address,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,embedding_json FROM messages WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted')")
-        .bind(&[bind_str(id),bind_str(&user.iss),bind_str(&user.sub)])?.first::<MessageRow>(None).await?.ok_or_else(AppError::not_found)
+    db(env)?
+        .prepare(MESSAGE_DETAIL_SQL)
+        .bind(&[bind_str(id), bind_str(&user.iss), bind_str(&user.sub)])?
+        .first::<MessageRow>(None)
+        .await?
+        .ok_or_else(AppError::not_found)
 }
 
 async fn get_message(
@@ -2059,6 +2074,7 @@ async fn get_message(
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
     value["metadata"] = metadata;
+    value["links"] = feedback::message_links(id, row.direction == "outbound");
     value["request_id"] = request_id.into();
     Ok(Response::from_json(&value)?)
 }
@@ -2093,6 +2109,9 @@ struct MarkRequest {
     read: bool,
 }
 
+/// Skip idempotent marks: no changed state means no search-generation mutation.
+const MARK_MESSAGE_SQL: &str = "UPDATE messages SET is_read=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND deleted_at IS NULL AND is_read!=?1";
+
 async fn mark_message(
     req: &mut Request,
     env: &Env,
@@ -2105,8 +2124,16 @@ async fn mark_message(
         .await
         .map_err(|_| AppError::bad("invalid_json"))?;
     one_message(env, user, id).await?;
-    db(env)?.prepare("UPDATE messages SET is_read=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND deleted_at IS NULL")
-        .bind(&[bind_num(input.read as i64),bind_str(id),bind_str(&user.iss),bind_str(&user.sub)])?.run().await?;
+    db(env)?
+        .prepare(MARK_MESSAGE_SQL)
+        .bind(&[
+            bind_num(input.read as i64),
+            bind_str(id),
+            bind_str(&user.iss),
+            bind_str(&user.sub),
+        ])?
+        .run()
+        .await?;
     get_message(env, user, id, request_id).await
 }
 
@@ -2388,7 +2415,12 @@ struct TextPredicate(regex::Regex);
 
 impl TextPredicate {
     fn new(value: &str, regex: bool, case_sensitive: bool) -> AppResult<Self> {
-        if value.len() > 256 {
+        Self::bounded(value, regex, case_sensitive, 256)
+    }
+
+    /// Relation IDs have a 512-byte wire bound; other predicates keep the legacy cap.
+    fn bounded(value: &str, regex: bool, case_sensitive: bool, max: usize) -> AppResult<Self> {
+        if value.len() > max {
             return Err(AppError::bad("invalid_pattern"));
         }
         let expression = if regex {
@@ -2431,16 +2463,23 @@ impl SearchMatcher {
         for (key, value) in input.metadata.as_ref().into_iter().flat_map(|m| m.iter()) {
             if ![
                 "message_id",
+                "rfc_message_id",
+                "provider_id",
                 "in_reply_to",
+                "reply_to",
+                "references",
                 "content_type",
                 "attachment_name",
             ]
             .contains(&key.as_str())
-                || value.len() > 256
+                || value.len() > 512
             {
                 return Err(AppError::bad("invalid_metadata_filter"));
             }
-            metadata.push((key.clone(), TextPredicate::new(value, regex, case)?));
+            metadata.push((
+                key.clone(),
+                TextPredicate::bounded(value, regex, case, 512)?,
+            ));
         }
         Ok(Self {
             title: compile(&input.title)?,
@@ -2474,10 +2513,16 @@ impl SearchMatcher {
         let metadata: serde_json::Value =
             serde_json::from_str(&row.metadata_json).unwrap_or_default();
         self.metadata.iter().all(|(key, term)| {
-            metadata
-                .get(key)
-                .and_then(|value| value.as_str())
-                .is_some_and(|value| term.matches(value))
+            match metadata.get(key) {
+                Some(serde_json::Value::String(value)) => term.matches(value),
+                // A reference predicate matches one complete relation, never a
+                // concatenation boundary between unrelated IDs.
+                Some(serde_json::Value::Array(values)) if key == "references" => values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .any(|value| term.matches(value)),
+                _ => false,
+            }
         })
     }
 
@@ -2705,7 +2750,10 @@ async fn send_message(
         reserve_outbound_budget(&database, user, &draft, &idem, inserted_new).await?;
     }
     let r2_key = format!("messages/{id}.zip");
-    if let Err(err) = reserve_storage(&database, &id, user, bytes.len() as i64).await {
+    // The archive is no longer needed after the R2 write; keep its size, not a
+    // second potentially 5 MiB allocation, across the provider exchange.
+    let archive_size = bytes.len();
+    if let Err(err) = reserve_storage(&database, &id, user, archive_size as i64).await {
         // A full mailbox is definitive: retain charged quota but not a fresh
         // never-submitted idempotency row that could accumulate every day.
         // 邮箱满为确定性拒绝：额度照常消耗，但不永久保留尚未提交的新幂等记录。
@@ -2718,7 +2766,7 @@ async fn send_message(
     let started = js_sys::Date::now();
     let archive_write = env
         .bucket("MAIL_BODIES")?
-        .put(&r2_key, bytes.clone())
+        .put(&r2_key, bytes)
         .execute()
         .await;
     trace.phase(
@@ -2776,7 +2824,7 @@ async fn send_message(
             hash: &payload_hash,
             provider: &provider_id,
             created_at,
-            bytes: bytes.len(),
+            bytes: archive_size,
         },
         &draft,
     )
@@ -2828,8 +2876,12 @@ fn outbound_metadata(draft: &Draft, provider_id: &str) -> serde_json::Value {
         .chain(&draft.manifest.cc)
         .chain(&draft.manifest.bcc)
         .collect::<Vec<_>>();
+    // The provider submission identifier is not a proven on-wire Message-ID,
+    // even when it has valid msg-id syntax. Preserve the legacy lookup key and
+    // explicit provider ID, but never manufacture a verified RFC relation here.
     serde_json::json!({
-        "message_id":provider_id,"in_reply_to":draft.manifest.in_reply_to,
+        "message_id":provider_id,"provider_id":provider_id,"in_reply_to":draft.manifest.in_reply_to,
+        "reply_to":draft.manifest.reply_to,"references":draft.manifest.references,
         "content_type":if draft.html.is_some() {"multipart/alternative"} else {"text/plain"},
         "cc":&draft.manifest.cc,"bcc":&draft.manifest.bcc,
         "envelope_recipients":envelope_recipients,
@@ -3076,25 +3128,9 @@ fn acknowledge_telemetry(
 }
 
 /// Compute exact cosine over all 256 persisted f32 coordinates, including their actual norms. / 基于持久化的全部 256 个 f32 坐标及其实际范数计算精确余弦。
+#[cfg(test)]
 fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
-    if left.len() != 256 || right.len() != 256 || left.iter().chain(right).any(|x| !x.is_finite()) {
-        return None;
-    }
-    let mut dot = 0.0f64;
-    let mut left_norm = 0.0f64;
-    let mut right_norm = 0.0f64;
-    for (a, b) in left.iter().zip(right) {
-        let a = *a as f64;
-        let b = *b as f64;
-        dot += a * b;
-        left_norm += a * a;
-        right_norm += b * b;
-    }
-    let denominator = (left_norm * right_norm).sqrt();
-    if denominator <= 0.0 || !denominator.is_finite() {
-        return None;
-    }
-    Some((dot / denominator).clamp(-1.0, 1.0))
+    exact_cosine::QueryCosine::new(left)?.score(right)
 }
 
 #[cfg(test)]
@@ -3550,7 +3586,7 @@ mod tests {
     /// Server filters remain exact for regex, case and metadata. / 服务端正则、大小写及元数据筛选保持精确。
     #[test]
     fn matcher_exactness() {
-        let row = MessageRow {
+        let mut row = MessageRow {
             id: "1".into(),
             address: "a@mail.moesegfault.dev".into(),
             direction: "inbound".into(),
@@ -3580,6 +3616,21 @@ mod tests {
             ..Default::default()
         };
         assert!(SearchMatcher::new(&request)
+            .unwrap()
+            .matches_without_body(&row));
+        row.metadata_json = r#"{"message_id":"<abc@example.org>","rfc_message_id":"<abc@example.org>","in_reply_to":"<parent@example.org>","references":["<older@example.org>","<parent@example.org>"]}"#.into();
+        let relations = SearchRequest {
+            metadata: Some(
+                [
+                    ("rfc_message_id".into(), "<abc@example.org>".into()),
+                    ("in_reply_to".into(), "<parent@example.org>".into()),
+                    ("references".into(), "<older@example.org>".into()),
+                ]
+                .into(),
+            ),
+            ..Default::default()
+        };
+        assert!(SearchMatcher::new(&relations)
             .unwrap()
             .matches_without_body(&row));
         let strict = SearchRequest {
@@ -3712,6 +3763,21 @@ mod tests {
         assert_eq!(outbound_recipient_count(&draft), 3);
         let metadata = outbound_metadata(&draft, "provider-123");
         assert_eq!(metadata["message_id"], "provider-123");
+        assert_eq!(metadata["provider_id"], "provider-123");
+        assert!(metadata.get("rfc_message_id").is_none());
+        let valid_syntax_provider = outbound_metadata(&draft, "<synthetic@example.invalid>");
+        assert_eq!(
+            valid_syntax_provider["message_id"],
+            "<synthetic@example.invalid>"
+        );
+        assert_eq!(
+            valid_syntax_provider["provider_id"],
+            "<synthetic@example.invalid>"
+        );
+        assert!(
+            valid_syntax_provider.get("rfc_message_id").is_none(),
+            "valid provider-ID syntax does not prove the on-wire Message-ID"
+        );
         assert_eq!(metadata["cc"], serde_json::json!(["cc@example.org"]));
         assert_eq!(metadata["bcc"], serde_json::json!(["bcc@example.org"]));
         assert_eq!(

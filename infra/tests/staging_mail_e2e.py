@@ -11,6 +11,10 @@ Usage (after first-party synthetic registration and native CLI login):
 
 The executable and home must already exist. The script never creates an account,
 authorizes a browser, changes a release gate or enables general sending.
+Read-only discovery/policy/event/absent-intent checks precede fixture creation.
+The same two inbound fixtures additionally prove reply metadata and indexed
+relationship discovery, with fixture two referring only to fixture one's verified
+SMTP DATA receipt. Reply-To remains the single route owned by this run.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ import tempfile
 import time
 import tomllib
 import urllib.request
+import uuid
 
 
 # Legacy role/hosted callers load this file via spec_from_file_location rather
@@ -266,6 +271,92 @@ def amail_not_found(binary: Path, env: dict[str, str], *args: str) -> None:
         rb"amail: mail API [a-z.]+ failed: HTTP 404(?: [A-Za-z ]{1,40})?, code=not_found(?:,|\r?\n|$)",
         proc.stderr,
     ) is not None, "deleted_resource_still_accessible")
+
+
+def progressive_surfaces(binary: Path, env: dict[str, str]) -> None:
+    """Explore native read-only capabilities without enabling or submitting mail.
+
+    Events are ordinary CLI JSONL items, not the HTTP page envelope. Empty
+    output means no retained owner-visible feedback, never proof of delivery.
+    """
+
+    root = amail(binary, env, "discover", failure="discover_root_failed")
+    check(len(root) == 1 and root[0].get("schema") == "amail.discover.v1"
+          and root[0].get("topic") == "index", "discover_root_shape")
+    capabilities = root[0].get("capabilities")
+    check(isinstance(capabilities, dict)
+          and capabilities.get("explore") == "amail discover TOPIC"
+          and isinstance(capabilities.get("topics"), list)
+          and {"send", "events", "search", "machine"}.issubset(capabilities["topics"]),
+          "discover_root_topics")
+    for topic in ("send", "send.schema", "events", "events.schema", "search", "machine"):
+        values = amail(binary, env, "discover", topic, failure="discover_topic_failed")
+        check(len(values) == 1 and values[0].get("schema") == "amail.discover.v1"
+              and values[0].get("topic") == topic
+              and isinstance(values[0].get("capabilities"), dict), "discover_topic_shape")
+        body = values[0]["capabilities"]
+        if topic == "send":
+            check("send.schema" in body.get("children", [])
+                  and "events" in body.get("children", []), "discover_send_children")
+        if topic == "events":
+            check("events.schema" in body.get("children", []), "discover_events_children")
+        if topic == "search":
+            check({"rfc_message_id", "in_reply_to", "references", "reply_to"}.issubset(
+                body.get("metadata_keys", [])), "discover_relation_keys")
+
+    values = amail(binary, env, "sending-status", failure="sending_status_failed")
+    check(len(values) == 1, "sending_status_shape")
+    value = values[0]
+    check(value.get("policy") == {"state": "held", "code": "send_held"},
+          "staging_sending_not_held")
+    check(value.get("interpretation") == "advisory_not_reservation_or_recipient_authorization"
+          and value.get("links") == {"events": "/v1/events",
+                                     "send_receipt": "/v1/sends/{idempotency_key}"},
+          "sending_status_semantics")
+    quotas = value.get("quotas")
+    check(isinstance(quotas, list) and len(quotas) == 3
+          and all(isinstance(q, dict) for q in quotas)
+          and {q.get("kind") for q in quotas} == {"send", "send_messages", "send_hour"},
+          "sending_status_quotas")
+    for quota in quotas:
+        check(all(type(quota.get(key)) is int and quota[key] >= 0
+                  for key in ("used", "limit", "remaining"))
+              and quota["remaining"] == max(0, quota["limit"] - quota["used"])
+              and isinstance(quota.get("reset_at"), str), "sending_status_quota_shape")
+
+    events = amail(binary, env, "events", "--limit", "2", failure="owner_events_failed")
+    event_rows = [row for row in events if "next_cursor" not in row]
+    cursors = [row for row in events if "next_cursor" in row]
+    check(len(event_rows) <= 2 and len(cursors) <= 1, "owner_events_bounds")
+    for row in event_rows:
+        check(set(row) == {"event_id", "message_id", "recipient", "kind", "occurred_at", "received_at"}
+              and all(isinstance(v, str) and bool(v) for v in row.values())
+              and row["kind"] in {"deferred", "delivered", "bounced", "failed", "rejected", "complained"},
+              "owner_event_shape")
+    if cursors:
+        check(set(cursors[0]) == {"next_cursor"} and len(event_rows) == 2
+              and isinstance(cursors[0]["next_cursor"], str)
+              and bool(cursors[0]["next_cursor"]), "owner_event_cursor_shape")
+
+    # Query an unsubmitted random intent only; a missing receipt never permits a send.
+    try:
+        proc = subprocess.run([str(binary), "--machine", "send-status", str(uuid.uuid4())],
+                              env=env, capture_output=True, timeout=90, check=False)
+    except (subprocess.TimeoutExpired, OSError):
+        raise ProbeFailure("missing_intent_process_failed") from None
+    check(proc.returncode != 0 and not proc.stdout and len(proc.stderr) <= 2_000_000,
+          "missing_intent_result")
+    try:
+        records = [json.loads(line) for line in proc.stderr.splitlines() if line.strip()]
+    except (ValueError, UnicodeDecodeError):
+        raise ProbeFailure("missing_intent_machine_invalid") from None
+    check(all(isinstance(record, dict) and record.get("schema") == "amail.machine.v1"
+              for record in records), "missing_intent_machine_shape")
+    errors = [record.get("data") for record in records if record.get("event") == "error"]
+    check(len(errors) == 1 and isinstance(errors[0], dict)
+          and errors[0].get("code") == "not_found" and errors[0].get("http_status") == 404
+          and errors[0].get("next_action") == "stop", "missing_intent_no_resend")
+    print("progressive_discovery_policy_events_missing_intent_verified")
 
 
 def cf_rules(zone: str, token: str) -> list[dict]:
@@ -640,15 +731,33 @@ def smtp_send(token: str, address: str, messages: list[EmailMessage], realm: Acc
 
 
 def smtp_send_receipts(token: str, address: str,
-                       fixtures: list[tuple[EmailMessage, dict]], realm: AcceptanceRealm = STAGING) -> None:
-    """Submit each MIME once and retain its private DATA receipt in the same oracle."""
+                       fixtures: list[tuple[EmailMessage, dict]], realm: AcceptanceRealm = STAGING,
+                       *, relate_second: bool = False) -> None:
+    """Submit once; optionally relate the second fixture to the first DATA receipt.
+
+    The first provider-assigned RFC identifier must be verified before constructing
+    the reply. Reply-To is the already owned envelope destination, not a new route.
+    """
 
     try:
         with smtplib.SMTP_SSL(
             "smtp.mx.cloudflare.net", 465, timeout=30, context=ssl.create_default_context()
         ) as smtp:
             smtp.login("api_token", token)
-            for message, oracle in fixtures:
+            check(not relate_second or len(fixtures) == 2, "smtp_relation_fixture_count")
+            for index, (message, oracle) in enumerate(fixtures):
+                if relate_second and index == 1:
+                    parent = fixtures[0][1]["provider_message_id"]
+                    check(isinstance(parent, str), "smtp_parent_receipt_missing")
+                    provider_receipt(f"2.0.0 Ok {parent}".encode("ascii"))
+                    check(not any(key in message for key in ("Reply-To", "In-Reply-To", "References")),
+                          "smtp_relation_headers_present")
+                    message["Reply-To"] = address
+                    message["In-Reply-To"] = parent
+                    message["References"] = parent
+                    oracle["reply_to"] = address
+                    oracle["in_reply_to"] = parent
+                    oracle["references"] = [parent]
                 check("Message-ID" not in message, "smtp_source_message_id_present")
                 check(oracle.get("provider_message_id") is None, "smtp_receipt_reused")
                 code, _ = smtp.mail(realm.sender)
@@ -699,6 +808,9 @@ def verify_fixture(row: dict, oracle: dict, address: str, target: str, realm: Ac
     metadata = row.get("metadata")
     check(isinstance(metadata, dict) and metadata.get("message_id") == receipt,
           "provider_message_id_mismatch")
+    check(metadata.get("rfc_message_id") == receipt, "rfc_message_id_mismatch")
+    for key in ("reply_to", "in_reply_to", "references"):
+        check(metadata.get(key) == oracle.get(key), "fixture_relation_mismatch")
     rich = oracle["subject"].endswith("-Signal")
     check(row.get("id") == target and row.get("mailbox") == address
           and row.get("direction") == "inbound" and row.get("subject") == oracle["subject"]
@@ -729,8 +841,11 @@ def verify_archive(dest: Path, oracle: dict, address: str, target: str, row: dic
         "version": 1, "id": target, "direction": "inbound", "from": realm.sender,
         "to": [address], "subject": oracle["subject"],
         "received_at": row["received_at"], "message_id": oracle["provider_message_id"],
+        "rfc_message_id": oracle["provider_message_id"],
         "assets": assets,
     }
+    expected.update({key: oracle[key] for key in ("reply_to", "in_reply_to", "references")
+                     if key in oracle})
     check(manifest == expected, "archive_receipt_mismatch")
     files = {path.relative_to(dest).as_posix() for path in dest.rglob("*") if path.is_file()}
     expected_files = {"manifest.toml", "body.txt"} | {asset["path"] for asset in assets}
@@ -1050,6 +1165,7 @@ def main() -> int:
     nonce = run_nonce()
     address = f"e2e-{nonce}@{DOMAIN}"
     part = f"e2e-{nonce}"
+    progressive_surfaces(binary, env)
     owned = amail(binary, env, "address", "list", failure="address_preflight_failed")
     assert_address_creation_preflight(owned, cf_rules(zone, routing_token), address)
     creation_attempted = False
@@ -1088,7 +1204,8 @@ def main() -> int:
         mail_oracles = {rich_oracle["subject"]: rich_oracle,
                         distractor_oracle["subject"]: distractor_oracle}
         smtp_attempted = True
-        smtp_send_receipts(smtp_token, address, [(rich, rich_oracle), (distractor, distractor_oracle)])
+        smtp_send_receipts(smtp_token, address, [(rich, rich_oracle), (distractor, distractor_oracle)],
+                           relate_second=True)
         print("smtp_submitted")
         messages = await_messages(binary, env, {rich_oracle["subject"], distractor_oracle["subject"]})
         delivery_confirmed = True
@@ -1118,6 +1235,14 @@ def main() -> int:
             verify_archive(unpacked, distractor_oracle, address, distractor_id, other_detail[0])
         print("smtp_to_zip_verified")
 
+        for key, value in (("in_reply_to", rich_oracle["provider_message_id"]),
+                           ("references", rich_oracle["provider_message_id"]),
+                           ("reply_to", address)):
+            hits = rows(amail(binary, env, "search", "--mailbox", address,
+                             "--title", distractor_oracle["subject"], "--meta", f"{key}={value}",
+                             failure="relation_search_failed"))
+            check(len(hits) == 1 and hits[0].get("id") == distractor_id, "relation_search_hit")
+        print("smtp_reply_relationship_search_verified")
         search_cases(binary, env, address, rich_oracle, rich_row)
         amail(binary, env, "mark", target, "--read", failure="mark_read_failed")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--read", failure="read_search_failed"), rich_oracle["subject"], 1, "read_search_count")

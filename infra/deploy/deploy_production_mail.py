@@ -25,12 +25,12 @@ def require_context(target: str) -> None:
     also verifies reviewed isolated config and its strict Queue binding so a
     branch selection cannot silently deploy default production capabilities.
     """
-    branch = {"production": "refs/heads/main", "staging": "refs/heads/codex/amail-v0.1.0"}.get(target)
+    branch = {"production": "refs/heads/main", "staging": "refs/heads/codex/v0.1.2-agent-first-performance"}.get(target)
     if branch is None or os.getenv("GITHUB_REF") != branch or not os.getenv("GITHUB_OUTPUT"):
         raise ValueError("context_unverified")
     if target == "staging":
-        if (os.getenv("AMAIL_STAGING_MAIL_DEPLOY_CONFIRM") != "RUN_STAGING_TRACE_SINK_ROLLOUT"
-                or os.getenv("AMAIL_TRACE_TOPOLOGY") != "api-only"):
+        if (os.getenv("AMAIL_STAGING_MAIL_DEPLOY_CONFIRM") != "RUN_STAGING_V012"
+                or os.getenv("AMAIL_TRACE_TOPOLOGY") != "api-scheduled"):
             raise ValueError("staging_context_unverified")
         from check_staging import check
         check()

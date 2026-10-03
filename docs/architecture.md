@@ -57,9 +57,106 @@ All URLs are under `https://mail.moesegfault.dev`; requests except health use `A
 | `PATCH /v1/messages/{id}` | `{"read":true}` or false | updated summary; no implicit read from GET/archive |
 | `DELETE /v1/messages/{id}` | — | 204; only this caller's delivery is deleted |
 | `POST /v1/messages/send` | `application/zip`, `Idempotency-Key: <UUID>` | 202 `{ "id":"...","state":"accepted" }`; never claim delivered before provider confirmation |
+| `GET /v1/sends/{idempotency_key}` | caller's logical-send UUID | owner-scoped submission receipt, including pending/unknown work; acceptance and archival projection distinguished |
+| `GET /v1/messages/{id}/outcomes` | owned visible outbound message | bounded known per-recipient risk-precedence feedback; not a read receipt |
+| `GET /v1/events` | optional `message_id`, `kind`, `since`, `limit`, `cursor` | owner-scoped indexed lifecycle event page; discover changes without a known message ID |
+| `GET /v1/messages/{id}/events` | same event filters except `message_id` | same event query scoped to one owned visible outbound message |
+| `GET /v1/sending/status` | — | applicable owner sending policy and own quota usage; advisory, not quota reservation or recipient authorization |
 | `POST /v1/telemetry` | redacted event batch; opt-out respected | 202; never block mail operations on failure |
 
 Summary fields: `id`, `mailbox`, `direction` (`inbound` or `outbound`), `from`, `to`, `subject`, `subject_truncated`, `received_at`, `read`, `size_bytes`, `has_attachments`; optional `score` only for semantic search. `subject` is a bounded preview in search results; when `subject_truncated=true`, request the message archive for complete content rather than treating the preview as authoritative. Default CLI line format should emit concise parseable JSON lines, not human decoration. `--human` may add layout/color but must not change server state.
+
+The v0.1.2 metadata allowlist additionally includes `rfc_message_id`, `provider_id`,
+`reply_to` and `references`; array references match each element independently,
+never by concatenating IDs into a fabricated relationship. Metadata patterns have
+a 512-byte bound, accommodating complete RFC identifiers; other text-pattern
+limits are unchanged. Legacy `message_id` semantics remain unchanged.
+
+### v0.1.2 progressive disclosure and recovery
+
+The additive v0.1.2 contract targets staging acceptance, not public publication.
+Existing message-list/search stdout remains unchanged. `get` adds small optional
+links to archive and, for outbound mail, outcomes/events; it does not embed a
+lifecycle history. `amail discover` works without configuration, token, network
+or diagnostic-store initialization and returns `amail.discover.v1` with a small
+topic index. Targeted topics and `.schema` children explain input bounds, field
+semantics and recovery examples. Discovery describes installed capabilities, not
+remote policy. Relevant detail is reachable, not preloaded into every call.
+
+Submission receipt fields are `idempotency_key`, local `id` or null, `state`,
+`projection_state`, UTC `created_at`, optional allowlisted `rejection_code`, links
+when the undeleted message is visible, and `request_id`. Internal `sent` maps to
+public `accepted` with `projection_state=archived`; internal `accepted` has a
+pending projection. Other submission states are preparing, reserving, submitting,
+unknown and rejected. Neither acceptance nor archived projection proves delivery.
+A missing receipt after transport uncertainty never authorizes a new send key.
+
+The CLI keeps accepted receipts separately from legacy `send_attempts`, at most
+100 recent intents. A single local SQLite transaction stores safe historical
+acceptance before deleting only the matching payload/key's unresolved row. An
+explicit intent's acceptance cannot release a different concurrent default
+intent. `send-receipts` and `send-status --local` disclose local history on demand;
+they do not replace server state. An intentionally new identical message remains
+possible after acceptance; this is not permanent payload deduplication. The agent
+must save an explicit UUID before invocation to close the process/output-loss
+boundary even when no acceptance receipt could be written locally.
+
+Outcomes reuse `recipient_outcomes` and return `id`, `outcomes`, retention and
+interpretation, links and request ID. Each outcome contains recipient, kind,
+provider `occurred_at` and event ID. It is the existing risk-precedence projection,
+not the last event received, a complete envelope list or a read confirmation.
+
+Events reuse `provider_events`. The six kinds are deferred, delivered, bounced,
+failed, rejected and complained. Rows contain event ID, local message ID,
+recipient, kind, provider occurrence time and service receipt time; no raw
+provider payload, SMTP prose or private operator notes. The owner-facing query
+also requires visible undeleted owned outbound mail, preventing deleted content
+or another owner's/Bcc data from being rediscovered. Owner-authorized Bcc feedback
+is itself private content and must not be placed in public telemetry/artifacts.
+
+Event `limit` defaults to 20 and is bounded to 1..100. `since` is inclusive RFC3339
+service receipt time, so delayed events with an older occurrence are discoverable.
+Duplicate/unknown query keys, unsupported kind and malformed dates are rejected.
+`next_cursor` is an opaque owner/filter-bound versioned continuation with a fixed
+rowid high-water mark and descending receipt-time/event-ID keyset. Page size may
+change without changing scope; filters may not. Expiry is one hour; retained
+history may expire during a continuation, so this is not a forever snapshot.
+`events_cursor_expired` (410) requires a fresh listing. A new listing sees later
+receipts. Narrow owner/time/message/kind indexes support these bounded read paths.
+Journal/outcome retention is 90 days, and an empty page means no retained observed
+feedback, not proof of historic absence, delivery failure or resend permission.
+
+Incoming ZIP manifests and `get.metadata` add optional validated `reply_to`,
+`in_reply_to`, `references` and `rfc_message_id`. Relations support modern RFC5322
+message-ID syntax only; ambiguous duplicate headers, invalid/oversized values and
+unsupported obsolete syntax are omitted, not partial guessed relationships.
+Reply-To permits one valid mailbox; header limits are 998 bytes for Reply-To,
+8,192 bytes for relation fields, 512 bytes per ID and 100 reference IDs. Legacy
+`message_id` is preserved as-is for compatibility. Outbound metadata additionally
+names `provider_id` separately but never derives `rfc_message_id` from it, even
+when the provider value has valid RFC syntax: syntax does not establish the actual
+Message-ID header. This release has no verified outbound wire-ID mapping. The
+incoming `rfc_message_id` comes from the actual received header. Never append a guessed domain
+or identify a UUID delivery ID as an RFC relation. If no proven RFC identity is
+available, automated reply association remains unknown. An inbound suggested
+destination is data, not authorization, and replying uses a fresh draft/intent.
+
+`amail --machine` is an explicit opt-in `amail.machine.v1` stderr control protocol;
+legacy compact stdout and default prose errors are preserved. Typed errors expose
+stable bounded code, next action, optional HTTP status/request ID and safe details.
+Pre-submission send-intent and search-running events permit capture before a
+long operation. Required actions distinguish fix-input, login, resume-search,
+query-send-status, restart-search, restart-events, retry-later, stop and inspect-local. A generic
+retry boolean would erase important mutation/recovery semantics. Machine records
+omit private input/provider prose; incidental diagnostic failures use versioned
+records rather than corrupting the selected control stream.
+
+Applicable owner canary availability is reported separately from ordinary policy:
+an owner's temporary single-intent canary does not make global policy allowed.
+The status read and send admission share the same policy predicate; status still
+does not reserve a canary, quota or recipient permission. Unknown provider
+submissions, known accepted-but-index-pending sends and unclassified send 5xx
+failures direct the caller to query the same intent, never replace its key.
 
 SearchRequest (all supplied predicates AND together):
 
