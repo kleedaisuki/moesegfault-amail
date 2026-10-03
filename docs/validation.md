@@ -205,6 +205,17 @@ provider mutation, mail action or workflow dispatch was performed. Hosted full C
 actual `production-inspect` and normal replacement results remain pending; release
 publication/site evidence must likewise be recorded only after the owner's runs.
 
+Actual production inspection
+[37104009114](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37104009114)
+passed current policy/owned active graph reads but failed subscription admission
+before any writes. The controller had invented a top-level `type=queues` field
+and compared destination type to `queues` instead of documented `queues.queue`.
+The narrow repair follows the
+[Cloudflare subscription response contract](https://developers.cloudflare.com/api/resources/queues/subresources/subscriptions/methods/list/),
+retains exact selectors/destination/events, and rejects duplicate identities or
+extra paths related to the production domain/main or DLQ. Eight focused tests and
+157 infrastructure tests pass; corrected actual read admission remains required.
+
 ## Verification proportional to value
 
 The owner's preserved local audit records source-level repair candidates outside

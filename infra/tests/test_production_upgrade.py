@@ -52,6 +52,36 @@ class ProductionUpgradeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "split_policy_unverified"):
                 upgrade.graph.verify(realm, state, expected_policy=self.policy())
 
+    def test_retained_subscription_matches_documented_destination_not_invented_row_type(self):
+        """Use the API response shape; wrong selectors and extra delivery paths stop."""
+        from check_staging_adapters import forwarding
+        from ensure_email_events import EVENTS, ZONE
+        provider = type("Provider", (), {"account": "a" * 32, "token": "synthetic"})()
+        queues = [{"queue_name": "amail-sending-events", "queue_id": "b" * 32},
+                  {"queue_name": "amail-sending-events-dlq", "queue_id": "c" * 32}]
+        row = {"id": "synthetic-id", "name": "amail-sending-lifecycle", "enabled": True,
+               "source": {"type": "email.sending", "zone_id": ZONE, "domain": "mail.moesegfault.dev",
+                          "name": "returned display label"},
+               "destination": {"type": "queues.queue", "queue_id": "b" * 32}, "events": EVENTS.split(",")}
+        wrong_destination = deepcopy(row)
+        wrong_destination["destination"]["type"] = "queues"
+        wrong_scope = deepcopy(row)
+        wrong_scope["source"]["domain"] = "other.invalid"
+        extra_path = deepcopy(row)
+        extra_path["id"] = "additional-path"
+        extra_path["source"]["domain"] = "other.invalid"
+        unknown_selector = deepcopy(row)
+        unknown_selector["source"]["unknown_selector"] = "private"
+        with patch.object(upgrade.retained, "verify_adapters", return_value=upgrade.ADAPTER_PINS), \
+             patch.object(upgrade.retained.readback, "complete", return_value=queues), \
+             patch.object(upgrade.graph, "direct_forward_snapshot", return_value={}), \
+             patch.object(forwarding, "pages", return_value=[row]) as pages:
+            self.assertEqual(upgrade.retained_snapshot(provider)["subscription"], [row])
+            for rows in ([wrong_destination], [wrong_scope], [unknown_selector], [row, deepcopy(row)], [row, extra_path]):
+                pages.return_value = rows
+                with self.assertRaisesRegex(ValueError, "retained_subscription_unverified"):
+                    upgrade.retained_snapshot(provider)
+
     def test_read_confirmation_cannot_authorize_write_or_wrong_context(self):
         """Inspection and replacement are different explicit capabilities."""
         env = self.environment()
