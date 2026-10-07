@@ -201,6 +201,12 @@ pub struct Event {
     /// Strict causal parent ID, never replaced by Queue span IDs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_span_id: Option<String>,
+    /// Scheduler execution link for a durable asynchronous Billing continuation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_trace_id: Option<String>,
+    /// Scheduler root paired with linked_trace_id; never a journal/Queue identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_span_id: Option<String>,
     /// Canonical UUID request correlation; optional for legacy CLI rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
@@ -270,6 +276,7 @@ impl Event {
                 .request_id
                 .as_deref()
                 .is_some_and(|id| !canonical_uuid(id))
+            || !self.valid_link()
             || self.occurred_at_ms.is_some_and(|n| n > MAX_SAFE_INTEGER)
             || self.duration_ms.is_some_and(|n| n > MAX_SAFE_INTEGER)
             || (self.service != Service::MailCli
@@ -299,6 +306,22 @@ impl Event {
             (Service::MailApi, Phase::RequestExit) => self.valid_request(),
             (Service::MailApi, Phase::OperationExit) => false,
             (Service::MailApi, _) => self.valid_phase(),
+            _ => false,
+        }
+    }
+
+    /// Only durable Billing delivery can join a source trace and scheduler execution.
+    fn valid_link(&self) -> bool {
+        match (&self.linked_trace_id, &self.linked_span_id) {
+            (None, None) => true,
+            (Some(trace), Some(span)) => {
+                self.service == Service::MailApi
+                    && self.operation == Operation::Maintenance
+                    && self.phase == Phase::BillingHttp
+                    && valid_hex_id(trace, 32)
+                    && valid_hex_id(span, 16)
+                    && !(trace == &self.trace_id && self.span_id.as_ref() == Some(span))
+            }
             _ => false,
         }
     }
@@ -719,5 +742,26 @@ mod tests {
             ordinary["operation"] = json!("messages_send");
             assert!(Event::from_value(ordinary).is_none());
         }
+    }
+
+    /// Async context links are a closed pair confined to scheduled Billing delivery.
+    #[test]
+    fn async_link_is_paired_and_restricted_to_durable_usage_delivery() {
+        let mut value = fixture();
+        value["operation"] = json!("maintenance");
+        value["phase"] = json!("billing_http");
+        value.as_object_mut().unwrap().remove("http_status_class");
+        value["occurred_at_ms"] = json!(1_790_000_000_123u64);
+        value["duration_ms"] = json!(7);
+        value["linked_trace_id"] = json!("11111111111111111111111111111111");
+        value["linked_span_id"] = json!("2222222222222222");
+        assert!(Event::from_value(value.clone()).is_some());
+        for key in ["linked_trace_id", "linked_span_id"] {
+            let mut partial = value.clone();
+            partial.as_object_mut().unwrap().remove(key);
+            assert!(Event::from_value(partial).is_none());
+        }
+        value["operation"] = json!("messages_send");
+        assert!(Event::from_value(value).is_none());
     }
 }

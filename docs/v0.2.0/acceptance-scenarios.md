@@ -130,3 +130,99 @@ backoff, and Billing acceptance followed by a deliberately failed local ACK SQL
 update. The final case requires the next sweep to replay the same event and the
 synthetic receiver to retain one liability, not two. No real send or payment is
 performed. JavaScript syntax is checked; compiled hosted execution is pending.
+
+## Executable hosted browser extension
+
+The existing `infra/tests/staging_hosted_e2e.py` now optionally calls
+`staging_billing_e2e.execute` immediately after its normal admitted-CLI native
+login and before the existing inbound/search/delete/send loop. It reuses the
+same protected staging identity and `staging_identity_cdp.Browser`; no additional
+identity registration, provider deployment or activation issuance is embedded.
+
+Required runner inputs (secret values must not appear in commands/logs):
+
+| Input | Contract |
+| --- | --- |
+| `AMAIL_STAGING_E2E_CONFIRM` | Existing `RUN_STAGING_E2E` admission |
+| `AMAIL_STAGING_BILLING_CONFIRM` | Explicit `RUN_STAGING_BILLING_V020` |
+| `AMAIL_STAGING_BILLING_PLAN` | `free` (default) or `lite` |
+| `STAGING_E2E_USERNAME` / `STAGING_E2E_PASSWORD` | Existing protected synthetic account, never a customer |
+| `STAGING_E2E_AMAIL_ACTIVATION_CODE` | Only for Lite; legitimately issued amail-lite capability injected privately |
+| Other artifact/mail/provider inputs | Unchanged existing hosted harness contract |
+
+Invoke the existing runner entry, not a parallel deployment command:
+
+```powershell
+python infra/tests/staging_hosted_e2e.py
+```
+
+The hosted workflow must explicitly pass the new confirmation/plan/private code
+before this optional branch runs. The runner retrieves its credentials through
+the already stored same-user DPAPI blob, navigates the exact staging authorization
+path, completes normal Subscribe→Identity→Subscribe SSO and types only at checked
+first-party origins. It first cancels a fresh Free intent, verifies the CLI's
+cancelled receipt, then approves a new Free/Lite intent through the visible
+checkbox/form. Lite types the private activation code into the ordinary existing
+activation form before approval. This is synthetic-human validation, not consent
+from a real paying customer. Approved budget is deliberately zero.
+
+CLI reads back the effective plan and `payment_collection_available:false`.
+Telemetry is enabled for these bounded CLI commands, then flushed; the helper
+reads only actual billing trace IDs from the local diagnostic SQLite journal.
+The safe result is `.temp/staging-billing-evidence.json`, containing plan, phase
+outcomes, time bounds and trace IDs, never URL, owner identity, code or mail body.
+Upload this sanitized file separately if durable hosted evidence is required;
+the existing parent cleanup removes all private browser/profile/credential files.
+Retained cross-service witness queries must still prove the collected IDs; local
+journal presence is not remote retention evidence.
+
+Paid baseline must initially be Free. The helper refuses to downgrade an already
+paid account merely to make a rerun pass. A successful Lite run is not permission
+to redeem another code or reset the account; use its existing receipt and evidence.
+
+Legitimate issuance is the existing subscriptions command
+`node scripts/admin-issue.mjs --plan amail-lite` after the staging catalog exists.
+It uses the ignored local administrator key and sends only to configured
+`ADMIN_EMAIL`; the raw code is not returned. Retrieval must use the authorized
+amail mailbox workflow, bounded by issuance time and exact message ID. No D1 code
+minting, provider-store reads or public transcript of the code is permitted.
+Subscriptions has no persisted reusable synthetic credential fixture; its prior
+2026-10-05 manual Beta acceptance is historical evidence, not current credentials.
+
+Local harness verification: `python -m unittest discover -s infra/tests` passes
+183 tests on 2026-10-07; the new two tests check exact URL routing/privacy and
+bounded object-only CLI JSONL parsing. Python compile checks pass. These results
+do not execute Chrome, SSO, activation, hosted Mail or retained trace retrieval.
+
+## Hosted compiled checkpoint and concrete fixture correction
+
+Checks run [37614032629](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37614032629)
+at source `b07646e` is **failed**, not release admission. Its actual workerd log
+(`.cache/v020/mail-checks-37614032629.log`) records 119 passes and five failures.
+The Billing human-loop, native causal Queue capture, outbox success/backoff/lost
+ACK and incompatible-version negative cases passed at that source. All five
+failures were the accepted HTTP/Cron race suite, which exited before the fixture's
+committed-acceptance pause. This is compiled simulation evidence, not deployment
+or hosted browser acceptance.
+
+Inspection found the exact acceptance SQL still matched the production operation,
+but the fixture required D1 `meta.changes===1`. New atomic accounting triggers
+make one accepted journal mutation produce multiple total changes. The actual SQL
+reproduction `test_acceptance_trigger_changes_are_not_direct_row_identity` proves
+`SELECT changes()=1`, `total_changes` delta greater than one, and the expected
+reserved→accepted accounting transition. The corrected test-only adapter reads
+the exact owner/idem row before and after the native commit, verifies
+`submitting→accepted` plus the submitted provider ID, then pauses. No race
+assertion, barrier or production implementation was weakened. Its syntax and SQL
+reproduction pass; the corrected compiled race still requires a new hosted run.
+
+The hidden-accepted deletion case also contained an eight-phase rotation fixture.
+v0.2 adds Billing as phase nine, so its old timestamp no longer made GC precede
+outbound recovery. The test now uses `1680000600000` and explicitly asserts
+`floor(timestamp/300000)%9==4` (Deleted first), preserving the original ordering
+scenario and all source-retention/terminalization assertions.
+
+The next outbox test revision also captures actual native scheduled records:
+persisted original send context must parent the usage HTTP dependency, while its
+explicit span link points to the actual new scheduled root. This new assertion
+is not covered by the earlier checkpoint and remains pending compiled execution.

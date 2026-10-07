@@ -105,6 +105,28 @@ class UpgradePreservationTests(unittest.TestCase):
             "FROM resource_accounts WHERE owner_sub='new-owner'",
         ).fetchone(), ("free", 100, 200_000_000, 1, 0, 0, None))
 
+    def test_acceptance_trigger_changes_are_not_direct_row_identity(self):
+        """One real accepted journal transition also commits its reserved usage rows."""
+        self.upgrade()
+        self.db.execute("UPDATE send_requests SET state='submitting' WHERE idem_key='synthetic-unknown'")
+        self.db.execute(
+            "INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units) "
+            "SELECT owner_iss,owner_sub,'synthetic-unknown',period_start,1 FROM resource_current "
+            "WHERE owner_iss=? AND owner_sub=?", (ISSUER, SUBJECT),
+        )
+        before = self.db.total_changes
+        self.db.execute(
+            "UPDATE send_requests SET state='accepted',provider_id=?1,sender=?2,envelope_json=?3,"
+            "request_id=?4 WHERE owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND state='submitting'",
+            ("synthetic-provider", "fixture@example.invalid", "[]", "synthetic-request", ISSUER, SUBJECT,
+             "synthetic-unknown"),
+        )
+        self.assertEqual(self.db.execute("SELECT changes()").fetchone()[0], 1)
+        self.assertGreater(self.db.total_changes - before, 1)
+        self.assertEqual(self.db.execute("SELECT state FROM resource_send_reservations").fetchone()[0], "accepted")
+        self.assertEqual(self.db.execute("SELECT outbound_reserved,outbound_accepted FROM resource_periods")
+                         .fetchone(), (0, 1))
+
 
 if __name__ == "__main__":
     unittest.main()

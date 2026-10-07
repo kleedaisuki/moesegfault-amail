@@ -52,6 +52,22 @@ on:
         required: false
         type: string
 
+      billing_confirm:
+        description: Optional RUN_STAGING_BILLING_V020 for the protected synthetic browser authorization loop
+        required: false
+        type: string
+      billing_plan:
+        description: Synthetic browser plan; lite requires a legitimate pre-provisioned activation code
+        required: false
+        default: free
+        type: choice
+        options: [free, lite]
+      billing_trace:
+        description: Verify retained content-free CLI to Mail to Billing spans after the browser loop
+        required: false
+        default: false
+        type: boolean
+
       staging_resume_run:
         description: Explicit failed owned staging sink run; existing sink and queues are read-only
         required: false
@@ -416,6 +432,9 @@ jobs:
           AMAIL_STAGING_E2E_CONFIRM: ${{ inputs.confirm }}
           AMAIL_STAGING_CANARY_CONFIRM: ${{ inputs.send_confirm }}
           AMAIL_SOURCE_RUN: ${{ inputs.source_run }}
+          AMAIL_STAGING_BILLING_CONFIRM: ${{ inputs.billing_confirm }}
+          AMAIL_STAGING_BILLING_PLAN: ${{ inputs.billing_plan }}
+          AMAIL_STAGING_BILLING_TRACE: ${{ inputs.billing_trace }}
         run: |
           if ($env:AMAIL_STAGING_E2E_CONFIRM -ne 'RUN_STAGING_E2E') {
             throw 'Explicit staging E2E confirmation required'
@@ -426,6 +445,15 @@ jobs:
                 -not $env:AMAIL_SOURCE_RUN) {
               throw 'Owned staging send requires exact candidate bytes and explicit confirmation'
             }
+          }
+          if ($env:AMAIL_STAGING_BILLING_CONFIRM) {
+            if ($env:AMAIL_STAGING_BILLING_CONFIRM -ne 'RUN_STAGING_BILLING_V020' -or
+                $env:GITHUB_REF -ne 'refs/heads/codex/v0.2.0-billing' -or
+                -not $env:AMAIL_SOURCE_RUN) {
+              throw 'Billing browser acceptance requires exact candidate bytes and explicit staging confirmation'
+            }
+          } elseif ($env:AMAIL_STAGING_BILLING_PLAN -eq 'lite' -or $env:AMAIL_STAGING_BILLING_TRACE -eq 'true') {
+            throw 'Billing plan or retained trace acceptance requires explicit browser confirmation'
           }
       - uses: actions/setup-python@v5
         with:
@@ -465,6 +493,11 @@ jobs:
         env:
           AMAIL_STAGING_E2E_CONFIRM: ${{ inputs.confirm }}
           AMAIL_STAGING_CANARY_CONFIRM: ${{ inputs.send_confirm }}
+          AMAIL_STAGING_BILLING_CONFIRM: ${{ inputs.billing_confirm }}
+          AMAIL_STAGING_BILLING_PLAN: ${{ inputs.billing_plan }}
+          AMAIL_STAGING_BILLING_TRACE: ${{ inputs.billing_trace }}
+          STAGING_E2E_AMAIL_ACTIVATION_CODE: ${{ inputs.billing_confirm == 'RUN_STAGING_BILLING_V020' && inputs.billing_plan == 'lite' && secrets.STAGING_E2E_AMAIL_ACTIVATION_CODE || '' }}
+          BILLING_SERVICE_KEY: ${{ inputs.billing_confirm == 'RUN_STAGING_BILLING_V020' && inputs.billing_trace && secrets.BILLING_SERVICE_KEY || '' }}
           STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
           STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -474,6 +507,16 @@ jobs:
           CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_hosted_e2e.py
+
+      - name: Preserve only content-free Billing acceptance evidence
+        if: always() && inputs.billing_confirm == 'RUN_STAGING_BILLING_V020'
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-billing-evidence-${{ github.run_id }}
+          path: .temp/staging-billing-evidence.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
 
   worker-build:
     name: Build and unit-check Rust Worker modules

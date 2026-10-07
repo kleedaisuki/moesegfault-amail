@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,9 +38,9 @@ class ResourceMetering(unittest.TestCase):
         """Explicit human authorization is a fixture, never synthesized by a paid plan."""
         self.db.execute("UPDATE resource_accounts SET billing_owner_id='opaque-owner',authorization_id='human-consent',overage_budget_micros=?", (budget,))
 
-    def reserve(self, key, units):
+    def reserve(self, key, units, origin=None):
         """Mirror the application's atomic INSERT SELECT, including exact replay no-op."""
-        self.db.execute("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,authorization_id) SELECT 'issuer','owner',?,period_start,?,authorization_id FROM resource_current WHERE NOT EXISTS(SELECT 1 FROM resource_send_reservations WHERE idem_key=?)", (key, units, key))
+        self.db.execute("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,authorization_id,origin_traceparent) SELECT 'issuer','owner',?,period_start,?,authorization_id,? FROM resource_current WHERE NOT EXISTS(SELECT 1 FROM resource_send_reservations WHERE idem_key=?)", (key, units, origin, key))
 
     def state(self, key, state):
         """Exercise the same trigger transition invoked by the provider journal."""
@@ -48,6 +49,82 @@ class ResourceMetering(unittest.TestCase):
     def stock(self, size):
         """Allocate a real retained-byte reservation through production admission."""
         self.db.execute("INSERT INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at) VALUES('archive','issuer','owner',?,'indexed',unixepoch())", (size,))
+
+    def reconcile(self):
+        """Execute exact production Rust SQL so entitlement refresh tests cover shipped statements."""
+        source = (ROOT / "crates/mail-worker/src/resource.rs").read_text(encoding="utf-8")
+        body = source.split("pub(crate) async fn ensure_account", 1)[1].split("/// Settle elapsed", 1)[0]
+        statements = re.findall(r'prepare\("([^"\n]+)"\)', body)
+        self.assertEqual(len(statements), 5)
+        for query in statements:
+            self.db.execute(query, ("issuer", "owner"))
+
+    def test_identical_refresh_cannot_turn_reserved_overage_into_free_allowance(self):
+        self.authorize(5_000)
+        self.reserve("funded", 101)
+        for _ in range(3):
+            self.reconcile()
+        self.assertEqual(self.db.execute("SELECT included_outbound,reserved_micros FROM resource_current").fetchone(), (100, 5_000))
+        self.state("funded", "accepted")
+        self.assertEqual(self.db.execute("SELECT SUM(amount_micros) FROM resource_outbox").fetchone()[0], 5_000)
+
+    def test_upgrade_downgrade_cycle_does_not_farm_monthly_allowance(self):
+        self.authorize()
+        self.db.execute("UPDATE resource_accounts SET plan='plus',included_outbound=5000")
+        self.reconcile()
+        self.reserve("paid-included", 5000)
+        self.state("paid-included", "accepted")
+        self.db.execute("UPDATE resource_accounts SET plan='free',included_outbound=100")
+        self.reconcile()
+        self.db.execute("UPDATE resource_accounts SET plan='plus',included_outbound=5000")
+        self.reconcile()
+        self.reserve("after-upgrade", 1)
+        self.state("after-upgrade", "accepted")
+        self.assertEqual(self.db.execute("SELECT SUM(amount_micros) FROM resource_outbox").fetchone()[0], 5_000)
+
+    def test_month_rollover_preserves_unknown_old_period_hold(self):
+        self.authorize(5_000)
+        self.reserve("old-unknown", 101)
+        original_period = self.unixepoch("now", "start of month")
+        self.clock = int(datetime(2026, 11, 1, tzinfo=timezone.utc).timestamp())
+        self.reconcile()
+        self.assertEqual(self.db.execute("SELECT outbound_accepted,outbound_reserved,reserved_micros FROM resource_current").fetchone(), (0, 0, 5_000))
+        self.state("old-unknown", "accepted")
+        self.assertEqual(self.db.execute("SELECT period_start,occurred_at,amount_micros FROM resource_outbox").fetchone(), (original_period, self.clock, 5_000))
+
+    def test_paid_expiry_clamps_stock_even_on_direct_cleanup_trigger(self):
+        self.authorize()
+        start = self.clock
+        self.db.execute("UPDATE resource_accounts SET plan='lite',included_storage_bytes=2000000000,valid_until=?", (start + 60,))
+        self.stock(3_000_000_000)
+        self.clock += 120
+        self.db.execute("DELETE FROM storage_reservations WHERE id='archive'")
+        self.assertEqual(self.db.execute("SELECT quantity,authorized_at,occurred_at FROM resource_outbox").fetchone(), (60_000_000_000, start, start + 60))
+        self.reconcile()
+        self.assertEqual(self.db.execute("SELECT plan,overage_budget_micros FROM resource_current").fetchone(), ("free", 0))
+
+    def test_provider_commit_trigger_expands_metadata_but_not_projection_claim(self):
+        # Production D1/Miniflare metadata uses total_changes(), including triggers.
+        # The owned journal still changes exactly once; an exact-one fixture metadata
+        # predicate must not prevent pausing after that durable acceptance boundary.
+        self.db.execute("UPDATE send_release_gates SET canary_owner_iss='issuer',canary_owner_sub='owner',canary_expires_at=unixepoch()+600 WHERE id=1")
+        self.db.execute("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,quota_reserved,state,created_at) VALUES('issuer','owner','provider-commit','hash','archive',1,'submitting',unixepoch())")
+        self.reserve("provider-commit", 1)
+        source = (ROOT / "crates/mail-worker/src/lib.rs").read_text(encoding="utf-8")
+        query = re.search(r"""prepare\("(UPDATE send_requests SET state='accepted',provider_id=[^"\n]+)"\)""", source).group(1)
+        before = self.db.total_changes
+        self.db.execute(query, ("provider-id", "fixture@example.invalid", "[]", "request-id", "issuer", "owner", "provider-commit"))
+        self.assertEqual(self.db.total_changes - before, 3)
+        self.assertEqual(self.db.execute("SELECT changes()").fetchone()[0], 1)
+        self.assertEqual(self.db.execute("SELECT state FROM send_requests").fetchone()[0], "accepted")
+        self.assertEqual(self.db.execute("SELECT state FROM resource_send_reservations").fetchone()[0], "accepted")
+        self.assertEqual(self.db.execute("SELECT outbound_reserved,outbound_accepted FROM resource_current").fetchone(), (0, 1))
+        before = self.db.total_changes
+        self.db.execute("UPDATE send_requests SET index_projection_token='fixture-token',index_projection_lease_until=9999999999999 WHERE state='accepted'")
+        self.assertEqual(self.db.total_changes - before, 1, "lease-column claim does not fire UPDATE OF state accounting")
+        before = self.db.total_changes
+        self.db.execute("UPDATE send_requests SET state='sent',index_projection_token=NULL,index_projection_lease_until=0 WHERE state='accepted'")
+        self.assertEqual(self.db.total_changes - before, 1, "sent projection does not commit the same resource hold twice")
 
     def test_free_is_monthly_recipients_not_submission_count(self):
         self.reserve("first", 100)
@@ -81,6 +158,49 @@ class ResourceMetering(unittest.TestCase):
         self.clock += 60
         self.state("unknown", "accepted")
         self.assertEqual(self.db.execute("SELECT authorization_id,authorized_at,occurred_at,amount_micros FROM resource_outbox").fetchone(), ("human-consent", original_time, self.clock, 5_000))
+
+    def test_async_origin_survives_unknown_rollover_consent_change_and_replay(self):
+        self.authorize(5_000)
+        send_origin = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+        later_origin = "00-fedcba9876543210fedcba9876543210-fedcba9876543210-01"
+        self.reserve("trace-unknown", 101, send_origin)
+        original_period = self.unixepoch("now", "start of month")
+        original_time = self.clock
+        self.reserve("trace-unknown", 101, later_origin)
+        self.clock = int(datetime(2026, 11, 1, tzinfo=timezone.utc).timestamp())
+        self.reconcile()
+        self.db.execute("UPDATE resource_accounts SET authorization_id='later-consent',overage_budget_micros=0,origin_traceparent=?", (later_origin,))
+        self.state("trace-unknown", "accepted")
+        self.state("trace-unknown", "accepted")
+        event = self.db.execute("SELECT event_id,period_start,authorization_id,authorized_at,origin_traceparent,amount_micros FROM resource_outbox").fetchone()
+        self.assertEqual(event[1:], (original_period, "human-consent", original_time, send_origin, 5_000))
+        self.db.execute("UPDATE resource_outbox SET delivered_at=unixepoch() WHERE event_id=?", (event[0],))
+        self.assertEqual(self.db.execute("SELECT event_id,period_start,authorization_id,authorized_at,origin_traceparent,amount_micros FROM resource_outbox").fetchall(), [event])
+
+    def test_snapshot_refresh_preserves_first_origin_and_rejects_stale_authority(self):
+        source = (ROOT / "crates/mail-worker/src/resource.rs").read_text(encoding="utf-8")
+        body = source.split("pub(crate) async fn apply_snapshot", 1)[1].split("/// Read local state", 1)[0]
+        query = re.findall(r'prepare\("([^"\n]+)"\)', body)[0]
+        first = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+        later = "00-fedcba9876543210fedcba9876543210-fedcba9876543210-01"
+        def snapshot(stamp, authorization, origin):
+            self.db.execute(query, ("issuer", "owner", "free", 100, 200_000_000, 1, "opaque-owner", 5_000, None, stamp, authorization, origin))
+        snapshot(1, "first-consent", first)
+        snapshot(1, "first-consent", later)
+        self.assertEqual(self.db.execute("SELECT origin_traceparent FROM resource_accounts").fetchone()[0], first)
+        snapshot(0, "stale-consent", later)
+        self.assertEqual(self.db.execute("SELECT authorization_id,origin_traceparent FROM resource_accounts").fetchone(), ("first-consent", first))
+        snapshot(2, "later-consent", later)
+        self.assertEqual(self.db.execute("SELECT authorization_id,origin_traceparent FROM resource_accounts").fetchone(), ("later-consent", later))
+
+    def test_stock_origin_is_the_authorization_origin_not_maintenance_trace(self):
+        self.authorize()
+        origin = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+        self.db.execute("UPDATE resource_accounts SET origin_traceparent=?", (origin,))
+        self.stock(1_200_000_000)
+        self.clock += 86_400
+        self.db.execute("UPDATE resource_accounts SET accounting_tick=unixepoch()")
+        self.assertEqual(self.db.execute("SELECT origin_traceparent FROM resource_outbox").fetchone()[0], origin)
 
     def test_storage_free_limit_is_decimal_and_has_no_mail_count(self):
         self.stock(200_000_000)

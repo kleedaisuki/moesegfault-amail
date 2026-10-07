@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 from pathlib import Path
 import re
 import shutil
 import sys
 import tempfile
+import time
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -104,6 +106,41 @@ def recoverable_run_nonce(password: str) -> str:
     return digest[:16]
 
 
+def retained_billing_trace(evidence: dict) -> dict:
+    """Read only bounded safe spans after the browser loop, never CLI child secrets."""
+    from staging_trace_witness import read_records, read_service_records, witness, TraceWitnessError
+    traces = evidence.get("trace_ids")
+    started = evidence.get("started_at_ms")
+    if (not isinstance(traces, list) or not 1 <= len(traces) <= 16
+            or any(not isinstance(trace, str) or not re.fullmatch(r"[0-9a-f]{32}", trace) for trace in traces)
+            or type(started) is not int):
+        raise HostedProbeError("billing_trace_scope_invalid")
+    account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+    token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+    service_key = os.environ.get("BILLING_SERVICE_KEY", "")
+    if not account or not token or not service_key:
+        raise HostedProbeError("billing_trace_credentials_missing")
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        end = int(time.time() * 1000)
+        if not 0 < end - started <= 900_000:
+            raise HostedProbeError("billing_trace_window_invalid")
+        for trace in traces:
+            if time.monotonic() >= deadline:
+                break
+            try:
+                records = read_records(account, token, "amail-trace-sink-staging", trace, started, end)
+                records += read_service_records("billing", service_key, trace)
+                records += read_service_records("subscribe", service_key, trace)
+                return witness(records, trace, require_cli=True, require_authorization=True)
+            except TraceWitnessError:
+                # Persisted read visibility can lag; bounded reads never replay an action.
+                continue
+        if time.monotonic() < deadline:
+            time.sleep(3)
+    raise HostedProbeError("billing_retained_trace_unverified")
+
+
 def execute() -> None:
     """Exercise native staging login and the two-message mail journey."""
 
@@ -128,6 +165,20 @@ def execute() -> None:
             raise HostedProbeError(f"identity_{safe_stage_code(error)}") from None
         home = unique_auth_home(run_dir)
         del username, password
+
+        if os.environ.get("AMAIL_STAGING_BILLING_CONFIRM"):
+            import staging_billing_e2e
+            try:
+                billing_evidence = staging_billing_e2e.execute(binary, home, run_dir)
+            except (staging_billing_e2e.BillingProbeError, ProbeError) as error:
+                raise HostedProbeError(f"billing_{safe_stage_code(error)}") from None
+            # Preserve completed browser evidence even if a later retained read is unavailable.
+            evidence_path = TEMP / "staging-billing-evidence.json"
+            evidence_path.write_text(json.dumps(billing_evidence, sort_keys=True), encoding="utf-8")
+            if os.environ.get("AMAIL_STAGING_BILLING_TRACE") == "true":
+                billing_evidence["retained_trace"] = retained_billing_trace(billing_evidence)
+                evidence_path.write_text(json.dumps(billing_evidence, sort_keys=True), encoding="utf-8")
+            # Only safe phase/trace metadata persists; the private profile is removed below.
 
         # The SMTP harness receives this bearer capability, but its CLI child
         # processes use a strict environment allowlist and never inherit it.

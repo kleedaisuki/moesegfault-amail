@@ -110,9 +110,12 @@ async fn call(
     key: Option<&str>,
     request_id: &str,
     trace: &Trace,
+    origin_traceparent: Option<&str>,
 ) -> AppResult<Value> {
     let config = Configuration::load(env)?;
-    let span = trace.dependency(request_id, Phase::BillingHttp);
+    let span = trace
+        .dependency(request_id, Phase::BillingHttp)
+        .continue_from(origin_traceparent);
     let headers = Headers::new();
     headers.set(
         "Authorization",
@@ -276,8 +279,8 @@ pub(crate) async fn create(
         plan(&account.plan)?
     };
     let timestamp = now() / 1000;
-    database.prepare("INSERT OR IGNORE INTO billing_sessions(id,owner_iss,owner_sub,action,requested_plan,created_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7)")
-        .bind(&[bind_str(&key),bind_str(&user.iss),bind_str(&user.sub),bind_str(&body.action),bind_str(requested_plan),bind_num(timestamp),bind_num(timestamp+1800)])?.run().await?;
+    database.prepare("INSERT OR IGNORE INTO billing_sessions(id,owner_iss,owner_sub,action,requested_plan,created_at,expires_at,origin_traceparent) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")
+        .bind(&[bind_str(&key),bind_str(&user.iss),bind_str(&user.sub),bind_str(&body.action),bind_str(requested_plan),bind_num(timestamp),bind_num(timestamp+1800),bind_str(&trace.traceparent())])?.run().await?;
     let row = session(&database, user, &key).await?;
     if row.action != body.action
         || (body.action == "subscribe" && row.requested_plan != requested_plan)
@@ -303,6 +306,7 @@ pub(crate) async fn create(
         Some(&key),
         request_id,
         trace,
+        None,
     )
     .await?;
     let remote_id = remote
@@ -356,6 +360,15 @@ async fn apply(database: &Database, user: &Principal, value: &Value) -> AppResul
         return Err(unavailable());
     }
     let expired = binding.valid_until.is_some_and(|until| until <= timestamp);
+    // Match the actual authority receipt, not whichever old session happened to be polled.
+    // An out-of-band or legacy authority has no invented causal origin.
+    #[derive(Deserialize)]
+    struct Origin {
+        origin_traceparent: Option<String>,
+    }
+    let origin = database.prepare("SELECT origin_traceparent FROM billing_sessions WHERE owner_iss=?1 AND owner_sub=?2 AND remote_id=?3 LIMIT 1")
+        .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&binding.authorization_id)])?
+        .first::<Origin>(None).await?.and_then(|row| row.origin_traceparent);
     resource::apply_snapshot(
         database,
         user,
@@ -374,6 +387,7 @@ async fn apply(database: &Database, user: &Principal, value: &Value) -> AppResul
             valid_until: if expired { None } else { binding.valid_until },
             authority_updated_at: binding.updated_at,
             authorization_id: binding.authorization_id,
+            origin_traceparent: origin,
         },
     )
     .await
@@ -407,6 +421,7 @@ pub(crate) async fn poll(
         None,
         request_id,
         trace,
+        None,
     )
     .await?;
     let authorization = receipt.get("authorization").ok_or_else(unavailable)?;
@@ -434,6 +449,7 @@ pub(crate) async fn poll(
                     None,
                     request_id,
                     trace,
+                    None,
                 )
                 .await?;
                 apply(
@@ -479,6 +495,7 @@ pub(crate) async fn refresh(
         None,
         request_id,
         trace,
+        None,
     )
     .await?;
     if let Some(binding) = receipt.get("binding").filter(|value| !value.is_null()) {
@@ -503,6 +520,7 @@ pub(crate) async fn status(
     if let Some(object) = account.as_object_mut() {
         object.remove("billing_owner_id");
         object.remove("authorization_id");
+        object.remove("origin_traceparent");
     }
     Ok(Response::from_json(
         &json!({"api_version":"2","version":"0.2.0","account":account,
@@ -524,6 +542,8 @@ struct Usage {
     occurred_at: i64,
     authorization_id: String,
     authorized_at: i64,
+    /// Opaque validated durable handoff, not a Billing payload field.
+    origin_traceparent: Option<String>,
 }
 
 /// Fair bounded accounting and at-least-once outbox delivery share the scheduled
@@ -552,7 +572,7 @@ pub(crate) async fn maintain(
         .await
         .map_err(|_| worker::Error::RustError("billing_reconciliation_failed".into()))?;
     }
-    let events=database.prepare("SELECT event_id,billing_owner_id,period_start,period_end,meter,quantity,amount_micros,occurred_at,authorization_id,authorized_at FROM resource_outbox WHERE delivered_at IS NULL AND next_attempt_at<=unixepoch() ORDER BY next_attempt_at,occurred_at,event_id LIMIT 3")
+    let events=database.prepare("SELECT event_id,billing_owner_id,period_start,period_end,meter,quantity,amount_micros,occurred_at,authorization_id,authorized_at,origin_traceparent FROM resource_outbox WHERE delivered_at IS NULL AND next_attempt_at<=unixepoch() ORDER BY next_attempt_at,occurred_at,event_id LIMIT 3")
         .all().await?.results::<Usage>()?;
     let mut failed = false;
     for event in events {
@@ -562,7 +582,7 @@ pub(crate) async fn maintain(
             "period_start":event.period_start,"period_end":event.period_end,"meter":event.meter,
                 "quantity":event.quantity,"amount_micros":event.amount_micros,"occurred_at":event.occurred_at,
                 "authorization_id":event.authorization_id,"authorized_at":event.authorized_at
-        })),Some(&event.event_id),request_id,trace).await;
+        })),Some(&event.event_id),request_id,trace,event.origin_traceparent.as_deref()).await;
         let valid = result.as_ref().is_ok_and(|receipt| {
             receipt.get("event_id").and_then(Value::as_str) == Some(event.event_id.as_str())
                 || receipt

@@ -182,8 +182,9 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
         // Exercise the intentional rotated order: GC runs before outbound and
         // must retain accepted source. Outbound terminalizes the tombstone later
         // in this turn; a following real GC turn performs physical reclamation.
-        const deletedFirstSlot = new Date(1_680_001_200_000);
-        assert.equal(Math.floor(deletedFirstSlot.getTime() / 300_000) % 8, 4);
+        // v0.2 adds Billing as the ninth phase; preserve Deleted-first rotation.
+        const deletedFirstSlot = new Date(1_680_000_600_000);
+        assert.equal(Math.floor(deletedFirstSlot.getTime() / 300_000) % 9, 4);
         await (await mf.getWorker("amail-accepted-maintenance")).scheduled({ scheduledTime: deletedFirstSlot });
         assert.equal((await db.prepare("SELECT state FROM send_requests WHERE idem_key=?1").bind(idem).first()).state, "sent", "outbound terminalizes deletion after the earlier GC phase");
         assert.equal((await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first()).deleted_at, tombstone.deleted_at);

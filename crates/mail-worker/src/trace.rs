@@ -75,17 +75,42 @@ pub(crate) struct DependencySpan<'a> {
     phase: Phase,
     span_id: String,
     started_at_ms: u64,
+    /// Durable origin replaces causal parentage, while the scheduler remains a span link.
+    origin: Option<Parent>,
 }
 
 impl DependencySpan<'_> {
     /// W3C remote parent is this client span, not its containing server span.
     pub(crate) fn traceparent(&self) -> String {
+        let trace_id = self
+            .origin
+            .as_ref()
+            .map_or(self.trace.trace_id.as_str(), |parent| {
+                parent.trace_id.as_str()
+            });
         format!(
             "00-{}-{}-{}",
-            self.trace.trace_id,
+            trace_id,
             self.span_id,
-            if self.trace.sampled { "01" } else { "00" }
+            if self
+                .origin
+                .as_ref()
+                .map_or(self.trace.sampled, |parent| parent.sampled)
+            {
+                "01"
+            } else {
+                "00"
+            }
         )
+    }
+
+    /// Continue a durable source trace and link the actual scheduler execution separately.
+    /// Only maintenance Billing calls may adopt stored context; invalid input is ignored.
+    pub(crate) fn continue_from(mut self, raw: Option<&str>) -> Self {
+        if self.trace.operation == Operation::Maintenance && self.phase == Phase::BillingHttp {
+            self.origin = raw.and_then(parse_parent);
+        }
+        self
     }
 
     /// Finish a non-HTTP dependency exactly once; no exception prose is accepted.
@@ -104,6 +129,12 @@ impl DependencySpan<'_> {
             duration_ms,
         );
         event.occurred_at_ms = self.started_at_ms;
+        if let Some(origin) = &self.origin {
+            event.trace_id = &origin.trace_id;
+            event.parent_span_id = Some(&origin.span_id);
+            event.linked_trace_id = Some(&self.trace.trace_id);
+            event.linked_span_id = Some(&self.trace.span_id);
+        }
         if self.phase == Phase::BillingHttp {
             event.provider_http_status = status.filter(|value| (100..=599).contains(value));
         }
@@ -123,6 +154,10 @@ struct Event<'a> {
     span_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     parent_span_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linked_trace_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linked_span_id: Option<&'a str>,
     request_id: &'a str,
     outcome: Outcome,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -218,6 +253,17 @@ impl Trace {
         self.request_bytes = Some(bucket(bytes as u64));
     }
 
+    /// Persist only this opaque server context at a durable work handoff.
+    /// Never substitute a request UUID, owner ID or provider submission identifier.
+    pub(crate) fn traceparent(&self) -> String {
+        format!(
+            "00-{}-{}-{}",
+            self.trace_id,
+            self.span_id,
+            if self.sampled { "01" } else { "00" }
+        )
+    }
+
     /// Start before network work and propagate this handle's context to the remote server.
     pub(crate) fn dependency<'a>(
         &'a self,
@@ -230,6 +276,7 @@ impl Trace {
             phase,
             span_id: random_span_id(),
             started_at_ms: now_ms(),
+            origin: None,
         }
     }
 
@@ -259,6 +306,8 @@ impl Trace {
             trace_id: &self.trace_id,
             span_id: &self.span_id,
             parent_span_id: self.parent_span_id.as_deref(),
+            linked_trace_id: None,
+            linked_span_id: None,
             request_id,
             outcome: match status {
                 100..=399 => Outcome::Success,
@@ -347,6 +396,8 @@ impl Trace {
             trace_id: &self.trace_id,
             span_id: &span_id,
             parent_span_id: Some(&self.span_id),
+            linked_trace_id: None,
+            linked_span_id: None,
             request_id,
             outcome: if success {
                 Outcome::Success
@@ -733,6 +784,8 @@ mod tests {
             trace_id: &trace.trace_id,
             span_id: &trace.span_id,
             parent_span_id: trace.parent_span_id.as_deref(),
+            linked_trace_id: None,
+            linked_span_id: None,
             request_id: "00000000-0000-4000-8000-000000000001",
             outcome: Outcome::Success,
             error_code: None,
@@ -802,6 +855,38 @@ mod tests {
         assert_eq!(event.provider_http_status, Some(503));
         assert_eq!(event.outcome, Outcome::PhaseFailure);
         assert!(event.valid());
+    }
+
+    /// Durable delivery continues its originating Mail span and links the actual Cron run.
+    #[test]
+    fn async_billing_continuation_preserves_origin_and_scheduler_link() {
+        let mut origin = Trace::new();
+        origin.operation(Operation::MessagesSend);
+        let context = origin.traceparent();
+        let mut scheduled = Trace::new();
+        scheduled.operation(Operation::Maintenance);
+        let span = scheduled
+            .dependency("00000000-0000-4000-8000-000000000001", Phase::BillingHttp)
+            .continue_from(Some(&context));
+        let propagated = parse_parent(&span.traceparent()).unwrap();
+        span.finish_http(true, Some(201));
+        let event = scheduled.take_events().pop().unwrap();
+        assert!(event.valid());
+        assert_eq!(event.trace_id, origin.trace_id);
+        assert_eq!(
+            event.parent_span_id.as_deref(),
+            Some(origin.span_id.as_str())
+        );
+        assert_eq!(event.span_id.as_deref(), Some(propagated.span_id.as_str()));
+        assert_eq!(
+            event.linked_trace_id.as_deref(),
+            Some(scheduled.trace_id.as_str())
+        );
+        assert_eq!(
+            event.linked_span_id.as_deref(),
+            Some(scheduled.span_id.as_str())
+        );
+        assert_ne!(event.trace_id, scheduled.trace_id);
     }
 
     /// Successful no-op maintenance is visible, not indistinguishable from a dead Cron.
@@ -1022,6 +1107,8 @@ fn diagnostic_record(code: DiagnosticCode) -> QueuedEvent {
         trace_id: uuid::Uuid::new_v4().simple().to_string(),
         span_id: Some(random_span_id()),
         parent_span_id: None,
+        linked_trace_id: None,
+        linked_span_id: None,
         request_id: Some(uuid::Uuid::new_v4().to_string()),
         outcome: amail_trace_schema::Outcome::PhaseFailure,
         error_code: Some(

@@ -66,6 +66,15 @@ and delivery acknowledgement. Outbound consent is captured on reservation, not l
 provider acceptance. Stock consent is captured at the integrated interval's start.
 A later lower cap/expiry does not rewrite already authorized receipts.
 
+The optional server-owned `origin_traceparent` is a strictly validated W3C version-00
+context (55 bytes), never an address, payer ID, token, arbitrary request header, or
+request prose. Send reservations retain their first originating server context across
+same-key retries, unknown outcomes, consent changes and month rollover. Outbox receipt
+replay preserves the same causal context. Stock receipts retain the human authorization
+context from the account snapshot; refreshing the same authority never overwrites it
+with an unrelated status or maintenance trace. Scheduled delivery continues that
+original context while separately linking its executing maintenance span.
+
 Only successful Billing ingestion marks outbox delivery. That means
 `pending_settlement`, not collected money; Billing currently has no live payment
 processor and the service must not pretend otherwise.
@@ -73,7 +82,7 @@ processor and the service must not pretend otherwise.
 ## Integration API
 
 `resource::Snapshot` contains lowercase plan, opaque billing_owner_id,
-authorization_id, overage_budget_micros, valid_until, authority_updated_at.
+authorization_id, origin_traceparent, overage_budget_micros, valid_until, authority_updated_at.
 Only server-verified Billing authority may construct it. `apply_snapshot` ignores
 older authority updates and refuses a different already-bound opaque owner.
 `status` reconciles expiry and period state and returns the current local account.
@@ -91,15 +100,37 @@ storage attribution, not silently charge two differently counted copies.
 ## Evidence
 
 `python -m unittest infra.tests.test_resource_metering infra.tests.test_v020_migration -v`
-passes twelve deterministic real-SQL tests (2026-10-07), covering decimal thresholds,
+passes twenty deterministic real-SQL tests (2026-10-07), covering decimal thresholds,
 no mail-count guard, stock integration before deletion, fractional carry, lowered cap,
 concurrent recipient holds/reversed acceptance, replay, consent capture, grandfather
-migration, and byte-for-byte preservation of legacy owner/provider state.
+migration, byte-for-byte preservation of legacy owner/provider state, exact shipped entitlement-refresh SQL,
+upgrade/downgrade quota-farming prevention, calendar rollover, and direct-cleanup paid expiry.
 Hosted Worker simulation and release checks remain required; native SQLite alone does
 not prove workerd, remote D1 trigger splitting, provider integration, or staging health.
 
 References: repository `docs/subscription` proposal in the orchestration workspace;
 Cloudflare D1 serialized transactions and batch guarantees:
 https://developers.cloudflare.com/d1/worker-api/d1-database/#batch
+(verified 2026-10-07: batched statements are sequential transactions; any failure rolls
+back the complete batch, which grounds atomic expiry/period and snapshot updates).
 Billing consumer authority and pairwise-subject boundary:
 `.agents/skills/moesegfault-billing/references/consumers.md`.
+
+
+### Hosted acceptance-race fixture correction
+
+The first integrated hosted check (run 37614032629, source b07646e) passed 119/124
+workerd checks but five accepted HTTP/Cron race fixtures skipped their barrier.
+The SQL text still matched. Their `meta.changes === 1` hook incorrectly treated
+D1's aggregate `total_changes()` delta as a top-level matched-row count. Provider
+acceptance now atomically changes the journal, resource reservation, and period
+(three writes for an included Free recipient); paid overage additionally creates
+its receipt. This is expected accounting, not duplicate acceptance.
+
+A targeted real-SQL regression executes the shipped acceptance UPDATE and verifies
+aggregate changes=3, top-level SQLite changes()=1, one accepted recipient and no
+remaining hold. Projection-token-only UPDATE and final accepted-to-sent UPDATE
+remain aggregate changes=1: the former does not name `state`; the latter sees an
+already committed resource reservation. The simulation hook must verify the exact
+owned journal's committed pre/post state, not require aggregate changes=1. The
+production projection CAS semantics do not need to be weakened.

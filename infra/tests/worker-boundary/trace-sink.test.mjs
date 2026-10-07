@@ -211,3 +211,18 @@ test("native sink retains scheduled success without inventing HTTP or private co
   ]);
   assert.deepEqual(records, [run, ...children]);
 });
+
+/** Durable usage has original send ancestry and an explicit separate scheduler link. */
+test("native sink preserves async Billing origin and only a complete safe scheduler link", async () => {
+  const delivery = { ...legacy(), operation: "maintenance", phase: "billing_http",
+    occurred_at_ms: 1_790_000_000_123, duration_ms: 7,
+    linked_trace_id: "11111111111111111111111111111111", linked_span_id: "2222222222222222" };
+  delete delivery.http_status_class;
+  const { records } = await consume([delivery,
+    { ...delivery, linked_span_id: undefined },
+    { ...delivery, linked_trace_id: "SYNTHETIC_PRIVATE_CONTEXT" },
+    { ...delivery, operation: "messages_send" },
+  ]);
+  assert.deepEqual(records, [delivery]);
+  assert.notEqual(records[0].trace_id, records[0].linked_trace_id);
+});

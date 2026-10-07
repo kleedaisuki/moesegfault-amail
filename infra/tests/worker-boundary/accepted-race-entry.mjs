@@ -5,15 +5,25 @@ import MailMaintenance from "../../../crates/mail-worker/entry/maintenance.mjs";
 const acceptedSql = "UPDATE send_requests SET state='accepted',provider_id=?1,sender=?2,envelope_json=?3,request_id=?4 WHERE owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND state='submitting'";
 
 /** Preserve native statement semantics, intercepting only a committed acceptance. */
-function statement(native, sql, control, pauseClaim) {
+function statement(native, sql, control, pauseClaim, nativeDatabase, values = []) {
   return new Proxy(native, {
     get(target, key) {
       if (key === "constructor") return target.constructor;
-      if (key === "bind") return (...args) => statement(target.bind(...args), sql, control, pauseClaim);
+      if (key === "bind") return (...args) => statement(target.bind(...args), sql, control, pauseClaim, nativeDatabase, args);
       if (key === "run" && sql.replace(/\s+/g, " ").trim() === acceptedSql) {
         return async () => {
+          // D1 changes includes trigger writes. Read the exact PK before/after
+          // this native commit rather than mistaking total_changes for row count.
+          const read = () => nativeDatabase.prepare(
+            "SELECT state,provider_id FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3",
+          ).bind(values[4], values[5], values[6]).first();
+          const before = await read();
           const result = await target.run();
-          if (result.success && result.meta?.changes === 1) {
+          const after = await read();
+          if (result.success && before?.state === "submitting") {
+            if (after?.state !== "accepted" || after.provider_id !== values[0]) {
+              throw new Error("synthetic committed acceptance witness mismatch");
+            }
             const response = await control.fetch("https://test.invalid/after-accepted", { method: "POST" });
             if (!response.ok) throw new Error("synthetic acceptance barrier failed");
           }
@@ -41,7 +51,7 @@ function database(native, control, pauseClaim) {
   return new Proxy(native, {
     get(target, key) {
       if (key === "constructor") return target.constructor;
-      if (key === "prepare") return sql => statement(target.prepare(sql), sql, control, pauseClaim);
+      if (key === "prepare") return sql => statement(target.prepare(sql), sql, control, pauseClaim, target);
       const value = Reflect.get(target, key, target);
       return typeof value === "function" ? value.bind(target) : value;
     },

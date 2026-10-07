@@ -2679,6 +2679,7 @@ async fn charge_outbound_quotas(
     user: &Principal,
     draft: &Draft,
     idem: &str,
+    trace: &Trace,
 ) -> AppResult<()> {
     let global = Principal {
         iss: "_global".into(),
@@ -2693,7 +2694,14 @@ async fn charge_outbound_quotas(
     )
     .await?;
     reserve_window_quota(database, "send_minute", user, 1, 2, 60_000).await?;
-    resource::reserve_send(database, user, idem, outbound_recipient_count(draft)).await
+    resource::reserve_send(
+        database,
+        user,
+        idem,
+        outbound_recipient_count(draft),
+        Some(&trace.traceparent()),
+    )
+    .await
 }
 
 /// A single CAS winner claims quota; a quota failure releases its local claim
@@ -2705,13 +2713,14 @@ async fn reserve_outbound_budget(
     draft: &Draft,
     idem: &str,
     inserted_new: bool,
+    trace: &Trace,
 ) -> AppResult<()> {
     let claim = database.prepare("UPDATE send_requests SET state='reserving',reservation_started_at=?4 WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing' AND quota_reserved=0")
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(idem),bind_num(now())])?.run().await?;
     if claim.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
         return Err(AppError::conflict("send_in_progress"));
     }
-    let charged = charge_outbound_quotas(database, user, draft, idem).await;
+    let charged = charge_outbound_quotas(database, user, draft, idem, trace).await;
     if charged.is_err() {
         let _ = database.prepare("UPDATE send_requests SET state='preparing',reservation_started_at=NULL WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
             .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(idem)])?.run().await;
@@ -2822,10 +2831,17 @@ async fn send_message(
         (id, false, true, created_at)
     };
     if !quota_reserved {
-        reserve_outbound_budget(&database, user, &draft, &idem, inserted_new).await?;
+        reserve_outbound_budget(&database, user, &draft, &idem, inserted_new, trace).await?;
     } else {
         // Pre-v0.2 preparing journals may carry the legacy safety flag without a resource hold.
-        resource::reserve_send(&database, user, &idem, outbound_recipient_count(&draft)).await?;
+        resource::reserve_send(
+            &database,
+            user,
+            &idem,
+            outbound_recipient_count(&draft),
+            Some(&trace.traceparent()),
+        )
+        .await?;
     }
     let r2_key = format!("messages/{id}.zip");
     // The archive is no longer needed after the R2 write; keep its size, not a

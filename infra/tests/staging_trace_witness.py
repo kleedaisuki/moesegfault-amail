@@ -14,11 +14,9 @@ import urllib.request
 import uuid
 
 
-SCRIPTS = {
-    "mail_api": "amail-trace-sink-staging",
-    "billing": "moesegfault-billing-staging",
-    "subscribe": "moesegfault-subscribe-staging",
-}
+SCRIPTS = {"mail_api": "amail-trace-sink-staging"}
+SERVICE_ORIGINS = {"billing": "https://billing-staging.moesegfault.dev",
+                   "subscribe": "https://subscribe-staging.moesegfault.dev"}
 MAX_REPLY = 2_000_000
 MAX_EVENTS = 128
 SAFE_INTEGER = (1 << 53) - 1
@@ -30,6 +28,7 @@ MAIL_FIELDS = BASE_FIELDS | {
     "client_error_kind", "duration_ms_bucket", "request_bytes_bucket",
     "response_bytes_bucket", "provider_http_status", "provider_error_code",
     "diagnostic_code",
+    "linked_trace_id", "linked_span_id",
 }
 BILLING_OPERATIONS = {"billing_status", "billing_session_create",
                       "billing_session_status", "billing_authorize", "billing_usage_record"}
@@ -39,6 +38,7 @@ SUBSCRIBE_OPERATIONS = {"amail.authorization.approve", "amail.authorization.canc
                         "session.logout", "subscribe.other"}
 MAIL_PHASES = {"request_exit", "operation_exit", "billing_http", "d1_read",
                "d1_write", "r2_write", "provider_send", "routing_list", "routing_create"}
+MAIL_OPERATIONS = BILLING_OPERATIONS | {"messages_send", "maintenance"}
 
 
 class TraceWitnessError(Exception):
@@ -93,7 +93,7 @@ def decode_source(source: object) -> dict:
 def validate_span(record: dict, service: str, trace_id: str) -> dict:
     """Fail closed before projecting a content-free span identity/timing view."""
     allowed = MAIL_FIELDS if service in {"mail_api", "mail_cli"} else BASE_FIELDS
-    if service not in {*SCRIPTS, "mail_cli"} or set(record) - allowed or record.get("service") != service or type(record.get("schema_version")) is not int or record.get("schema_version") != 1:
+    if service not in {*SCRIPTS, *SERVICE_ORIGINS, "mail_cli"} or set(record) - allowed or record.get("service") != service or type(record.get("schema_version")) is not int or record.get("schema_version") != 1:
         raise TraceWitnessError("retained_span_fields_invalid")
     parent = record.get("parent_span_id")
     if not (canonical_uuid(record.get("event_id")) and record.get("trace_id") == trace_id
@@ -101,7 +101,8 @@ def validate_span(record: dict, service: str, trace_id: str) -> dict:
             and (parent is None or (hex_id(parent, 16) and parent != record["span_id"]))
             and integer(record.get("occurred_at_ms")) and integer(record.get("duration_ms"))):
         raise TraceWitnessError("retained_span_identity_or_clock_invalid")
-    if record.get("operation") not in (SUBSCRIBE_OPERATIONS if service == "subscribe" else BILLING_OPERATIONS):
+    operations = SUBSCRIBE_OPERATIONS if service == "subscribe" else MAIL_OPERATIONS if service in {"mail_api", "mail_cli"} else BILLING_OPERATIONS
+    if record.get("operation") not in operations:
         raise TraceWitnessError("retained_span_operation_invalid")
     if service in {"mail_api", "mail_cli"}:
         if record.get("phase") not in MAIL_PHASES:
@@ -114,6 +115,12 @@ def validate_span(record: dict, service: str, trace_id: str) -> dict:
             raise TraceWitnessError("retained_span_error_invalid")
         if record.get("diagnostic_code") is not None:
             raise TraceWitnessError("retained_span_error_invalid")
+        link_trace, link_span = record.get("linked_trace_id"), record.get("linked_span_id")
+        if (link_trace is not None or link_span is not None) and not (
+                service == "mail_api" and record["operation"] == "maintenance"
+                and record["phase"] == "billing_http" and hex_id(link_trace, 32)
+                and hex_id(link_span, 16) and (link_trace, link_span) != (trace_id, record["span_id"])):
+            raise TraceWitnessError("retained_span_link_invalid")
         for key in {"duration_ms_bucket", "request_bytes_bucket", "response_bytes_bucket", "provider_error_code"}:
             if key in record and not integer(record[key]):
                 raise TraceWitnessError("retained_span_measurement_invalid")
@@ -126,7 +133,8 @@ def validate_span(record: dict, service: str, trace_id: str) -> dict:
     for key in {"http_status", "provider_http_status"}:
         if key in record and not (integer(record[key], 599) and record[key] >= 100):
             raise TraceWitnessError("retained_span_measurement_invalid")
-    return {key: record.get(key) for key in BASE_FIELDS if key in record}
+    projection = BASE_FIELDS | {"linked_trace_id", "linked_span_id"}
+    return {key: record.get(key) for key in projection if key in record}
 
 
 def query_body(script: str, trace_id: str, start_ms: int, end_ms: int) -> dict:
@@ -180,6 +188,52 @@ def read_records(account: str, token: str, script: str, trace_id: str, start_ms:
     return result
 
 
+def read_service_records(service: str, service_key: str, trace_id: str) -> list[dict]:
+    """Read only typed D1 spans from fixed staging origins; never query HTTP logs.
+
+    The key is passed in memory and must come from the protected staging secret.
+    It is never a command-line argument, URL parameter or returned diagnostic.
+    """
+    if service not in SERVICE_ORIGINS or not service_key or not hex_id(trace_id, 32):
+        raise TraceWitnessError("retained_trace_scope_or_credentials_invalid")
+    request = urllib.request.Request(f"{SERVICE_ORIGINS[service]}/v1/service/amail/trace-query",
+                                    data=json.dumps({"trace_id": trace_id}).encode(), method="POST",
+                                    headers={"Authorization": f"Bearer {service_key}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.build_opener(RejectRedirect).open(request, timeout=20) as response:
+            raw = response.read(MAX_REPLY + 1)
+            status = response.status
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise TraceWitnessError("retained_trace_service_unavailable") from None
+    if status != 200 or len(raw) > MAX_REPLY:
+        raise TraceWitnessError("retained_trace_response_invalid")
+    try:
+        payload = json.loads(raw)
+        rows = payload["spans"]
+    except (ValueError, KeyError, TypeError):
+        raise TraceWitnessError("retained_trace_response_invalid") from None
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "spans"} or payload.get("schema_version") != 1 or not isinstance(rows, list) or len(rows) >= MAX_EVENTS:
+        raise TraceWitnessError("retained_trace_response_truncated_or_invalid")
+    if any(not isinstance(row, dict) for row in rows):
+        raise TraceWitnessError("retained_span_shape_invalid")
+    return [validate_span(row, service, trace_id) for row in rows]
+
+
+def connected_authorization(spans: list[dict], reachable: set[str]) -> bool:
+    """The approval's real remote parent must be a retained Subscribe client span."""
+    by_id = {span["span_id"]: span for span in spans}
+    for authorization in spans:
+        client = by_id.get(authorization.get("parent_span_id"), {})
+        server = by_id.get(client.get("parent_span_id"), {})
+        if (authorization["service"] == "billing" and authorization["operation"] == "billing_authorize"
+                and authorization["outcome"] == "success" and authorization["span_id"] in reachable
+                and client.get("service") == "subscribe" and client.get("phase") == "dependency_exit"
+                and server.get("service") == "subscribe" and server.get("phase") == "request_exit"
+                and server.get("operation") == "amail.authorization.approve"):
+            return True
+    return False
+
+
 def witness(records: list[dict], trace_id: str, *, require_cli: bool = True, require_authorization: bool = False) -> dict:
     """Prove actual retained CLI→Mail→Billing parentage and return only safe summary."""
     unique = {}
@@ -199,7 +253,7 @@ def witness(records: list[dict], trace_id: str, *, require_cli: bool = True, req
             reachable = {dependency["span_id"]}
             for _ in spans:
                 reachable.update(span["span_id"] for span in spans if span.get("parent_span_id") in reachable)
-            authorized = any(span["service"] == "billing" and span["operation"] == "billing_authorize" and span["outcome"] == "success" and span["span_id"] in reachable for span in spans)
+            authorized = connected_authorization(spans, reachable)
             if billing and (cli or not require_cli) and (authorized or not require_authorization):
                 return {"schema_version": 1, "trace_id": trace_id, "retained_span_count": len(spans),
                         "mail_span_id": server["span_id"], "billing_client_span_id": dependency["span_id"],

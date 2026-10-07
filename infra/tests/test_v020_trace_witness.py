@@ -44,12 +44,19 @@ class TraceWitnessTest(unittest.TestCase):
     def test_human_approval_must_join_creation_context(self):
         """A same-trace but disconnected authorization is not accepted."""
         rows = spans()
+        server = dict(rows[-1], event_id="00000000-0000-4000-8000-000000000006",
+                      service="subscribe", operation="amail.authorization.approve",
+                      span_id="6" * 16, parent_span_id="4" * 16)
+        client = dict(server, event_id="00000000-0000-4000-8000-000000000007",
+                      phase="dependency_exit", span_id="7" * 16, parent_span_id="6" * 16)
         approve = dict(rows[-1], event_id="00000000-0000-4000-8000-000000000005",
-                       operation="billing_authorize", span_id="5" * 16, parent_span_id="3" * 16)
-        self.assertTrue(trace.witness(rows + [approve], TRACE, require_authorization=True)["human_authorization_retained"])
+                       operation="billing_authorize", span_id="5" * 16, parent_span_id="7" * 16)
+        self.assertTrue(trace.witness(rows + [server, client, approve], TRACE, require_authorization=True)["human_authorization_retained"])
+        with self.assertRaisesRegex(trace.TraceWitnessError, "retained_trace_chain_incomplete"):
+            trace.witness(rows + [server, approve], TRACE, require_authorization=True)
         approve["parent_span_id"] = "9" * 16
         with self.assertRaisesRegex(trace.TraceWitnessError, "retained_trace_chain_incomplete"):
-            trace.witness(rows + [approve], TRACE, require_authorization=True)
+            trace.witness(rows + [server, client, approve], TRACE, require_authorization=True)
 
     def test_private_or_invalid_records_fail_with_fixed_labels(self):
         """No poison payload is returned inside a validation exception."""
@@ -102,6 +109,46 @@ class TraceWitnessTest(unittest.TestCase):
                                         trace.SCRIPTS["mail_api"], TRACE, 1000, 2000)
         self.assertEqual(result, [row])
         self.assertNotIn("private", json.dumps(result))
+
+    def test_service_reader_uses_fixed_post_and_auth_header_only(self):
+        """Billing/Subscribe spans are D1 records, never HTTP console metadata."""
+        row = spans()[-1]
+        reply = json.dumps({"schema_version": 1, "spans": [row]}).encode()
+
+        class Reply:
+            """One bounded service response for the private read contract."""
+            status = 200
+
+            def __enter__(self):
+                """Match urllib response context management."""
+                return self
+
+            def __exit__(self, *args):
+                """No external resource exists."""
+
+            def read(self, limit):
+                """Return only a typed bounded payload."""
+                return reply[:limit]
+
+        with patch("urllib.request.OpenerDirector.open", return_value=Reply()) as call:
+            result = trace.read_service_records("billing", "SYNTHETIC_PRIVATE_SERVICE_KEY", TRACE)
+        request = call.call_args.args[0]
+        self.assertEqual(request.full_url, "https://billing-staging.moesegfault.dev/v1/service/amail/trace-query")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(json.loads(request.data), {"trace_id": TRACE})
+        self.assertEqual(result, [row])
+        self.assertNotIn("SYNTHETIC_PRIVATE_SERVICE_KEY", json.dumps(result))
+
+    def test_async_delivery_accepts_only_closed_scheduler_link(self):
+        """Usage can join the source request without pretending Cron is its parent."""
+        delivery = dict(spans()[2], operation="maintenance",
+                        linked_trace_id="9" * 32, linked_span_id="8" * 16)
+        self.assertEqual(trace.validate_span(delivery, "mail_api", TRACE), delivery)
+        for key in ["linked_trace_id", "linked_span_id"]:
+            invalid = delivery.copy()
+            del invalid[key]
+            with self.assertRaises(trace.TraceWitnessError):
+                trace.validate_span(invalid, "mail_api", TRACE)
 
 
 if __name__ == "__main__":

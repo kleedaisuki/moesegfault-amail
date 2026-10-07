@@ -9,6 +9,7 @@ CREATE TABLE resource_accounts (
  grandfathered_addresses INTEGER NOT NULL DEFAULT 0,
  billing_owner_id TEXT,
  authorization_id TEXT,
+ origin_traceparent TEXT CHECK(origin_traceparent IS NULL OR length(origin_traceparent)=55),
  overage_budget_micros INTEGER NOT NULL DEFAULT 0 CHECK(overage_budget_micros>=0),
  valid_until INTEGER,
  authority_updated_at INTEGER NOT NULL DEFAULT 0,
@@ -32,6 +33,7 @@ CREATE TABLE resource_send_reservations (
  owner_iss TEXT NOT NULL,owner_sub TEXT NOT NULL,idem_key TEXT NOT NULL,
  period_start INTEGER NOT NULL,units INTEGER NOT NULL CHECK(units>0),
  authorization_id TEXT,
+ origin_traceparent TEXT CHECK(origin_traceparent IS NULL OR length(origin_traceparent)=55),
  authorized_at INTEGER NOT NULL DEFAULT (unixepoch()),
  state TEXT NOT NULL DEFAULT 'reserved' CHECK(state IN ('reserved','accepted','released')),
  PRIMARY KEY(owner_iss,owner_sub,idem_key)
@@ -39,6 +41,7 @@ CREATE TABLE resource_send_reservations (
 CREATE TABLE resource_outbox (
  event_id TEXT PRIMARY KEY,
  owner_iss TEXT NOT NULL,owner_sub TEXT NOT NULL,billing_owner_id TEXT NOT NULL,authorization_id TEXT,
+ origin_traceparent TEXT CHECK(origin_traceparent IS NULL OR length(origin_traceparent)=55),
  period_start INTEGER NOT NULL,period_end INTEGER NOT NULL,
  meter TEXT NOT NULL CHECK(meter IN ('outbound_recipients','storage_byte_seconds','address_seconds')),
  quantity INTEGER NOT NULL CHECK(quantity>0),amount_micros INTEGER NOT NULL CHECK(amount_micros>=0),
@@ -56,7 +59,7 @@ INSERT INTO resource_periods(owner_iss,owner_sub,period_start,period_end,account
  SELECT owner_iss,owner_sub,unixepoch('now','start of month'),unixepoch('now','start of month','+1 month'),unixepoch() FROM resource_accounts;
 -- All unresolved requests retain their provider journal. Pre-v0.2 sends are not retroactively billed.
 CREATE VIEW resource_current AS
- SELECT a.owner_iss,a.owner_sub,a.plan,p.included_outbound,a.included_storage_bytes,a.included_addresses,a.grandfathered_addresses,a.billing_owner_id,a.authorization_id,a.overage_budget_micros,a.valid_until,a.authority_updated_at,a.accounting_tick,p.period_start,p.period_end,p.outbound_reserved,p.outbound_accepted,p.accrued_micros,p.accounted_at,p.storage_fraction,p.address_fraction,
+ SELECT a.owner_iss,a.owner_sub,a.plan,p.included_outbound,a.included_storage_bytes,a.included_addresses,a.grandfathered_addresses,a.billing_owner_id,a.authorization_id,a.origin_traceparent,a.overage_budget_micros,a.valid_until,a.authority_updated_at,a.accounting_tick,p.period_start,p.period_end,p.outbound_reserved,p.outbound_accepted,p.accrued_micros,p.accounted_at,p.storage_fraction,p.address_fraction,
  COALESCE((SELECT used_bytes FROM storage_usage s WHERE s.owner_iss=a.owner_iss AND s.owner_sub=a.owner_sub),0) AS storage_bytes,
  (SELECT COUNT(*) FROM addresses d WHERE d.owner_iss=a.owner_iss AND d.owner_sub=a.owner_sub AND d.state!='retired') AS address_count,
  COALESCE((SELECT SUM((MAX(0,q.outbound_accepted+q.outbound_reserved-q.included_outbound)-MAX(0,q.outbound_accepted-q.included_outbound))*5000) FROM resource_periods q WHERE q.owner_iss=a.owner_iss AND q.owner_sub=a.owner_sub),0) AS reserved_micros
@@ -64,7 +67,7 @@ CREATE VIEW resource_current AS
  WHERE p.period_start<=unixepoch() AND p.period_end>unixepoch();
 -- Accrue against the old stock before any mutation; SQLite writers serialize each trigger transaction.
 CREATE VIEW resource_accrual AS
- SELECT a.owner_iss,a.owner_sub,a.billing_owner_id,a.authorization_id,p.period_start,p.period_end,p.accounted_at,
+ SELECT a.owner_iss,a.owner_sub,a.billing_owner_id,a.authorization_id,a.origin_traceparent,p.period_start,p.period_end,p.accounted_at,
  MIN(MAX(a.accounting_tick,p.accounted_at),p.period_end,COALESCE(MAX(a.valid_until,p.accounted_at),p.period_end)) AS tick,
  MAX(0,COALESCE((SELECT used_bytes FROM storage_usage s WHERE s.owner_iss=a.owner_iss AND s.owner_sub=a.owner_sub),0)-a.included_storage_bytes)*(MIN(MAX(a.accounting_tick,p.accounted_at),p.period_end,COALESCE(MAX(a.valid_until,p.accounted_at),p.period_end))-p.accounted_at) AS storage_quantity,
  MAX(0,(SELECT COUNT(*) FROM addresses d WHERE d.owner_iss=a.owner_iss AND d.owner_sub=a.owner_sub AND d.state!='retired')-MAX(a.included_addresses,a.grandfathered_addresses))*(MIN(MAX(a.accounting_tick,p.accounted_at),p.period_end,COALESCE(MAX(a.valid_until,p.accounted_at),p.period_end))-p.accounted_at) AS address_quantity,
@@ -77,12 +80,12 @@ CREATE VIEW resource_accrual_amounts AS
  MIN(MAX(0,budget_room-CAST(storage_fraction+storage_quantity*0.001/(period_end-period_start) AS INTEGER)),CAST(address_fraction+address_quantity*3000000.0/(period_end-period_start) AS INTEGER)) AS address_amount
  FROM resource_accrual;
 CREATE TRIGGER resource_account_tick AFTER UPDATE OF accounting_tick ON resource_accounts BEGIN
- INSERT INTO resource_outbox(event_id,owner_iss,owner_sub,billing_owner_id,authorization_id,period_start,period_end,meter,quantity,amount_micros,authorized_at,occurred_at)
- SELECT 'storage:'||lower(hex(randomblob(16))),owner_iss,owner_sub,billing_owner_id,authorization_id,period_start,period_end,'storage_byte_seconds',storage_quantity,
+ INSERT INTO resource_outbox(event_id,owner_iss,owner_sub,billing_owner_id,authorization_id,origin_traceparent,period_start,period_end,meter,quantity,amount_micros,authorized_at,occurred_at)
+ SELECT 'storage:'||lower(hex(randomblob(16))),owner_iss,owner_sub,billing_owner_id,authorization_id,origin_traceparent,period_start,period_end,'storage_byte_seconds',storage_quantity,
  storage_amount,accounted_at,tick
  FROM resource_accrual_amounts WHERE owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub AND storage_quantity>0 AND storage_amount>0 AND overage_budget_micros>0 AND billing_owner_id IS NOT NULL AND authorization_id IS NOT NULL;
- INSERT INTO resource_outbox(event_id,owner_iss,owner_sub,billing_owner_id,authorization_id,period_start,period_end,meter,quantity,amount_micros,authorized_at,occurred_at)
- SELECT 'address:'||lower(hex(randomblob(16))),owner_iss,owner_sub,billing_owner_id,authorization_id,period_start,period_end,'address_seconds',address_quantity,
+ INSERT INTO resource_outbox(event_id,owner_iss,owner_sub,billing_owner_id,authorization_id,origin_traceparent,period_start,period_end,meter,quantity,amount_micros,authorized_at,occurred_at)
+ SELECT 'address:'||lower(hex(randomblob(16))),owner_iss,owner_sub,billing_owner_id,authorization_id,origin_traceparent,period_start,period_end,'address_seconds',address_quantity,
  address_amount,accounted_at,tick
  FROM resource_accrual_amounts WHERE owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub AND address_quantity>0 AND address_amount>0 AND overage_budget_micros>0 AND billing_owner_id IS NOT NULL AND authorization_id IS NOT NULL;
  UPDATE resource_periods SET
@@ -134,8 +137,8 @@ CREATE TRIGGER resource_send_reserved AFTER INSERT ON resource_send_reservations
  UPDATE resource_periods SET outbound_reserved=outbound_reserved+NEW.units WHERE owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub AND period_start=NEW.period_start;
 END;
 CREATE TRIGGER resource_send_finish AFTER UPDATE OF state ON resource_send_reservations WHEN OLD.state='reserved' AND NEW.state!='reserved' BEGIN
- INSERT INTO resource_outbox(event_id,owner_iss,owner_sub,billing_owner_id,authorization_id,period_start,period_end,meter,quantity,amount_micros,authorized_at,occurred_at)
- SELECT 'send:'||NEW.idem_key||':'||a.billing_owner_id,a.owner_iss,a.owner_sub,a.billing_owner_id,NEW.authorization_id,p.period_start,p.period_end,'outbound_recipients',
+ INSERT INTO resource_outbox(event_id,owner_iss,owner_sub,billing_owner_id,authorization_id,origin_traceparent,period_start,period_end,meter,quantity,amount_micros,authorized_at,occurred_at)
+ SELECT 'send:'||NEW.idem_key||':'||a.billing_owner_id,a.owner_iss,a.owner_sub,a.billing_owner_id,NEW.authorization_id,NEW.origin_traceparent,p.period_start,p.period_end,'outbound_recipients',
  MAX(0,p.outbound_accepted+NEW.units-p.included_outbound)-MAX(0,p.outbound_accepted-p.included_outbound),
  (MAX(0,p.outbound_accepted+NEW.units-p.included_outbound)-MAX(0,p.outbound_accepted-p.included_outbound))*5000,NEW.authorized_at,unixepoch()
  FROM resource_accounts a JOIN resource_periods p USING(owner_iss,owner_sub)

@@ -6,6 +6,44 @@ in Git history, not competing current-state documents. Evidence recorded on
 
 ## Delivered v0.1.2 — current release
 
+### In progress: v0.2.0 isolated staging candidate
+
+The owner requested Billing integration and staging delivery on 2026-10-07, not
+production publication. Candidate branch `codex/v0.2.0-billing` starts at
+`b07646e04f1337b482011d63e0aeb40a9202c738`; coordinated Billing/Subscribe source is
+`ae19b1bc3421a6dd278d190f4b53a40d6c98bb26` on
+`codex/amail-v0.2.0-integration` in the subscriptions repository.
+
+Hosted initial checks: [Mail 37614032629](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37614032629)
+and [Billing 37614622042](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37614622042).
+The initial Mail run compiled native/Wasm and passed all CLI platforms plus
+119/124 workerd cases, including the new Billing/outbox scenarios. Five legacy
+HTTP/Cron races failed because their test barrier assumed D1 `meta.changes == 1`;
+new atomic accounting triggers legitimately increase aggregate changes. The
+fixture now checks the exact committed owner/key/provider transition instead,
+without weakening interleaving, lease, deletion or GC assertions. Actual SQL
+regressions distinguish top-level changes from trigger-inclusive total changes.
+
+The initial Billing run passed Rust/Wasm and domain/frontend contracts but failed
+the existing audit gate on newly reported `sharp < 0.35.5`. The targeted patched
+override retains Wrangler and the audit gate. The subsequent Billing staging
+delivery is [37615238720](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37615238720),
+not yet accepted. Causal-trace handoff changes and fixture repairs require fresh
+exact-source build/runtime evidence before Mail deployment.
+
+The intended contract is Free/Lite/Plus, free incoming mail, no retained-message
+count or per-account semantic-query quota, byte/address/outbound metering, human
+browser consent, and unchanged Identity sectors. Existing addresses are preserved
+on Free. HTTP producers keep provider capture off; private Mail Queue records and
+typed Billing/Subscribe D1 spans provide content-free retention. Billing's existing
+activation grants plus usage accrual do not constitute monetary collection.
+
+Real migration/concurrency simulations and source implementation are present, but
+staging deployment, browser acceptance, and retained end-to-end tracing are **not
+yet accepted**. The delivered public release and production runtime remain v0.1.2.
+
+### v0.1.2 publication evidence
+
 The owner authorized formal publication on 2026-10-03. The
 [v0.1.2 Release](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.1.2)
 is public, nondraft and nonprerelease, published at `2026-10-03T07:04:34Z`.

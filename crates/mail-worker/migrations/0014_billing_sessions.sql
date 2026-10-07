@@ -12,9 +12,12 @@ CREATE TABLE billing_sessions (
         CHECK(state IN ('pending','completed','cancelled','expired','failed')),
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
+    -- Stable source context belongs to the durable intent, never a later poll.
+    origin_traceparent TEXT CHECK(origin_traceparent IS NULL OR length(origin_traceparent)=55),
     PRIMARY KEY(owner_iss,owner_sub,id)
 );
 CREATE INDEX billing_sessions_expiry ON billing_sessions(expires_at);
+CREATE INDEX billing_sessions_authorization ON billing_sessions(owner_iss,owner_sub,remote_id);
 
 -- Failed/ambiguous service delivery retains the same immutable event and moves
 -- its next retry behind ready peers; never delete usage to make a sweep green.

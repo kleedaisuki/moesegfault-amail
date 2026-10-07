@@ -20,6 +20,11 @@ The release must preserve these distinctions:
   context in server-owned session state; credentials never become trace fields.
 * Queue transport preserves producer event/span IDs. Sink receipt time and Queue
   invocation IDs must not replace application timing or causal context.
+* Durable send reservations preserve the originating Mail server `traceparent`.
+  Acceptance copies that context into the immutable usage outbox. Later delivery
+  continues the original trace/parent and separately links the actual scheduler
+  root with the closed `linked_trace_id`/`linked_span_id` pair. The span sent to
+  Billing is still exactly the client span retained at completion.
 
 The shape is:
 
@@ -41,7 +46,8 @@ scheduled maintenance root
   ├─ search
   ├─ abuse
   └─ billing usage outbox
-       └─ Billing HTTP client (at most three per sweep)
+       └─ links to Billing HTTP clients in originating send/consent traces
+          (at most three per sweep; original parentage is not overwritten)
 ```
 
 ## Changes from v0.1.2
@@ -90,6 +96,27 @@ snake-case wire operation values. Subscription polls have their own HTTP traces;
 the hosted session's durable creation context joins the subsequent human action,
 not a guessed context from a browser URL.
 
+Billing and Subscribe retain their closed spans directly in their own D1 stores,
+indexed by trace ID and expiring after seven days. Their HTTP Workers keep Logs,
+native Traces and Issues off. Safe JSON inside an HTTP console log is insufficient:
+the platform's enclosing event may still contain the original path/query. The
+typed D1 store avoids retaining that raw envelope entirely. Telemetry insertion
+is best effort and cannot replace an already committed authorization response.
+
+The hosted BFF persists the validated Billing creation/GET context in server-owned
+D1 state against a capability hash, expiring after thirty minutes. Subsequent
+approval/cancellation adopts it **before** creating the BFF server/client spans.
+Billing honors an authenticated same-creation-trace incoming BFF client parent;
+only the initial browser GET needs restoration from the durable creation context.
+No tracing capability is placed in a URL or supplied by browser input.
+
+Mail `billing_sessions.origin_traceparent` is captured before the first external
+creation call and never overwritten by polls/retries. Applying a receipt resolves
+that receipt's actual authorization ID to its saved source context; a superseded
+session or a routine refresh cannot become a new financial-consent origin. Stock
+usage keeps this source; send usage keeps its individual provider-attempt source.
+Unknown and accepted sends preserve the same reservation context across recovery.
+
 ## Acceptance evidence required
 
 1. Real CLI request emits a W3C parent and an exact locally journaled attempt.
@@ -127,13 +154,13 @@ retained trace must never be described as a complete captured waterfall.
 
 ## Retained staging witness
 
-`infra/tests/staging_trace_witness.py` reads the existing persisted typed logs via
+`infra/tests/staging_trace_witness.py` reads the existing Mail sink's typed logs via
 Cloudflare's [Observability query API](https://developers.cloudflare.com/api/resources/workers/subresources/observability/subresources/telemetry/methods/query/).
 It is not a capture service. The API currently requires `Workers Observability
 Write` permission even for a dry query; a missing scope is an explicit unavailable
 retention witness, not permission to broaden credentials or enable native capture.
 
-The reader accepts only the fixed staging sink, Billing and Subscribe script names;
+The Mail reader accepts only the fixed staging sink script name;
 each query includes an exact opaque trace ID, a maximum fifteen-minute window,
 128-event maximum and a two-megabyte HTTP-response limit. It does not paginate,
 discover fields, search across an account or retain provider envelopes. Only
@@ -141,14 +168,22 @@ validated closed records are projected into memory. Unknown fields, private text
 bad identifiers, missing clocks, truncation and malformed responses fail with
 fixed content-free error labels. Repeated event IDs must have identical payloads.
 
+Billing and Subscribe are read through their fixed staging origins with
+`POST /v1/service/amail/trace-query`, exactly `{"trace_id": "..."}` in the body and
+the shared stage service key in the `Authorization` header. The response is
+exactly `{"schema_version":1,"spans":[...]}`. The same 128-record/two-megabyte
+bounds apply and expired records are excluded by the service. The key stays in
+memory: never pass it in a command-line argument, URL or diagnostic. No provider
+HTTP console query is used for these services.
+
 Hosted acceptance can call:
 
 ```python
-from infra.tests.staging_trace_witness import SCRIPTS, read_records, witness
+from infra.tests.staging_trace_witness import SCRIPTS, read_records, read_service_records, witness
 
-records = []
-for service in ("mail_api", "billing", "subscribe"):
-    records += read_records(account, token, SCRIPTS[service], trace_id, start_ms, end_ms)
+records = read_records(account, token, SCRIPTS["mail_api"], trace_id, start_ms, end_ms)
+for service in ("billing", "subscribe"):
+    records += read_service_records(service, shared_stage_key, trace_id)
 summary = witness(records, trace_id, require_cli=True, require_authorization=True)
 ```
 
@@ -156,11 +191,13 @@ The trace ID and timestamps come from the actual native CLI's diagnostic request
 row; they are not derived from mail, addresses, tokens or a checkout URL. The
 result proves retained CLI→Mail server→Billing HTTP client→Billing server ancestry.
 With authorization required it additionally requires a successful authorization
-span connected to creation context. This is supplementary to browser acceptance,
+span whose actual remote parent is a retained Subscribe client span beneath the
+retained approval server span, all connected to creation context. This is supplementary to browser acceptance,
 not proof by itself that a human approved or money was collected. No raw console
 or provider response may be uploaded as an artifact.
 
-2026-10-07 local evidence: the five focused Python reader/witness tests passed;
+2026-10-07 local evidence: the seven focused Python reader/witness tests and three
+real SQLite migration-preservation tests passed;
 targeted `rustfmt` parsing and `node --check` for the expanded compiled sink test
 passed; scoped `git diff --check` passed. Rust/native sink execution and live
 retained delivery remain hosted/staging acceptance requirements, not inferred

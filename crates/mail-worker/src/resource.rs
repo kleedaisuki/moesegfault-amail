@@ -12,6 +12,8 @@ pub(crate) struct Snapshot {
     pub billing_owner_id: String,
     /// Human consent receipt preserved with every eventual usage event.
     pub authorization_id: String,
+    /// Validated originating server span retained across deferred usage delivery.
+    pub origin_traceparent: Option<String>,
     /// Explicit human-approved variable-spending cap; zero denies paid growth.
     pub overage_budget_micros: i64,
     /// Paid entitlement expiry in Unix seconds; Free has no expiry.
@@ -31,6 +33,8 @@ pub(crate) struct Account {
     pub billing_owner_id: Option<String>,
     /// Private immutable authority receipt; omit from public account projections.
     pub authorization_id: Option<String>,
+    /// Server-only causal context, never a public account identifier.
+    pub origin_traceparent: Option<String>,
     pub overage_budget_micros: i64,
     pub valid_until: Option<i64>,
     pub authority_updated_at: i64,
@@ -85,14 +89,26 @@ pub(crate) async fn apply_snapshot(
     {
         return Err(AppError::bad("billing_snapshot_invalid"));
     }
+    if snapshot
+        .origin_traceparent
+        .as_deref()
+        .is_some_and(|raw| crate::trace::parse_parent(raw).is_none())
+    {
+        return Err(AppError::bad("invalid_trace_context"));
+    }
     ensure_account(database, user).await?;
+    let origin = snapshot
+        .origin_traceparent
+        .as_deref()
+        .map(bind_str)
+        .unwrap_or(wasm_bindgen::JsValue::NULL);
     let expiry = snapshot
         .valid_until
         .map(bind_num)
         .unwrap_or(wasm_bindgen::JsValue::NULL);
     database.batch(vec![
-        database.prepare("UPDATE resource_accounts SET plan=?3,included_outbound=?4,included_storage_bytes=?5,included_addresses=?6,billing_owner_id=?7,authorization_id=?11,overage_budget_micros=?8,valid_until=?9,authority_updated_at=?10 WHERE owner_iss=?1 AND owner_sub=?2 AND authority_updated_at<=?10 AND (billing_owner_id IS NULL OR billing_owner_id=?7)")
-            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&snapshot.plan),bind_num(outbound),bind_num(bytes),bind_num(addresses),bind_str(&snapshot.billing_owner_id),bind_num(snapshot.overage_budget_micros),expiry,bind_num(snapshot.authority_updated_at),bind_str(&snapshot.authorization_id)])?,
+        database.prepare("UPDATE resource_accounts SET plan=?3,included_outbound=?4,included_storage_bytes=?5,included_addresses=?6,billing_owner_id=?7,origin_traceparent=(CASE WHEN authorization_id IS NOT ?11 THEN ?12 ELSE COALESCE(origin_traceparent,?12) END),authorization_id=?11,overage_budget_micros=?8,valid_until=?9,authority_updated_at=?10 WHERE owner_iss=?1 AND owner_sub=?2 AND authority_updated_at<=?10 AND (billing_owner_id IS NULL OR billing_owner_id=?7)")
+            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&snapshot.plan),bind_num(outbound),bind_num(bytes),bind_num(addresses),bind_str(&snapshot.billing_owner_id),bind_num(snapshot.overage_budget_micros),expiry,bind_num(snapshot.authority_updated_at),bind_str(&snapshot.authorization_id),origin])?,
         database.prepare("UPDATE resource_periods SET included_outbound=MAX(outbound_accepted+outbound_reserved,(SELECT included_outbound FROM resource_accounts a WHERE a.owner_iss=resource_periods.owner_iss AND a.owner_sub=resource_periods.owner_sub)),entitlement_outbound=(SELECT included_outbound FROM resource_accounts a WHERE a.owner_iss=resource_periods.owner_iss AND a.owner_sub=resource_periods.owner_sub) WHERE owner_iss=?1 AND owner_sub=?2 AND period_start=unixepoch('now','start of month') AND entitlement_outbound!=(SELECT included_outbound FROM resource_accounts a WHERE a.owner_iss=resource_periods.owner_iss AND a.owner_sub=resource_periods.owner_sub)")
             .bind(&[bind_str(&user.iss),bind_str(&user.sub)])?,
     ]).await?;
@@ -119,13 +135,20 @@ pub(crate) async fn reserve_send(
     user: &Principal,
     idem: &str,
     units: i64,
+    origin_traceparent: Option<&str>,
 ) -> AppResult<()> {
     if units <= 0 {
         return Err(AppError::bad("invalid_recipients"));
     }
+    if origin_traceparent.is_some_and(|raw| crate::trace::parse_parent(raw).is_none()) {
+        return Err(AppError::bad("invalid_trace_context"));
+    }
+    let origin = origin_traceparent
+        .map(bind_str)
+        .unwrap_or(wasm_bindgen::JsValue::NULL);
     ensure_account(database, user).await?;
-    let result=database.prepare("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,authorization_id) SELECT ?1,?2,?3,period_start,?4,authorization_id FROM resource_current WHERE owner_iss=?1 AND owner_sub=?2 AND NOT EXISTS(SELECT 1 FROM resource_send_reservations r WHERE r.owner_iss=?1 AND r.owner_sub=?2 AND r.idem_key=?3)")
-        .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(idem),bind_num(units)])?.run().await;
+    let result=database.prepare("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,authorization_id,origin_traceparent) SELECT ?1,?2,?3,period_start,?4,authorization_id,?5 FROM resource_current WHERE owner_iss=?1 AND owner_sub=?2 AND NOT EXISTS(SELECT 1 FROM resource_send_reservations r WHERE r.owner_iss=?1 AND r.owner_sub=?2 AND r.idem_key=?3)")
+        .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(idem),bind_num(units),origin])?.run().await;
     if let Err(error) = result {
         if error.to_string().contains("outbound_quota_exhausted") {
             return Err(AppError {
