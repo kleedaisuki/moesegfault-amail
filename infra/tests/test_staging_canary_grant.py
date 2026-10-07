@@ -31,9 +31,9 @@ class StagingCanaryTests(unittest.TestCase):
         self.rule = {"tag": "b" * 32, "enabled": True, "source": "api",
                      "matchers": [{"type": "literal", "field": "to", "value": self.address}],
                      "actions": [{"type": "worker", "value": ["amail-inbound-staging"]}]}
-        self.environment = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/codex/v0.1.2-agent-first-performance",
+        self.environment = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/codex/v0.2.0-billing",
             "GITHUB_ACTOR": "synthetic-actor", "AMAIL_TEST_RUN_NONCE": "a" * 16,
-            "AMAIL_STAGING_CANARY_CONFIRM": "RUN_STAGING_OWNED_SEND_V012", "CF_EMAIL_ROUTING_TOKEN": "synthetic"}
+            "AMAIL_STAGING_CANARY_CONFIRM": "RUN_STAGING_OWNED_SEND_V020", "CF_EMAIL_ROUTING_TOKEN": "synthetic"}
         self.writes = 0
 
     def query(self, sql: str, params=None) -> dict:
@@ -86,7 +86,7 @@ class StagingCanaryTests(unittest.TestCase):
         self.environment["GITHUB_REF"] = "refs/heads/main"
         with self.assertRaisesRegex(ValueError, "context_unverified"):
             self.invoke()
-        self.environment["GITHUB_REF"] = "refs/heads/codex/v0.1.2-agent-first-performance"
+        self.environment["GITHUB_REF"] = "refs/heads/codex/v0.2.0-billing"
         self.rule["actions"] = [{"type": "worker", "value": ["amail-inbound"]}]
         with self.assertRaisesRegex(ValueError, "route_unverified"):
             self.invoke()

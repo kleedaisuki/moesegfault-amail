@@ -4,18 +4,18 @@ import { pathToFileURL } from 'node:url';
 import { releaseDownloads, releaseVersion, releaseTagUrl as tagUrl } from '../src/releaseDownloads.mjs';
 
 const releasesUrl = 'https://github.com/kleedaisuki/moesegfault-amail/releases';
-const serviceNotice = '这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。';
+const serviceNotice = '这是 v0.2.0 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。';
 const pages = [
-  { path: 'index', label: 'home', candidate: 'v0.1.2 尚未发布', published: 'v0.1.2 已发布' },
-  { path: 'manual/index', label: 'manual', candidate: 'v0.1.2 尚未开放下载', published: 'v0.1.2 已发布' },
-  { path: 'changelog/index', label: 'changelog', candidate: 'v0.1.2 仍在验收', published: 'v0.1.2 已正式发布' },
+  { path: 'index', label: 'home', candidate: 'v0.2.0 尚未发布', published: 'v0.2.0 已发布' },
+  { path: 'manual/index', label: 'manual', candidate: 'v0.2.0 尚未开放下载', published: 'v0.2.0 已发布' },
+  { path: 'changelog/index', label: 'changelog', candidate: 'v0.2.0 仍在验收', published: 'v0.2.0 已正式发布' },
 ];
 
 /** Verify public release identity and the complete expected download inventory. */
 export function checkPublishedRelease(release) {
   if (release.tag_name !== releaseVersion || release.draft !== false || release.prerelease !== false ||
       !release.published_at || release.html_url !== tagUrl) {
-    throw new Error('Expected the nondraft, nonprerelease published v0.1.2 Release');
+    throw new Error('Expected the nondraft, nonprerelease published v0.2.0 Release');
   }
   for (const asset of releaseDownloads) {
     const matching = release.assets?.filter((item) => item.name === asset.name) ?? [];
@@ -69,10 +69,10 @@ export function checkReleaseState(state, htmlByPath, headers) {
       throw new Error(`${page.label}: incorrect candidate service-availability boundary`);
     }
     if (state === 'published' && !hasHref(html, tagUrl)) {
-      throw new Error(`${page.label}: exact v0.1.2 Release link is missing`);
+      throw new Error(`${page.label}: exact v0.2.0 Release link is missing`);
     }
     if (state === 'candidate' && hasHref(html, tagUrl)) {
-      throw new Error(`${page.label}: unpublished v0.1.2 Release link is present`);
+      throw new Error(`${page.label}: unpublished v0.2.0 Release link is present`);
     }
     for (const asset of releaseDownloads) {
       if (state === 'candidate' && hasHref(html, asset.href)) {
@@ -91,13 +91,13 @@ export function checkReleaseState(state, htmlByPath, headers) {
     throw new Error('Manual or changelog table of contents is missing');
   }
   const changelog = htmlByPath['changelog/index'];
-  if (!changelog.includes('id="v0.1.2"') || !hasHref(changelog, '#v0.1.2')) {
-    throw new Error('Current v0.1.2 changelog entry and TOC must exist in both states');
+  if (!changelog.includes('id="v0.2.0"') || !hasHref(changelog, '#v0.2.0')) {
+    throw new Error('Current v0.2.0 changelog entry and TOC must exist in both states');
   }
   if (!changelog.includes('id="v0.1.0"') || !hasHref(changelog, '#v0.1.0')) {
     throw new Error('Historical v0.1.0 changelog entry and TOC must remain');
   }
-  if (state === 'published' && /staging 候选|v0\.1\.2 尚未|候选记录日期/.test(changelog)) {
+  if (state === 'published' && /staging 候选|v0\.2\.0 尚未|候选记录日期/.test(changelog)) {
     throw new Error('Published changelog must not retain current candidate claims');
   }
 }

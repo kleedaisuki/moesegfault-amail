@@ -5,7 +5,7 @@ name: CI and deploy
 on:
   pull_request:
   push:
-    branches: [main, codex/amail-v0.1.0, codex/v0.1.2-agent-first-performance]
+    branches: [main, codex/amail-v0.1.0, codex/v0.2.0-billing]
     # Skip only non-build documentation; PR/manual/release checks remain independent.
     # A skipped push supplies no exact-SHA CI result or acceptance/release artifact.
     paths-ignore:
@@ -48,7 +48,7 @@ on:
         type: string
 
       send_confirm:
-        description: Optional RUN_STAGING_OWNED_SEND_V012 for one synthetic self-send under global hold
+        description: Optional RUN_STAGING_OWNED_SEND_V020 for one synthetic self-send under global hold
         required: false
         type: string
 
@@ -269,7 +269,7 @@ jobs:
           shared-key: cli-dependencies-v1
           cache-bin: false
           cache-workspace-crates: false
-          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance') }}
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.2.0-billing') }}
       - name: Check formatting
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
@@ -278,14 +278,14 @@ jobs:
       - name: Check CLI help
         run: cargo run -p amail --locked -- --help
       - name: Build native release candidate for staging acceptance
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
         run: cargo build -p amail --locked --release
       - uses: actions/setup-python@v5
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
         with:
           python-version: '3.12'
       - name: Restore verified published v0.1.0 CLI baseline on the same hosted runner
-        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -300,14 +300,14 @@ jobs:
           tar -xzf amail-v0.1.0-x86_64-unknown-linux-gnu.tar.gz amail
           ./amail --version
       - name: Measure bounded CLI startup and long-tail synthetic ZIP cases
-        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
         shell: bash
         run: |
           mkdir -p .temp/performance
           python scripts/performance.py --binary target/release/amail --baseline .temp/perf-baseline/amail --output .temp/performance/cli.json
           cargo test -p amail --locked --release performance_microbench -- --ignored --nocapture | tee .temp/performance/cli-microbench.log
       - name: Preserve bounded CLI performance measurements
-        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
         uses: actions/upload-artifact@v4
         with:
           name: performance-cli-${{ github.run_id }}
@@ -315,10 +315,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Package version-checked native CLI candidate
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
         run: python infra/ci/cli_candidate.py binary
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
         with:
           name: cli-candidate-native-${{ runner.os }}
           path: .temp/ci/cli-candidate/*
@@ -326,8 +326,8 @@ jobs:
           retention-days: 14
 
   cli-candidate:
-    name: Assemble unpublished v0.1.2 staging acceptance bundle
-    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+    name: Assemble unpublished v0.2.0 staging acceptance bundle
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
     needs: cli
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -346,14 +346,14 @@ jobs:
       - name: Upload acceptance downloads without creating a Release or tag
         uses: actions/upload-artifact@v4
         with:
-          name: cli-candidate-v0.1.2-${{ github.run_id }}
+          name: cli-candidate-v0.2.0-${{ github.run_id }}
           path: .temp/ci/cli-candidate/*
           if-no-files-found: error
           retention-days: 14
 
   staging-inspect:
     name: Read isolated staging rollout predecessor
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging-inspect' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'INSPECT_STAGING_V012'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging-inspect' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'INSPECT_STAGING_V020'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: staging
@@ -396,7 +396,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.target == 'staging-e2e' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance')
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.2.0-billing')
     permissions:
       contents: read
       actions: read
@@ -421,8 +421,8 @@ jobs:
             throw 'Explicit staging E2E confirmation required'
           }
           if ($env:AMAIL_STAGING_CANARY_CONFIRM) {
-            if ($env:AMAIL_STAGING_CANARY_CONFIRM -ne 'RUN_STAGING_OWNED_SEND_V012' -or
-                $env:GITHUB_REF -ne 'refs/heads/codex/v0.1.2-agent-first-performance' -or
+            if ($env:AMAIL_STAGING_CANARY_CONFIRM -ne 'RUN_STAGING_OWNED_SEND_V020' -or
+                $env:GITHUB_REF -ne 'refs/heads/codex/v0.2.0-billing' -or
                 -not $env:AMAIL_SOURCE_RUN) {
               throw 'Owned staging send requires exact candidate bytes and explicit confirmation'
             }
@@ -510,7 +510,7 @@ jobs:
           shared-key: worker-dependencies-v1
           cache-bin: false
           cache-workspace-crates: false
-          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance') }}
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.2.0-billing') }}
       - name: Fingerprint the pinned public bundler compiler
         id: compiler
         shell: bash
@@ -574,7 +574,7 @@ jobs:
         working-directory: workers/role-monitor
         run: worker-build --release
       - name: Save trusted pinned check bundler
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance') && steps.worker-bundler-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.2.0-billing') && steps.worker-bundler-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .cache/worker-build-check
@@ -585,13 +585,13 @@ jobs:
         timeout-minutes: 15
         run: pnpm test
       - name: Measure bounded Worker search and ZIP microbenchmarks
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
         shell: bash
         run: |
           mkdir -p .temp/performance
           cargo test -p amail-worker --locked --release performance_microbench -- --ignored --nocapture | tee .temp/performance/worker-microbench.log
       - name: Preserve bounded Worker performance measurements
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance'
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
         uses: actions/upload-artifact@v4
         with:
           name: performance-worker-${{ github.run_id }}
@@ -657,7 +657,9 @@ jobs:
       - name: Build static site
         run: pnpm build
       - name: Check default candidate copy and navigation
-        run: pnpm check:release-state candidate
+        run: |
+          pnpm check:release-state candidate
+          node scripts/check-billing-return.mjs
       - name: Measure bounded candidate site payload budget
         run: |
           mkdir -p ../.temp/performance
@@ -1037,7 +1039,7 @@ jobs:
   staging-site:
     name: Deploy isolated staging release site
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020'
     needs: [site, staging-events]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1096,7 +1098,7 @@ jobs:
               if ((remaining <= 0)); then ready=false; break; fi
               maximum=$((remaining < 15 ? remaining : 15))
               if ! curl --fail --silent --show-error --connect-timeout 10 --max-time "$maximum" \
-                --user-agent 'Mozilla/5.0 (compatible; AmailStagingAcceptance/0.1.2)' \
+                --user-agent 'Mozilla/5.0 (compatible; AmailStagingAcceptance/0.2.0)' \
                 --dump-header ".temp/staging-site-smoke/$route.headers" \
                 --output ".temp/staging-site-smoke/$route.html" \
                 "https://amail-staging.moesegfault.dev$path"; then ready=false; fi
@@ -1121,7 +1123,7 @@ jobs:
 
   staging-worker:
     name: Deploy isolated staging mail API
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020'
     needs: [cli, worker, site, dns, provider-live, staging-trace-sink, worker-build]
     permissions:
       contents: read
@@ -1151,6 +1153,7 @@ jobs:
       CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
       INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
+      BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
       MAIL_SENDING_DOMAIN: mail-staging.moesegfault.dev
       AMAIL_TRACE_TOPOLOGY: api-scheduled
       AMAIL_STAGING_MAIL_DEPLOY_CONFIRM: ${{ inputs.confirm }}
@@ -1160,7 +1163,7 @@ jobs:
         working-directory: .
         shell: bash
         run: |
-          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN OPENROUTER_API_KEY CF_EMAIL_ROUTING_TOKEN INGRESS_SECRET; do
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN OPENROUTER_API_KEY CF_EMAIL_ROUTING_TOKEN INGRESS_SECRET BILLING_SERVICE_KEY; do
             if [ -z "${!key}" ]; then
               echo "::error::Missing staging deployment value $key"
               exit 1
@@ -1271,7 +1274,7 @@ jobs:
   staging-ingress:
     name: Deploy isolated Rust staging SMTP ingress
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020'
     needs: [staging-worker, staging-trace-sink, worker, worker-build]
     outputs:
       version: ${{ needs.staging-trace-sink.outputs.reuse_adapters == 'true' && needs.staging-trace-sink.outputs.ingress_version || steps.ingress.outputs.version }}
@@ -1315,7 +1318,7 @@ jobs:
   staging-events:
     name: Deploy isolated Rust staging lifecycle consumer
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020'
     # Serialize same-run resource writers; GitHub otherwise replaces pending siblings.
     needs: [staging-ingress, staging-trace-sink, worker, worker-build]
     outputs:
@@ -1377,7 +1380,7 @@ jobs:
   staging-identity-test-inbox:
     name: Deploy private staging Identity verification inbox
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref != 'refs/heads/codex/v0.1.2-agent-first-performance'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref != 'refs/heads/codex/v0.2.0-billing'
     needs: [worker, dns, staging-events, worker-build]
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -1574,7 +1577,7 @@ jobs:
 
   staging-trace-sink:
     name: Deploy private staging privacy trace sink
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.1.2-agent-first-performance' && inputs.confirm == 'RUN_STAGING_V012'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020'
     needs: [cli, worker, site, dns, provider-live, worker-build]
     outputs:
       queue_id: ${{ steps.predecessor.outputs.reuse_sink == 'true' && steps.predecessor.outputs.queue_id || steps.queues.outputs.queue_id }}

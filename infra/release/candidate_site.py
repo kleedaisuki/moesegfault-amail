@@ -16,11 +16,11 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGING_HEADERS = "https://amail-staging.moesegfault.dev/*\n  X-Robots-Tag: noindex, nofollow\n"
-SERVICE_NOTICE = "这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。"
+SERVICE_NOTICE = "这是 v0.2.0 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。"
 PAGES = {
-    "home": ("index.html", "v0.1.2 尚未发布", "v0.1.0 已发布", None),
-    "manual": ("manual/index.html", "v0.1.2 尚未开放下载", "v0.1.0 已发布", "用户手册目录"),
-    "changelog": ("changelog/index.html", "v0.1.2 仍在验收", "v0.1.0 已正式发布", "更新日志目录"),
+    "home": ("index.html", "v0.2.0 尚未发布", "v0.1.0 已发布", None),
+    "manual": ("manual/index.html", "v0.2.0 尚未开放下载", "v0.1.0 已发布", "用户手册目录"),
+    "changelog": ("changelog/index.html", "v0.2.0 仍在验收", "v0.1.0 已正式发布", "更新日志目录"),
 }
 
 
@@ -111,7 +111,7 @@ def check_page(route, html):
         raise ValueError(f"{route}: TOC fragment has no local target")
     if route == "changelog" and "候选记录日期" not in text:
         raise ValueError("changelog: candidate date must not imply publication")
-    if route == "changelog" and ("v0.1.2" not in page.ids or "#v0.1.2" not in page.toc_links):
+    if route == "changelog" and ("v0.2.0" not in page.ids or "#v0.2.0" not in page.toc_links):
         raise ValueError("changelog: current candidate entry or TOC target missing")
     if route == "manual" and (not all(command in text for command in
             ("amail discover", "amail send-status", "amail events"))

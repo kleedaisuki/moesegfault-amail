@@ -44,7 +44,7 @@ def admit(run_id: str) -> dict:
     run = github(f"actions/runs/{run_id}")
     if (str(run.get("id")) != run_id or run.get("status") != "completed"
             or run.get("conclusion") != "success" or run.get("head_sha") != os.getenv("GITHUB_SHA")
-            or run.get("head_branch") != "codex/v0.1.2-agent-first-performance"
+            or run.get("head_branch") != "codex/v0.2.0-billing"
             or run.get("path") != ".github/workflows/ci.yml"
             or run.get("event") != "workflow_dispatch"
             or type(run.get("run_attempt")) is not int or run["run_attempt"] < 1):
@@ -55,7 +55,7 @@ def admit(run_id: str) -> dict:
             or artifacts["total_count"] != len(rows) or len(rows) > 100):
         raise ValueError("candidate_artifacts_incomplete")
     matches = [row for row in rows if isinstance(row, dict)
-               and row.get("name") == f"cli-candidate-v0.1.2-{run_id}"]
+               and row.get("name") == f"cli-candidate-v0.2.0-{run_id}"]
     if (len(matches) != 1 or matches[0].get("expired") is not False
             or type(matches[0].get("id")) is not int or matches[0]["id"] < 1
             or matches[0].get("workflow_run", {}).get("head_sha") != run["head_sha"]):

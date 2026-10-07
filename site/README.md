@@ -8,7 +8,7 @@ navigation and stable version-based changelog navigation.
 The repository contains the CLI, Mail backend, versioned Agent Skill and release
 pipeline. The site itself remains a static public guide, not a web inbox.
 Hosting its candidate mode does not publish the CLI or authorize public sending.
-The current release coordinates are v0.1.2. Production published builds require
+The current release coordinates are v0.2.0. Production published builds require
 an actual nondraft Release and all seven assets; source/candidate builds do not
 assert publication. Historical v0.1.0 records remain in the changelog.
 
@@ -25,7 +25,7 @@ and lockfile remain those imported from reviewed source.
 
 `AMAIL_RELEASE_STATE` is typed and fail-closed: unset or `candidate` renders
 pre-release copy; `published` renders public-release copy and the seven exact
-v0.1.2 Release downloads. Both build states retain the current and historical
+v0.2.0 Release downloads. Both build states retain the current and historical
 changelog entries; candidate headers and global copy remain state-specific. Unknown values fail the build. Source checks exercise both
 states without deploying. The tag release workflow deploys published state only
 after the existing production gate, Release publication and published-byte check.
@@ -57,7 +57,7 @@ Green build checks are not live acceptance.
 
 `.github/workflows/release.yml` is the actual publication path. A manual main run
 only prepares candidate bundles. After authorized production acceptance and all
-genuine send attestations, a `v0.1.2` tag on the final accepted main source starts
+genuine send attestations, a `v0.2.0` tag on the final accepted main source starts
 five platform builds/tests, the Skill bundle and checksums. The existing production
 gate must pass before GitHub Release creation. Its published assets are then
 downloaded and compared with the same-run trusted checksum manifest before the
@@ -132,7 +132,7 @@ The hosted `Site browser acceptance` workflow supports `live-published`, alongsi
 source preview and existing live candidate/staging targets. Set `candidate_revision`
 to the exact deployed source SHA (the input is shared by all live modes). This is
 read-only verification, not deployment or publication. The published target first
-requires the nondraft, nonprerelease GitHub v0.1.2 Release with all seven exact
+requires the nondraft, nonprerelease GitHub v0.2.0 Release with all seven exact
 nonempty assets, then checks published status and Release links on all three
 routes, seven downloads on the manual, absence of candidate/noindex output, and
 `X-Amail-Release-Revision` matching that deployed SHA. All modes retain the same

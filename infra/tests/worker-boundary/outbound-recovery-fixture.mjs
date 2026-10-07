@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
-import { applyMigrations } from "./migration-fixture.mjs";
+import { applyMigrations, seedResourceAccount } from "./migration-fixture.mjs";
 import { workerModuleRules } from "./worker-module-rules.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -78,6 +78,7 @@ export async function fixture(run, { observeR2 = false } = {}) {
   try {
     const { MAIL_DB: db, MAIL_BODIES: bucket } = await mf.getBindings();
     await applyMigrations(db, path.join(worker, "migrations"));
+    await seedResourceAccount(db, issuer, owner);
     await db.prepare("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES(?1,'recovery-synthetic',?2,?3,0,'active',?4)")
       .bind(sender, issuer, owner, Date.now()).run();
     // Keep this test about persistence, not third-party embedding processing.

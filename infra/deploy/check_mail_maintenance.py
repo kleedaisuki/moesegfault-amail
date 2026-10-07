@@ -19,6 +19,14 @@ from pin_staging_mail import ACCOUNT, UUID, _bindings_match, mail_resources, ser
 REALMS = ("production", "staging")
 SECRETS = ("CF_EMAIL_ROUTING_TOKEN", "OPENROUTER_API_KEY")
 VARS = ("MAIL_DOMAIN", "CF_ZONE_ID", "EMAIL_INGRESS_WORKER_NAME", "OPENROUTER_EMBEDDING_MODEL")
+BILLING_VARS = ("BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN", "BILLING_RETURN_URL")
+
+
+def realm_vars(realm: str) -> tuple[str, ...]:
+    """Billing settlement capabilities are admitted only for staging."""
+    return VARS + BILLING_VARS if realm == "staging" else VARS
+
+
 CADENCE = ("*/5 * * * *",)
 STATES = ("legacy-pinned", "prepared", "old-draining", "paused", "active", "new-draining", "legacy-recovery")
 
@@ -65,7 +73,7 @@ def maintenance_config(realm: str, *, active: bool = False) -> dict:
             or selected.get("logpush") is not False or selected.get("routes") != []
             or not capture.safe_observability(selected.get("observability"))
             or selected.get("triggers") != {"crons": list(CADENCE) if active else []}
-            or selected.get("vars") != {name: api["vars"][name] for name in VARS}
+            or selected.get("vars") != {name: api["vars"][name] for name in realm_vars(realm)}
             or mail_resources(selected) != mail_resources(api)
             or selected.get("version_metadata") != {"binding": "VERSION_METADATA"}
             or selected.get("queues") != {"producers": [{"binding": "TRACE_EVENTS", "queue":
@@ -102,7 +110,7 @@ def check_source_configs() -> None:
     reject_inbound_bindings()
 
 
-def expected_bindings(realm: str, queue_id: str, *, active: bool = False) -> dict:
+def expected_bindings(realm: str, queue_id: str, *, active: bool = False, predecessor: bool = False) -> dict:
     """Immutable readback checks exact names/types/resources; secret values stay private."""
     if ACCOUNT.fullmatch(queue_id) is None:
         raise ValueError("queue_pin_unreviewed")
@@ -114,8 +122,8 @@ def expected_bindings(realm: str, queue_id: str, *, active: bool = False) -> dic
     database, bucket = mail_resources(selected)
     return {"MAIL_DB": ("d1", database), "MAIL_BODIES": ("r2_bucket", bucket),
             "TRACE_EVENTS": ("queue", queue_id), "VERSION_METADATA": ("version_metadata", None),
-            **{name: ("secret_text", None) for name in SECRETS},
-            **{name: ("plain_text", selected["vars"][name]) for name in VARS}}
+            **{name: ("secret_text", None) for name in (SECRETS + (("BILLING_SERVICE_KEY",) if realm == "staging" and not predecessor else ()))},
+            **{name: ("plain_text", selected["vars"][name]) for name in (VARS if predecessor else realm_vars(realm))}}
 
 
 def schedules_match(result: object, expected: tuple[str, ...] = ()) -> bool:
@@ -147,14 +155,14 @@ def expected_schedules(state: str) -> tuple[str, ...]:
 
 
 def verify(realm: str, state: str, account: str, token: str, version: str, queue_id: str,
-           *, api_crons: tuple[str, ...] = ()) -> None:
+           *, api_crons: tuple[str, ...] = (), predecessor: bool = False) -> None:
     """Bracket the exact serving deployment around immutable and non-versioned reads.
 
     Routes/domains/callers are checked by the enclosing realm graph, not inferred
     from a failed fetch; this function never claims complete population isolation.
     """
     cadence = expected_schedules(state)
-    expected = expected_bindings(realm, queue_id, active=state == "active")
+    expected = expected_bindings(realm, queue_id, active=state == "active", predecessor=predecessor)
     if ACCOUNT.fullmatch(account) is None or not token or UUID.fullmatch(version) is None:
         raise ValueError("maintenance_pin_unreviewed")
     script = script_name(realm)

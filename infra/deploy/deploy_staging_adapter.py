@@ -20,8 +20,8 @@ from tested_worker_artifact import require_artifact
 def deploy(component: str) -> str:
     """Use only the candidate's two source-owned adapters and a private secret file."""
     if (component not in ("ingress", "events") or os.getenv("GITHUB_ACTIONS") != "true"
-            or os.getenv("GITHUB_REF") != "refs/heads/codex/v0.1.2-agent-first-performance"
-            or os.getenv("AMAIL_STAGING_DEPLOY_CONFIRM") != "RUN_STAGING_V012"
+            or os.getenv("GITHUB_REF") != "refs/heads/codex/v0.2.0-billing"
+            or os.getenv("AMAIL_STAGING_DEPLOY_CONFIRM") != "RUN_STAGING_V020"
             or not os.getenv("CLOUDFLARE_ACCOUNT_ID") or not os.getenv("CLOUDFLARE_API_TOKEN")):
         raise ValueError("adapter_deploy_coordinates_unverified")
     source_configs()

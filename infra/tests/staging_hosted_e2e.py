@@ -147,7 +147,7 @@ def execute() -> None:
                 raise HostedProbeError("inbound_acceptance_failed")
             send_confirmation = os.environ.get("AMAIL_STAGING_CANARY_CONFIRM", "")
             if send_confirmation:
-                if send_confirmation != "RUN_STAGING_OWNED_SEND_V012":
+                if send_confirmation != "RUN_STAGING_OWNED_SEND_V020":
                     raise HostedProbeError("owned_send_confirmation_invalid")
                 import staging_owned_send
                 try:

@@ -17,6 +17,14 @@ use std::{
 pub enum CommandKind {
     /// Non-secret configuration display.
     Config,
+    /// Effective subscription and metered resources.
+    BillingStatus,
+    /// Plan-change authorization navigation.
+    BillingSubscribe,
+    /// Human-only billing management navigation.
+    BillingManage,
+    /// Owner-scoped authorization continuation.
+    BillingSession,
     /// Local ZIP creation.
     Pack,
     /// Local ZIP extraction.
@@ -54,6 +62,10 @@ impl CommandKind {
     fn label(self) -> &'static str {
         match self {
             Self::Config => "config",
+            Self::BillingStatus => "billing_status",
+            Self::BillingSubscribe => "billing_subscribe",
+            Self::BillingManage => "billing_manage",
+            Self::BillingSession => "billing_session",
             Self::Pack => "pack",
             Self::Unpack => "unpack",
             Self::AuthLogin => "auth_login",

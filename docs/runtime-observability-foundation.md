@@ -1,11 +1,15 @@
 # Diagnostics and privacy
 
-## Correlation, not another infrastructure project
+## Private causal spans, not automatic request capture
 
 CLI bounded SQLite diagnostics and local command spans join opaque API request/
 trace coordinates. Typed events cross the private Queue to a queue-only sink.
 Local command UUID, request ID and native W3C span are different coordinates.
 Upload acceptance is not retained delivery or a complete native trace waterfall.
+v0.2.0 adds exact API/dependency clocks, stable pre-transport Billing client span
+IDs, and scheduled root/stage spans; these are real application spans, not native
+Cloudflare auto-instrumentation. See [v0.2.0 tracing](v0.2.0/observability.md) for
+the shared causal contract and bounded retained-log witness.
 
 Preserve legacy readers and typed capability negotiation. New closed wire shapes
 must be parsed explicitly at the actual workers-rs boundary, not rely on a struct

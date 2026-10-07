@@ -1,4 +1,4 @@
-# Workflow index for installed v0.1.2
+# Workflow index for installed v0.2.0
 
 Read for a task spanning topics; load only the reference required by the next
 step. These capabilities do not assert publication, service health or sending

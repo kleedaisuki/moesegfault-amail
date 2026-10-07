@@ -93,7 +93,7 @@ def split_diagnostic(result: dict) -> dict:
                        "AMAIL_EXPECTED_TRACE_SINK_VERSION": scripts["amail-trace-sink-staging"]["version"],
                        "AMAIL_TRACE_TOPOLOGY": "api-scheduled"})
     try:
-        graph.verify("staging", "active")
+        graph.verify("staging", "active", allow_v012_predecessor=True)
     except (ValueError, KeyError, TypeError, OSError) as error:
         return {"exact_graph": False, "reason": graph.failure_reason(error)}
     return {"exact_graph": True, "reason": "verified"}

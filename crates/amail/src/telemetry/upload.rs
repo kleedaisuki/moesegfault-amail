@@ -226,6 +226,7 @@ fn send(
     attempt.phase(conn, "transport", None, None)?;
     let response = http
         .post(format!("{}{}", cfg.api_base, support.path()))
+        .header("x-amail-api-version", "2")
         .bearer_auth(token)
         .json(&serde_json::json!({"events":events}))
         .send();
@@ -339,6 +340,7 @@ mod tests {
             }
         };
         let headers = String::from_utf8_lossy(&received[..header_end]).to_ascii_lowercase();
+        assert!(headers.lines().any(|line| line == "x-amail-api-version: 2"));
         let length = headers
             .lines()
             .find_map(|line| line.strip_prefix("content-length:"))

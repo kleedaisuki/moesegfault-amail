@@ -43,3 +43,11 @@ export async function applyMigrations(db, migrationsDir) {
     }
   }
 }
+
+/** Explicit fixture-only Free owner initialization; never bypass resource guards. */
+export async function seedResourceAccount(db, issuer, subject) {
+  await db.prepare("INSERT OR IGNORE INTO resource_accounts(owner_iss,owner_sub) VALUES(?1,?2)")
+    .bind(issuer, subject).run();
+  await db.prepare("INSERT OR IGNORE INTO resource_periods(owner_iss,owner_sub,period_start,period_end,accounted_at) VALUES(?1,?2,unixepoch('now','start of month'),unixepoch('now','start of month','+1 month'),unixepoch())")
+    .bind(issuer, subject).run();
+}

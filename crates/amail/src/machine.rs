@@ -70,6 +70,20 @@ pub fn error_record(error: &anyhow::Error) -> Value {
             | "search_cursor_expired"
             | "search_cursor_vector_changed" => "restart_search",
             "events_cursor_expired" => "restart_events",
+            "required_client_version" => "upgrade_client",
+            "invalid_billing_plan"
+            | "invalid_billing_action"
+            | "invalid_idempotency_key"
+            | "idempotency_key_required" => "fix_input",
+            "idempotency_conflict" | "billing_plan_invalid" | "billing_snapshot_invalid" => "stop",
+            "outbound_quota_exhausted" | "resource_budget_exceeded" => "inspect_billing_status",
+            "billing_unavailable" if failure.operation == "billing.session.create" => {
+                "reuse_billing_session_key"
+            }
+            "billing_unavailable" if failure.operation == "billing.session.status" => {
+                "resume_billing_session"
+            }
+            "billing_unavailable" => "retry_later",
             "send_held"
             | "recipient_suppressed"
             | "recipient_not_allowed"
@@ -82,7 +96,13 @@ pub fn error_record(error: &anyhow::Error) -> Value {
             "send_in_progress" | "send_outcome_unknown" | "send_unknown" | "send_index_pending" => {
                 "query_send_status"
             }
+            _ if failure.status.as_u16() == 426 => "upgrade_client",
             _ if failure.status.as_u16() == 401 => "login",
+            _ if failure.operation == "billing.session.create"
+                && failure.status.is_server_error() =>
+            {
+                "reuse_billing_session_key"
+            }
             _ if failure.status.as_u16() == 429 => "retry_later",
             _ if failure.operation == "messages.send" && failure.status.is_server_error() => {
                 "query_send_status"
@@ -132,6 +152,7 @@ mod tests {
             ("send_outcome_unknown", 409, "query_send_status"),
             ("send_index_pending", 503, "query_send_status"),
             ("unauthorized", 401, "login"),
+            ("client_upgrade_required", 426, "upgrade_client"),
             ("not_found", 404, "stop"),
             ("provider private\ntext", 500, "stop"),
         ] {
@@ -159,6 +180,106 @@ mod tests {
         }
         .into();
         assert_eq!(error_record(&error)["next_action"], "query_send_status");
+    }
+    #[test]
+    fn uncertain_billing_creation_reuses_original_key() {
+        let error: anyhow::Error = crate::api::ApiFailure {
+            status: reqwest::StatusCode::BAD_GATEWAY,
+            code: "billing_unavailable".into(),
+            request_id: None,
+            operation: "billing.session.create".into(),
+            message: "private provider prose".into(),
+        }
+        .into();
+        assert_eq!(
+            error_record(&error)["next_action"],
+            "reuse_billing_session_key"
+        );
+        assert!(!error_record(&error).to_string().contains("private"));
+    }
+    #[test]
+    fn billing_and_resource_failures_never_grant_financial_authority() {
+        for (code, status, operation, action) in [
+            (
+                "invalid_billing_plan",
+                400,
+                "billing.session.create",
+                "fix_input",
+            ),
+            (
+                "invalid_billing_action",
+                400,
+                "billing.session.create",
+                "fix_input",
+            ),
+            (
+                "invalid_idempotency_key",
+                400,
+                "billing.session.create",
+                "fix_input",
+            ),
+            (
+                "idempotency_key_required",
+                400,
+                "billing.session.create",
+                "fix_input",
+            ),
+            (
+                "idempotency_conflict",
+                409,
+                "billing.session.create",
+                "stop",
+            ),
+            (
+                "billing_unavailable",
+                503,
+                "billing.session.create",
+                "reuse_billing_session_key",
+            ),
+            (
+                "billing_unavailable",
+                503,
+                "billing.session.status",
+                "resume_billing_session",
+            ),
+            ("billing_unavailable", 503, "billing.status", "retry_later"),
+            (
+                "outbound_quota_exhausted",
+                429,
+                "messages.send",
+                "inspect_billing_status",
+            ),
+            (
+                "resource_budget_exceeded",
+                429,
+                "addresses.add",
+                "inspect_billing_status",
+            ),
+            (
+                "required_client_version",
+                426,
+                "billing.status",
+                "upgrade_client",
+            ),
+            (
+                "billing_snapshot_invalid",
+                400,
+                "billing.session.status",
+                "stop",
+            ),
+        ] {
+            let error: anyhow::Error = crate::api::ApiFailure {
+                status: reqwest::StatusCode::from_u16(status).unwrap(),
+                code: code.into(),
+                request_id: None,
+                operation: operation.into(),
+                message: "private provider prose".into(),
+            }
+            .into();
+            let record = error_record(&error);
+            assert_eq!(record["next_action"], action, "{code} for {operation}");
+            assert!(!record.to_string().contains("private"));
+        }
     }
     #[test]
     fn continuation_and_auth_are_typed_without_private_error_prose() {

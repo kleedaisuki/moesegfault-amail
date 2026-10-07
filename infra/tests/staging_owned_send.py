@@ -33,7 +33,7 @@ def owner_subject(account: str, token: str, address: str) -> str:
     req = urllib.request.Request(
         f"{mail.API}/accounts/{account}/d1/database/{mail.ACCOUNT_DB}/query",
         data=json.dumps({"sql": mail.ADDRESS_ROW_SQL, "params": [address]}).encode(),
-        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}, method="POST")
+        headers={"x-amail-api-version": "2", "Authorization": "Bearer " + token, "Content-Type": "application/json"}, method="POST")
     try:
         with mail.control_open(req, timeout=25) as response:
             mail.check(response.status == 200, "owned_send_owner_read_failed")
@@ -255,7 +255,7 @@ def verify_task_counts(account: str, token: str, address: str, title: str) -> No
     req = urllib.request.Request(
         f"{mail.API}/accounts/{account}/d1/database/{mail.ACCOUNT_DB}/query",
         data=json.dumps({"sql": sql, "params": [address, title]}).encode(),
-        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}, method="POST")
+        headers={"x-amail-api-version": "2", "Authorization": "Bearer " + token, "Content-Type": "application/json"}, method="POST")
     try:
         with mail.control_open(req, timeout=25) as response:
             mail.check(response.status == 200, "owned_send_cleanup_counts_unverified")
@@ -345,7 +345,7 @@ def grant_failure_reason(error: Exception) -> str:
 
 def execute(binary: Path, home: Path, run_dir: Path, nonce: str) -> None:
     """Run at most one new provider submission under the guarded self-only grant."""
-    mail.check(os.environ.get("AMAIL_STAGING_CANARY_CONFIRM") == "RUN_STAGING_OWNED_SEND_V012",
+    mail.check(os.environ.get("AMAIL_STAGING_CANARY_CONFIRM") == "RUN_STAGING_OWNED_SEND_V020",
                "owned_send_confirmation_required")
     mail.check(bool(re.fullmatch(r"[a-f0-9]{16}", nonce)), "owned_send_nonce_invalid")
     binary, home, run_dir = map(lambda p: mail.inside_temp(str(p)), (binary, home, run_dir))

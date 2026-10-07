@@ -28,9 +28,9 @@ from pin_staging_mail import containment_bindings_match, serving_deployment, run
 from tested_worker_artifact import require_artifact
 from worker_deploy_result import DeploymentFailure, submit
 
-BRANCH = "refs/heads/codex/v0.1.2-agent-first-performance"
-CONFIRM = "RUN_STAGING_V012"
-INSPECT_CONFIRM = "INSPECT_STAGING_V012"
+BRANCH = "refs/heads/codex/v0.2.0-billing"
+CONFIRM = "RUN_STAGING_V020"
+INSPECT_CONFIRM = "INSPECT_STAGING_V020"
 # Closed diagnostic vocabulary: arbitrary exception/provider text never escapes.
 FAILURES = frozenset({
     "staging_context_unverified", "staging_api_privacy_unverified", "staging_legacy_graph_unverified",
@@ -72,7 +72,7 @@ def context(*, read_only: bool = False) -> None:
     if (os.getenv("GITHUB_REF") != BRANCH or os.getenv("GITHUB_ACTIONS") != "true"
             or not confirmed or not os.getenv("GITHUB_OUTPUT")):
         raise ValueError("staging_context_unverified")
-    if read_only and os.getenv("AMAIL_STAGING_RESUME_RUN") not in ("37053907751", "37058617870", "37065145834"):
+    if read_only and os.getenv("AMAIL_STAGING_RESUME_RUN", "") not in ("", "37053907751", "37058617870", "37065145834"):
         raise ValueError("staging_inspect_resume_unverified")
 
 
@@ -193,7 +193,7 @@ def preflight(*, read_only: bool = False) -> None:
                            "AMAIL_EXPECTED_MAINTENANCE_VERSION": maintenance["version"],
                            "AMAIL_EXPECTED_TRACE_SINK_VERSION": value["scripts"]["amail-trace-sink-staging"]["version"],
                            "AMAIL_TRACE_TOPOLOGY": "api-scheduled"})
-        graph.verify("staging", "active")
+        graph.verify("staging", "active", allow_v012_predecessor=True)
         if resume:
             if phase == "adapters":
                 from check_staging_adapters import forwarding, verify
@@ -254,7 +254,7 @@ def deploy_maintenance(active: bool) -> str:
     context()
     require_artifact("mail_api")
     maintenance_config("staging", active=True)
-    names = ("OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN")
+    names = ("OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "BILLING_SERVICE_KEY")
     secrets = {name: os.getenv(name, "") for name in names}
     if not all(secrets.values()):
         raise ValueError("staging_maintenance_secrets_missing")

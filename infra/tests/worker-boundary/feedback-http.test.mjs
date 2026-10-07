@@ -1,11 +1,12 @@
 /** Real Rust/Wasm progressive feedback reads against synthetic owner-scoped D1. */
+import { apiVersionHeaders } from "./api-version.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
-import { applyMigrations } from "./migration-fixture.mjs";
+import { applyMigrations, seedResourceAccount } from "./migration-fixture.mjs";
 import { workerModuleRules } from "./worker-module-rules.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -47,6 +48,8 @@ test("feedback spaces preserve owner isolation, bounded discovery and stable con
   try {
     const db = await mf.getD1Database("MAIL_DB", "feedback-synthetic");
     await applyMigrations(db, path.join(worker, "migrations"));
+    await seedResourceAccount(db, issuer, "owner");
+    await seedResourceAccount(db, issuer, "foreign");
     await db.prepare("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES('owner@mail-staging.moesegfault.dev','owner',?1,'owner',0,'active',0)").bind(issuer).run();
     await db.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES(?1,'owner@mail-staging.moesegfault.dev',?2,'owner','outbound','owner@mail-staging.moesegfault.dev','[\"recipient@example.invalid\"]','private subject','private body','{}',1,0,1,0,'synthetic',1)").bind(id, issuer).run();
     // A local message ID has exactly one immutable owner. A foreign event must
@@ -66,7 +69,7 @@ test("feedback spaces preserve owner isolation, bounded discovery and stable con
     /** Dispatch JSON reads and preserve HTTP status for typed-error assertions. */
     const get = async (url, owner = "owner") => {
       const response = await mf.dispatchFetch(`https://mail.invalid${url}`, {
-        headers: { authorization: `Bearer ${token(owner)}` },
+        headers: { ...apiVersionHeaders, authorization: `Bearer ${token(owner)}` },
       });
       return { status: response.status, body: await response.json() };
     };

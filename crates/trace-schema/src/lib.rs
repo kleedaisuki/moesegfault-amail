@@ -53,6 +53,12 @@ pub enum Operation {
     MessagesArchive,
     MessagesMark,
     MessagesDelete,
+    /// Current subscription and metered-resource snapshot.
+    BillingStatus,
+    /// Human-approved hosted subscription/manage session creation.
+    BillingSessionCreate,
+    /// Agent polling of a hosted human approval session.
+    BillingSessionStatus,
     TelemetryUpload,
     Unknown,
     /// Scheduled or bounded operational diagnostics, never request-derived labels.
@@ -89,6 +95,28 @@ pub enum Phase {
     ProviderSend,
     RoutingList,
     RoutingCreate,
+    /// Authenticated Mail-to-Billing HTTP dependency, never a checkout URL.
+    BillingHttp,
+    /// Scheduled invocation root; no invented HTTP status.
+    ScheduledExit,
+    /// Address-route reconciliation stage.
+    MaintenanceAddresses,
+    /// Accepted/unknown outbound journal reconciliation stage.
+    MaintenanceOutbound,
+    /// Deferred semantic-index stage.
+    MaintenanceEmbeddings,
+    /// Storage ledger reconciliation stage.
+    MaintenanceStorage,
+    /// Deleted-message reclamation stage.
+    MaintenanceDeleted,
+    /// Orphan-object reclamation stage.
+    MaintenanceOrphans,
+    /// Expired search-job cleanup stage.
+    MaintenanceSearch,
+    /// Restricted abuse envelope retention stage.
+    MaintenanceAbuse,
+    /// Retry the durable Billing usage outbox without replaying mail delivery.
+    MaintenanceBilling,
     /// Scheduled or bounded operational diagnostics, never request-derived labels.
     Maintenance,
 }
@@ -147,6 +175,8 @@ pub enum DiagnosticCode {
     MaintenanceBudgetDeferred,
     /// Maintenance retained its journal when its admission deadline elapsed.
     MaintenanceDeadlineDeferred,
+    /// The durable Billing usage outbox could not be reconciled.
+    BillingReconciliationFailed,
 }
 
 /// Flat allowlisted JSON. Validation additionally enforces service-specific field sets.
@@ -235,7 +265,7 @@ impl Event {
             || self
                 .parent_span_id
                 .as_deref()
-                .is_some_and(|id| !valid_hex_id(id, 16))
+                .is_some_and(|id| !valid_hex_id(id, 16) || self.span_id.as_deref() == Some(id))
             || self
                 .request_id
                 .as_deref()
@@ -265,6 +295,7 @@ impl Event {
         match (self.service, self.phase) {
             (Service::MailCli, Phase::OperationExit) => self.valid_client(),
             (Service::MailApi, Phase::Maintenance) => self.valid_diagnostic(),
+            (Service::MailApi, Phase::ScheduledExit) => self.valid_scheduled(),
             (Service::MailApi, Phase::RequestExit) => self.valid_request(),
             (Service::MailApi, Phase::OperationExit) => false,
             (Service::MailApi, _) => self.valid_phase(),
@@ -309,6 +340,9 @@ impl Event {
                 | Operation::MessagesArchive
                 | Operation::MessagesMark
                 | Operation::MessagesDelete
+                | Operation::BillingStatus
+                | Operation::BillingSessionCreate
+                | Operation::BillingSessionStatus
         ) && self.parent_span_id.is_none()
             && valid_outcome
             && self.request_bytes_bucket.is_none()
@@ -371,7 +405,12 @@ impl Event {
     }
 
     fn valid_phase(&self) -> bool {
-        self.operation != Operation::Maintenance
+        (self.operation != Operation::Maintenance
+            || self.phase.is_maintenance_child()
+            || self.phase == Phase::BillingHttp)
+            && (!self.phase.is_maintenance_child() || self.operation == Operation::Maintenance)
+            && (!(self.phase == Phase::BillingHttp || self.phase.is_maintenance_child())
+                || (self.occurred_at_ms.is_some() && self.duration_ms.is_some()))
             && self.span_id.is_some()
             && self.parent_span_id.is_some()
             && self.request_id.is_some()
@@ -379,7 +418,30 @@ impl Event {
             && self.request_bytes_bucket.is_none()
             && self.response_bytes_bucket.is_none()
             && self.diagnostic_code.is_none()
-            && (self.phase == Phase::RoutingCreate || self.no_provider())
+            && (matches!(self.phase, Phase::RoutingCreate | Phase::BillingHttp)
+                || self.no_provider())
+            && (self.phase == Phase::RoutingCreate || self.provider_error_code.is_none())
+            && matches!(
+                (self.outcome, self.error_code),
+                (Outcome::Success, None)
+                    | (Outcome::PhaseFailure, Some(ErrorCode::DependencyFailure))
+            )
+    }
+
+    /// Scheduled work has exact clocks and a root identity, without HTTP semantics.
+    fn valid_scheduled(&self) -> bool {
+        self.operation == Operation::Maintenance
+            && self.span_id.is_some()
+            && self.parent_span_id.is_none()
+            && self.request_id.is_some()
+            && self.occurred_at_ms.is_some()
+            && self.duration_ms.is_some()
+            && self.http_status.is_none()
+            && self.http_status_class.is_none()
+            && self.request_bytes_bucket.is_none()
+            && self.response_bytes_bucket.is_none()
+            && self.diagnostic_code.is_none()
+            && self.no_provider()
             && matches!(
                 (self.outcome, self.error_code),
                 (Outcome::Success, None)
@@ -394,6 +456,24 @@ impl Event {
                 | (Some(4), Outcome::ClientError)
                 | (Some(5), Outcome::ServerError)
         ) || (legacy && self.http_status_class == Some(0) && self.outcome == Outcome::ServerError)
+    }
+}
+
+impl Phase {
+    /// Fixed scheduled phase names cannot be attached to ordinary request operations.
+    pub fn is_maintenance_child(self) -> bool {
+        matches!(
+            self,
+            Self::MaintenanceAddresses
+                | Self::MaintenanceOutbound
+                | Self::MaintenanceEmbeddings
+                | Self::MaintenanceStorage
+                | Self::MaintenanceDeleted
+                | Self::MaintenanceOrphans
+                | Self::MaintenanceSearch
+                | Self::MaintenanceAbuse
+                | Self::MaintenanceBilling
+        )
     }
 }
 
@@ -580,5 +660,64 @@ mod tests {
         assert!(Event::from_value(value.clone()).is_some());
         value["phase"] = json!("d1_read");
         assert!(Event::from_value(value).is_none());
+    }
+
+    /// New Billing spans require exact timing and cannot retain provider prose or codes.
+    #[test]
+    fn billing_dependency_has_exact_privacy_safe_timing() {
+        let mut value = fixture();
+        value["operation"] = json!("billing_session_create");
+        value["phase"] = json!("billing_http");
+        value.as_object_mut().unwrap().remove("http_status_class");
+        value["occurred_at_ms"] = json!(1_790_000_000_123u64);
+        value["duration_ms"] = json!(7);
+        value["provider_http_status"] = json!(201);
+        assert!(Event::from_value(value.clone()).is_some());
+        for key in ["occurred_at_ms", "duration_ms"] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(Event::from_value(missing).is_none());
+        }
+        for (key, poison) in [
+            ("url", json!("private")),
+            ("provider_error_code", json!(10000)),
+            ("parent_span_id", value["span_id"].clone()),
+        ] {
+            let mut bad = value.clone();
+            bad[key] = poison;
+            assert!(Event::from_value(bad).is_none());
+        }
+    }
+
+    /// Scheduled work is a timed root with fixed timed children, never an HTTP request.
+    #[test]
+    fn scheduled_spans_have_distinct_root_and_child_contracts() {
+        let mut value = fixture();
+        value["operation"] = json!("maintenance");
+        value["phase"] = json!("scheduled_exit");
+        value.as_object_mut().unwrap().remove("http_status_class");
+        value.as_object_mut().unwrap().remove("parent_span_id");
+        value["occurred_at_ms"] = json!(1_790_000_000_123u64);
+        value["duration_ms"] = json!(7);
+        assert!(Event::from_value(value.clone()).is_some());
+        value["parent_span_id"] = json!("0123456789abcdef");
+        assert!(Event::from_value(value.clone()).is_none());
+        for phase in [
+            "maintenance_addresses",
+            "maintenance_outbound",
+            "maintenance_embeddings",
+            "maintenance_storage",
+            "maintenance_deleted",
+            "maintenance_orphans",
+            "maintenance_search",
+            "maintenance_abuse",
+            "maintenance_billing",
+        ] {
+            value["phase"] = json!(phase);
+            assert!(Event::from_value(value.clone()).is_some());
+            let mut ordinary = value.clone();
+            ordinary["operation"] = json!("messages_send");
+            assert!(Event::from_value(ordinary).is_none());
+        }
     }
 }

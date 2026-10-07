@@ -176,8 +176,8 @@ class DeployTests(unittest.TestCase):
     """The wrapper selects tested staging bytes and never retries a submission."""
 
     @patch.dict(os.environ, {**ENV, "GITHUB_ACTIONS": "true",
-        "GITHUB_REF": "refs/heads/codex/v0.1.2-agent-first-performance",
-        "AMAIL_STAGING_DEPLOY_CONFIRM": "RUN_STAGING_V012"})
+        "GITHUB_REF": "refs/heads/codex/v0.2.0-billing",
+        "AMAIL_STAGING_DEPLOY_CONFIRM": "RUN_STAGING_V020"})
     def test_events_exact_staging_and_failure_no_retry(self):
         with patch.object(deploy, "require_artifact") as artifact, patch.object(deploy, "submit", return_value=VERSION) as submit:
             self.assertEqual(deploy.deploy("events"), VERSION)

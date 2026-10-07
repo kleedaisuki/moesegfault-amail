@@ -2,7 +2,7 @@
 
 Read when finding mail, continuing pages or handling a search job. Use
 `amail discover search` and installed help for the targeted contract; the examples
-below describe v0.1.2 rather than service availability or sending authorization.
+below describe v0.2.0 rather than service availability or sending authorization.
 
 ## Narrow before retrieving content
 
@@ -18,6 +18,8 @@ Other filters include mailbox, to, body, read state, regex and case sensitivity;
 use `--semantic` only when meaning-based search helps and its query transfer is
 appropriate. Ordinary search does not stop [background indexing](privacy.md).
 Search results are compact metadata, not bodies, and do not mark mail read.
+Semantic searches have no per-plan fee or request-count quota in v0.2.0; normal
+concurrency, request-size and service-protection limits still apply.
 
 Allowlisted metadata keys are `message_id`, `rfc_message_id`, `provider_id`,
 `in_reply_to`, `reply_to`, `references`, `content_type`, `attachment_name`.
@@ -62,7 +64,7 @@ normal `next_cursor`; use it for the next filtered page, not with `--resume`.
 | `search_job_stale`, `search_job_expired` | Start a fresh search if still needed. |
 | `search_cursor_stale`, `search_cursor_expired` | Restart page 1; never mix old/new pages. |
 | Legacy `search_cursor_vector_changed` | Discard the compatibility cursor and restart. |
-| `search_job_quota`, `search_work_quota`, `semantic_quota` | Respect limits; finish work or wait rather than retry aggressively. |
+| `search_job_quota`, `search_work_quota` | Respect concurrent-work/service protection; finish work or wait rather than retry aggressively. These are not subscription search quotas. |
 | `semantic_index_incomplete` | Eligible mail awaits indexing, not an empty or partial answer; use bounded waiting/retries of the same query, or resume its accepted job. |
 
 Only an initial cursorless `sync` automatically retries `search_job_stale` once;

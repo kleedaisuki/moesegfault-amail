@@ -25,11 +25,11 @@ def require_context(target: str) -> None:
     also verifies reviewed isolated config and its strict Queue binding so a
     branch selection cannot silently deploy default production capabilities.
     """
-    branch = {"production": "refs/heads/main", "staging": "refs/heads/codex/v0.1.2-agent-first-performance"}.get(target)
+    branch = {"production": "refs/heads/main", "staging": "refs/heads/codex/v0.2.0-billing"}.get(target)
     if branch is None or os.getenv("GITHUB_REF") != branch or not os.getenv("GITHUB_OUTPUT"):
         raise ValueError("context_unverified")
     if target == "staging":
-        if (os.getenv("AMAIL_STAGING_MAIL_DEPLOY_CONFIRM") != "RUN_STAGING_V012"
+        if (os.getenv("AMAIL_STAGING_MAIL_DEPLOY_CONFIRM") != "RUN_STAGING_V020"
                 or os.getenv("AMAIL_TRACE_TOPOLOGY") != "api-scheduled"):
             raise ValueError("staging_context_unverified")
         from check_staging import check
@@ -50,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
             facts.reason = "realm_context_verified"
         require_artifact("mail_api")
         names = ("OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "INGRESS_SECRET")
+        if target == "staging":
+            names += ("BILLING_SERVICE_KEY",)
         secrets = {name: os.getenv(name, "") for name in names}
         if not all(secrets.values()):
             with span("workers.deploy", "precondition", realm=target, component="mail_api") as facts:

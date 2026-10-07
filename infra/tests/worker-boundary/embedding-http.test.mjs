@@ -1,4 +1,5 @@
 /** Production Rust/Wasm embedding boundary; all egress is synthetic and denied by default. */
+import { apiVersionHeaders } from "./api-version.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import path from "node:path";
@@ -69,7 +70,7 @@ async function exercise(providerResponse) {
     const { MAIL_DB: db } = await mf.getBindings();
     await applyMigrations(db, path.join(worker, "migrations"));
     const response = await mf.dispatchFetch("https://mail-staging.moesegfault.dev/v1/messages/search", {
-      method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" },
+      method: "POST", headers: { ...apiVersionHeaders, authorization: `Bearer ${token()}`, "content-type": "application/json" },
       body: JSON.stringify({ semantic: querySentinel }),
     });
     const text = await response.text();

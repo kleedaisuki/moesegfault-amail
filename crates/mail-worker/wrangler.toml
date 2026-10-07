@@ -68,6 +68,10 @@ workers_dev = false
 routes = [{ pattern = "mail-staging.moesegfault.dev", custom_domain = true }]
 
 [env.staging.vars]
+# Billing authority and browser authorization are isolated to the staging realm.
+BILLING_BASE_URL = "https://billing-staging.moesegfault.dev"
+BILLING_SUBSCRIBE_ORIGIN = "https://subscribe-staging.moesegfault.dev"
+BILLING_RETURN_URL = "https://amail-staging.moesegfault.dev/billing/return"
 # Authenticated address-add emits a bounded diagnostic header only on this isolated domain.
 ADDRESS_DIAGNOSTICS = "v1"
 IDENTITY_ISSUER = "https://identity-staging.moesegfault.dev"

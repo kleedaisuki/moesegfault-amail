@@ -216,11 +216,11 @@ try {
         assert.equal(await page.locator('main#main').count(), 1);
         const text = await page.locator('main').innerText();
         const state = published
-          ? { '/': 'v0.1.2 已发布', '/manual/': 'v0.1.2 已发布', '/changelog/': 'v0.1.2 已正式发布' }
-          : { '/': 'v0.1.2 尚未发布', '/manual/': 'v0.1.2 尚未开放下载', '/changelog/': 'v0.1.2 仍在验收' };
+          ? { '/': 'v0.2.0 已发布', '/manual/': 'v0.2.0 已发布', '/changelog/': 'v0.2.0 已正式发布' }
+          : { '/': 'v0.2.0 尚未发布', '/manual/': 'v0.2.0 尚未开放下载', '/changelog/': 'v0.2.0 仍在验收' };
         assert.ok(text.includes(state[route]), 'route-local publication status missing');
         if (published) {
-          assert.doesNotMatch(text, /staging 候选|v0\.1\.2 尚未|v0\.1\.2 仍在验收|候选记录日期/);
+          assert.doesNotMatch(text, /staging 候选|v0\.2\.0 尚未|v0\.2\.0 仍在验收|候选记录日期/);
           assert.ok(await page.locator(`a[href="${releaseTagUrl}"]`).count() > 0);
           if (route === '/manual/') {
             for (const asset of releaseDownloads) {
@@ -229,7 +229,7 @@ try {
             }
           }
         } else {
-          assert.ok(text.includes('这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。'));
+          assert.ok(text.includes('这是 v0.2.0 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。'));
           for (const asset of releaseDownloads) assert.equal(await page.locator(`a[href="${asset.href}"]`).count(), 0);
         }
         if (route === '/manual/') {
@@ -238,9 +238,9 @@ try {
           }
         }
         if (route === '/changelog/') {
-          assert.equal(await page.locator('h2[id="v0.1.2"]').count(), 1,
+          assert.equal(await page.locator('h2[id="v0.2.0"]').count(), 1,
             'candidate changelog entry must exist independently of page status');
-          assert.equal(await page.locator('.toc a[href="#v0.1.2"]').count(), 1);
+          assert.equal(await page.locator('.toc a[href="#v0.2.0"]').count(), 1);
           assert.equal(await page.locator('h2[id="v0.1.0"]').count(), 1);
           assert.equal(await page.locator('.toc a[href="#v0.1.0"]').count(), 1);
         }
@@ -305,6 +305,16 @@ try {
         assert.equal(count, 1, 'privacy introduction must have exactly one strong label');
         assert.ok(!(await page.locator('.manual-prose').innerText()).includes(`**${label}**`),
           'privacy introduction must not expose literal Markdown markers');
+      });
+      if (route === '/manual/') await check(result, 'human Billing return is inert and non-authoritative', async () => {
+        const response = await page.goto(`${base}/billing/return?code=synthetic-untrusted-return`);
+        assert.equal(response.status(), 200);
+        const text = await page.locator('main').innerText();
+        assert.ok(text.includes('不代表付款成功'));
+        assert.ok(text.includes('amail billing status'));
+        assert.ok(!text.includes('synthetic-untrusted-return'));
+        assert.equal(await page.locator('script, form, iframe').count(), 0);
+        await page.goto(`${base}/manual/`);
       });
       if (route === '/manual/' && width <= 390) await check(result,
         'mobile table columns visible without horizontal scrolling', () => mobileTableColumns(page, stem, result));

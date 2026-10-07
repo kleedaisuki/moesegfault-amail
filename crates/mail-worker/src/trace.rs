@@ -29,6 +29,9 @@ pub(crate) fn operation_from_cli(raw: &str) -> Option<Operation> {
         "messages.mark" => Operation::MessagesMark,
         "messages.delete" => Operation::MessagesDelete,
         "messages.send" => Operation::MessagesSend,
+        "billing.status" => Operation::BillingStatus,
+        "billing.session.create" => Operation::BillingSessionCreate,
+        "billing.session.status" => Operation::BillingSessionStatus,
         _ => return None,
     })
 }
@@ -60,6 +63,52 @@ pub(crate) struct Trace {
     events: RefCell<Vec<QueuedEvent>>,
     /// Authentication boundary only; never serialized into retained diagnostic records.
     authenticated: bool,
+    /// Start captured before authentication; IDs and clocks never contain request data.
+    started_at_ms: u64,
+}
+
+/// One dependency's identity exists before transport and survives completion unchanged.
+/// This prevents a propagated remote parent from referring to an unrecorded span.
+pub(crate) struct DependencySpan<'a> {
+    trace: &'a Trace,
+    request_id: &'a str,
+    phase: Phase,
+    span_id: String,
+    started_at_ms: u64,
+}
+
+impl DependencySpan<'_> {
+    /// W3C remote parent is this client span, not its containing server span.
+    pub(crate) fn traceparent(&self) -> String {
+        format!(
+            "00-{}-{}-{}",
+            self.trace.trace_id,
+            self.span_id,
+            if self.trace.sampled { "01" } else { "00" }
+        )
+    }
+
+    /// Finish a non-HTTP dependency exactly once; no exception prose is accepted.
+    pub(crate) fn finish(self, success: bool) {
+        self.finish_http(success, None);
+    }
+
+    /// Freeze clocks and retain only numeric HTTP facts for the approved dependency.
+    pub(crate) fn finish_http(self, success: bool, status: Option<u16>) {
+        let duration_ms = now_ms().saturating_sub(self.started_at_ms);
+        let mut event = self.trace.phase_record(
+            &self.span_id,
+            self.request_id,
+            self.phase,
+            success,
+            duration_ms,
+        );
+        event.occurred_at_ms = self.started_at_ms;
+        if self.phase == Phase::BillingHttp {
+            event.provider_http_status = status.filter(|value| (100..=599).contains(value));
+        }
+        self.trace.record(&event, false);
+    }
 }
 
 /// The sole retained JSON schema. Adding a field requires a privacy review.
@@ -81,6 +130,9 @@ struct Event<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     http_status_class: Option<u16>,
     duration_ms_bucket: u64,
+    /// Exact span start and duration allow a real causal timeline, not bucket guesses.
+    occurred_at_ms: u64,
+    duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     request_bytes_bucket: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,6 +184,7 @@ impl Trace {
             request_bytes: None,
             events: RefCell::new(Vec::new()),
             authenticated: false,
+            started_at_ms: now_ms(),
         }
     }
 
@@ -165,6 +218,36 @@ impl Trace {
         self.request_bytes = Some(bucket(bytes as u64));
     }
 
+    /// Start before network work and propagate this handle's context to the remote server.
+    pub(crate) fn dependency<'a>(
+        &'a self,
+        request_id: &'a str,
+        phase: Phase,
+    ) -> DependencySpan<'a> {
+        DependencySpan {
+            trace: self,
+            request_id,
+            phase,
+            span_id: random_span_id(),
+            started_at_ms: now_ms(),
+        }
+    }
+
+    /// Finish the scheduled root without manufacturing HTTP status or request metadata.
+    pub(crate) fn scheduled_exit(&self, request_id: &str, success: bool) {
+        let duration_ms = now_ms().saturating_sub(self.started_at_ms);
+        let mut event = self.phase_record(
+            &self.span_id,
+            request_id,
+            Phase::ScheduledExit,
+            success,
+            duration_ms,
+        );
+        event.parent_span_id = None;
+        event.occurred_at_ms = self.started_at_ms;
+        self.record(&event, true);
+    }
+
     /// Buffer a bounded request-exit event; never emit console fallback on failure.
     pub(crate) fn exit(&self, request_id: &str, status: u16, duration_ms: u64) {
         let event = Event {
@@ -185,6 +268,8 @@ impl Trace {
             error_code: error_code(status),
             http_status_class: Some(status / 100),
             duration_ms_bucket: bucket(duration_ms.min(3_600_000)),
+            occurred_at_ms: self.started_at_ms,
+            duration_ms,
             request_bytes_bucket: self.request_bytes,
             provider_http_status: None,
             provider_error_code: None,
@@ -275,6 +360,8 @@ impl Trace {
             },
             http_status_class: None,
             duration_ms_bucket: bucket(duration_ms.min(3_600_000)),
+            occurred_at_ms: now_ms().saturating_sub(duration_ms),
+            duration_ms,
             request_bytes_bucket: None,
             provider_http_status: None,
             provider_error_code: None,
@@ -317,6 +404,21 @@ impl Trace {
 /// Measure a bounded elapsed duration without treating wall-clock rollback as failure.
 pub(crate) fn elapsed_ms(start: f64) -> u64 {
     (js_sys::Date::now() - start).max(0.0) as u64
+}
+
+/// Workers use UTC milliseconds; native contract tests use the system UTC clock.
+/// Cross-service clock skew never changes parentage or invents negative durations.
+fn now_ms() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now().max(0.0) as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |value| value.as_millis().min(u64::MAX as u128) as u64)
+    }
 }
 
 /// Parse exact lower-case W3C v00 syntax with nonzero IDs and known flags.
@@ -480,10 +582,10 @@ mod tests {
         }
     }
 
-    /// Validate real serialized bodies, including the exact thirteen-record case.
+    /// Bound nine stage spans, three Billing calls, a root and fourteen conditions.
     #[test]
     fn maintenance_buffer_validates_whole_batch_before_any_binding() {
-        let events = (0..13)
+        let events = (0..27)
             .map(|_| diagnostic_record(DiagnosticCode::MaintenanceDeadlineDeferred))
             .collect::<Vec<_>>();
         let lengths = events
@@ -492,7 +594,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(lengths.iter().all(|length| *length <= 1024));
         assert_eq!(maintenance_charge(&events), batch_charge(&lengths));
-        assert!(maintenance_charge(&events).unwrap() <= 24_078);
+        assert!(maintenance_charge(&events).unwrap() <= 45_596);
         let mut invalid = events.clone();
         invalid[12].error_code = Some(ErrorCode::DependencyFailure);
         assert!(maintenance_charge(&invalid).is_none());
@@ -636,12 +738,14 @@ mod tests {
             error_code: None,
             http_status_class: Some(2),
             duration_ms_bucket: 8,
+            occurred_at_ms: 1_790_000_000_123,
+            duration_ms: 7,
             request_bytes_bucket: None,
             provider_http_status: None,
             provider_error_code: None,
         };
         let value = serde_json::to_value(event).unwrap();
-        assert_eq!(value.as_object().unwrap().len(), 12);
+        assert_eq!(value.as_object().unwrap().len(), 14);
         assert_eq!(value["parent_span_id"], "0123456789abcdef");
         assert!(value.get("url").is_none());
         assert!(value.get("tracestate").is_none());
@@ -670,6 +774,62 @@ mod tests {
         assert_eq!(value["phase"], "r2_write");
         assert_eq!(value["error_code"], "dependency_failure");
         assert!(value.get("http_status_class").is_none());
+    }
+
+    /// The remote server must parent the client span actually retained at completion.
+    #[test]
+    fn billing_transport_preserves_propagated_identity_and_exact_clock() {
+        let mut trace = Trace::new();
+        trace.accept_parent(Some(
+            "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+        ));
+        trace.operation(Operation::BillingSessionCreate);
+        let span = trace.dependency("00000000-0000-4000-8000-000000000001", Phase::BillingHttp);
+        let parent = parse_parent(&span.traceparent()).unwrap();
+        let started = span.started_at_ms;
+        span.finish_http(false, Some(503));
+        let events = trace.take_events();
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.trace_id, parent.trace_id);
+        assert_eq!(event.span_id.as_deref(), Some(parent.span_id.as_str()));
+        assert_eq!(
+            event.parent_span_id.as_deref(),
+            Some(trace.span_id.as_str())
+        );
+        assert_eq!(event.occurred_at_ms, Some(started));
+        assert!(event.duration_ms.is_some());
+        assert_eq!(event.provider_http_status, Some(503));
+        assert_eq!(event.outcome, Outcome::PhaseFailure);
+        assert!(event.valid());
+    }
+
+    /// Successful no-op maintenance is visible, not indistinguishable from a dead Cron.
+    #[test]
+    fn scheduled_root_and_stage_share_trace_but_not_span_identity() {
+        let mut trace = Trace::new();
+        trace.operation(Operation::Maintenance);
+        let request = "00000000-0000-4000-8000-000000000001";
+        trace
+            .dependency(request, Phase::MaintenanceStorage)
+            .finish(true);
+        trace
+            .dependency(request, Phase::BillingHttp)
+            .finish_http(true, Some(200));
+        trace.scheduled_exit(request, true);
+        let events = trace.take_events();
+        assert_eq!(events.len(), 3);
+        let stage = &events[0];
+        let root = &events[2];
+        assert!(events[1].valid());
+        assert_eq!(events[1].parent_span_id, root.span_id);
+        assert!(stage.valid() && root.valid());
+        assert_eq!(stage.trace_id, root.trace_id);
+        assert_eq!(stage.parent_span_id, root.span_id);
+        assert_ne!(stage.span_id, root.span_id);
+        assert_eq!(root.phase, Phase::ScheduledExit);
+        assert!(root.parent_span_id.is_none());
+        assert!(root.http_status_class.is_none());
     }
 
     /// One hundred legacy uploaded rows and a request exit require two ordered batches.
@@ -798,9 +958,10 @@ fn queue_batches(mut events: Vec<QueuedEvent>) -> Vec<Vec<QueuedEvent>> {
 pub(crate) async fn flush_maintenance(
     env: &worker::Env,
     codes: Vec<DiagnosticCode>,
+    mut events: Vec<QueuedEvent>,
     deadline: crate::maintenance::ExternalDeadline<'_>,
 ) {
-    let events = codes.into_iter().map(diagnostic_record).collect::<Vec<_>>();
+    events.extend(codes.into_iter().map(diagnostic_record));
     if events.is_empty() || maintenance_charge(&events).is_none() {
         return;
     }
@@ -824,7 +985,7 @@ pub(crate) async fn flush_maintenance(
 
 /// Validate the entire buffer and actual UTF-8 body bytes before binding access.
 fn maintenance_charge(events: &[QueuedEvent]) -> Option<usize> {
-    if events.len() > 13 || events.iter().any(|event| !event.valid()) {
+    if events.len() > 27 || events.iter().any(|event| !event.valid()) {
         return None;
     }
     let lengths = events

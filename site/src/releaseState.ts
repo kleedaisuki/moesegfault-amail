@@ -2,10 +2,10 @@
 export type ReleaseState = 'candidate' | 'published';
 
 /** Candidate version matches current release coordinates without asserting publication. */
-export const candidateVersion = 'v0.1.2';
+export const candidateVersion = 'v0.2.0';
 
 /** Candidate documentation never asserts publication or public sending authority. */
-export const candidateServiceNotice = '这是 v0.1.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。';
+export const candidateServiceNotice = '这是 v0.2.0 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。';
 
 /**
  * Resolve publication state at build time. Missing state is deliberately a

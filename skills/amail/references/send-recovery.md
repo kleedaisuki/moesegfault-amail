@@ -48,7 +48,9 @@ outcomes may require authorized operational reconciliation, not more sending.
 
 ## Quotas and recipient privacy
 
-Query `amail sending-status` for the owner's current policy/usage. It is advisory,
+Query `amail sending-status` for the owner's current policy/usage and
+`amail billing status` for effective included resources and approved budget. Both
+are advisory,
 not quota reservation or recipient authorization; the send still validates and
 reserves. A narrow operator canary does not open ordinary global sending.
 
@@ -57,6 +59,15 @@ Source limits: 50 recipient entries/account/UTC day, 20 sends/account/UTC day,
 message permits 50 recipient entries and 32 attachments. A global 10,000-entry
 daily guard also applies. To/Cc/Bcc and duplicate entries all count. Earlier
 reservations can remain consumed if a later check or submission fails.
+
+The separate v0.2.0 monthly billable unit is one distinct normalized envelope
+recipient across To/Cc/Bcc: identical recipients are charged once per message.
+An accepted send consumes its reservation even if it later bounces; retries of the
+same intent do not charge twice. A known pre-acceptance rejection releases the
+billing reservation; unresolved sends keep it. Abuse guards above remain separate
+from pricing and cannot be bypassed by paying. `outbound_quota_exhausted` or
+`resource_budget_exceeded` means inspect [billing status](billing.md), not an
+automatic upgrade, fresh financial key or recipient/identity splitting.
 
 Bcc is hidden from recipient-visible headers, not from the owner's draft,
 envelope or authorized feedback. Do not share the raw owner archive/receipt

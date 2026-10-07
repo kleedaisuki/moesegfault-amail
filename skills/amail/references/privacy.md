@@ -1,7 +1,7 @@
 # Privacy and protected task files
 
 Read when explaining mail processing, choosing suitable content, or changing
-diagnostics. These are v0.1.2 processing contracts, not a promise that a particular
+diagnostics. These are v0.2.0 processing contracts, not a promise that a particular
 service is currently available or sending is enabled.
 
 ## Content indexing is separate from diagnostics

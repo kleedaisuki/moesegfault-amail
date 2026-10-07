@@ -9,8 +9,8 @@ use worker::{D1Database, D1PreparedStatement, D1Result, Env, Error, Result};
 
 /// Application ceiling below the independently verified Paid D1 platform limit.
 const TOTAL: usize = 800;
-/// Fixed grants do not borrow from each other; 18 control tokens remain unused.
-const GRANTS: [usize; 8] = [170, 380, 90, 2, 65, 65, 5, 5];
+/// Fixed grants do not borrow from each other; 2 control tokens remain unused.
+const GRANTS: [usize; 9] = [170, 380, 90, 2, 65, 65, 5, 5, 16];
 
 /// Closed maintenance identity; fixed grant indices do not follow rotated order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,11 +23,12 @@ pub(crate) enum MaintenancePhase {
     Orphans,
     Search,
     Abuse,
+    Billing,
 }
 
 impl MaintenancePhase {
     /// Every scheduled phase must receive a distinct fixed grant exactly once.
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Addresses,
         Self::Outbound,
         Self::Embeddings,
@@ -36,6 +37,7 @@ impl MaintenancePhase {
         Self::Orphans,
         Self::Search,
         Self::Abuse,
+        Self::Billing,
     ];
 }
 
@@ -45,7 +47,7 @@ struct Budget {
     /// All statements admitted in this invocation, including failed submissions.
     spent: usize,
     /// No phase can consume another phase's service opportunity.
-    phases: [usize; 8],
+    phases: [usize; 9],
 }
 
 impl Budget {
@@ -91,7 +93,7 @@ impl MaintenanceBudget {
 /// A private capability carried through every nested SQL call and prepared value.
 #[derive(Clone)]
 struct Admission {
-    /// The exact invocation, shared by all eight phase handles.
+    /// The exact invocation, shared by all nine phase handles.
     budget: Rc<RefCell<Budget>>,
     /// The phase to which every submitted statement is charged.
     phase: MaintenancePhase,
@@ -231,7 +233,7 @@ mod tests {
     /// Grants fit the global ceiling; denied/repeated batches never borrow/refund.
     #[test]
     fn fixed_grants_count_each_statement_and_preserve_other_phases() {
-        assert_eq!(GRANTS.iter().sum::<usize>() + 18, TOTAL);
+        assert_eq!(GRANTS.iter().sum::<usize>() + 2, TOTAL);
         let mut budget = Budget::default();
         budget.debit(MaintenancePhase::Outbound, 379).unwrap();
         assert!(is_deferred(
@@ -246,7 +248,7 @@ mod tests {
         {
             budget.debit(phase, GRANTS[phase as usize]).unwrap();
         }
-        assert_eq!(budget.spent, 782);
+        assert_eq!(budget.spent, 798);
         assert!(budget.ensure(MaintenancePhase::Abuse, usize::MAX).is_err());
     }
 

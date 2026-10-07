@@ -1,0 +1,13 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+---
+<BaseLayout title="订阅授权返回 · amail" description="返回 Agent 并重新查询 amail 订阅状态。">
+  <section class="page-head"><div class="wrap">
+    <span class="eyebrow">Billing authorization · v0.2.0 staging</span>
+    <h1>回到你的 Agent<span class="period">.</span></h1>
+    <p>你已从订阅授权网页返回。这个页面不代表付款成功，也不会修改订阅或自动继续发送邮件。</p>
+    <p>请回到启动授权的 Agent，让它运行 <code>amail billing status</code> 重新查询服务端状态。取消、处理中或尚未生效时，请以查询结果为准，不要重复付款。</p>
+    <p>订阅、超额预算与付费授权由你在网页中确认；Agent 不能替你提高预算。本页不读取网址中的参数、不显示令牌，也不调用支付接口。</p>
+    <p><a href="/manual/#订阅与用量">查看订阅与用量说明 ↗</a></p>
+  </div></section>
+</BaseLayout>

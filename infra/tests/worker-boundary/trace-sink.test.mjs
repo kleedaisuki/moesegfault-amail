@@ -167,3 +167,47 @@ test("native sink retains CLI search polling without accepting arbitrary operati
   const { records } = await consume([poll, { ...poll, operation: "private_search_text" }]);
   assert.deepEqual(records, [poll]);
 });
+
+/** Billing has a real timed client span; unknown labels or private fields fail closed. */
+test("native sink preserves Billing client ancestry and strict subscription vocabulary", async () => {
+  const request = { ...legacy(), operation: "billing_session_create",
+    occurred_at_ms: 1_790_000_000_123, duration_ms: 19 };
+  const dependency = { ...request, event_id: "00000000-0000-4000-8000-000000000003",
+    phase: "billing_http", span_id: "1111111111111111", parent_span_id: request.span_id,
+    duration_ms: 7, provider_http_status: 201 };
+  delete dependency.http_status_class;
+  const client = { ...clientAttempts()[3], operation: "billing_session_create" };
+  const marker = "SYNTHETIC_PRIVATE_BILLING_CAPABILITY";
+  const { records, logs } = await consume([request, dependency, client,
+    { ...dependency, checkout_url: marker },
+    { ...dependency, provider_error_code: 10000 },
+    { ...dependency, occurred_at_ms: undefined },
+    { ...dependency, parent_span_id: dependency.span_id },
+    { ...client, operation: marker },
+  ]);
+  assert.deepEqual(records, [request, dependency, client]);
+  assert.equal(logs.includes(marker), false);
+  assert.equal(records[1].parent_span_id, records[0].span_id);
+  assert.equal(records[1].trace_id, records[0].trace_id);
+});
+
+/** A successful scheduled run has a timed root and stage even when no warning exists. */
+test("native sink retains scheduled success without inventing HTTP or private context", async () => {
+  const run = { ...legacy(), operation: "maintenance", phase: "scheduled_exit",
+    occurred_at_ms: 1_790_000_000_123, duration_ms: 19 };
+  delete run.parent_span_id;
+  delete run.http_status_class;
+  const phases = ["addresses", "outbound", "embeddings", "storage", "deleted",
+    "orphans", "search", "abuse", "billing"];
+  const children = phases.map((phase, index) => ({ ...run,
+    event_id: `00000000-0000-4000-8000-${String(index + 3).padStart(12, "0")}`,
+    phase: `maintenance_${phase}`, span_id: `${index + 1}`.repeat(16),
+    parent_span_id: run.span_id, duration_ms: index }));
+  const { records } = await consume([run, ...children,
+    { ...run, http_status_class: 2 },
+    { ...run, parent_span_id: "1111111111111111" },
+    { ...children[0], operation: "messages_send" },
+    { ...children[0], duration_ms: undefined },
+  ]);
+  assert.deepEqual(records, [run, ...children]);
+});

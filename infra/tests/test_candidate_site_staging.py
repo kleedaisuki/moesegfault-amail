@@ -21,8 +21,8 @@ class StagingSiteTests(unittest.TestCase):
             links += '<a href="https://github.com/kleedaisuki/moesegfault-amail/releases">Releases</a>'
             links += f'<nav aria-label="{label}"><a href="#从小入口探索完整工作流">Workflow</a></nav><h2 id="从小入口探索完整工作流">Workflow</h2>'
             if route == "changelog":
-                links = links.replace('</nav>', '<a href="#v0.1.2">v0.1.2</a></nav>')
-                links += '<h2 id="v0.1.2">v0.1.2</h2>'
+                links = links.replace('</nav>', '<a href="#v0.2.0">v0.2.0</a></nav>')
+                links += '<h2 id="v0.2.0">v0.2.0</h2>'
         return links + f'<p>{candidate}</p><p>{site.SERVICE_NOTICE}</p>' + (
             '<pre>amail discover\namail send-status\namail events</pre>' if route == "manual" else
             '<p>候选记录日期</p>' if route == "changelog" else '')
@@ -44,7 +44,7 @@ class StagingSiteTests(unittest.TestCase):
     def test_old_copy_or_missing_discovery_is_not_current_acceptance(self):
         """HTTP 200 cannot mask a stale v0.1.0 candidate or incomplete manual."""
         with self.assertRaises(ValueError):
-            site.check_page("home", self.page("home").replace("v0.1.2 尚未发布", "v0.1.0 尚未发布"))
+            site.check_page("home", self.page("home").replace("v0.2.0 尚未发布", "v0.1.0 尚未发布"))
         with self.assertRaises(ValueError):
             site.check_page("manual", self.page("manual").replace("amail discover", "removed"))
 

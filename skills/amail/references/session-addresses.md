@@ -1,7 +1,7 @@
 # Session, bootstrap and address lifecycle
 
 Read only for first use, authentication or an address operation. Installed
-v0.1.2 commands do not establish release publication or remote policy.
+v0.2.0 commands do not establish release publication or remote policy.
 
 ## First authorized task
 
@@ -38,7 +38,11 @@ amail address delete alice@mail.moesegfault.dev
 Choose a user-authorized available local part. User addresses belong under
 `mail.moesegfault.dev`, not the apex `moesegfault.dev`; `mail@moesegfault.dev` is a
 site sender, not a user mailbox. Service names are reserved. An account has at
-most ten pending/active/non-retired address slots; the service reserves two of
+most ten pending/active/non-retired address slots, subject to its plan, approved
+overage budget and retained pre-upgrade address allowance. All existing users move
+to Free while retaining every registered address; do not retire an address merely
+to fit Free. Existing excess addresses are grandfathered, not newly billable slots.
+Read [billing](billing.md) for effective allowance. The service reserves two of
 the provider's 200 literal routes for operational intake, leaving a bounded
 198-user-alias design. Capacity estimates do not prove provider availability.
 

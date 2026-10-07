@@ -252,7 +252,7 @@ class StagingRolloutTests(unittest.TestCase):
                   ("amail-trace-sink-staging", "sink"))}}
         with patch.dict(os.environ, {}, clear=True), patch.object(rollout.graph, "verify") as verify:
             self.assertEqual(inspector.split_diagnostic(value), {"exact_graph": True, "reason": "verified"})
-            verify.assert_called_once_with("staging", "active")
+            verify.assert_called_once_with("staging", "active", allow_v012_predecessor=True)
         for failure, expected in (("split_role_absence_unverified", "split_role_absence_unverified"),
                                   ("arbitrary private provider text", "unknown")):
             with patch.dict(os.environ, {}, clear=True), \
@@ -361,7 +361,7 @@ class StagingRolloutTests(unittest.TestCase):
             rollout.preflight()
             self.assertEqual(os.environ["AMAIL_TRACE_QUEUE_ID"], resume.QUEUE)
             self.assertEqual(os.environ["AMAIL_TRACE_DLQ_ID"], resume.DLQ)
-        graph.assert_called_once_with("staging", "active")
+        graph.assert_called_once_with("staging", "active", allow_v012_predecessor=True)
         deploy.assert_not_called()
         self.assertEqual(dict(call.args for call in output.call_args_list)["reuse_api"], "true")
 

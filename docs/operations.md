@@ -47,7 +47,14 @@ The actual workflow input/confirmation schema is authoritative; no historical
 incident document may restore a removed dispatch mode. staging-e2e retains the
 normal native-login/two-SMTP/ZIP/search journey and RUN_STAGING_E2E confirmation.
 
-### v0.1.2 staging-only candidate
+### v0.2.0 staging-only Billing candidate
+
+The active lane is `codex/v0.2.0-billing`, with `RUN_STAGING_V020` and
+`INSPECT_STAGING_V020`. See [delivery contract](v0.2.0/staging-delivery.md) for
+Billing realm URLs, service-key provisioning and exact artifact admission.
+Production remains on its independently accepted release until separately authorized.
+
+### Historical v0.1.2 staging-only candidate
 
 The reviewed branch is `codex/v0.1.2-agent-first-performance`. Dispatch `checks`
 for hosted source/performance checks and downloadable native candidates without

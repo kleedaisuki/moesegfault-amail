@@ -50,16 +50,16 @@ impl DeepCondition {
 /// durable boundary, then consume this value once at scheduled invocation exit.
 pub(crate) struct MaintenanceDiagnostics {
     /// Unfinished phases are neither successes nor invented failures.
-    phases: [Option<PhaseOutcome>; 8],
+    phases: [Option<PhaseOutcome>; 9],
     /// Repetition never retains frequency or grows the buffer.
     deep: [bool; 5],
 }
 
 impl MaintenanceDiagnostics {
-    /// Create eight terminal slots and five presence bits without binding access.
+    /// Create nine terminal slots and five presence bits without binding access.
     pub(crate) fn new() -> Self {
         Self {
-            phases: [None; 8],
+            phases: [None; 9],
             deep: [false; 5],
         }
     }
@@ -84,9 +84,9 @@ impl MaintenanceDiagnostics {
         self.deep[condition.entry().0] = true;
     }
 
-    /// Consume once into at most eight terminal failures and five deep conditions.
+    /// Consume once into at most nine terminal failures and five deep conditions.
     pub(crate) fn into_codes(self) -> Vec<DiagnosticCode> {
-        let mut codes = Vec::with_capacity(13);
+        let mut codes = Vec::with_capacity(14);
         for phase in MaintenancePhase::ALL {
             let code = match self.phases[phase_slot(phase)] {
                 None | Some(PhaseOutcome::Complete) => continue,
@@ -123,6 +123,7 @@ fn phase_slot(phase: MaintenancePhase) -> usize {
         MaintenancePhase::Orphans => 5,
         MaintenancePhase::Search => 6,
         MaintenancePhase::Abuse => 7,
+        MaintenancePhase::Billing => 8,
     }
 }
 
@@ -137,6 +138,7 @@ fn phase_failure(phase: MaintenancePhase) -> DiagnosticCode {
         MaintenancePhase::Orphans => DiagnosticCode::OrphanObjectCleanupFailed,
         MaintenancePhase::Search => DiagnosticCode::SearchJobCleanupFailed,
         MaintenancePhase::Abuse => DiagnosticCode::AbuseDataCleanupFailed,
+        MaintenancePhase::Billing => DiagnosticCode::BillingReconciliationFailed,
     }
 }
 
@@ -153,17 +155,17 @@ const DEFERRED: &str = "maintenance_deadline_deferred";
 
 /// Rotate phase identity by the intended five-minute schedule slot, not delivery.
 ///
-/// Duplicate or delayed delivery retains its slot's order. Eight consecutive
+/// Duplicate or delayed delivery retains its slot's order. Nine consecutive
 /// delivered slots give every phase first opportunity; arbitrary missed slots do
-/// not guarantee fairness (for example, delivering only every eighth slot).
+/// not guarantee fairness (for example, delivering only every ninth slot).
 /// Invalid/nonfinite or negative timestamps defensively use the established order.
-pub(crate) fn phase_order(scheduled_ms: f64) -> [MaintenancePhase; 8] {
+pub(crate) fn phase_order(scheduled_ms: f64) -> [MaintenancePhase; 9] {
     let start = if scheduled_ms.is_finite() && scheduled_ms >= 0.0 {
-        ((scheduled_ms / SLOT_MS).floor() % 8.0) as usize
+        ((scheduled_ms / SLOT_MS).floor() % 9.0) as usize
     } else {
         0
     };
-    std::array::from_fn(|index| MaintenancePhase::ALL[(start + index) % 8])
+    std::array::from_fn(|index| MaintenancePhase::ALL[(start + index) % 9])
 }
 
 /// One invocation's clock origin; no state survives isolate reuse.
@@ -388,7 +390,7 @@ pub(crate) fn is_deferred(error: &Error) -> bool {
 mod tests {
     use super::*;
 
-    /// Eight phase failures and repeated deep facts have exactly thirteen codes.
+    /// Nine phase failures and repeated deep facts have exactly fourteen codes.
     #[test]
     fn diagnostics_are_fixed_presence_only_and_rotation_independent() {
         let mut diagnostics = MaintenanceDiagnostics::new();
@@ -407,8 +409,8 @@ mod tests {
             }
         }
         let codes = diagnostics.into_codes();
-        assert_eq!(codes.len(), 13);
-        assert_eq!(&codes[..8], &MaintenancePhase::ALL.map(phase_failure));
+        assert_eq!(codes.len(), 14);
+        assert_eq!(&codes[..9], &MaintenancePhase::ALL.map(phase_failure));
         assert_eq!(
             codes
                 .iter()
@@ -487,14 +489,14 @@ mod tests {
 
     #[test]
     fn rotation_covers_all_phases_and_keeps_identity() {
-        for start in 0..8 {
+        for start in 0..9 {
             let order = phase_order(start as f64 * SLOT_MS);
             assert_eq!(order[0], MaintenancePhase::ALL[start]);
             for (offset, phase) in order.iter().enumerate() {
-                assert_eq!(*phase, MaintenancePhase::ALL[(start + offset) % 8]);
+                assert_eq!(*phase, MaintenancePhase::ALL[(start + offset) % 9]);
             }
         }
-        assert_eq!(phase_order(8.0 * SLOT_MS), MaintenancePhase::ALL);
+        assert_eq!(phase_order(9.0 * SLOT_MS), MaintenancePhase::ALL);
     }
 
     #[test]
@@ -506,7 +508,7 @@ mod tests {
         assert_eq!(phase_order(scheduled)[0], MaintenancePhase::Storage);
         assert_eq!(phase_order(scheduled), original_order);
         assert_eq!(
-            phase_order(scheduled + 8.0 * SLOT_MS),
+            phase_order(scheduled + 9.0 * SLOT_MS),
             phase_order(scheduled)
         );
         assert_eq!(phase_order(SLOT_MS - 1.0), MaintenancePhase::ALL);

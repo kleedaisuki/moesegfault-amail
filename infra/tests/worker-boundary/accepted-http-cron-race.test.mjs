@@ -2,13 +2,14 @@
  * Deterministic HTTP-vs-Cron regression using the real built Rust/Wasm Worker.
  * Synthetic provider only. Run separately in hosted CI after worker-build.
  */
+import { apiVersionHeaders } from "./api-version.mjs";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
-import { applyMigrations } from "./migration-fixture.mjs";
+import { applyMigrations, seedResourceAccount } from "./migration-fixture.mjs";
 import { workerModuleRules } from "./worker-module-rules.mjs";
 import { draftZip } from "./accepted-race-zip.mjs";
 
@@ -107,13 +108,14 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
   try {
     const { MAIL_DB: db, MAIL_BODIES: bucket } = await mf.getBindings();
     await applyMigrations(db, path.join(worker, "migrations"));
+    await seedResourceAccount(db, issuer, owner);
     await db.prepare("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES(?1,'recovery-synthetic',?2,?3,0,'active',?4)").bind(sender, issuer, owner, Date.now()).run();
     await db.prepare("UPDATE embedding_dependency SET blocked_until=?1 WHERE id=1").bind(Date.now() + 86_400_000).run();
     // A synthetic one-recipient canary exercises normal SQL admission while global held.
     await db.prepare("UPDATE send_release_gates SET canary_owner_iss=?1,canary_owner_sub=?2,canary_recipient_sha256=?3,canary_expires_at=unixepoch()+600,actor='synthetic-fixture',case_ref='synthetic-race' WHERE id=1")
       .bind(issuer, owner, createHash("sha256").update("synthetic@example.invalid").digest("hex")).run();
     const bytes = draftZip(body, sender), authorization = bearer();
-    const send = () => mf.dispatchFetch("https://mail-staging.moesegfault.dev/v1/messages/send", { method: "POST", headers: { Authorization: authorization, "Content-Type": "application/zip", "Idempotency-Key": idem }, body: bytes });
+    const send = () => mf.dispatchFetch("https://mail-staging.moesegfault.dev/v1/messages/send", { method: "POST", headers: { ...apiVersionHeaders, Authorization: authorization, "Content-Type": "application/zip", "Idempotency-Key": idem }, body: bytes });
     pending = send();
     await barrierArrived(arrived, pending);
     assert.equal(barriers, 1, "exact committed acceptance SQL matched once");
@@ -151,17 +153,17 @@ async function race(deleteBeforeResume, expireClaim = false, { noEmbeddingWork =
         // Model a legacy visible partial row: its known ID remains deletable
         // although the accepted journal now excludes it from public reads.
         await db.prepare("UPDATE send_requests SET state='accepted' WHERE idem_key=?1").bind(idem).run();
-        const hidden = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { headers: { Authorization: authorization } });
+        const hidden = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { headers: { ...apiVersionHeaders, Authorization: authorization } });
         assert.equal(hidden.status, 404, "accepted partial projection is hidden from metadata reads");
       }
-      const foreign = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { method: "DELETE", headers: { Authorization: bearer("synthetic-foreign-owner") } });
+      const foreign = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { method: "DELETE", headers: { ...apiVersionHeaders, Authorization: bearer("synthetic-foreign-owner") } });
       assert.equal(foreign.status, 404, "foreign identity cannot tombstone this delivery");
       assert.equal((await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first()).deleted_at, null);
-      const deleted = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { method: "DELETE", headers: { Authorization: authorization } });
+      const deleted = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { method: "DELETE", headers: { ...apiVersionHeaders, Authorization: authorization } });
       const tombstone = await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first();
       assert.ok(tombstone && Number.isFinite(tombstone.deleted_at) && tombstone.deleted_at > 0, "the public DELETE must persist the owner tombstone, regardless of result metadata");
       assert.equal(deleted.status, 204, "a matching owner delete returns 204 despite cleanup trigger changes");
-      const repeated = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { method: "DELETE", headers: { Authorization: authorization } });
+      const repeated = await mf.dispatchFetch(`https://mail-staging.moesegfault.dev/v1/messages/${journal.message_id}`, { method: "DELETE", headers: { ...apiVersionHeaders, Authorization: authorization } });
       assert.equal(repeated.status, 404, "already deleted delivery does not match the atomic predicate");
       assert.equal((await db.prepare("SELECT deleted_at FROM messages WHERE id=?1").bind(journal.message_id).first()).deleted_at, tombstone.deleted_at);
       if (hiddenAccepted) {

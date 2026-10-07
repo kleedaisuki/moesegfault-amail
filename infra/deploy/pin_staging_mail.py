@@ -104,7 +104,7 @@ def serving_deployment(result: dict) -> tuple[str, str] | None:
     return deployment_id, version_id
 
 
-def expected_bindings(phase: str = "pre-queue", queue_id: str = "", *, realm: str = "staging") -> dict[str, tuple[str, str | None]]:
+def expected_bindings(phase: str = "pre-queue", queue_id: str = "", *, realm: str = "staging", predecessor: bool = False) -> dict[str, tuple[str, str | None]]:
     """Derive the exact direct-only Mail contract from reviewed realm config."""
 
     if phase not in PHASES:
@@ -125,6 +125,12 @@ def expected_bindings(phase: str = "pre-queue", queue_id: str = "", *, realm: st
         "INGRESS_SECRET": ("secret_text", None),
         **{name: ("plain_text", value) for name, value in stage["vars"].items()},
     }
+    if realm == "staging":
+        if predecessor:
+            for name in ("BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN", "BILLING_RETURN_URL"):
+                expected.pop(name, None)
+        else:
+            expected["BILLING_SERVICE_KEY"] = ("secret_text", None)
     if realm == "production":
         expected["OFFICIAL_EMAIL"] = ("send_email", None)
     if phase == "queue-api":
@@ -173,10 +179,10 @@ def containment_bindings_match(version: dict, expected_version: str) -> bool:
 
 
 def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-queue",
-                   queue_id: str = "", realm: str = "staging") -> bool:
+                   queue_id: str = "", realm: str = "staging", predecessor: bool = False) -> bool:
     """Check the current direct-only contract, without historical fallback."""
     expected = (expected_bindings() if phase == "pre-queue" and realm == "staging"
-                else expected_bindings(phase, queue_id, realm=realm))
+                else expected_bindings(phase, queue_id, realm=realm, predecessor=predecessor))
     return _bindings_match(version, expected_version, expected)
 
 

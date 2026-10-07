@@ -58,6 +58,10 @@ routes = []
 logpush = false
 
 [env.staging.vars]
+# Scheduled usage outbox settlement uses only the staging Billing authority.
+BILLING_BASE_URL = "https://billing-staging.moesegfault.dev"
+BILLING_SUBSCRIBE_ORIGIN = "https://subscribe-staging.moesegfault.dev"
+BILLING_RETURN_URL = "https://amail-staging.moesegfault.dev/billing/return"
 MAIL_DOMAIN = "mail-staging.moesegfault.dev"
 CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"
 EMAIL_INGRESS_WORKER_NAME = "amail-inbound-staging"

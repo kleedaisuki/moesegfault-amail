@@ -2,13 +2,14 @@
  * Execute the production Rust/Wasm Worker through workerd with fake OIDC and
  * Routing HTTP responses and local D1. No request can reach a real provider.
  */
+import { apiVersionHeaders } from "./api-version.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
-import { applyMigrations } from "./migration-fixture.mjs";
+import { applyMigrations, seedResourceAccount } from "./migration-fixture.mjs";
 import { workerModuleRules } from "./worker-module-rules.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -134,7 +135,7 @@ async function exercise(createResponse, { failActivation = false, listedRuleIds 
     }
     const response = await mf.dispatchFetch("https://mail-staging.moesegfault.dev/v1/addresses", {
       method: "POST",
-      headers: { Authorization: `Bearer ${accessToken()}`, "Content-Type": "application/json" },
+      headers: { ...apiVersionHeaders, Authorization: `Bearer ${accessToken()}`, "Content-Type": "application/json" },
       body: JSON.stringify({ local_part: "synthetic-only" }),
     });
     const body = await response.json();
@@ -156,6 +157,7 @@ async function exercise(createResponse, { failActivation = false, listedRuleIds 
     }
     for (let n = 0; n < backlogCount; n++) {
       const recipient = `backlog-${String(n).padStart(2, "0")}@mail-staging.moesegfault.dev`;
+      await seedResourceAccount(db, "synthetic-issuer", `backlog-subject-${n}`);
       await db.prepare("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES(?1,?2,'synthetic-issuer',?3,0,'provisioning',0)")
         .bind(recipient, `backlog-${n}`, `backlog-subject-${n}`).run();
     }
@@ -412,6 +414,7 @@ async function withProvider({ rules = [], listPage, getRule, beforeDelete, creat
     await applyMigrations(db, path.join(worker, "migrations"));
     const insert = async (recipient, { state = "retired", marker = 0, saved = null, due = 0, ownerSub } = {}) => {
       const local = recipient.split("@")[0];
+      await seedResourceAccount(db, issuer, ownerSub ?? `owner-${local}`);
       await db.prepare("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at,cf_rule_id,needs_reconcile,next_reconcile_at) VALUES(?1,?2,?3,?4,0,?5,0,?6,?7,?8)")
         .bind(recipient, local, issuer, ownerSub ?? `owner-${local}`, state, saved, marker, due).run();
     };
@@ -427,11 +430,11 @@ async function withProvider({ rules = [], listPage, getRule, beforeDelete, creat
       return current;
     };
     const add = async () => await mf.dispatchFetch("https://mail-staging.moesegfault.dev/v1/addresses", {
-      method: "POST", headers: { Authorization: `Bearer ${accessToken()}`, "Content-Type": "application/json" },
+      method: "POST", headers: { ...apiVersionHeaders, Authorization: `Bearer ${accessToken()}`, "Content-Type": "application/json" },
       body: JSON.stringify({ local_part: "synthetic-only" }),
     });
     const remove = async (recipient = address) => await mf.dispatchFetch("https://mail-staging.moesegfault.dev/v1/addresses", {
-      method: "DELETE", headers: { Authorization: `Bearer ${accessToken()}`, "Content-Type": "application/json" },
+      method: "DELETE", headers: { ...apiVersionHeaders, Authorization: `Bearer ${accessToken()}`, "Content-Type": "application/json" },
       body: JSON.stringify({ address: recipient }),
     });
     await body({ db, insert, row, tick, store, calls, add, remove });

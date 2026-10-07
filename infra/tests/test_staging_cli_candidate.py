@@ -25,7 +25,7 @@ class StagingCandidateTests(unittest.TestCase):
     def test_admission_refuses_failed_or_different_source_runs(self):
         """Ancestry, successful artifacts in a failed run or cache are not admission."""
         run = {"id": 123, "status": "completed", "conclusion": "success", "head_sha": "a" * 40,
-               "head_branch": "codex/v0.1.2-agent-first-performance", "path": ".github/workflows/ci.yml",
+               "head_branch": "codex/v0.2.0-billing", "path": ".github/workflows/ci.yml",
                "event": "workflow_dispatch", "run_attempt": 1}
         for field, value in (("conclusion", "failure"), ("head_sha", "b" * 40), ("head_branch", "main")):
             with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "GITHUB_SHA": "a" * 40}, clear=True), \
@@ -36,9 +36,9 @@ class StagingCandidateTests(unittest.TestCase):
     def test_admission_selects_one_immutable_artifact_from_the_successful_run(self):
         """Run identity and artifact SHA are positively checked before download."""
         run = {"id": 123, "status": "completed", "conclusion": "success", "head_sha": "a" * 40,
-               "head_branch": "codex/v0.1.2-agent-first-performance", "path": ".github/workflows/ci.yml",
+               "head_branch": "codex/v0.2.0-billing", "path": ".github/workflows/ci.yml",
                "event": "workflow_dispatch", "run_attempt": 1}
-        artifacts = {"total_count": 1, "artifacts": [{"id": 456, "name": "cli-candidate-v0.1.2-123",
+        artifacts = {"total_count": 1, "artifacts": [{"id": 456, "name": "cli-candidate-v0.2.0-123",
             "expired": False, "workflow_run": {"head_sha": "a" * 40}}]}
         (ROOT / ".temp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder:

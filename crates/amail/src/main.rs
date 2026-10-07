@@ -3,6 +3,7 @@
 mod api;
 mod archive;
 mod auth;
+mod billing;
 mod command_journal;
 mod config;
 mod discovery;
@@ -71,6 +72,11 @@ enum Command {
     },
     /// Query current owner-visible sending policy and quotas.
     SendingStatus,
+    /// Inspect resources or request human browser authorization for subscriptions.
+    Billing {
+        #[command(subcommand)]
+        command: billing::Command,
+    },
     /// Query provider feedback for one owned outbound message.
     Outcomes { id: String },
     /// Explore owner-visible lifecycle event pages only when needed.
@@ -672,6 +678,12 @@ fn command_kind(command: &Command) -> Option<command_journal::CommandKind> {
         | Command::SendingStatus
         | Command::Outcomes { .. }
         | Command::Events { .. } => return None,
+        Command::Billing { command } => match command {
+            billing::Command::Status => K::BillingStatus,
+            billing::Command::Subscribe { .. } => K::BillingSubscribe,
+            billing::Command::Manage { .. } => K::BillingManage,
+            billing::Command::Session { .. } => K::BillingSession,
+        },
         Command::Config => K::Config,
         Command::Pack { .. } => K::Pack,
         Command::Unpack { .. } => K::Unpack,
@@ -810,6 +822,7 @@ fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> R
                     emit(&api.send_status(&id)?, cli.human)?
                 }
                 Command::SendingStatus => emit(&api.sending_status()?, cli.human)?,
+                Command::Billing { command } => billing::run(&api, command, cli.human)?,
                 Command::Outcomes { id } => emit(&api.outcomes(&id)?, cli.human)?,
                 Command::Events {
                     message,

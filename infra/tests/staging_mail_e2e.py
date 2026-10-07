@@ -368,7 +368,7 @@ def cf_rules(zone: str, token: str) -> list[dict]:
     for page in range(1, 201):
         path = f"/zones/{zone}/email/routing/rules?per_page=50&page={page}"
         req = urllib.request.Request(
-            API + path, headers={"Authorization": "Bearer " + token, "Accept": "application/json"}
+            API + path, headers={"x-amail-api-version": "2", "Authorization": "Bearer " + token, "Accept": "application/json"}
         )
         try:
             with control_open(req, timeout=25) as response:
@@ -437,7 +437,7 @@ def assert_staging_sender(zone: str, token: str, realm: AcceptanceRealm = STAGIN
 
     req = urllib.request.Request(
         f"{API}/zones/{zone}/email/sending/subdomains/{realm.sending_tag}",
-        headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+        headers={"x-amail-api-version": "2", "Authorization": "Bearer " + token, "Accept": "application/json"},
     )
     try:
         with control_open(req, timeout=20) as response:
@@ -522,7 +522,7 @@ def row_snapshot(account: str, token: str, address: str, realm: AcceptanceRealm 
         req = urllib.request.Request(
             f"{API}/accounts/{account}/d1/database/{realm.mail_database_id}/query",
             data=json.dumps({"sql": ADDRESS_ROW_SQL, "params": [address]}).encode("utf-8"),
-            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            headers={"x-amail-api-version": "2", "Authorization": "Bearer " + token, "Content-Type": "application/json"},
             method="POST",
         )
         with control_open(req, timeout=25) as response:
@@ -1043,7 +1043,7 @@ def cleanup_d1_counts(account: str, token: str, address: str,
     req = urllib.request.Request(
         f"{API}/accounts/{account}/d1/database/{realm.mail_database_id}/query",
         data=json.dumps({"sql": sql, "params": [address, *subjects]}).encode(),
-        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+        headers={"x-amail-api-version": "2", "Authorization": "Bearer " + token, "Content-Type": "application/json"},
         method="POST",
     )
     try:

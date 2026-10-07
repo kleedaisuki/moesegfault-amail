@@ -27,12 +27,13 @@ class MailDeployTests(unittest.TestCase):
     def environment(self, target: str, output: Path) -> dict:
         """Provide synthetic realm-selected credentials through the workflow contract."""
         return {
-            "GITHUB_REF": "refs/heads/main" if target == "production" else "refs/heads/codex/v0.1.2-agent-first-performance",
+            "GITHUB_REF": "refs/heads/main" if target == "production" else "refs/heads/codex/v0.2.0-billing",
             "GITHUB_OUTPUT": str(output),
             "OPENROUTER_API_KEY": f"{target}-synthetic-openrouter",
             "CF_EMAIL_ROUTING_TOKEN": f"{target}-synthetic-routing",
             "INGRESS_SECRET": f"{target}-synthetic-ingress",
-            "AMAIL_STAGING_MAIL_DEPLOY_CONFIRM": "RUN_STAGING_V012",
+            "BILLING_SERVICE_KEY": f"{target}-synthetic-billing",
+            "AMAIL_STAGING_MAIL_DEPLOY_CONFIRM": "RUN_STAGING_V020",
             "AMAIL_TRACE_TOPOLOGY": "api-scheduled",
             "AMAIL_TRACE_QUEUE_ID": "b" * 32,
         }
@@ -60,6 +61,8 @@ class MailDeployTests(unittest.TestCase):
                 seen.append(path)
                 self.assertEqual(path.parent, root / ".temp")
                 expected = {key: environment[key] for key in ("OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "INGRESS_SECRET")}
+                if target == "staging":
+                    expected["BILLING_SERVICE_KEY"] = environment["BILLING_SERVICE_KEY"]
                 self.assertEqual(json.loads(path.read_text()), expected)
                 self.assertNotIn("ROLE_FORWARD_DESTINATION", json.loads(path.read_text()))
                 if timeout:
@@ -75,9 +78,22 @@ class MailDeployTests(unittest.TestCase):
             self.assertFalse(seen[0].exists())
             logs = captured.getvalue()
             self.assertNotIn(PRIVATE, logs)
-            for key in ("OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "INGRESS_SECRET"):
+            for key in ("OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "INGRESS_SECRET", "BILLING_SERVICE_KEY"):
                 self.assertNotIn(environment[key], logs)
             return code, logs, output.read_text() if output.exists() else ""
+
+    def test_billing_bindings_are_new_staging_capabilities_only(self):
+        """New desired readback requires Billing; historical cohort excludes exactly those keys."""
+        from pin_staging_mail import expected_bindings
+        from check_mail_maintenance import expected_bindings as maintenance_bindings
+        for make in (lambda realm, predecessor: expected_bindings("queue-api", "b" * 32, realm=realm, predecessor=predecessor),
+                     lambda realm, predecessor: maintenance_bindings(realm, "b" * 32, predecessor=predecessor)):
+            current = make("staging", False)
+            old = make("staging", True)
+            names = {"BILLING_SERVICE_KEY", "BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN", "BILLING_RETURN_URL"}
+            self.assertEqual(set(current) - set(old), names)
+            self.assertEqual({name: value for name, value in current.items() if name not in names}, old)
+            self.assertTrue(names.isdisjoint(make("production", False)))
 
     def test_default_production_and_explicit_staging_capture_exact_pin(self):
         """Existing no-argument production behavior remains main-only and env-free."""
@@ -112,7 +128,7 @@ class MailDeployTests(unittest.TestCase):
         """Explicit staging selection cannot reach production by fallback or guesswork."""
         cases = (
             ("staging", "GITHUB_REF", "refs/heads/main"),
-            ("production", "GITHUB_REF", "refs/heads/codex/v0.1.2-agent-first-performance"),
+            ("production", "GITHUB_REF", "refs/heads/codex/v0.2.0-billing"),
             ("staging", "AMAIL_STAGING_MAIL_DEPLOY_CONFIRM", "wrong"),
             ("staging", "AMAIL_TRACE_TOPOLOGY", "api-role"),
             ("staging", "AMAIL_TRACE_QUEUE_ID", "missing"),

@@ -315,6 +315,7 @@ impl<'a> Api<'a> {
         let mut request: RequestBuilder = self
             .http
             .request(method, format!("{}{}", self.cfg.api_base, path))
+            .header("x-amail-api-version", "2")
             .bearer_auth(&token)
             .header("traceparent", journal.traceparent());
         if let Some(value) = json {
@@ -353,6 +354,8 @@ impl<'a> Api<'a> {
                     code: "transport_failed",
                     next_action: if operation == "messages.send" {
                         "query_send_status"
+                    } else if operation == "billing.session.create" {
+                        "reuse_billing_session_key"
                     } else {
                         "retry_later"
                     },
@@ -392,6 +395,8 @@ impl<'a> Api<'a> {
                     code: "response_incomplete",
                     next_action: if operation == "messages.send" {
                         "query_send_status"
+                    } else if operation == "billing.session.create" {
+                        "reuse_billing_session_key"
                     } else {
                         "retry_later"
                     },
@@ -472,6 +477,34 @@ impl<'a> Api<'a> {
         }
     }
 
+    /// Read authoritative effective resources and accrued, not necessarily settled, usage.
+    pub fn billing_status(&self) -> Result<Value> {
+        self.json(Method::GET, "/v1/billing", "billing.status", None)
+    }
+
+    /// Mint human-only browser authorization with a stable retry identity.
+    pub fn create_billing_session(&self, body: &Value, key: &uuid::Uuid) -> Result<Value> {
+        let bytes = self.execute(
+            Method::POST,
+            "/v1/billing/sessions",
+            "billing.session.create",
+            Some(body),
+            None,
+            Some(&key.to_string()),
+        )?;
+        serde_json::from_slice(&bytes)
+            .map_err(|_| anyhow::anyhow!("invalid billing session response"))
+    }
+
+    /// Resume an owner-scoped authorization; never repeat checkout creation on timeout.
+    pub fn billing_session(&self, id: &uuid::Uuid) -> Result<Value> {
+        self.json(
+            Method::GET,
+            &format!("/v1/billing/sessions/{id}"),
+            "billing.session.status",
+            None,
+        )
+    }
     /// List owned addresses / 列出拥有的地址。
     pub fn addresses(&self) -> Result<Value> {
         self.json(Method::GET, "/v1/addresses", "addresses.list", None)

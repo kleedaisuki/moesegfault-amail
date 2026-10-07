@@ -152,7 +152,7 @@ def direct_forward_snapshot(realm: str, account: str, token: str) -> object:
     return {"role": None}
 
 
-def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_policy: dict | None = None) -> dict:
+def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_policy: dict | None = None, allow_v012_predecessor: bool = False) -> dict:
     """Require exact selected graph, independent privacy and unchanged serving brackets."""
     if expected_policy is not None and (realm != "production" or state != "active" or old_crons):
         raise ValueError("split_policy_unverified")
@@ -186,6 +186,12 @@ def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_
             or os.getenv("AMAIL_EXPECTED_ROLE_WORKER_VERSION", "")
             or os.getenv("AMAIL_ROLE_ROUTED_COUNT", "") not in ("", "0")):
         raise ValueError("split_pins_unverified")
+    predecessor = False
+    if allow_v012_predecessor:
+        # Only the exact source-owned historical cohort may omit new Billing capabilities.
+        from staging_resume import ACTIVE_API, ACTIVE_MAINTENANCE
+        predecessor = (realm == "staging" and state == "active"
+                       and pins[api] == ACTIVE_API and pins[maintenance] == ACTIVE_MAINTENANCE)
     before = serving(account, token, pins)
     check_policy()
     forwards = direct_forward_snapshot(realm, account, token)
@@ -193,7 +199,7 @@ def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_
     version = capture.readback(account, token, api, f"versions/{pins[api]}")
     api_crons = old_crons if state in ("legacy-pinned", "prepared") else ()
     # Legacy mixed code is a pinned migration predecessor, never a normal deploy.
-    if (not bindings_match(version, pins[api], phase="queue-api", queue_id=queue, realm=realm)
+    if (not bindings_match(version, pins[api], phase="queue-api", queue_id=queue, realm=realm, predecessor=predecessor)
             or (state not in ("legacy-pinned", "prepared") and not entry_surface_match(version, pins[api], "fetch"))
             or not schedules_match(capture.readback(account, token, api, "schedules"), api_crons)):
         raise ValueError("split_api_unverified")
@@ -202,7 +208,7 @@ def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_
     if legacy:
         maintenance_absent(account, token, maintenance)
     else:
-        maintenance_verify(realm, state, account, token, pins[maintenance], queue, api_crons=api_crons)
+        maintenance_verify(realm, state, account, token, pins[maintenance], queue, api_crons=api_crons, predecessor=predecessor)
     queues.reconcile(account, token, realm, "readback", topology)
     check_policy()
     if direct_forward_snapshot(realm, account, token) != forwards or serving(account, token, pins) != before:

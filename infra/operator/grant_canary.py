@@ -45,8 +45,8 @@ def grant_staging_owned(account: str, token: str, address: str, subject: str, ca
     actor = os.getenv("GITHUB_ACTOR", "")
     routing = os.getenv("CF_EMAIL_ROUTING_TOKEN", "")
     if (os.getenv("GITHUB_ACTIONS") != "true"
-            or os.getenv("GITHUB_REF") != "refs/heads/codex/v0.1.2-agent-first-performance"
-            or os.getenv("AMAIL_STAGING_CANARY_CONFIRM") != "RUN_STAGING_OWNED_SEND_V012"
+            or os.getenv("GITHUB_REF") != "refs/heads/codex/v0.2.0-billing"
+            or os.getenv("AMAIL_STAGING_CANARY_CONFIRM") != "RUN_STAGING_OWNED_SEND_V020"
             or not re.fullmatch(r"[a-f0-9]{16}", nonce)
             or address != f"send-{nonce}@mail-staging.moesegfault.dev"
             or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", actor)

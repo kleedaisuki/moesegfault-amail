@@ -7,7 +7,9 @@ description: Use the amail CLI for authorized moeSegFault mail tasks, including 
 
 Use amail for the user's mail task; do not ask the human to operate an inbox or
 perform routine CLI steps. The human completes Identity browser authorization;
-the agent handles only the mail operations authorized by the task. Sending is
+the agent handles only the mail operations authorized by the task. Subscription
+and overage spending require separate human browser consent; the agent never
+enters activation codes, approves payment or raises a spending limit. Sending is
 for agent-workflow transactional notifications and related replies, not campaigns
 or unrestricted correspondence.
 
@@ -40,8 +42,10 @@ telemetry or public diagnostics.
 
 ## Start small, explore as needed
 
-These instructions describe installed v0.1.2 capabilities, not publication status,
-remote health or current sending permission. Check `amail --version`; for another
+These instructions describe installed v0.2.0 capabilities, not publication status,
+remote health or current sending permission. A v0.2.0 server rejects older clients
+with HTTP 426; upgrade the matching CLI/Skill rather than bypassing the gate.
+Check `amail --version`; for another
 version use its installed help. If login is needed, invoke `amail login` and let
 the human complete the browser flow. Never request passwords, tokens, browser
 sessions or a copied authorization code. `amail auth status` checks non-secret
@@ -56,6 +60,7 @@ catalog.
 
 | When needed | Read only this reference |
 | --- | --- |
+| Subscription, usage, budget, authorization recovery or Free migration | [Billing and resource plans](references/billing.md) |
 | Bootstrap, login, address provisioning or retirement | [Session and addresses](references/session-addresses.md) |
 | Search filters, pagination or resumable jobs | [Search and continuation](references/search-jobs.md) |
 | Draft composition, ZIP retrieval or extraction | [Archive contract](references/archive.md) |

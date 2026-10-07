@@ -5,6 +5,7 @@ mod address_diag;
 mod archive;
 mod archive_read;
 mod auth;
+mod billing;
 mod database;
 mod exact_cosine;
 mod feedback;
@@ -12,6 +13,7 @@ mod maintenance;
 #[cfg(test)]
 mod performance;
 mod platform;
+mod resource;
 mod search_jobs;
 mod telemetry_read;
 mod trace;
@@ -159,6 +161,7 @@ pub async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .headers_mut()
         .set("x-amail-request-id", &request_id)?;
     response.headers_mut().set("Cache-Control", "no-store")?;
+    response.headers_mut().set("x-amail-api-version", "2")?;
     if trace.can_announce(env.queue("TRACE_EVENTS").is_ok()) {
         response.headers_mut().set(
             amail_trace_schema::CAPABILITY_HEADER,
@@ -183,12 +186,46 @@ pub async fn scheduled(event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
     let turn = MaintenanceTurn::new();
     let budget = MaintenanceBudget::new();
     let mut diagnostics = MaintenanceDiagnostics::new();
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let mut trace = Trace::new();
+    trace.operation(Operation::Maintenance);
+    let mut success = true;
     for phase in maintenance::phase_order(event.schedule()) {
-        let result = maintain_phase(&env, &budget, &turn, phase, &mut diagnostics).await;
+        let span_phase = match phase {
+            MaintenancePhase::Addresses => Phase::MaintenanceAddresses,
+            MaintenancePhase::Outbound => Phase::MaintenanceOutbound,
+            MaintenancePhase::Embeddings => Phase::MaintenanceEmbeddings,
+            MaintenancePhase::Storage => Phase::MaintenanceStorage,
+            MaintenancePhase::Deleted => Phase::MaintenanceDeleted,
+            MaintenancePhase::Orphans => Phase::MaintenanceOrphans,
+            MaintenancePhase::Search => Phase::MaintenanceSearch,
+            MaintenancePhase::Abuse => Phase::MaintenanceAbuse,
+            MaintenancePhase::Billing => Phase::MaintenanceBilling,
+        };
+        let span = trace.dependency(&request_id, span_phase);
+        let result = maintain_phase(
+            &env,
+            &budget,
+            &turn,
+            phase,
+            &mut diagnostics,
+            &trace,
+            &request_id,
+        )
+        .await;
+        span.finish(result.is_ok());
+        success &= result.is_ok();
         diagnostics.finish(phase, &result);
     }
+    trace.scheduled_exit(&request_id, success);
     let deadline = turn.diagnostic_deadline();
-    trace::flush_maintenance(&env, diagnostics.into_codes(), deadline).await;
+    trace::flush_maintenance(
+        &env,
+        diagnostics.into_codes(),
+        trace.take_events(),
+        deadline,
+    )
+    .await;
 }
 
 /// The only scheduled dispatch obtains a phase handle; nested helpers cannot
@@ -199,6 +236,8 @@ async fn maintain_phase(
     turn: &MaintenanceTurn,
     phase: MaintenancePhase,
     diagnostics: &mut MaintenanceDiagnostics,
+    trace: &Trace,
+    request_id: &str,
 ) -> Result<()> {
     // Admission includes setup and the first complete item. SQL accounting is
     // deliberately independent: admitted completion never gets a clock cutoff.
@@ -215,6 +254,7 @@ async fn maintain_phase(
         MaintenancePhase::Orphans => clean_orphans(env, &database, &mut phase_turn).await,
         MaintenancePhase::Search => search_jobs::cleanup(&database).await,
         MaintenancePhase::Abuse => expire_abuse_data(&database).await,
+        MaintenancePhase::Billing => billing::maintain(env, &database, trace, request_id).await,
     }
 }
 
@@ -1179,11 +1219,19 @@ async fn dispatch(
     if req.method() == Method::Get && path == "/health" {
         trace.operation(Operation::Health);
         return Ok(Response::from_json(
-            &serde_json::json!({"status":"ok","request_id":request_id}),
+            &serde_json::json!({"status":"ok","request_id":request_id,"version":"0.2.0","api_version":"2"}),
         )?);
     }
     if path == "/internal/inbound" && req.method() == Method::Post {
         return inbound(&mut req, &env, request_id, trace).await;
+    }
+    // Reject old clients before credential/service exchange; SMTP is not a CLI client.
+    if path.starts_with("/v1/") && req.headers().get("x-amail-api-version")?.as_deref() != Some("2")
+    {
+        return Err(AppError {
+            status: 426,
+            code: "required_client_version",
+        });
     }
     let user = auth::authenticate(&req, &env).await.map_err(|_| AppError {
         status: 401,
@@ -1193,7 +1241,22 @@ async fn dispatch(
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
     trace.accept_parent(req.headers().get("traceparent").ok().flatten().as_deref());
     trace.operation(operation_for(req.method(), &segments));
+    if req.method() == Method::Post
+        && matches!(
+            segments.as_slice(),
+            ["v1", "addresses"] | ["v1", "messages", "send"]
+        )
+    {
+        billing::refresh(&env, &user, request_id, trace).await?;
+    }
     match (req.method(), segments.as_slice()) {
+        (Method::Get, ["v1", "billing"]) => billing::status(&env, &user, request_id, trace).await,
+        (Method::Post, ["v1", "billing", "sessions"]) => {
+            billing::create(&mut req, &env, &user, request_id, trace).await
+        }
+        (Method::Get, ["v1", "billing", "sessions", id]) => {
+            billing::poll(&env, &user, id, request_id, trace).await
+        }
         (Method::Get, ["v1", "addresses"]) => list_addresses(&env, &user, request_id).await,
         (Method::Post, ["v1", "addresses"]) => {
             let mut diagnostic = AddressDiag::new();
@@ -1300,6 +1363,9 @@ fn address_diagnostics_enabled(env: &Env) -> bool {
 /// Classify only known routes after authentication; never retain URL segments.
 fn operation_for(method: Method, segments: &[&str]) -> Operation {
     match (method, segments) {
+        (Method::Get, ["v1", "billing"]) => Operation::BillingStatus,
+        (Method::Post, ["v1", "billing", "sessions"]) => Operation::BillingSessionCreate,
+        (Method::Get, ["v1", "billing", "sessions", _]) => Operation::BillingSessionStatus,
         (Method::Get, ["v1", "addresses"]) => Operation::AddressesList,
         (Method::Post, ["v1", "addresses"]) => Operation::AddressesAdd,
         (Method::Delete, ["v1", "addresses"]) => Operation::AddressesDelete,
@@ -1592,7 +1658,10 @@ fn canary_matches(draft: &Draft, idem: &str, recipient_hash: &str, used_by: Opti
     format!("{:x}", Sha256::digest(recipient.as_bytes())) == recipient_hash
 }
 
-/// Atomically reserve retained bytes before any R2 write; repeat IDs never double-charge. / 在任何 R2 写入前原子预留保留字节；重复 ID 不会重复计费。
+/// Reserve retained bytes before R2 writes, using the account's current tariff.
+/// Database triggers accrue the old byte balance and enforce storage/budget
+/// admission atomically. Duplicate IDs cannot charge or allocate twice; retained
+/// bytes remain accounted until physical cleanup removes their reservation.
 async fn reserve_storage(
     database: &Database,
     id: &str,
@@ -1605,16 +1674,19 @@ async fn reserve_storage(
         owner_sub: String,
         bytes: i64,
     }
-    if bytes < 0 || bytes > 1024 * 1024 * 1024 {
-        return Err(AppError {
-            status: 429,
-            code: "mailbox_full",
-        });
+    if bytes < 0 {
+        return Err(AppError::bad("invalid_storage_bytes"));
     }
+    resource::ensure_account(database, user).await?;
     let insert = database.prepare("INSERT OR IGNORE INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at) VALUES(?1,?2,?3,?4,'reserved',?5)")
         .bind(&[bind_str(id),bind_str(&user.iss),bind_str(&user.sub),bind_num(bytes),bind_num(now())])?.run().await;
     if let Err(err) = insert {
-        return if err.to_string().contains("mailbox_full") {
+        return if err.to_string().contains("resource_budget_exceeded") {
+            Err(AppError {
+                status: 429,
+                code: "resource_budget_exceeded",
+            })
+        } else if err.to_string().contains("mailbox_full") {
             Err(AppError {
                 status: 429,
                 code: "mailbox_full",
@@ -1728,6 +1800,7 @@ async fn add_address(
     let address = format!("{part}@{}", env.var("MAIL_DOMAIN")?.to_string());
     diagnostic.enter(AddressDiagStage::D1Lookup);
     let database = db(env)?;
+    resource::ensure_account(&database, user).await?;
     let existing = database
         .prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1")
         .bind(&[bind_str(&address)])?
@@ -1790,9 +1863,17 @@ async fn add_address(
             ])?
             .run()
             .await;
-        if result.is_err() {
+        if let Err(error) = result {
             diagnostic.fail(AddressDiagKind::D1, None, None);
-            return Err(AppError::conflict("address_unavailable"));
+            let message = error.to_string();
+            let code = if message.contains("address_limit") {
+                "address_limit"
+            } else if message.contains("capacity_exhausted") {
+                "capacity_exhausted"
+            } else {
+                "address_unavailable"
+            };
+            return Err(AppError::conflict(code));
         }
         let owned = database.prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3")
             .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.first::<AddressRow>(None).await?;
@@ -2592,33 +2673,27 @@ fn valid_message_id(id: &str) -> bool {
             .any(|c| c.is_ascii_control() || c.is_whitespace())
 }
 
-/// Reserve all exposure dimensions before submission. Earlier buckets remain
-/// conservatively charged if a later bucket fails; no provider call occurs.
-/// 提交前预留所有风险维度；后续额度失败时前序桶保守计费，但不调用提供商。
+/// Bound deployment-wide abuse independently of commercial monthly resource allowances.
 async fn charge_outbound_quotas(
     database: &Database,
     user: &Principal,
     draft: &Draft,
+    idem: &str,
 ) -> AppResult<()> {
-    let recipients = outbound_recipient_count(draft);
-    reserve_quota(database, "send", user, recipients, 50).await?;
     let global = Principal {
         iss: "_global".into(),
         sub: "_global".into(),
     };
-    reserve_quota(database, "send_global", &global, recipients, 10_000).await?;
-    reserve_quota(database, "send_messages", user, 1, 20).await?;
-    reserve_window_quota(database, "send_hour", user, 1, 5, 3_600_000).await?;
-    for recipient in draft
-        .manifest
-        .to
-        .iter()
-        .chain(&draft.manifest.cc)
-        .chain(&draft.manifest.bcc)
-    {
-        reserve_quota(database, &recipient_quota_kind(recipient), user, 1, 10).await?;
-    }
-    Ok(())
+    reserve_quota(
+        database,
+        "send_global",
+        &global,
+        outbound_recipient_count(draft),
+        10_000,
+    )
+    .await?;
+    reserve_window_quota(database, "send_minute", user, 1, 2, 60_000).await?;
+    resource::reserve_send(database, user, idem, outbound_recipient_count(draft)).await
 }
 
 /// A single CAS winner claims quota; a quota failure releases its local claim
@@ -2636,7 +2711,7 @@ async fn reserve_outbound_budget(
     if claim.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
         return Err(AppError::conflict("send_in_progress"));
     }
-    let charged = charge_outbound_quotas(database, user, draft).await;
+    let charged = charge_outbound_quotas(database, user, draft, idem).await;
     if charged.is_err() {
         let _ = database.prepare("UPDATE send_requests SET state='preparing',reservation_started_at=NULL WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='reserving'")
             .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(idem)])?.run().await;
@@ -2748,15 +2823,17 @@ async fn send_message(
     };
     if !quota_reserved {
         reserve_outbound_budget(&database, user, &draft, &idem, inserted_new).await?;
+    } else {
+        // Pre-v0.2 preparing journals may carry the legacy safety flag without a resource hold.
+        resource::reserve_send(&database, user, &idem, outbound_recipient_count(&draft)).await?;
     }
     let r2_key = format!("messages/{id}.zip");
     // The archive is no longer needed after the R2 write; keep its size, not a
     // second potentially 5 MiB allocation, across the provider exchange.
     let archive_size = bytes.len();
     if let Err(err) = reserve_storage(&database, &id, user, archive_size as i64).await {
-        // A full mailbox is definitive: retain charged quota but not a fresh
-        // never-submitted idempotency row that could accumulate every day.
-        // 邮箱满为确定性拒绝：额度照常消耗，但不永久保留尚未提交的新幂等记录。
+        // No provider submission happened: release commercial allowance and spending holds.
+        resource::release_send(&database, user, &idem).await?;
         if inserted_new && err.code == "mailbox_full" {
             let _ = database.prepare("DELETE FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing'")
                 .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await;
@@ -2775,7 +2852,10 @@ async fn send_message(
         archive_write.is_ok(),
         trace::elapsed_ms(started),
     );
-    archive_write?;
+    if let Err(error) = archive_write {
+        resource::release_send(&database, user, &idem).await?;
+        return Err(error.into());
+    }
     let transition = database.prepare("UPDATE send_requests SET state='submitting' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing' AND quota_reserved=1")
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
     if transition.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
@@ -2786,6 +2866,7 @@ async fn send_message(
         // 尚未调用提供商；释放本地占有状态，允许日后安全重试。
         database.prepare("UPDATE send_requests SET state='preparing' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='submitting'")
             .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
+        resource::release_send(&database, user, &idem).await?;
         return Err(err);
     }
     let started = js_sys::Date::now();
@@ -2839,9 +2920,17 @@ async fn send_message(
     .with_status(202))
 }
 
-/// Count every To/Cc/Bcc envelope entry for daily sender exposure, not one ZIP per send. / 每个 To/Cc/Bcc 信封条目均计入每日发件风险，而非每 ZIP 只计一次。
+/// One canonical distinct envelope recipient is one billable delivery, regardless of header role.
 fn outbound_recipient_count(draft: &Draft) -> i64 {
-    (draft.manifest.to.len() + draft.manifest.cc.len() + draft.manifest.bcc.len()) as i64
+    draft
+        .manifest
+        .to
+        .iter()
+        .chain(&draft.manifest.cc)
+        .chain(&draft.manifest.bcc)
+        .map(|recipient| recipient.to_ascii_lowercase())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len() as i64
 }
 
 /// Keep the complete private envelope on the idempotency row for late feedback,
@@ -2952,14 +3041,6 @@ async fn inbound(
     };
     let storage_bytes = (raw.len() + archive.len()) as i64;
     reserve_storage(&database, &id, &user, storage_bytes).await?;
-    reserve_quota(
-        &database,
-        "inbound_bytes",
-        &user,
-        raw.len() as i64,
-        100 * 1024 * 1024,
-    )
-    .await?;
     let r2_key = format!("messages/{id}.zip");
     // Preserve original MIME separately for forensic recovery; never expose raw headers to the agent archive.
     let started = js_sys::Date::now();
@@ -3789,7 +3870,7 @@ mod tests {
             serde_json::json!(["to@example.org"])
         );
         draft.manifest.cc.push("to@example.org".into());
-        assert_eq!(outbound_recipient_count(&draft), 4);
+        assert_eq!(outbound_recipient_count(&draft), 3);
     }
 
     /// Daily D1 upsert limits recipient entries rather than the number of ZIP submissions. / D1 每日 upsert 限制收件人条目数，而非 ZIP 提交次数。

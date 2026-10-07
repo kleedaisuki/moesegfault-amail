@@ -22,21 +22,20 @@ fn expensive(input: &SearchRequest) -> bool {
         || input.metadata.as_ref().is_some_and(|map| !map.is_empty())
 }
 
-/// Atomically admit one broad-filter request against account and shared daily budgets. / 按账户与共享每日额度原子准入一次宽泛筛选请求。
-async fn reserve_search_work(database: &Database, user: &Principal) -> AppResult<()> {
+/// Apply the service-wide scan safety budget equally to every subscription.
+/// Search has no account-level daily or billable query allowance. Exhaustion is
+/// shared service capacity, not a paid-plan entitlement failure.
+async fn reserve_search_work(database: &Database) -> AppResult<()> {
     let quota = |error: AppError| {
         if error.status == 429 {
             AppError {
-                status: 429,
-                code: "search_work_quota",
+                status: 503,
+                code: "search_capacity_exhausted",
             }
         } else {
             error
         }
     };
-    reserve_quota(database, "search_work", user, 1, 300)
-        .await
-        .map_err(quota)?;
     let global = Principal {
         iss: "_global".into(),
         sub: "_global".into(),
@@ -421,7 +420,7 @@ pub(super) async fn search(
         cursor_key: None,
     };
     if !semantic && expensive(&input) {
-        reserve_search_work(&database, user).await?;
+        reserve_search_work(&database).await?;
     }
     // Most list/lexical searches finish without writing a job. Only continuation is durable.
     // 多数列表/词法检索无需写入任务；仅在确实需要续扫时持久化。
@@ -495,7 +494,7 @@ pub(super) async fn search(
         return running(&id, request_id);
     }
     if origin.is_some() {
-        if let Err(error) = reserve_search_work(&database, user).await {
+        if let Err(error) = reserve_search_work(&database).await {
             if let Ok(query) = database
                 .prepare("DELETE FROM search_jobs WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='running'")
                 .bind(&[bind_str(&id), bind_str(&user.iss), bind_str(&user.sub)])
@@ -507,16 +506,13 @@ pub(super) async fn search(
     }
     if let Some(term) = input.semantic.as_deref().filter(|_| origin.is_none()) {
         let prepared: AppResult<()> = async {
-            // Reserve the D1 slot and daily provider budget before any billable call.
-            // 任何可计费调用之前，先原子预留 D1 任务槽和每日供应商额度。
-            reserve_search_work(&database, user).await?;
-            reserve_quota(&database, "semantic_queries", user, 1, 500)
-                .await
-                .map_err(|error| if error.status == 429 { AppError { status:429, code:"semantic_quota" } } else { error })?;
+            // Protect shared provider capacity before calling the embedding
+            // service. No per-user count allowance or search charge applies.
+            reserve_search_work(&database).await?;
             let global = Principal { iss:"_global".into(), sub:"_global".into() };
             reserve_quota(&database, "semantic_queries_global", &global, 1, 50_000)
                 .await
-                .map_err(|error| if error.status == 429 { AppError { status:429, code:"semantic_quota" } } else { error })?;
+                .map_err(|error| if error.status == 429 { AppError { status:503, code:"search_capacity_exhausted" } } else { error })?;
             state.query_vector = Some(platform::embed(env, term, "search_query").await.map_err(|_| AppError {
                 status:503, code:"semantic_unavailable"
             })?);

@@ -8,6 +8,7 @@
  * evidence, not an execution of a historical rollback binary.
  * Queue fixture mechanism: https://developers.cloudflare.com/workers/testing/miniflare/core/queues/
  */
+import { apiVersionHeaders } from "./api-version.mjs";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import path from "node:path";
@@ -105,9 +106,9 @@ async function fixture(run, { queueBinding = true } = {}) {
   });
   const mf = new Miniflare({ cf: false, workers });
   try {
-    const request = async (pathname, { auth = token(), body, method = "POST" } = {}) =>
+    const request = async (pathname, { auth = token(), body, method = "POST", version = "2" } = {}) =>
       mf.dispatchFetch(`${origin}${pathname}`, { method,
-        headers: { ...(auth === null ? {} : { Authorization: `Bearer ${auth}` }), "Content-Type": "application/json" },
+        headers: { ...(version === null ? {} : { ...apiVersionHeaders, "x-amail-api-version": version }), ...(auth === null ? {} : { Authorization: `Bearer ${auth}` }), "Content-Type": "application/json" },
         ...(body === undefined ? {} : {
           body: typeof body === "string" || body instanceof ReadableStream ? body : JSON.stringify(body),
           ...(body instanceof ReadableStream ? { duplex: "half" } : {}),
@@ -131,6 +132,30 @@ async function fixture(run, { queueBinding = true } = {}) {
 function capable(response) {
   assert.equal(response.headers.get("x-amail-telemetry"), "attempts-v1");
 }
+
+/** Unsupported clients stop before authentication, body parsing or business work. */
+test("missing and old API versions require upgrade before any dependency call", async () => {
+  await fixture(async ({ request, exchanges }) => {
+    for (const version of [null, "1", "0.1.2", "3", "2.0"]) {
+      const response = await request("/v1/billing/sessions", {
+        version, body: "SYNTHETIC_INVALID_JSON",
+      });
+      assert.equal(response.status, 426, `unsupported protocol ${version}`);
+      assert.equal((await response.json()).code, "required_client_version");
+    }
+    assert.ok(exchanges.every(item => !item.used), "upgrade rejection never calls Identity or Billing");
+  });
+});
+
+/** Health remains usable by deployment monitors that are not native clients. */
+test("health remains public without the incompatible client protocol header", async () => {
+  await fixture(async ({ request, exchanges }) => {
+    const response = await request("/health", { method: "GET", auth: null, version: null });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).status, "ok");
+    assert.ok(exchanges.every(item => !item.used));
+  });
+});
 
 test("authenticated legacy telemetry keeps its ACK and announces exact capability", async () => {
   await fixture(async ({ request, delivered }) => {
