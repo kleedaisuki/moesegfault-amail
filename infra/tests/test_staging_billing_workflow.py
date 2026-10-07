@@ -45,6 +45,15 @@ class BillingWorkflowTests(unittest.TestCase):
         self.assertIn("path: .temp/staging-billing-evidence.json", source)
         self.assertIn("options: [free, lite]", source)
 
+    def test_real_metering_is_opt_in_and_does_not_shorten_existing_job_budget(self):
+        """Only the explicitly confirmed Lite/trace case receives metering capability."""
+        source = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("inputs.confirm == 'RUN_STAGING_E2E' && inputs.billing_confirm == 'RUN_STAGING_BILLING_V020' "
+                      "&& inputs.billing_plan == 'lite' && inputs.billing_trace && "
+                      "inputs.billing_metering_confirm == 'RUN_STAGING_BILLING_METERING_V020'", source)
+        self.assertIn("inputs.billing_metering_confirm == 'RUN_STAGING_BILLING_METERING_V020' && 50 || 40", source)
+        self.assertIn("$env:AMAIL_STAGING_BILLING_METERING_CONFIRM -ne 'RUN_STAGING_BILLING_METERING_V020'", source)
+
 
 if __name__ == "__main__":
     unittest.main()

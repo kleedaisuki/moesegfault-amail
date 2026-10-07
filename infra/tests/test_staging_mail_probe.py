@@ -104,5 +104,72 @@ class ProbeContractTests(unittest.TestCase):
                 probe.progressive_surfaces(Path("amail"), {})
 
 
+class SearchRestartContractTests(unittest.TestCase):
+    """Exercise generation races without weakening search oracles or replaying writes."""
+
+    @staticmethod
+    def stale(code="search_job_stale", *, stdout=b"", operation="messages.search.poll"):
+        """Build the exact safe CLI failure grammar observed in hosted acceptance."""
+        return subprocess.CompletedProcess([], 1, stdout, (
+            f"amail: mail API {operation} failed: HTTP 409 Conflict, code={code}, "
+            "correlation_id=123e4567-e89b-42d3-a456-426614174000\n"
+        ).encode())
+
+    def test_stale_restarts_identical_fresh_search_and_returns_only_complete_page(self):
+        """Every predicate survives the restart and only the successful page is exposed."""
+        args = ("search", "--mailbox", "owned@example.test", "--title", "^Signal$",
+                "--regex", "--meta", "message_id=<receipt@example.test>", "--unread")
+        success = subprocess.CompletedProcess([], 0, b'{"id":"current","subject":"Signal"}\n', b"")
+        for code in ("search_job_stale", "search_cursor_stale"):
+            with self.subTest(code=code), patch.object(probe.subprocess, "run", side_effect=[
+                    self.stale(code), success]) as run, patch.object(probe.time, "sleep") as sleep:
+                values = probe.amail(Path("amail"), {}, *args, failure="search_test_failed")
+                self.assertEqual(values, [{"id": "current", "subject": "Signal"}])
+                self.assertEqual(run.call_count, 2)
+                self.assertEqual(run.call_args_list[0], run.call_args_list[1])
+                self.assertEqual(run.call_args.args[0], ["amail", *args])
+                sleep.assert_called_once_with(2)
+
+    def test_stale_restarts_are_bounded_and_never_accept_missing_results(self):
+        """Persistent mutation must fail rather than passing a positive or negative oracle."""
+        with patch.object(probe.subprocess, "run", return_value=self.stale()) as run, \
+                patch.object(probe.time, "sleep") as sleep:
+            with self.assertRaisesRegex(probe.ProbeFailure, "search_test_failed_http_409_search_job_stale"):
+                probe.amail(Path("amail"), {}, "search", "--title", "Signal", failure="search_test_failed")
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 5])
+
+    def test_pages_resume_mutations_and_other_conflicts_never_restart(self):
+        """Recovery cannot mix snapshots, replay sends, or swallow unrelated HTTP 409."""
+        for args, failure in [
+            (("search", "--cursor", "old-page"), self.stale()),
+            (("search", "--cursor=old-page"), self.stale()),
+            (("search", "--resume", "old-job"), self.stale()),
+            (("search", "--resume=old-job"), self.stale()),
+            (("send", "draft.zip", "--idempotency-key", "original-key"), self.stale()),
+            (("search",), self.stale("send_outcome_unknown")),
+            (("search",), self.stale(operation="messages.send")),
+            (("search",), self.stale(stdout=b'{"id":"partial"}\n')),
+            (("search",), subprocess.CompletedProcess([], 1, b"", b"private unknown failure")),
+        ]:
+            with self.subTest(args=args, stderr=failure.stderr), \
+                    patch.object(probe.subprocess, "run", return_value=failure) as run, \
+                    patch.object(probe.time, "sleep") as sleep:
+                with self.assertRaises(probe.ProbeFailure):
+                    probe.amail(Path("amail"), {}, *args, failure="search_test_failed")
+                run.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_search_stale_grammar_rejects_mixed_or_unknown_diagnostics(self):
+        """Only a full typed search failure, including wrapped poll errors, is recoverable."""
+        original = self.stale().stderr
+        wrapped = original.replace(b"amail: ", b"amail: search job 123e4567-e89b-42d3-a456-426614174000: ", 1)
+        self.assertTrue(probe.restartable_search_error(wrapped))
+        for value in (original + b"private extra text", b"untrusted prefix\n" + original,
+                      original.replace(b"409 Conflict", b"503 Unavailable"),
+                      original.replace(b"search_job_stale", b"search_job_expired")):
+            self.assertFalse(probe.restartable_search_error(value))
+
+
 if __name__ == "__main__":
     unittest.main()

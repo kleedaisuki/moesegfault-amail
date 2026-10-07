@@ -211,6 +211,26 @@ def execute(binary: Path, home: Path, run_dir: Path) -> dict:
         if (account.get("plan") != plan or account.get("overage_budget_micros") != 0
                 or final.get("payment_collection_available") is not False):
             raise BillingProbeError("billing_entitlement_readback_invalid")
+        metering = None
+        if os.environ.get("AMAIL_STAGING_BILLING_METERING_CONFIRM"):
+            import staging_billing_metering
+            try:
+                metering = staging_billing_metering.execute(
+                    binary, home, run_dir, evidence_started_at_ms=started_at_ms)
+            except staging_billing_metering.MeteringError as error:
+                raise BillingProbeError(str(error)) from None
+        # Capture creation, metering and zero-budget restoration contexts before
+        # final submission; the retained reader consumes this exact bounded union.
+        with closing(sqlite3.connect(f"file:{home / 'telemetry.sqlite3'}?mode=ro", uri=True)) as db:
+            traces = [row[0] for row in db.execute(
+                "SELECT DISTINCT trace_id FROM events WHERE operation IN "
+                "('billing.session.create','billing.session.status','billing.status') ORDER BY id")]
+        if metering:
+            traces = list(dict.fromkeys([*traces, *metering["trace_ids"]]))
+        if not traces or any(not re.fullmatch(r"[0-9a-f]{32}", trace) for trace in traces):
+            raise BillingProbeError("billing_cli_trace_ids_missing")
+        if len(traces) > 16:
+            raise BillingProbeError("billing_trace_scope_exceeded")
         try:
             flushed = subprocess.run([str(binary), "_telemetry-flush"], env=environment,
                                      capture_output=True, timeout=60, check=False)
@@ -218,15 +238,12 @@ def execute(binary: Path, home: Path, run_dir: Path) -> dict:
                 raise BillingProbeError("billing_cli_telemetry_flush_failed")
         except (OSError, subprocess.TimeoutExpired):
             raise BillingProbeError("billing_cli_telemetry_flush_failed") from None
-        with closing(sqlite3.connect(f"file:{home / 'telemetry.sqlite3'}?mode=ro", uri=True)) as db:
-            traces = [row[0] for row in db.execute(
-                "SELECT DISTINCT trace_id FROM events WHERE operation IN "
-                "('billing.session.create','billing.session.status','billing.status') ORDER BY id")]
-        if not traces or any(not re.fullmatch(r"[0-9a-f]{32}", trace) for trace in traces):
-            raise BillingProbeError("billing_cli_trace_ids_missing")
+        if int(time.time() * 1000) - started_at_ms >= 810_000:
+            raise BillingProbeError("billing_trace_scope_exceeded")
         print(f"staging_billing_browser_cancel_and_{plan}_receipt_verified")
         return {"schema_version": 1, "plan": plan, "cancelled": True, "browser_return_verified": True,
                 "grant_source": grant_source,
+                **({"metering": metering} if metering else {}),
                 "human_simulation": "protected_synthetic_identity", "payment_collection_verified": False,
                 "trace_ids": traces, "started_at_ms": started_at_ms, "ended_at_ms": int(time.time() * 1000)}
     finally:

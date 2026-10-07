@@ -67,9 +67,12 @@ these boundaries, not replace the implementation with a JavaScript billing model
 
 ## Execution status
 
-2026-10-07: scenarios derived from the owner request, existing maintainer runbook,
-staging harness and inspected Billing contract. Implementation is in progress;
-none of the new compiled or hosted scenarios is claimed passed by this document.
+2026-10-07: production Rust/Wasm/workerd contracts and isolated runtime deployment
+passed in `37617246563`; complete native/browser/mail and 14-span retained human
+authorization/CLI tracing passed in `37621170985`. Canonical exact source/run,
+component versions and evidence boundaries are in `../validation.md`. The
+additional explicitly opted-in positive address-overage acceptance below remains
+unexecuted; normal authorization is not a claim of monetary collection.
 
 ### Executable migration fixture
 
@@ -90,8 +93,8 @@ API against synthetic signed OIDC and an allowlisted Billing transport. It cover
 pending-to-approved receipt projection, denial/expiry, cross-owner rejection,
 wrong-owner binding, same-key replay and retry after service failure. It asserts
 the outgoing Billing `traceparent` retains the incoming trace ID and service
-credentials never enter public error bodies. Syntax checks pass; compiled hosted
-execution is still pending. This is not a browser, real payment, native trace-sink
+credentials never enter public error bodies. Compiled hosted execution passed in
+`37617246563`. This simulation alone is not a browser, real payment, native trace-sink
 delivery, or deployed Billing acceptance claim.
 
 The causal trace case additionally captures actual Rust-produced Queue bodies
@@ -99,8 +102,9 @@ with a native local consumer, then checks CLI parent -> API server -> Billing
 dependency -> exact propagated upstream span ID, source time/duration and absence
 of raw subject, authorization URL and service credential. Queue delivery uses a
 positive arrival barrier with a 10-second failure deadline, not a blind sleep.
-Execution is pending; even a pass will prove local compiled production behavior,
-not deployed Cloudflare sink retention or real browser service traces.
+Compiled execution passed in `37617246563`; that case proves local compiled
+production behavior, while the separately accepted `37621170985` retained witness
+establishes actual deployed sink retention and browser-service trace ancestry.
 
 `python -m unittest infra.tests.test_v020_migration infra.tests.test_v020_resource_concurrency -v`
 passes four tests against actual 0013/0014 on local Windows Python 3.14. The
@@ -129,7 +133,8 @@ normal delivery followed by a no-op sweep, HTTP 503 with retained liability and
 backoff, and Billing acceptance followed by a deliberately failed local ACK SQL
 update. The final case requires the next sweep to replay the same event and the
 synthetic receiver to retain one liability, not two. No real send or payment is
-performed. JavaScript syntax is checked; compiled hosted execution is pending.
+performed. Compiled hosted execution passed in `37617246563`; this is not the
+additional live positive-liability acceptance below.
 
 ## Executable hosted browser extension
 
@@ -247,4 +252,54 @@ scenario and all source-retention/terminalization assertions.
 The next outbox test revision also captures actual native scheduled records:
 persisted original send context must parent the usage HTTP dependency, while its
 explicit span link points to the actual new scheduled root. This new assertion
-is not covered by the earlier checkpoint and remains pending compiled execution.
+passed compiled execution in `37617246563`. Its real positive-liability scheduled
+delivery and retained asynchronous-link counterpart remains the explicit extra
+acceptance below, not a claim inferred from the compiled checkpoint.
+
+## Explicit real address-meter acceptance
+
+`billing_metering_confirm=RUN_STAGING_BILLING_METERING_V020` is an additional
+opt-in, not a change to normal subscription acceptance. The existing staging
+confirmation, Billing browser confirmation, Lite selection and retained-trace
+selection must all also be present. Normal jobs retain their 40-minute timeout;
+only this explicitly requested path receives 50 minutes.
+
+The protected synthetic account must have a real existing Lite grant, exactly
+three included addresses, no grandfathered addresses, no registered addresses and
+zero budget. Storage must remain within its included allowance, outbound
+reservations must be zero, and entitlement/month boundaries must be more than
+1,200 seconds away. Fixed read-only Mail D1 counts and normal provider rule lists
+must leave four slots within the 198-user-address / 200-provider-rule ceilings.
+No activation material is accepted by the metering helper.
+
+The normal Manage browser UI temporarily authorizes a 3.00 CNY spending ceiling.
+The normal CLI creates four nonce-scoped task addresses, observes all four active,
+and holds them for at least two real seconds. Normal CLI retirement closes every
+task address; the same browser restores zero budget and checks the authoritative
+receipt/readback **before** delivery polling. A lost creation acknowledgement
+still triggers retirement of the attempted task address if listed. Cleanup and
+budget restoration are independent mandatory recovery actions: failure of either,
+or both, is an explicit failure and cannot become a successful evidence artifact.
+
+The helper does not send mail, seed usage, write D1, invoke a synthetic scheduler,
+mint codes, or exercise a payment processor. It waits for the existing five-minute
+Cron to deliver actual durable outbox liabilities. Its provider adapter accepts
+only three fixed SELECT statements. Delivered markers, the exact period, positive
+address-seconds, an original trace context, and the authoritative Billing usage
+amount/event count must agree. Task liability must be positive and at most 10,000
+CNY micros (0.01 CNY); the 3 CNY ceiling is not the expected charge. Billing must
+report zero current budget and `pending_settlement`, never payment collection.
+
+Polling is bounded by 660 seconds and the shared 810-second Billing evidence
+envelope. Last-poll admission reserves 50 seconds for its two bounded reads and
+60 seconds for the parent's final telemetry flush; the outer retained-reader
+15-minute window consequently retains its 90-second reserve. Long setup can
+shorten the polling opportunity rather than silently widening the evidence scope.
+
+Offline checkpoint (2026-10-07): the 21 focused tests in
+`test_staging_billing_metering`, `test_staging_billing_e2e`, and
+`test_staging_billing_workflow` pass. They cover the full controlled helper flow,
+partial creation/lost acknowledgement, independent cleanup/restore failures,
+late evidence-window admission, default-zero behavior, and optional trace union
+before final flush. These simulations do not establish live Cron delivery or a
+hosted metering pass; that requires the explicitly confirmed staging run.

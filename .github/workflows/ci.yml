@@ -67,6 +67,10 @@ on:
         required: false
         default: false
         type: boolean
+      billing_metering_confirm:
+        description: Optional RUN_STAGING_BILLING_METERING_V020 authorizes synthetic Lite budget 3 CNY then 0 and four temporary addresses
+        required: false
+        type: string
 
       staging_resume_run:
         description: Explicit failed owned staging sink run; existing sink and queues are read-only
@@ -418,7 +422,8 @@ jobs:
       actions: read
     runs-on: windows-latest
     environment: staging
-    timeout-minutes: 40
+    # Optional metering can wait up to two normal Cron intervals after cleanup.
+    timeout-minutes: ${{ inputs.billing_metering_confirm == 'RUN_STAGING_BILLING_METERING_V020' && 50 || 40 }}
     concurrency:
       group: staging-native-mail-acceptance
       cancel-in-progress: false
@@ -435,6 +440,7 @@ jobs:
           AMAIL_STAGING_BILLING_CONFIRM: ${{ inputs.billing_confirm }}
           AMAIL_STAGING_BILLING_PLAN: ${{ inputs.billing_plan }}
           AMAIL_STAGING_BILLING_TRACE: ${{ inputs.billing_trace }}
+          AMAIL_STAGING_BILLING_METERING_CONFIRM: ${{ inputs.billing_metering_confirm }}
         run: |
           if ($env:AMAIL_STAGING_E2E_CONFIRM -ne 'RUN_STAGING_E2E') {
             throw 'Explicit staging E2E confirmation required'
@@ -454,6 +460,13 @@ jobs:
             }
           } elseif ($env:AMAIL_STAGING_BILLING_PLAN -eq 'lite' -or $env:AMAIL_STAGING_BILLING_TRACE -eq 'true') {
             throw 'Billing plan or retained trace acceptance requires explicit browser confirmation'
+          }
+          if ($env:AMAIL_STAGING_BILLING_METERING_CONFIRM) {
+            if ($env:AMAIL_STAGING_BILLING_METERING_CONFIRM -ne 'RUN_STAGING_BILLING_METERING_V020' -or
+                $env:AMAIL_STAGING_BILLING_CONFIRM -ne 'RUN_STAGING_BILLING_V020' -or
+                $env:AMAIL_STAGING_BILLING_PLAN -ne 'lite' -or $env:AMAIL_STAGING_BILLING_TRACE -ne 'true') {
+              throw 'Real metering requires explicit synthetic billing confirmation, Lite and retained traces'
+            }
           }
       - uses: actions/setup-python@v5
         with:
@@ -496,6 +509,7 @@ jobs:
           AMAIL_STAGING_BILLING_CONFIRM: ${{ inputs.billing_confirm }}
           AMAIL_STAGING_BILLING_PLAN: ${{ inputs.billing_plan }}
           AMAIL_STAGING_BILLING_TRACE: ${{ inputs.billing_trace }}
+          AMAIL_STAGING_BILLING_METERING_CONFIRM: ${{ inputs.confirm == 'RUN_STAGING_E2E' && inputs.billing_confirm == 'RUN_STAGING_BILLING_V020' && inputs.billing_plan == 'lite' && inputs.billing_trace && inputs.billing_metering_confirm == 'RUN_STAGING_BILLING_METERING_V020' && inputs.billing_metering_confirm || '' }}
           STAGING_E2E_AMAIL_ACTIVATION_CODE: ${{ inputs.billing_confirm == 'RUN_STAGING_BILLING_V020' && inputs.billing_plan == 'lite' && secrets.STAGING_E2E_AMAIL_ACTIVATION_CODE || '' }}
           BILLING_SERVICE_KEY: ${{ inputs.billing_confirm == 'RUN_STAGING_BILLING_V020' && inputs.billing_trace && secrets.BILLING_SERVICE_KEY || '' }}
           STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}

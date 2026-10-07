@@ -108,13 +108,21 @@ def recoverable_run_nonce(password: str) -> str:
 
 def retained_billing_trace(evidence: dict) -> dict:
     """Read only bounded safe spans after the browser loop, never CLI child secrets."""
-    from staging_trace_witness import read_records, read_service_records, witness, TraceWitnessError
+    from staging_trace_witness import read_records, read_service_records, witness, async_usage_witness, hex_id, TraceWitnessError
     traces = evidence.get("trace_ids")
     started = evidence.get("started_at_ms")
     if (not isinstance(traces, list) or not 1 <= len(traces) <= 16
             or any(not isinstance(trace, str) or not re.fullmatch(r"[0-9a-f]{32}", trace) for trace in traces)
             or type(started) is not int):
         raise HostedProbeError("billing_trace_scope_invalid")
+    metering = evidence.get("metering")
+    meter_traces = metering.get("trace_ids") if isinstance(metering, dict) else None
+    if "metering" in evidence and (not isinstance(meter_traces, list) or not meter_traces
+            or any(not hex_id(trace, 32) or trace not in traces for trace in meter_traces)
+            or len(set(meter_traces)) != len(meter_traces)):
+        raise HostedProbeError("billing_trace_scope_invalid")
+    normal = None
+    async_proofs = {}
     account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
     token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
     service_key = os.environ.get("BILLING_SERVICE_KEY", "")
@@ -137,7 +145,24 @@ def retained_billing_trace(evidence: dict) -> dict:
                 stage = "subscribe_read"
                 records += read_service_records("subscribe", service_key, trace)
                 stage = "chain_validation"
-                return witness(records, trace, require_cli=True, require_authorization=True)
+                proof = witness(records, trace, require_cli=True, require_authorization=True)
+                if normal is None:
+                    normal = proof
+                if meter_traces and trace in meter_traces and trace not in async_proofs:
+                    stage = "async_chain_validation"
+
+                    def read_scheduled(linked_trace: str, linked_span: str) -> list[dict]:
+                        """Follow one validated link without extending the overall read deadline."""
+                        if time.monotonic() >= deadline:
+                            raise TraceWitnessError("retained_trace_chain_incomplete")
+                        return read_records(account, token, "amail-trace-sink-staging", linked_trace,
+                                            started, end, exact_span_id=linked_span)
+
+                    async_proofs[trace] = async_usage_witness(records, trace, read_scheduled)
+                if not meter_traces:
+                    return proof
+                if normal is not None and len(async_proofs) == len(meter_traces):
+                    return dict(normal, metering_async_traces=[async_proofs[key] for key in meter_traces])
             except TraceWitnessError as error:
                 # Persisted read visibility can lag; bounded reads never replay an action.
                 # Only fixed stage/allowlisted failure labels survive the retry boundary.

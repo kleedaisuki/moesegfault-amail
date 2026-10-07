@@ -6,7 +6,7 @@ in Git history, not competing current-state documents. Evidence recorded on
 
 ## Delivered v0.1.2 — current release
 
-### In progress: v0.2.0 isolated staging candidate
+### Delivered v0.2.0 staging; additional metering acceptance in progress
 
 The owner requested Billing integration and staging delivery on 2026-10-07, not
 production publication. Candidate branch `codex/v0.2.0-billing` starts at
@@ -66,10 +66,13 @@ already retired; ten-active-address grandfathering is separately covered by the
 real migration SQL fixture, not claimed as populated live staging evidence.
 Direct unauthenticated staging HTTP probes returned 426/required_client_version
 for missing and old headers, and 401 for the current header without credentials.
-The latest helper-only local suite passes 202 infrastructure tests; it repairs
+The helper-only acceptance source repairs
 return-path normalization, existing paid-grant recovery without reusing one-use
 codes, and safe actionable retained-trace diagnostics. These changes do not alter
-the deployed runtime and need a same-source candidate producer for browser E2E.
+the deployed runtime. Exact-source producer
+[37620361945](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37620361945)
+passed at `de427af16097eff247ec33b831c829de89b56890`; its unpublished CLI/Skill
+bundle is artifact `11482156851`.
 
 The intended contract is Free/Lite/Plus, free incoming mail, no retained-message
 count or per-account semantic-query quota, byte/address/outbound metering, human
@@ -78,14 +81,38 @@ on Free. HTTP producers keep provider capture off; private Mail Queue records an
 typed Billing/Subscribe D1 spans provide content-free retention. Billing's existing
 activation grants plus usage accrual do not constitute monetary collection.
 
-Staging runtime deployment and migration are accepted. Browser acceptance and
-retained end-to-end tracing are **not yet accepted**. The delivered public release
-and production runtime remain v0.1.2. A single legitimate staging Lite issuance
+Staging runtime deployment, migration, browser acceptance and retained end-to-end
+tracing are accepted. The delivered public release and production runtime remain
+v0.1.2. A single legitimate staging Lite issuance
 was retrieved from the explicitly authorized owned mailbox through ordinary
 amail search/ZIP operations and passed privately into the protected test secret;
-no raw capability appeared in logs/artifacts or an agent context. The synthetic
-test must redeem it at most once, recover an existing grant on rerun, and remove
-the temporary input after confirmed consumption.
+no raw capability appeared in logs/artifacts or an agent context. First Lite
+browser acceptance in [37619968691](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37619968691)
+redeemed it, completed human approval and authoritative CLI projection; that
+workflow later failed at a legitimate stale search snapshot. A fixed read-only
+issuance/redemption join independently confirmed exactly one redemption, and the
+temporary GitHub test secret was deleted. The harness now explicitly restarts
+only classified stale first-page searches, retaining all original positive and
+negative oracles and never retrying sends or unknown failures.
+
+The subsequent complete native/browser/mail/trace journey
+[37621170985](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37621170985)
+finished **successfully**, using exact admitted `de427af` candidate bytes:
+
+| Accepted boundary | Actual evidence |
+| --- | --- |
+| Human subscription | Cancellation, fresh approval, actual return-link navigation, CLI completed receipt and Lite status; `grant_source=existing`, no second code redemption |
+| Retained cross-service tracing | Artifact `11482721812`: 14 validated persisted spans, CLI retained, human authorization retained, actual CLI → Mail → Billing and Subscribe approval ancestry |
+| Inbound/archive/search | Real two-SMTP fixtures, ZIP/body/asset/receipt equality, reply relations, composed positive and discriminating negative searches, explicit read-state/delete behavior |
+| Controlled outgoing delivery | One self-only held-policy send, lost-stdout receipt recovery, exact same-key replay, real delivered feedback/event and inbound archive, no second provider submission |
+| Cleanup | Exact task-owned address/route retirement and no primary/cleanup error; unrelated mail and journals retained |
+
+The latest local helper-only suite passes 219 infrastructure tests. An additional
+explicitly opted-in real address-overage/normal-Cron/Billing-ledger acceptance is
+implemented but **not yet executed**. Its temporary synthetic budget must return
+to zero, its task addresses must retire, and positive liabilities must remain
+`pending_settlement`, not falsely described as payment collection. No production
+deployment, public Release/tag or Identity-sector change was performed.
 
 ### v0.1.2 publication evidence
 

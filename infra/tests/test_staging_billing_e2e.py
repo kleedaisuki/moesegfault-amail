@@ -48,9 +48,10 @@ class BillingHarnessTests(unittest.TestCase):
         with self.assertRaises(probe.BillingProbeError):
             probe.needs_activation({"requires_activation": True, "subscription": grant}, "lite", 100)
 
-    def run_recovery(self, mail_plan, existing_grant, code=""):
+    def run_recovery(self, mail_plan, existing_grant, code="", *, confirmed_metering=False):
         """Simulate only branch decisions around the real helper, never hosted acceptance."""
-        state = {"plan": "free", "grant": existing_grant, "redemptions": 0, "codes_typed": 0, "statuses": 0}
+        state = {"plan": "free", "grant": existing_grant, "redemptions": 0, "codes_typed": 0, "statuses": 0,
+                 "budgets": [], "flushed": False}
 
         class Browser:
             """Minimal UI observer records whether the helper attempts another redemption."""
@@ -75,6 +76,8 @@ class BillingHarnessTests(unittest.TestCase):
             def fill(self, selector, _value):
                 if selector == "#activation-code":
                     state["codes_typed"] += 1
+                if selector == "#amail-budget":
+                    state["budgets"].append(_value)
 
             def click(self, selector):
                 if selector == "#activation-code + button":
@@ -102,22 +105,55 @@ class BillingHarnessTests(unittest.TestCase):
             elif args[1:3] == ["billing", "session"]:
                 output = {"state": "cancelled" if state["plan"] == "free" else "completed"}
             else:
+                if args[1:] == ["_telemetry-flush"]:
+                    state["flushed"] = True
                 output = {}
             return SimpleNamespace(returncode=0, stdout=json.dumps(output))
 
         connection = Mock()
-        connection.execute.return_value = [("0123456789abcdef0123456789abcdef",)]
+        def journal(_sql):
+            """Journal context discovery must finish before final telemetry submission."""
+            self.assertFalse(state["flushed"])
+            return [("0123456789abcdef0123456789abcdef",)]
+
+        connection.execute.side_effect = journal
         identity = SimpleNamespace(Browser=Browser, load_credential=lambda _path: ("synthetic", "synthetic-password", "unused"),
                                    ProbeError=type("ProbeError", (Exception,), {}))
         mail = SimpleNamespace(cli_env=lambda _path: {})
+        def meter(*_args, **kwargs):
+            """The real metering flow must run before the parent submits its final batch."""
+            self.assertFalse(state["flushed"])
+            self.assertNotIn("STAGING_E2E_AMAIL_ACTIVATION_CODE", os.environ)
+            self.assertIsInstance(kwargs["evidence_started_at_ms"], int)
+            return {"trace_ids": ["fedcba9876543210fedcba9876543210"], "budget_restored_micros": 0}
+
+        metering = SimpleNamespace(execute=Mock(side_effect=meter if confirmed_metering else
+                                               AssertionError("unconfirmed metering must not run")))
         with patch.dict(os.environ, {"AMAIL_STAGING_BILLING_CONFIRM": probe.CONFIRMATION,
                                      "AMAIL_STAGING_BILLING_PLAN": "lite",
+                                     "AMAIL_STAGING_BILLING_TRACE": "true",
+                                     "AMAIL_STAGING_BILLING_METERING_CONFIRM":
+                                         "RUN_STAGING_BILLING_METERING_V020" if confirmed_metering else "",
                                      "STAGING_E2E_AMAIL_ACTIVATION_CODE": code}, clear=True), \
-                patch.dict("sys.modules", {"staging_identity_cdp": identity, "staging_mail_e2e": mail}), \
+                patch.dict("sys.modules", {"staging_identity_cdp": identity, "staging_mail_e2e": mail,
+                                           "staging_billing_metering": metering}), \
                 patch.object(probe.subprocess, "run", side_effect=command), \
                 patch.object(probe.sqlite3, "connect", return_value=connection), patch("builtins.print"):
             result = probe.execute(Path("synthetic.exe"), Path("synthetic-home"), Path("synthetic-run"))
+            if confirmed_metering:
+                metering.execute.assert_called_once()
+            else:
+                metering.execute.assert_not_called()
+            self.assertEqual(state["budgets"], ["0"])
         return state, result
+
+    def test_confirmed_metering_runs_before_final_flush_and_unions_original_traces(self):
+        """Optional metering adds its causal IDs without replacing the subscription IDs."""
+        state, result = self.run_recovery("lite", True, confirmed_metering=True)
+        self.assertTrue(state["flushed"])
+        self.assertEqual(result["trace_ids"], ["0123456789abcdef0123456789abcdef",
+                                               "fedcba9876543210fedcba9876543210"])
+        self.assertEqual(result["metering"]["budget_restored_micros"], 0)
 
     def test_mail_free_billing_already_redeemed_resumes_without_code(self):
         """A redemption completed before lost approval must not consume a second capability."""

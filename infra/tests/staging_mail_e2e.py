@@ -237,17 +237,47 @@ def cli_failure(stderr: bytes, fallback: str) -> str:
     return label
 
 
+def restartable_search_error(stderr: bytes) -> bool:
+    """Recognize only the CLI's complete, known generation-stale search failure.
+
+    A stale exact scan has no complete page to preserve. Restarting page one is
+    the published restart_search action, not a generic retry of HTTP conflicts.
+    Reject mixed diagnostics, unrelated operations and arbitrary provider prose.
+    """
+
+    uuid_pattern = rb"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
+    return len(stderr) <= 65_536 and re.fullmatch(
+        rb"amail: (?:search job " + uuid_pattern + rb": )?"
+        rb"mail API messages\.search(?:\.poll)? failed: HTTP 409(?: Conflict)?, "
+        rb"code=search_(?:job|cursor)_stale, correlation_id=(?:none|"
+        + uuid_pattern + rb")\r?\n?", stderr,
+    ) is not None
+
+
 def amail(binary: Path, env: dict[str, str], *args: str, failure: str) -> list[dict]:
     """Capture JSONL in memory; suppress sensitive stdout/stderr. / 仅在内存解析 JSONL。"""
 
-    try:
-        proc = subprocess.run(
-            [str(binary), *args], env=env, capture_output=True, timeout=90, check=False
-        )
-    except subprocess.TimeoutExpired:
-        raise ProbeFailure(f"{failure}_subprocess_timeout") from None
-    except OSError:
-        raise ProbeFailure(f"{failure}_process_error") from None
+    # Only a fresh search can restart without discarding an earlier caller-owned
+    # page. Mutations, cursor pages, resumed jobs and unclassified failures never
+    # enter this path. Every attempt preserves all original predicates.
+    fresh_search = bool(args and args[0] == "search") and not any(
+        arg in ("--cursor", "--resume") or arg.startswith(("--cursor=", "--resume="))
+        for arg in args[1:]
+    )
+    for attempt in range(3):
+        try:
+            proc = subprocess.run(
+                [str(binary), *args], env=env, capture_output=True, timeout=90, check=False
+            )
+        except subprocess.TimeoutExpired:
+            raise ProbeFailure(f"{failure}_subprocess_timeout") from None
+        except OSError:
+            raise ProbeFailure(f"{failure}_process_error") from None
+        if (fresh_search and attempt < 2 and proc.returncode != 0
+                and not proc.stdout and restartable_search_error(proc.stderr)):
+            time.sleep((2, 5)[attempt])
+            continue
+        break
     check(proc.returncode == 0, cli_failure(proc.stderr, failure))
     check(len(proc.stdout) <= 2_000_000, "cli_output_oversized")
     try:

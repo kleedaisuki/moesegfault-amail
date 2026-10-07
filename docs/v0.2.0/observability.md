@@ -248,3 +248,54 @@ true using the recorded creation-context ancestor set, without inventing any
 Mail or CLI span. This confirms the service read and safe-envelope path after the fix;
 it does not substitute for the final hosted Mail-sink/CLI/Billing/Subscribe retained
 ancestor-chain witness, which must be rerun against the admitted helper artifact.
+
+### Optional real-meter evidence scope
+
+The explicitly confirmed synthetic Lite address-meter path keeps actual
+`resource_outbox.origin_traceparent` trace IDs and adds them to the normal
+subscription/Manage/restore CLI journal IDs before the parent's final telemetry
+flush. It deduplicates the union and rejects more than 16 trace IDs or an elapsed
+Billing journey of 810 seconds. Restore approval traces therefore remain available
+to the retained-reader witness; observing an outbox trace never replaces browser
+authorization-chain evidence.
+
+Only safe aggregate facts are returned: positive address-seconds, integer CNY
+micros, delivered-event count, four created/retired addresses, zero restored
+budget, `pending_settlement`, and validated random trace IDs. Raw owner IDs,
+addresses, event IDs, authorization URLs, activation codes, credentials and
+provider response bodies remain in memory and are not evidence fields. The three
+fixed D1 SELECTs and Billing usage GET use the existing honest
+`amail-staging-witness/0.2.0` client identifier, bounded bodies and rejected
+redirects. Their success proves actual ledger acknowledgement, not payment
+collection or native vendor tracing.
+
+The final polling admission leaves 110 seconds inside the 810-second envelope for
+two 25-second reads and the parent's 60-second final flush. Together with the
+existing 90-second retained-query reserve, this avoids admitting a last read whose
+bounded completion alone would push the journey outside the 15-minute scope.
+
+### Optional charged-outbox asynchronous retained witness
+
+When `metering` evidence exists, ordinary authorization acceptance alone no
+longer completes the retained witness. Every explicit `metering.trace_ids` entry
+must independently pass the existing CLI / Mail / Billing / human-approval
+ancestry verifier. A successful Mail `maintenance` / `billing_http` span must
+have that exact creation Mail server as its parent and a successful real Billing
+`billing_usage_record` request server as its child. Its validated link IDs then
+select one separate bounded staging-sink read, using the exact linked span ID as
+the query needle and projecting only the matching `scheduled_exit` record.
+That record must be a parentless maintenance root on the linked trace. Unrelated
+maintenance diagnostics are not retained or treated as acceptance evidence.
+
+The verifier returns only trace/span IDs and counts for the asynchronous proof.
+It compares causal IDs, not cross-host wall-clock order. A scheduler root may
+report an unrelated phase failure while its usage dependency and remote usage
+request succeeded. Reads retain the existing 128-event / 15-minute bounds,
+20-second network timeout and shared 90-second retry deadline; the additional
+read never starts after that deadline. No action is replayed, no provider writes
+are introduced, and non-meter acceptance keeps its existing return shape.
+
+Focused offline tests cover the complete asynchronous and hosted join, absent
+links, wrong origin/usage/scheduler parentage, wrong usage operation, failed usage
+dependency, missing CLI ancestry, unsafe scheduler fields, content-free async
+errors, and rejection of absent or unrelated explicit meter trace IDs.

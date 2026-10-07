@@ -143,7 +143,9 @@ def validate_span(record: dict, service: str, trace_id: str) -> dict:
     if record.get("operation") not in operations:
         raise TraceWitnessError("retained_span_operation_invalid")
     if service in {"mail_api", "mail_cli"}:
-        if record.get("phase") not in MAIL_PHASES:
+        scheduled_root = (service == "mail_api" and record.get("operation") == "maintenance"
+                          and record.get("phase") == "scheduled_exit" and parent is None)
+        if record.get("phase") not in MAIL_PHASES and not scheduled_root:
             raise TraceWitnessError("retained_span_phase_invalid")
         if record.get("error_code") not in {None, "invalid_request", "unauthorized", "forbidden", "not_found", "conflict", "rate_limited", "service_unavailable", "other_client", "other_server", "dependency_failure"}:
             raise TraceWitnessError("retained_span_error_invalid")
@@ -175,9 +177,10 @@ def validate_span(record: dict, service: str, trace_id: str) -> dict:
     return {key: record.get(key) for key in projection if key in record}
 
 
-def query_body(script: str, trace_id: str, start_ms: int, end_ms: int) -> dict:
+def query_body(script: str, trace_id: str, start_ms: int, end_ms: int, *, exact_span_id: str | None = None) -> dict:
     """Construct a fixed dry query; no adaptive field discovery or broad account scan."""
-    if script not in SCRIPTS.values() or not hex_id(trace_id, 32):
+    if (script not in SCRIPTS.values() or not hex_id(trace_id, 32)
+            or (exact_span_id is not None and not hex_id(exact_span_id, 16))):
         raise TraceWitnessError("retained_trace_scope_invalid")
     if not (integer(start_ms) and integer(end_ms) and 0 < end_ms - start_ms <= 900_000):
         raise TraceWitnessError("retained_trace_window_invalid")
@@ -185,14 +188,16 @@ def query_body(script: str, trace_id: str, start_ms: int, end_ms: int) -> dict:
             "limit": MAX_EVENTS, "timeframe": {"from": start_ms, "to": end_ms},
             "parameters": {"datasets": ["cloudflare-workers"], "filterCombination": "and",
                            "filters": [{"key": "$workers.scriptName", "type": "string", "operation": "eq", "value": script}],
-                           "needle": {"value": trace_id, "isRegex": False, "matchCase": True}}}
+                           "needle": {"value": exact_span_id or trace_id, "isRegex": False, "matchCase": True}}}
 
 
-def read_records(account: str, token: str, script: str, trace_id: str, start_ms: int, end_ms: int) -> list[dict]:
+def read_records(account: str, token: str, script: str, trace_id: str, start_ms: int, end_ms: int, *, exact_span_id: str | None = None) -> list[dict]:
     """Read at most one bounded persisted-log page without retaining its raw envelope."""
     if not re.fullmatch(r"[0-9a-f]{32}", account) or not token:
         raise TraceWitnessError("retained_trace_credentials_missing")
-    body = query_body(script, trace_id, start_ms, end_ms)
+    if exact_span_id is not None and not hex_id(exact_span_id, 16):
+        raise TraceWitnessError("retained_trace_scope_invalid")
+    body = query_body(script, trace_id, start_ms, end_ms, exact_span_id=exact_span_id)
     request = urllib.request.Request(f"https://api.cloudflare.com/client/v4/accounts/{account}/workers/observability/telemetry/query",
                                     data=json.dumps(body).encode(), method="POST",
                                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
@@ -227,6 +232,9 @@ def read_records(account: str, token: str, script: str, trace_id: str, start_ms:
         if not isinstance(row, dict) or not isinstance(row.get("$workers"), dict) or row["$workers"].get("scriptName") != script:
             raise TraceWitnessError("retained_trace_scope_invalid")
         record = decode_source(row.get("source"))
+        if exact_span_id is not None and (record.get("span_id") != exact_span_id
+                                          or record.get("phase") != "scheduled_exit"):
+            continue
         service = record.get("service")
         expected = "mail_api" if script == SCRIPTS["mail_api"] else next(key for key, value in SCRIPTS.items() if value == script)
         if service not in ({"mail_api", "mail_cli"} if expected == "mail_api" else {expected}):
@@ -314,4 +322,41 @@ def witness(records: list[dict], trace_id: str, *, require_cli: bool = True, req
                         "mail_span_id": server["span_id"], "billing_client_span_id": dependency["span_id"],
                         "billing_server_span_id": billing["span_id"], "cli_retained": cli is not None,
                         "human_authorization_retained": authorized}
+    raise TraceWitnessError("retained_trace_chain_incomplete")
+
+
+def async_usage_witness(records: list[dict], trace_id: str, read_scheduled) -> dict:
+    """Join a charged origin's actual human/CLI ancestry to a separate scheduler root.
+
+    The callback performs one bounded exact-span read using only validated link
+    IDs. Parent IDs prove causality; cross-host wall-clock ordering is irrelevant.
+    A scheduler may report an unrelated phase failure after successful delivery.
+    """
+    origin = witness(records, trace_id, require_cli=True, require_authorization=True)
+    spans = [validate_span(row, row.get("service"), trace_id) for row in records]
+    for dependency in spans:
+        if not (dependency["service"] == "mail_api" and dependency["operation"] == "maintenance"
+                and dependency["phase"] == "billing_http" and dependency["outcome"] == "success"
+                and dependency.get("parent_span_id") == origin["mail_span_id"]
+                and dependency.get("linked_trace_id") not in {None, trace_id}):
+            continue
+        billing = next((row for row in spans if row["service"] == "billing"
+                        and row["operation"] == "billing_usage_record" and row["phase"] == "request_exit"
+                        and row["outcome"] == "success"
+                        and row.get("parent_span_id") == dependency["span_id"]), None)
+        if billing is None:
+            continue
+        linked_trace, linked_span = dependency["linked_trace_id"], dependency["linked_span_id"]
+        roots = [validate_span(row, row.get("service"), linked_trace)
+                 for row in read_scheduled(linked_trace, linked_span)]
+        root = next((row for row in roots if row["service"] == "mail_api"
+                     and row["operation"] == "maintenance" and row["phase"] == "scheduled_exit"
+                     and row["span_id"] == linked_span and row.get("parent_span_id") is None), None)
+        if root is not None:
+            return {"trace_id": trace_id, "origin_mail_span_id": origin["mail_span_id"],
+                    "retained_span_count": origin["retained_span_count"],
+                    "usage_client_span_id": dependency["span_id"],
+                    "usage_server_span_id": billing["span_id"],
+                    "scheduled_trace_id": linked_trace, "scheduled_span_id": linked_span,
+                    "scheduled_retained_span_count": len(roots)}
     raise TraceWitnessError("retained_trace_chain_incomplete")
