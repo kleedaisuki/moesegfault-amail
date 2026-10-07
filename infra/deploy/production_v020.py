@@ -21,17 +21,20 @@ from tested_worker_artifact import require_artifact
 from worker_deploy_result import submit, DeploymentFailure
 
 ROOT = prior.ROOT
-ORIGIN_RUN = "37104468990"
+ORIGIN_RUN = "37657488925"
 ORIGIN_SOURCE = "805ac273fc00e85f773b9249587581a0dc274ce2"
-# Source-owned receipt artifact11267970678; never learn predecessor pins from latest.
+# API/maintenance: receipt11267970678. Sink: successful captured submit in owned
+# partial artifact11499677005; no migration/API intent followed it. Resume that
+# exact UUID without submitting the sink again; preflight brackets its deployment.
 PINS = {
     "amail-mail": ("4eee1ec6-8f70-47ee-98d8-e7ba4feb3f19", "50bd330d-2f9b-4102-8c8e-9bbaada927fe"),
     "amail-mail-maintenance": ("411db6fb-3028-44bd-98db-cb354bfbe922", "293d4049-c56a-40ee-8bc3-ef345a7a4eb7"),
-    "amail-trace-sink": prior.PINS["amail-trace-sink"],
+    "amail-trace-sink": (None, "f401659a-d076-4c6a-bfe5-28d0e71698b1"),
 }
 ROLES = {"api": "amail-mail", "maintenance": "amail-mail-maintenance", "sink": "amail-trace-sink"}
 CONFIGS = {**prior.retained.CONFIGS, "sink": "workers/trace-sink/wrangler.toml"}
 OWNERSHIP = "SELECT address,owner_iss,owner_sub,created_at FROM addresses ORDER BY address LIMIT 1000"
+FREE_INITIAL = "SELECT count(*) AS owners,coalesce(sum(plan!='free' OR currency!='USD' OR overage_budget_micros!=0),0) AS invalid FROM resource_accounts"
 
 
 def unchanged_adapters() -> None:
@@ -115,8 +118,18 @@ def billing_ready() -> None:
 
 
 def query(provider, sql: str) -> list:
-    """Reuse the bounded private production SELECT reader; never emit user rows."""
-    return prior.readback.query(provider, "accounts/" + provider.account, prior.SCOPE, sql)
+    """Read only fixed SELECTs on existing production D1, not fresh-scope capability.
+
+    FreshProvider intentionally refuses D1 reads before resource creation; do not
+    forge its private scope or weaken that boundary for an established database.
+    """
+    from direct_contact_health import DatabaseClient
+    if sql not in (OWNERSHIP, FREE_INITIAL):
+        raise ValueError("production_query_unreviewed")
+    rows = DatabaseClient(provider.account, provider.token, "production").query(sql).get("results")
+    if not isinstance(rows, list) or len(rows) > 1000 or not all(isinstance(row, dict) for row in rows):
+        raise ValueError("production_d1_read_unverified")
+    return rows
 
 
 def ownership(provider) -> dict:
@@ -129,6 +142,7 @@ def ownership(provider) -> dict:
 
 def migrate(provider) -> dict:
     """Apply forward-only SQL and verify every original address's ownership survives."""
+    prior.journal("ownership", "read_intent")
     before = ownership(provider)
     prior.journal("migration", "intent")
     result = subprocess.run(["wrangler", "d1", "migrations", "apply", "MAIL_DB", "--remote"],
@@ -139,7 +153,7 @@ def migrate(provider) -> dict:
     after = ownership(provider)
     if any(after.get(address) != row for address, row in before.items()):
         raise ValueError("production_ownership_changed")
-    rows = query(provider, "SELECT count(*) AS owners,coalesce(sum(plan!='free' OR currency!='USD' OR overage_budget_micros!=0),0) AS invalid FROM resource_accounts")
+    rows = query(provider, FREE_INITIAL)
     if len(rows) != 1 or rows[0]["invalid"] != 0:
         raise ValueError("production_free_migration_unverified")
     return {"preserved_addresses": len(before), "owners": rows[0]["owners"], "currency": "USD", "initial_budget_micros": 0}
@@ -200,9 +214,8 @@ def run(mode: str) -> None:
         billing_ready()
     if mode == "upgrade":
         pins = result["pins"]
-        pins[ROLES["sink"]] = (None, replace("sink"))
-        result, _, provider = observe(pins, policy)
-        pins = result["pins"]
+        # The owned failed run already submitted and verified this compatible
+        # sink. The current epoch starts there; it is never a generic retry lane.
         facts = migrate(provider)
         observe(pins, policy)
         for role in ("api", "maintenance"):
@@ -231,9 +244,10 @@ def main() -> int:
         run(args.mode)
     except Exception as error:
         known = prior.FAILURES | {"production_billing_unverified", "production_ownership_changed",
-            "production_ownership_scope_exceeded", "production_free_migration_unverified", "production_secrets_missing"}
+            "production_ownership_scope_exceeded", "production_free_migration_unverified", "production_secrets_missing",
+            "production_query_unreviewed", "production_d1_read_unverified"}
         reason = str(error) if isinstance(error, ValueError) and str(error) in known else prior.graph.failure_reason(error)
-        print("production_v020=UNVERIFIED reason=" + reason)
+        print("production_v020=UNVERIFIED reason=" + reason + " class=" + type(error).__name__)
         return 1
     print("production_v020=exact_graph_policy_and_ownership_preserved")
     return 0

@@ -47,6 +47,19 @@ class ProductionV020Tests(unittest.TestCase):
              patch.object(release, "query", return_value=[{"owners": 1, "invalid": 0}]):
             self.assertEqual(release.migrate(object())["preserved_addresses"], 1)
 
+    def test_existing_d1_reader_does_not_forge_fresh_creation_capability(self):
+        """Use the real fixed-production adapter, keeping FreshProvider's guard intact."""
+        from fresh_bootstrap_scope import FreshProvider
+        from direct_contact_health import DatabaseClient
+        provider = FreshProvider("a" * 32, "synthetic-token")
+        self.assertIsNone(provider._scope)
+        with patch.object(DatabaseClient, "query", return_value={"results": []}) as read:
+            self.assertEqual(release.query(provider, release.OWNERSHIP), [])
+            read.assert_called_once_with(release.OWNERSHIP)
+            self.assertIsNone(provider._scope)
+            with self.assertRaisesRegex(ValueError, "query_unreviewed"):
+                release.query(provider, "SELECT private_mail FROM mails")
+
     def test_schema_cannot_hide_missing_ownership_or_authorized_spend(self):
         """Lost/changed tuples and non-Free/currency/budget defaults stop before API replacement."""
         with patch.object(release.prior, "journal"), \
@@ -87,13 +100,13 @@ class ProductionV020Tests(unittest.TestCase):
                 release.run("upgrade")
         return order
 
-    def test_typed_sink_precedes_schema_and_producers_without_policy_write(self):
-        """New linked spans need a compatible consumer before producer replacement."""
-        self.assertEqual(self.exercise(), ["billing-read", "sink", "migration", "api", "maintenance"])
+    def test_owned_serving_sink_is_not_submitted_again_before_schema_and_producers(self):
+        """Known sink success survives recovery without replay or generic inventory adoption."""
+        self.assertEqual(self.exercise(), ["billing-read", "migration", "api", "maintenance"])
 
     def test_unknown_api_submit_is_not_repeated_and_maintenance_is_not_touched(self):
         """Failure coordinates require owned reconciliation, not another invocation."""
-        self.assertEqual(self.exercise("api"), ["billing-read", "sink", "migration", "api"])
+        self.assertEqual(self.exercise("api"), ["billing-read", "migration", "api"])
 
     def test_failed_dependency_preflight_performs_no_schema_or_worker_write(self):
         """An unreachable production bridge cannot turn into an unmetered rollout."""
