@@ -8,13 +8,13 @@
 - `GET /v1/plans` returns deployment-owned plan records. `GET /v1/me` accepts a verified Identity access token and returns account plus product-scoped subscriptions.
 - `POST /v1/activations` accepts `{code}` plus `Idempotency-Key`; activation atomically grants one product subscription snapshot. Different active plans cannot be switched until expiry.
 - Subscribe holds bearer tokens server-side, uses same-origin CSRF protection, and redirects only to exact configured return URLs. Existing hosted activation requires a legitimately issued activation code; it is not a payment checkout.
-- Billing currently has no payment processor, recurring debit, metered usage ledger, spending consent, or automatic settlement. The README explicitly says so. We must not represent activation or a locally calculated estimate as successful charging.
+- Before this integration, Billing had activation grants but no amail spending consent or metered usage ledger. v0.2.0 adds those two capabilities below. It still has no payment processor, recurring debit or automatic settlement; activation and accrued liability must never be represented as successful monetary collection.
 
 ## Identity integration constraint
 
 Billing keys accounts by `(issuer, sub)`, and Identity issues pairwise subjects. Existing amail CLI staging client `amail-cli-staging` uses sector `amail-staging.moesegfault.dev`; Subscribe uses `subscribe-staging.moesegfault.dev`. Adding an audience alone cannot join these accounts. Changing the deployed CLI sector would change every subject and can orphan existing addresses. Preserve existing subjects unless a deliberate migration proves ownership and preserves addresses.
 
-Preferred bridge: amail creates a service-authenticated, short-lived authorization intent bound to its immutable local account ID; a human authenticates and approves through Subscribe; amail retrieves the authoritative receipt over the service boundary. No editable email joins, browser bearer exposure, agent-granted paid plan, or agent-raised spend cap. The precise session API is being coordinated before implementation.
+Preferred bridge: amail creates a service-authenticated, short-lived authorization intent bound to its immutable local account ID; a human authenticates and approves through Subscribe; amail retrieves the authoritative receipt over the service boundary. No editable email joins, browser bearer exposure, agent-granted paid plan, or agent-raised spend cap. The implemented session API is specified below; actual staging acceptance is recorded at the end of this contract.
 
 ## Accepted community tariff
 
@@ -141,7 +141,26 @@ No build, package, deploy or production job ran in that acceptance workflow.
 
 Actual public staging smoke subsequently passed Billing health, Subscribe HTML/CSP,
 guest session and protected personal-API boundaries. This removes the service
-privacy/readiness prerequisite for the controlled human OAuth test; it does not
-claim that the full amail billing/mail/trace user workflow has already passed.
+privacy/readiness prerequisite for the controlled human OAuth test; subsequent
+full integration acceptance is recorded below rather than inferred from smoke tests.
 Detailed evidence and the previous migration/dependency repairs are retained in
 Subscriptions `docs/deployment/staging.md` and its linked incident notes.
+
+### Final real integration acceptance
+
+[Mail 37630962022](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37630962022)
+completed successfully with exact candidate `d1291b8`, a real existing Lite grant,
+normal browser cancellation/approval/return and authoritative CLI projection.
+Safe artifact `11486684051` records real positive address usage, budget restoration
+to zero, six delivered period events and retained human plus asynchronous ancestry.
+The same workflow repeated actual inbound/archive/search/delete and controlled
+outgoing receipt recovery/replay/delivery-feedback acceptance.
+
+Final fixed readback [37634410400](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37634410400)
+confirmed Mail accrued 22 CNY micros, Billing accrued the same 22 micros across
+six events, every outbox delivered marker present, budget zero and address count
+zero. All six retained Billing usage servers reported HTTP 200/success. Three
+events originated before subsequent consent reductions; their valid historical
+receipts survived and normal Cron/backoff delivered them without editing usage.
+The new seven-micro test is included in that 22-micro period total. This proves
+actual pending-settlement accrual, not automatic monetary collection.

@@ -55,7 +55,7 @@ probes send `x-amail-api-version: 2` rather than accidentally testing only 426.
 Existing account addresses must survive additive migration and be classified
 Free; source migration tests and live readback, not this document, prove this.
 
-## Local evidence and remaining delivery
+## Initial local checkpoint (superseded by actual delivery below)
 
 On 2026-10-07 the infrastructure suite passed all 161 tests, including 20 staging
 rollout, 16 adapter, 7 realm-secret, 6 canary and 4 candidate-selection contracts.
@@ -122,7 +122,7 @@ including unchanged API `1f4a056f-5342-46a5-8e32-7eebaea5f7a2` and sink
 `56c17824-679f-4427-bcc9-4584d2510208`, before a maintenance-only submit of the
 same-run tested artifact, then perform strict normal graph readback. This
 exception grants no production, other-version, queue, secret or generic missing
-binding fallback. No repair has been deployed merely by changing this source.
+binding fallback. Source adoption alone was not treated as a deployed repair.
 
 Actual fixed diagnostic [37627785234](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37627785234)
 confirmed Lite, zero budget, zero registered addresses, accrued 15 CNY micros,
@@ -133,3 +133,31 @@ The repair uses an explicit staging-only CI target, same-run compiled/workerd
 artifact and infrastructure gates, full graph brackets, one existing maintenance
 submit and strict post-readback. API, sink, queue graph, public send hold and
 five-minute cadence must remain unchanged. No backlog is seeded, edited or deleted.
+
+### Actual corrective deployment and final acceptance
+
+[37628266417](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37628266417)
+completed successfully from `d1291b80923d7d463e596bcd702a6e251039797f` after
+credential-free compiled/workerd and infrastructure gates. Maintenance now serves
+`eb38afe1-51fe-4d6b-8e82-661b5932dcbf`. Safe artifact `11485846948` records
+unchanged API `1f4a056f-5342-46a5-8e32-7eebaea5f7a2`, unchanged sink
+`56c17824-679f-4427-bcc9-4584d2510208`, and the retained five-minute Cron.
+Full immutable graph brackets also preserved queue/resource ownership, public
+send hold and private surfaces. No production or Identity resource was written.
+
+The successful final [37630962022](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37630962022)
+used the exact candidate admitted through successful producer `37628260838`,
+bundle artifact `11485896406`. Its six delivered period events included all
+three preserved failed-run liabilities and seven additional CNY micros from seven
+real excess address-seconds. Budget returned to zero and all four metering
+addresses retired through normal UI/CLI paths before polling. Safe artifact
+`11486684051` independently proves normal human/CLI ancestry, actual asynchronous
+usage client/server ancestry and the exact linked scheduled root. Real mail and
+self-send recovery acceptance also passed again. No scheduler invocation, outbox
+mutation or fictitious usage was used to obtain that result.
+
+Final fixed readback `37634410400` confirmed six delivered events, 22 accrued
+CNY micros in both Mail and Billing, zero registered addresses and zero budget.
+Every retained Billing usage server reported HTTP 200/success. This includes the
+15-micro historical backlog plus the seven-micro final test; all remain liabilities
+marked `pending_settlement`, never a claim of monetary payment.

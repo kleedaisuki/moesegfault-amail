@@ -247,7 +247,8 @@ server parent chain on the approval trace. `connected_authorization` also return
 true using the recorded creation-context ancestor set, without inventing any
 Mail or CLI span. This confirms the service read and safe-envelope path after the fix;
 it does not substitute for the final hosted Mail-sink/CLI/Billing/Subscribe retained
-ancestor-chain witness, which must be rerun against the admitted helper artifact.
+ancestor-chain witness, subsequently completed against the admitted helper artifact
+as recorded below.
 
 ### Optional real-meter evidence scope
 
@@ -299,3 +300,27 @@ Focused offline tests cover the complete asynchronous and hosted join, absent
 links, wrong origin/usage/scheduler parentage, wrong usage operation, failed usage
 dependency, missing CLI ancestry, unsafe scheduler fields, content-free async
 errors, and rejection of absent or unrelated explicit meter trace IDs.
+
+### Actual hosted asynchronous proof (2026-10-07)
+
+[37630962022](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37630962022),
+exact candidate source `d1291b80923d7d463e596bcd702a6e251039797f`, completed
+successfully. Safe artifact `11486684051` records ordinary human/CLI acceptance
+with 14 spans and the separate charged-origin proof with 20 spans plus one
+separately retained scheduled root. The observed meter was seven address-seconds
+and seven CNY micros, not a simulated or seeded outbox event.
+
+| Causal boundary | Actual retained identity |
+| --- | --- |
+| Charged origin trace | `e365ea01443bb50609dd67ef3bebcbab` |
+| Creation Mail server | `17f91fcc6ea94275` |
+| Successful maintenance usage client | `2e37d9232c144bd4` |
+| Successful Billing usage server | `62f56f328ead0db6` |
+| Linked actual scheduled trace | `8dcef501e1ba4ab894d29141fc029b01` |
+| Exact parentless scheduled root | `d3b2d315667d419a` |
+
+Parent equality proved creation-server → usage-client → usage-server. The usage
+client's link selected the exact separately retained scheduled root; wall-clock
+proximity was not substituted for causality. Zero current budget and six delivered
+period events matched the real pending-settlement ledger. The same run repeated
+SMTP/archive/search and controlled self-send recovery/delivery acceptance.

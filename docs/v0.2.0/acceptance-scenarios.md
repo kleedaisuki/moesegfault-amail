@@ -71,8 +71,9 @@ these boundaries, not replace the implementation with a JavaScript billing model
 passed in `37617246563`; complete native/browser/mail and 14-span retained human
 authorization/CLI tracing passed in `37621170985`. Canonical exact source/run,
 component versions and evidence boundaries are in `../validation.md`. The
-additional explicitly opted-in positive address-overage acceptance below remains
-unexecuted; normal authorization is not a claim of monetary collection.
+additional explicitly opted-in positive address-overage and asynchronous retained
+acceptance passed in `37630962022`; neither authorization nor usage accrual is a
+claim of monetary collection.
 
 ### Executable migration fixture
 
@@ -253,8 +254,8 @@ The next outbox test revision also captures actual native scheduled records:
 persisted original send context must parent the usage HTTP dependency, while its
 explicit span link points to the actual new scheduled root. This new assertion
 passed compiled execution in `37617246563`. Its real positive-liability scheduled
-delivery and retained asynchronous-link counterpart remains the explicit extra
-acceptance below, not a claim inferred from the compiled checkpoint.
+delivery and retained asynchronous-link counterpart subsequently passed the
+explicit real acceptance below, independently of that compiled checkpoint.
 
 ## Explicit real address-meter acceptance
 
@@ -303,3 +304,28 @@ partial creation/lost acknowledgement, independent cleanup/restore failures,
 late evidence-window admission, default-zero behavior, and optional trace union
 before final flush. These simulations do not establish live Cron delivery or a
 hosted metering pass; that requires the explicitly confirmed staging run.
+
+### Actual hosted result
+
+[37630962022](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37630962022)
+passed the full optional path at exact source `d1291b80923d7d463e596bcd702a6e251039797f`;
+producer [37628260838](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37628260838)
+and native CLI/Skill artifact `11485896406` were admitted before use. Safe artifact
+`11486684051` records four created/retired addresses, seven actual excess
+address-seconds, seven newly accrued CNY micros, six acknowledged period events,
+zero restored budget and `pending_settlement`. All period outbox events, including
+the three preserved earlier liabilities, matched authoritative Billing totals.
+
+The initial optional run `37625486364` exposed a real source/config mismatch:
+maintenance omitted the Billing bridge's issuer while the native fixture supplied
+it manually. The existing five-minute scheduler retained events and applied normal
+backoff; no event or timer was manually edited. The staging-only correction
+`37628266417` replaced only maintenance and passed config-derived positive/negative
+native regressions plus exact graph readbacks. See `staging-delivery.md`.
+
+The final real run independently proved 20 retained charged-origin spans plus an
+exact linked scheduled root, as well as the ordinary 14-span human/CLI witness.
+It then repeated actual two-SMTP/archive/search/read/delete and self-send receipt
+recovery/same-key replay/delivery-feedback/inbound acceptance successfully.
+The code was not redeemed again (`grant_source=existing`), and no production
+deployment, Identity-sector change or monetary collection occurred.

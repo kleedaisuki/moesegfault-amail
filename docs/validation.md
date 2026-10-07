@@ -6,7 +6,7 @@ in Git history, not competing current-state documents. Evidence recorded on
 
 ## Delivered v0.1.2 — current release
 
-### Delivered v0.2.0 staging; scheduled Billing configuration repair in progress
+### Delivered v0.2.0 staging — accepted
 
 The owner requested Billing integration and staging delivery on 2026-10-07, not
 production publication. Candidate branch `codex/v0.2.0-billing` starts at
@@ -107,7 +107,7 @@ finished **successfully**, using exact admitted `de427af` candidate bytes:
 | Controlled outgoing delivery | One self-only held-policy send, lost-stdout receipt recovery, exact same-key replay, real delivered feedback/event and inbound archive, no second provider submission |
 | Cleanup | Exact task-owned address/route retirement and no primary/cleanup error; unrelated mail and journals retained |
 
-The latest local helper-only suite passes 219 infrastructure tests. An additional
+The latest local helper-only suite passes 227 infrastructure tests. An additional
 explicitly opted-in real address-overage/normal-Cron/Billing-ledger acceptance is
 executed in [37625486364](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37625486364)
 from `9e91fa1`, but failed with `billing_metering_event_not_delivered`. The helper
@@ -115,7 +115,42 @@ completed independent mandatory task-address retirement and zero-budget restorat
 before entering that failed delivery poll. Source diagnosis found that the real
 scheduled Worker config omitted `IDENTITY_ISSUER`, required by the Billing bridge;
 the native outbox fixture supplied that variable manually and masked the mismatch.
-A staging-only configuration correction and config-derived regression are in progress.
+A staging-only correction and config-derived positive/negative native regression
+passed in [37628266417](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37628266417),
+source `d1291b80923d7d463e596bcd702a6e251039797f`. Only maintenance was replaced,
+now serving `eb38afe1-51fe-4d6b-8e82-661b5932dcbf`; API/sink deployment identities,
+queue graph, held send policy and five-minute cadence were bracketed unchanged.
+Artifact `11485846948` records the safe repair evidence. Read-only diagnosis
+[37627785234](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37627785234)
+proved zero remaining addresses/budget and exactly 15 micros of pending local
+liability. Post-repair [37629415153](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37629415153)
+read three preserved events at attempt three, due after 13:50:40 UTC; the existing
+Cron/backoff, not a database edit or manual scheduler, subsequently delivered them.
+The final complete acceptance
+[37630962022](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37630962022)
+finished **SUCCESS** from exact `d1291b8` candidate bytes admitted through
+[37628260838](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37628260838).
+The latest unpublished CLI/Skill bundle is artifact `11485896406`; safe hosted
+evidence is artifact `11486684051`. All earlier native/browser/mail/send recovery
+oracles passed again, including exact task address/route cleanup.
+
+| Final extra boundary | Actual accepted result |
+| --- | --- |
+| Real address overage | Four task addresses created/retired, 7 excess address-seconds, 7 CNY micros newly accrued |
+| Historical backlog | Six period events delivered, including all three preserved first-run events; final Mail/Billing totals both 22 CNY micros |
+| Consent restoration | Normal Manage UI returned budget to zero before delivery polling; authoritative Billing summary also reported zero |
+| Human and CLI ancestry | 14 retained spans in the ordinary subscription witness; existing Lite grant, no code reuse |
+| Actual asynchronous ancestry | 20 retained spans on the charged origin, real successful maintenance client → Billing usage server, linked to one exact separately retained scheduled root |
+| Settlement meaning | `pending_settlement`, `payment_collection_verified=false`; no payment processor or automatic debit |
+
+Final fixed readback
+[37634410400](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37634410400)
+confirmed Mail accrued 22 CNY micros and Billing exactly 22 micros across six
+events, all outbox delivered markers present, all six actual Billing usage
+request spans HTTP 200/success, budget zero and registered-address count zero.
+The first 15 micros survived later consent reductions and settled into the
+liability ledger through ordinary Cron/backoff, not an accounting edit.
+
 Positive liabilities remain `pending_settlement`, never payment collection. No production
 deployment, public Release/tag or Identity-sector change was performed.
 
