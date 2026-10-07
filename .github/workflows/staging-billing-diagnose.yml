@@ -1,0 +1,30 @@
+# Explicit fixed-scope diagnosis of the failed synthetic metering run; no writes.
+name: Diagnose staging Billing outbox
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: amail-staging-graph-writer
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    if: github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'DIAGNOSE_STAGING_METERING_37625486364'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: staging
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Project only fixed synthetic outbox and safe retained spans
+        run: python infra/tests/staging_billing_diagnose.py
