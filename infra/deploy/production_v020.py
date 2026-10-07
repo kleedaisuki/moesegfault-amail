@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import tomllib
 import urllib.request
@@ -21,13 +22,15 @@ from tested_worker_artifact import require_artifact
 from worker_deploy_result import submit, DeploymentFailure
 
 ROOT = prior.ROOT
-ORIGIN_RUN = "37657488925"
+sys.path.insert(0, str(ROOT / "infra/operator"))
+from direct_contact_health import DatabaseClient
+ORIGIN_RUN = "37659055164"
 ORIGIN_SOURCE = "805ac273fc00e85f773b9249587581a0dc274ce2"
-# API/maintenance: receipt11267970678. Sink: successful captured submit in owned
-# partial artifact11499677005; no migration/API intent followed it. Resume that
-# exact UUID without submitting the sink again; preflight brackets its deployment.
+# API: successful capture in owned run37659055164 after verified migration.
+# Maintenance remains receipt11267970678; sink remains partial11499677005.
+# Resume capture readback/maintenance only, never schema, API or sink submission.
 PINS = {
-    "amail-mail": ("4eee1ec6-8f70-47ee-98d8-e7ba4feb3f19", "50bd330d-2f9b-4102-8c8e-9bbaada927fe"),
+    "amail-mail": (None, "8dc1268f-6947-404b-bb89-95c4f1e5cde9"),
     "amail-mail-maintenance": ("411db6fb-3028-44bd-98db-cb354bfbe922", "293d4049-c56a-40ee-8bc3-ef345a7a4eb7"),
     "amail-trace-sink": (None, "f401659a-d076-4c6a-bfe5-28d0e71698b1"),
 }
@@ -123,7 +126,6 @@ def query(provider, sql: str) -> list:
     FreshProvider intentionally refuses D1 reads before resource creation; do not
     forge its private scope or weaken that boundary for an established database.
     """
-    from direct_contact_health import DatabaseClient
     if sql not in (OWNERSHIP, FREE_INITIAL):
         raise ValueError("production_query_unreviewed")
     rows = DatabaseClient(provider.account, provider.token, "production").query(sql).get("results")
@@ -159,7 +161,16 @@ def migrate(provider) -> dict:
     return {"preserved_addresses": len(before), "owners": rows[0]["owners"], "currency": "USD", "initial_budget_micros": 0}
 
 
-def replace(role: str) -> str:
+def capture_version(provider, role: str, version: str) -> None:
+    """Reuse the observed provider's complete queue catalog for immutable reads."""
+    expected = (expected_bindings("queue-api", prior.QUEUE, realm="production") if role == "api"
+                else prior.retained.maintenance.expected_bindings("production", prior.QUEUE, active=True))
+    config = tomllib.loads((ROOT / CONFIGS[role]).read_text())
+    prior.readback.capture_off(provider, ROLES[role], version, expected_bindings=expected,
+        reviewed=config["observability"], record=lambda state, **facts: prior.journal(role + "_capture", state, **facts))
+
+
+def replace(provider, role: str) -> str:
     """Submit one exact tested role, retaining recovery UUID and removing secret files."""
     component = "trace_sink" if role == "sink" else "mail_api"
     require_artifact(component)
@@ -192,12 +203,7 @@ def replace(role: str) -> str:
     prior.journal(role, "version_captured", version=version)
     prior.output(role + "_version", version)
     if role != "sink":
-        provider = prior.FreshProvider(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"])
-        expected = (expected_bindings("queue-api", prior.QUEUE, realm="production") if role == "api"
-                    else prior.retained.maintenance.expected_bindings("production", prior.QUEUE, active=True))
-        config = tomllib.loads((ROOT / CONFIGS[role]).read_text())
-        prior.readback.capture_off(provider, ROLES[role], version, expected_bindings=expected,
-            reviewed=config["observability"], record=lambda state, **facts: prior.journal(role + "_capture", state, **facts))
+        capture_version(provider, role, version)
     return version
 
 
@@ -214,14 +220,15 @@ def run(mode: str) -> None:
         billing_ready()
     if mode == "upgrade":
         pins = result["pins"]
-        # The owned failed run already submitted and verified this compatible
-        # sink. The current epoch starts there; it is never a generic retry lane.
-        facts = migrate(provider)
-        observe(pins, policy)
-        for role in ("api", "maintenance"):
-            pins[ROLES[role]] = (None, replace(role))
-            result, _, provider = observe(pins, policy)
-            pins = result["pins"]
+        # Owned run37659055164 already verified ownership/Free defaults and
+        # submitted this API. Its first capture-version GET failed before PATCH;
+        # keep that exact code and schema, finish capture and maintenance only.
+        capture_version(provider, "api", pins[ROLES["api"]][1])
+        result, _, provider = observe(pins, policy)
+        pins = result["pins"]
+        pins[ROLES["maintenance"]] = (None, replace(provider, "maintenance"))
+        result, _, provider = observe(pins, policy)
+        facts = {"previously_verified": True, "origin_run": "37659055164", "replayed": False}
     snapshot = {"schema": "production-v020/v1", "origin_run": ORIGIN_RUN,
         "source_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
         "graph": result, "policy_state": policy["state"], "policy_fingerprint": prior.digest(policy),
@@ -230,6 +237,8 @@ def run(mode: str) -> None:
     path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
     for key, value in (("queue_id", prior.QUEUE), ("dlq_id", prior.DLQ),
+                       ("api_version", result["pins"][ROLES["api"]][1]),
+                       ("maintenance_version", result["pins"][ROLES["maintenance"]][1]),
                        ("sink_version", result["pins"][ROLES["sink"]][1]),
                        ("policy_fingerprint", snapshot["policy_fingerprint"]), ("external_fingerprint", snapshot["external_fingerprint"])):
         prior.output(key, value)
@@ -245,7 +254,8 @@ def main() -> int:
     except Exception as error:
         known = prior.FAILURES | {"production_billing_unverified", "production_ownership_changed",
             "production_ownership_scope_exceeded", "production_free_migration_unverified", "production_secrets_missing",
-            "production_query_unreviewed", "production_d1_read_unverified"}
+            "production_query_unreviewed", "production_d1_read_unverified", "fresh_provider_schema_invalid",
+            "fresh_provider_route_unreviewed", "fresh_provider_http_failure", "fresh_provider_read_failed"}
         reason = str(error) if isinstance(error, ValueError) and str(error) in known else prior.graph.failure_reason(error)
         print("production_v020=UNVERIFIED reason=" + reason + " class=" + type(error).__name__)
         return 1
