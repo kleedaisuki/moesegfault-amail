@@ -152,7 +152,7 @@ def direct_forward_snapshot(realm: str, account: str, token: str) -> object:
     return {"role": None}
 
 
-def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_policy: dict | None = None, allow_v012_predecessor: bool = False, allow_missing_issuer_predecessor: bool = False) -> dict:
+def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_policy: dict | None = None, allow_v012_predecessor: bool = False, allow_missing_issuer_predecessor: bool = False, allow_production_v012_predecessor: bool = False) -> dict:
     """Require exact selected graph, independent privacy and unchanged serving brackets."""
     if expected_policy is not None and (realm != "production" or state != "active" or old_crons):
         raise ValueError("split_policy_unverified")
@@ -196,6 +196,12 @@ def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_
             or allow_v012_predecessor or pins[api] != "1f4a056f-5342-46a5-8e32-7eebaea5f7a2"
             or pins.get(maintenance) != "5281d8ef-f3c0-42d4-8331-bafa01923b40"):
         raise ValueError("split_pins_unverified")
+    api_predecessor = maintenance_predecessor = predecessor
+    if allow_production_v012_predecessor:
+        if realm != "production" or state != "active" or allow_v012_predecessor or allow_missing_issuer_predecessor:
+            raise ValueError("split_pins_unverified")
+        api_predecessor = pins[api] == "50bd330d-2f9b-4102-8c8e-9bbaada927fe"
+        maintenance_predecessor = pins[maintenance] == "293d4049-c56a-40ee-8bc3-ef345a7a4eb7"
     before = serving(account, token, pins)
     check_policy()
     forwards = direct_forward_snapshot(realm, account, token)
@@ -203,7 +209,7 @@ def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_
     version = capture.readback(account, token, api, f"versions/{pins[api]}")
     api_crons = old_crons if state in ("legacy-pinned", "prepared") else ()
     # Legacy mixed code is a pinned migration predecessor, never a normal deploy.
-    if (not bindings_match(version, pins[api], phase="queue-api", queue_id=queue, realm=realm, predecessor=predecessor)
+    if (not bindings_match(version, pins[api], phase="queue-api", queue_id=queue, realm=realm, predecessor=api_predecessor)
             or (state not in ("legacy-pinned", "prepared") and not entry_surface_match(version, pins[api], "fetch"))
             or not schedules_match(capture.readback(account, token, api, "schedules"), api_crons)):
         raise ValueError("split_api_unverified")
@@ -216,7 +222,7 @@ def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_
             maintenance_verify(realm, state, account, token, pins[maintenance], queue,
                                api_crons=api_crons, missing_issuer_predecessor=True)
         else:
-            maintenance_verify(realm, state, account, token, pins[maintenance], queue, api_crons=api_crons, predecessor=predecessor)
+            maintenance_verify(realm, state, account, token, pins[maintenance], queue, api_crons=api_crons, predecessor=maintenance_predecessor)
     queues.reconcile(account, token, realm, "readback", topology)
     check_policy()
     if direct_forward_snapshot(realm, account, token) != forwards or serving(account, token, pins) != before:

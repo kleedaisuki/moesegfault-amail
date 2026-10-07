@@ -13,6 +13,10 @@ MAIL_DOMAIN = "mail.moesegfault.dev"
 CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"
 EMAIL_INGRESS_WORKER_NAME = "amail-inbound"
 OPENROUTER_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
+IDENTITY_ISSUER = "https://identity.moesegfault.dev"
+BILLING_BASE_URL = "https://billing.moesegfault.dev"
+BILLING_SUBSCRIBE_ORIGIN = "https://subscribe.moesegfault.dev"
+BILLING_RETURN_URL = "https://amail.moesegfault.dev/billing/return"
 
 [[d1_databases]]
 binding = "MAIL_DB"

@@ -82,7 +82,7 @@ class MailDeployTests(unittest.TestCase):
                 self.assertNotIn(environment[key], logs)
             return code, logs, output.read_text() if output.exists() else ""
 
-    def test_billing_bindings_are_new_staging_capabilities_only(self):
+    def test_billing_bindings_are_required_and_realm_isolated(self):
         """New desired readback requires Billing; historical cohort excludes exactly those keys."""
         from pin_staging_mail import expected_bindings
         from check_mail_maintenance import expected_bindings as maintenance_bindings
@@ -95,7 +95,10 @@ class MailDeployTests(unittest.TestCase):
             expected_names = names | ({"IDENTITY_ISSUER"} if make == makers[1] else set())
             self.assertEqual(set(current) - set(old), expected_names)
             self.assertEqual({name: value for name, value in current.items() if name not in expected_names}, old)
-            self.assertTrue(names.isdisjoint(make("production", False)))
+            production = make("production", False)
+            self.assertTrue(names.issubset(production))
+            self.assertEqual(production["BILLING_BASE_URL"], ("plain_text", "https://billing.moesegfault.dev"))
+            self.assertEqual(set(production) - set(make("production", True)), expected_names)
 
     def test_default_production_and_explicit_staging_capture_exact_pin(self):
         """Existing no-argument production behavior remains main-only and env-free."""

@@ -794,6 +794,7 @@ jobs:
     outputs:
       api_version: ${{ steps.upgrade.outputs.api_version || steps.api.outputs.version }}
       maintenance_version: ${{ steps.upgrade.outputs.maintenance_version }}
+      sink_version: ${{ steps.upgrade.outputs.sink_version }}
       policy_fingerprint: ${{ steps.upgrade.outputs.policy_fingerprint }}
       external_fingerprint: ${{ steps.upgrade.outputs.external_fingerprint }}
     runs-on: ubuntu-latest
@@ -810,6 +811,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       AMAIL_TRACE_QUEUE_ID: ${{ needs.deploy-trace-sink.outputs.queue_id }}
       AMAIL_TRACE_DLQ_ID: ${{ needs.deploy-trace-sink.outputs.dlq_id }}
+      BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
@@ -828,7 +830,7 @@ jobs:
         working-directory: .
         shell: bash
         run: |
-          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN OPENROUTER_API_KEY CF_EMAIL_ROUTING_TOKEN CF_ZONE_ID INGRESS_SECRET; do
+          for key in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN OPENROUTER_API_KEY CF_EMAIL_ROUTING_TOKEN CF_ZONE_ID INGRESS_SECRET BILLING_SERVICE_KEY; do
             if [ -z "${!key}" ]; then
               echo "::error::Missing deployment value $key"
               exit 1
@@ -863,7 +865,7 @@ jobs:
         if: inputs.target == 'production'
         id: upgrade
         working-directory: .
-        run: python infra/deploy/production_upgrade.py upgrade
+        run: python infra/deploy/production_v020.py upgrade
       - name: Preserve partial production write coordinates without policy or contact data
         if: always() && inputs.target == 'production'
         uses: actions/upload-artifact@v4
@@ -941,6 +943,7 @@ jobs:
       AMAIL_UPGRADE_EXTERNAL_FINGERPRINT: ${{ needs.deploy-worker.outputs.external_fingerprint }}
       AMAIL_UPGRADE_API_VERSION: ${{ needs.deploy-worker.outputs.api_version }}
       AMAIL_UPGRADE_MAINTENANCE_VERSION: ${{ needs.deploy-worker.outputs.maintenance_version }}
+      AMAIL_UPGRADE_SINK_VERSION: ${{ needs.deploy-worker.outputs.sink_version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -949,7 +952,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Verify retained owned adapters and unchanged complete split graph
-        run: python infra/deploy/production_upgrade.py verify
+        run: python infra/deploy/production_v020.py verify
 
   deploy-events:
     name: Verify retained production lifecycle consumer
@@ -970,6 +973,7 @@ jobs:
       AMAIL_UPGRADE_EXTERNAL_FINGERPRINT: ${{ needs.deploy-worker.outputs.external_fingerprint }}
       AMAIL_UPGRADE_API_VERSION: ${{ needs.deploy-worker.outputs.api_version }}
       AMAIL_UPGRADE_MAINTENANCE_VERSION: ${{ needs.deploy-worker.outputs.maintenance_version }}
+      AMAIL_UPGRADE_SINK_VERSION: ${{ needs.deploy-worker.outputs.sink_version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -978,7 +982,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Verify retained owned adapters and unchanged complete split graph
-        run: python infra/deploy/production_upgrade.py verify
+        run: python infra/deploy/production_v020.py verify
 
   release-ready:
     name: Gate public site on verified published release
@@ -1513,6 +1517,7 @@ jobs:
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
       CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       AMAIL_PRODUCTION_ENVIRONMENT: production
@@ -1526,7 +1531,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Read exact serving capabilities and current policy without provider writes
-        run: python infra/deploy/production_upgrade.py inspect
+        run: python infra/deploy/production_v020.py inspect
       - name: Preserve non-content owned predecessor readback
         uses: actions/upload-artifact@v4
         with:
@@ -1556,6 +1561,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       AMAIL_TRACE_QUEUE_ID: ${{ vars.AMAIL_TRACE_QUEUE_ID_PRODUCTION }}
       AMAIL_TRACE_DLQ_ID: ${{ vars.AMAIL_TRACE_DLQ_ID_PRODUCTION }}
+      BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
       CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       AMAIL_EXPECTED_WORKER_VERSION: ${{ vars.AMAIL_MAIL_VERSION_PRODUCTION }}
@@ -1583,7 +1589,7 @@ jobs:
       - name: Admit owned active production predecessor without sink or Queue writes
         if: inputs.target == 'production'
         id: upgrade
-        run: python infra/deploy/production_upgrade.py preflight
+        run: python infra/deploy/production_v020.py preflight
       - name: Install pinned private sink deployment tools
         if: inputs.target == 'production-api-only-maintenance'
         run: |

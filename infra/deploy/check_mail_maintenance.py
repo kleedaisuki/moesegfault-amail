@@ -23,8 +23,8 @@ BILLING_VARS = ("IDENTITY_ISSUER", "BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN
 
 
 def realm_vars(realm: str) -> tuple[str, ...]:
-    """Billing settlement capabilities are admitted only for staging."""
-    return VARS + BILLING_VARS if realm == "staging" else VARS
+    """Both isolated realms require the same Billing capability names."""
+    return VARS + BILLING_VARS
 
 
 MISSING_ISSUER_PREDECESSOR = "5281d8ef-f3c0-42d4-8331-bafa01923b40"
@@ -124,7 +124,7 @@ def expected_bindings(realm: str, queue_id: str, *, active: bool = False, predec
     database, bucket = mail_resources(selected)
     return {"MAIL_DB": ("d1", database), "MAIL_BODIES": ("r2_bucket", bucket),
             "TRACE_EVENTS": ("queue", queue_id), "VERSION_METADATA": ("version_metadata", None),
-            **{name: ("secret_text", None) for name in (SECRETS + (("BILLING_SERVICE_KEY",) if realm == "staging" and not predecessor else ()))},
+            **{name: ("secret_text", None) for name in (SECRETS + (("BILLING_SERVICE_KEY",) if not predecessor else ()))},
             **{name: ("plain_text", selected["vars"][name]) for name in (VARS if predecessor else realm_vars(realm))}}
 
 
@@ -164,6 +164,8 @@ def verify(realm: str, state: str, account: str, token: str, version: str, queue
     Routes/domains/callers are checked by the enclosing realm graph, not inferred
     from a failed fetch; this function never claims complete population isolation.
     """
+    if predecessor and realm == "production" and version != "293d4049-c56a-40ee-8bc3-ef345a7a4eb7":
+        raise ValueError("maintenance_pin_unreviewed")
     cadence = expected_schedules(state)
     expected = expected_bindings(realm, queue_id, active=state == "active", predecessor=predecessor)
     if missing_issuer_predecessor:

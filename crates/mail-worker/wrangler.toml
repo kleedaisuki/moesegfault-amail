@@ -14,6 +14,9 @@ CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"
 MAIL_DOMAIN = "mail.moesegfault.dev"
 EMAIL_INGRESS_WORKER_NAME = "amail-inbound"
 OPENROUTER_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
+BILLING_BASE_URL = "https://billing.moesegfault.dev"
+BILLING_SUBSCRIBE_ORIGIN = "https://subscribe.moesegfault.dev"
+BILLING_RETURN_URL = "https://amail.moesegfault.dev/billing/return"
 
 # Direct-forward contact policy and health share Mail D1; no role-Worker lease is bound.
 [[d1_databases]]

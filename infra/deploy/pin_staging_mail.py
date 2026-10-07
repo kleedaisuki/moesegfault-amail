@@ -125,7 +125,7 @@ def expected_bindings(phase: str = "pre-queue", queue_id: str = "", *, realm: st
         "INGRESS_SECRET": ("secret_text", None),
         **{name: ("plain_text", value) for name, value in stage["vars"].items()},
     }
-    if realm == "staging":
+    if realm in ("staging", "production"):
         if predecessor:
             for name in ("BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN", "BILLING_RETURN_URL"):
                 expected.pop(name, None)
@@ -181,6 +181,8 @@ def containment_bindings_match(version: dict, expected_version: str) -> bool:
 def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-queue",
                    queue_id: str = "", realm: str = "staging", predecessor: bool = False) -> bool:
     """Check the current direct-only contract, without historical fallback."""
+    if predecessor and realm == "production" and expected_version != "50bd330d-2f9b-4102-8c8e-9bbaada927fe":
+        return False
     expected = (expected_bindings() if phase == "pre-queue" and realm == "staging"
                 else expected_bindings(phase, queue_id, realm=realm, predecessor=predecessor))
     return _bindings_match(version, expected_version, expected)

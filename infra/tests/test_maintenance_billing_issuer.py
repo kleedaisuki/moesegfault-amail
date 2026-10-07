@@ -22,7 +22,7 @@ class MaintenanceIssuerTests(unittest.TestCase):
         bindings = maintenance.expected_bindings("staging", "b" * 32)
         self.assertEqual(bindings["IDENTITY_ISSUER"],
                          ("plain_text", "https://identity-staging.moesegfault.dev"))
-        self.assertNotIn("IDENTITY_ISSUER", maintenance.expected_bindings("production", "b" * 32))
+        self.assertEqual(maintenance.expected_bindings("production", "b" * 32)["IDENTITY_ISSUER"], ("plain_text", "https://identity.moesegfault.dev"))
 
     def test_exact_repair_retains_every_other_binding(self):
         """Rejecting immutable content still exposes the exact expected map to this test."""
