@@ -198,3 +198,21 @@ two normal-Cron events, retired all four metering addresses and restored zero
 budget. Original 6 CNY events / 22 CNY micros remained unchanged. A stale CNY
 assertion later stopped the ordinary mail probe; the helper-only correction
 `aae6029` changes no deployed runtime bytes and must not replay charged usage.
+
+
+## Final fixed USD acceptance
+
+The complete ordinary browser/native/mail/self-send journey passed in
+[37646418030](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37646418030)
+at exact candidate `aae6029`, successful producer `37645057615`, CLI/Skill bundle
+`11493832761`, and safe authorization artifact `11495350924`. This run deliberately
+omitted the real-meter flag and reused the existing Lite grant, not an activation
+code. Actual USD liability/asynchronous evidence remains separate artifact
+`11494520444` from `37644087065`; the latter's overall failure is not relabeled.
+Final readback
+[37646496526](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37646496526)
+confirmed zero current cap/registered addresses, USD 2 micros in 2 events and
+unchanged CNY 22 micros in 6 events, all delivered. Both remain pending settlement.
+Runtime versions above are unchanged. See `usd-cutover.md` for the consolidated
+source, artifact, actual-mail, trace and cleanup evidence. No production/Identity
+or monetary-payment action was introduced.

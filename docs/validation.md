@@ -6,7 +6,7 @@ in Git history, not competing current-state documents. Evidence recorded on
 
 ## Delivered v0.1.2 — current release
 
-### Delivered v0.2.0 staging — fixed USD deployed; final mail recheck pending
+### Delivered v0.2.0 staging — fixed USD accepted
 
 The owner subsequently approved fixed USD tariffs: Free0, Lite1.50, Plus4.50
 per month; overage0.001/recipient,0.15/GB-month,0.50/address-month. Currency
@@ -30,8 +30,22 @@ reads still returned exactly 6 CNY events / 22 CNY micros. Safe artifact
 `11494520444` proves ordinary14-span and charged-origin18-span ancestry plus
 one separately retained scheduled root. This is liability, not automatic payment.
 The later mail probe failed on its obsolete CNY status assertion. The helper-only
-correction at `aae6029` requires USD and rejects CNY; the remaining ordinary
-mail/self-send acceptance must not repeat charged usage.
+correction at `aae6029` requires USD and rejects CNY. The final ordinary
+[37646418030](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37646418030)
+completed **SUCCESS** without metering confirmation: actual browser/native USD
+authorization, retained human ancestry, SMTP/archive/search/read/delete, exact
+address/route cleanup, and self-send recovery/replay/feedback/inbound all passed.
+Exact successful producer `37645057615` admitted CLI/Skill bundle `11493832761`;
+safe authorization artifact `11495350924` records an existing grant, not code reuse.
+The deployed runtime remains `27c5818` / `86bb06e` (helper/docs were not redeployed).
+
+Final fixed readback
+[37646496526](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37646496526)
+confirmed USD2micros/2events and CNY22micros/6events separately, all outbox entries
+delivered, all eight retained usage-server spans successful, zero registered
+addresses and zero current cap. No repeated charged usage, currency conversion,
+automatic debit, production/Identity deployment or public Release/tag occurred.
+The subsequent metadata/docs-copy CI `37647146356` also completed SUCCESS.
 
 #### Historical CNY baseline and preceding delivery
 

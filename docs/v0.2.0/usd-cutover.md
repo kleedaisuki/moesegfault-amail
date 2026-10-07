@@ -151,8 +151,40 @@ linked to one exact retained scheduled root. The native/application contract
 correctly returned USD; the remaining failure is a stale harness assertion.
 
 The helper now explicitly requires USD and its focused test positively covers
-USD while rejecting CNY as current status. Runtime bytes are unchanged. A fresh
-checks producer and ordinary full mail/browser/self-send acceptance will complete
-the remaining journey WITHOUT another real-meter confirmation. The fixture
-refuses nonzero USD accrued money, so blindly repeating a charged run is not
-permitted. Keep both runs as evidence rather than claiming the first was green.
+USD while rejecting CNY as current status. Runtime bytes are unchanged. The final
+ordinary mail/browser/self-send acceptance below passed WITHOUT another real-meter
+confirmation. The fixture refuses nonzero USD accrued money, so blindly repeating
+a charged run is not permitted. Keep both runs as evidence rather than claiming
+the first was green.
+
+
+## Final USD ordinary mail acceptance and ledger readback
+
+[37646418030](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37646418030)
+completed **SUCCESS** using exact helper/candidate source
+`aae6029e86a2eb2fc350de10afed9215cbd022fd`, admitted by successful checks producer
+[37645057615](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37645057615).
+CLI/Skill bundle `11493832761` is the accepted unpublished candidate. The deployed
+runtime remains Mail `27c5818` and Billing/Subscribe `86bb06e`; helper/docs changes
+were not redeployed. Subsequent documentation/workflow-copy checks `37647146356`
+also passed at `9c9ae77`.
+
+The native journey passed real login, browser cancellation and USD Lite approval,
+normal return navigation, authoritative CLI receipt, 14 retained human/CLI spans,
+SMTP-to-ZIP and reply-relationship search, read/delete, exact address/route cleanup,
+and controlled self-send receipt recovery, same-key replay, delivery feedback and
+inbound observation. Safe authorization artifact `11495350924` records
+`grant_source=existing`, explicit USD and `payment_collection_verified=false`.
+The real-meter flag was intentionally omitted: this successful run did not repeat
+charged usage. The separate real USD monetary/asynchronous proof remains safe
+artifact `11494520444` from `37644087065`; do not claim that earlier overall run
+was green or that the later artifact contains the meter proof.
+
+[Final fixed readback 37646496526](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37646496526)
+completed **SUCCESS** after the mail journey. Mail remains Lite, currency USD,
+accrued 2 micros, registered-address count zero and current budget zero. Billing
+explicitly returns USD 2 micros / 2 events and CNY 22 micros / 6 events; every
+outbox event is delivered and all eight retained usage-server spans report HTTP
+200/success. No USD accrual or CNY history was reset, converted or combined.
+Both balances remain `pending_settlement`, not monetary collection. Production,
+Identity, public releases and tags are untouched.

@@ -348,7 +348,18 @@ one separately retained scheduled root. Normal allocation/retirement generated
 
 This proves real asynchronous causal linkage, not inferred wall-clock proximity.
 The same run's later mail-sending status assertion incorrectly required CNY;
-therefore the overall run was not green. Ordinary mail acceptance is repeated
-with the helper corrected, without the real-meter flag or another charged test.
+therefore the overall run was not green. Ordinary mail acceptance subsequently passed with the helper corrected in
+`37646418030`, without the real-meter flag or another charged test.
 Existing liability and original trace evidence are preserved, not reset or
 synthesized to make a rerun look clean.
+
+
+The final ordinary USD authorization witness `11495350924` from successful
+`37646418030` contains 14 spans on trace `de83c4b044739aa3e6bd57a0d5f3a48e`, Mail
+server `b60ff4a8669c4399`, Billing client `09bd813f1bc5481a` and Billing server
+`0429ae184716e127`. Both CLI and human-authorization ancestry are validated. This
+is separate from the charged-origin/scheduled proof above, not its replacement.
+Final fixed readback `37646496526` found all eight actual retained usage servers
+successful (two USD and six historical CNY), unchanged separate totals and no
+undelivered outbox liability. See `usd-cutover.md` for the complete accepted run
+and candidate/artifact coordinates.
