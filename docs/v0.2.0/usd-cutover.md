@@ -98,3 +98,60 @@ requires zero existing USD accrual/reservations to prevent blind charged reruns.
 It also verifies the original CNY summary remains exactly6 events/22micros.
 Three network reads reserve135seconds inside the unchanged810second envelope.
 No raw currency-conversion receipt or exchange rate is invented.
+
+## Actual initial delivery (2026-10-07)
+
+Billing/Subscribe source86bb06e70a9ba98153230ed25d185031d221e6c2 fully passed
+[37641220454](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37641220454).
+Billing now7a85d66d-b33a-42f2-bc30-5c6e1cafc2c4; Subscribe
+dd8b046a-8f9e-4c3a-9947-3cf96e6cffbb. Migration0006, native/domain/UI tests,
+immutable packaging, staging deployment, capture readbacks and public smoke passed.
+
+Mail source27c58183485e90e544a1ee89dad926cfe38e24e0 passed all compiled/native
+workerd/three-platform/site/performance gates in
+[37641189250](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37641189250).
+Its sink submit succeeded and retained readbacks passed at version
+b088f203-25f3-4497-bea6-8d3c03e79686. API/maintenance/migration/adapter/site
+deployment jobs were never created. The overall run failed at GitHub's workflow
+dispatch service, not a failed application job: public run annotation reports
+Internal server error, correlation60a99e0c-f632-4248-a3bb-fb7d4880933e.
+The jobs/check-run APIs omit that workflow-level annotation; the public summary
+page exposes it. No USD Mail migration or charged test ran in this failed run.
+
+Recovery is a fresh same-source normal staging workflow with a fresh exact graph
+preflight and new immutable same-run artifacts, not a failed-attempt artifact
+provenance override or blind replay of an unknown submit. The previous sink
+submit and complete readback are known, and remaining API/schema submits never
+started. Its CLI bundle11492886825 is compiled evidence only because the run
+was not overall successful; do not use it as a successful E2E producer.
+
+The first fresh dispatch attempt returned HTTP500 and a bounded run listing
+confirmed no new run existed. After backoff, a new same-source normal staging
+run [37642433233](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37642433233)
+completed SUCCESS, including actual0015 migration and exact graph/adapter
+readbacks. No failed-attempt provenance override was added. Current versions:
+
+| Surface | USD serving version |
+| --- | --- |
+| Mail API | c33b65b1-d2a4-4902-9fa3-15e74baf1819 |
+| Scheduled maintenance | acbf4790-6e80-4bd3-aab2-095c9937759d |
+| Private Mail trace sink | f70bf19f-8f08-45a3-b142-244d34890db7 |
+| Ingress | 7ef1314c-1d4d-418e-8c3e-44025854271f |
+| Lifecycle | bbf2df6b-ceb7-433c-90da-b9ee459cf5b6 |
+
+Successful exact-source candidate bundle11492059864 belongs to37642433233.
+Controlled real USD acceptance37644087065 completed the browser and monetary
+portion successfully, then failed at mail_sending_status_overage_budget: the
+pre-existing mail probe still asserted CNY. Safe artifact11494520444 proves
+14 actual excess address-seconds,2USDmicros in2delivered events, zero restored
+budget, all4metering addresses retired, and unchanged6CNYevents/22CNYmicros.
+It also proves ordinary14-span human/CLI ancestry and18charged-origin spans
+linked to one exact retained scheduled root. The native/application contract
+correctly returned USD; the remaining failure is a stale harness assertion.
+
+The helper now explicitly requires USD and its focused test positively covers
+USD while rejecting CNY as current status. Runtime bytes are unchanged. A fresh
+checks producer and ordinary full mail/browser/self-send acceptance will complete
+the remaining journey WITHOUT another real-meter confirmation. The fixture
+refuses nonzero USD accrued money, so blindly repeating a charged run is not
+permitted. Keep both runs as evidence rather than claiming the first was green.

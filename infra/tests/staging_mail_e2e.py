@@ -362,7 +362,7 @@ def progressive_surfaces(binary: Path, env: dict[str, str]) -> None:
           and outbound["remaining_included"] == max(0, outbound["included"] - outbound["accepted"] - outbound["reserved"]),
           "sending_status_monthly_allowance")
     overage = billing.get("overage", {})
-    check(type(overage.get("enabled")) is bool and overage.get("currency") == "CNY"
+    check(type(overage.get("enabled")) is bool and overage.get("currency") == "USD"
           and all(type(overage.get(key)) is int and overage[key] >= 0
                   for key in ("budget_micros", "accrued_micros", "reserved_micros", "remaining_budget_micros")),
           "sending_status_overage_budget")

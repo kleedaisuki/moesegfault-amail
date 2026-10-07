@@ -64,6 +64,7 @@ class ProbeContractTests(unittest.TestCase):
     def test_missing_send_intent_requires_stop(self):
         """The probe accepts native empty events but rejects resend-like recovery."""
         topics = ["send", "events", "search", "machine"]
+        currency = "USD"
 
         def values(binary, env, *args, failure):
             """Return native CLI shapes only, never the HTTP events envelope."""
@@ -84,7 +85,7 @@ class ProbeContractTests(unittest.TestCase):
                      "links": {"events": "/v1/events", "send_receipt": "/v1/sends/{idempotency_key}", "billing": "/v1/billing"},
                      "billing": {"plan": "free", "period_start": 1, "period_end": 2,
                                  "outbound": {"meter": "outbound_recipients", "included": 100, "accepted": 0, "reserved": 0, "remaining_included": 100},
-                                 "overage": {"enabled": False, "currency": "CNY", "budget_micros": 0, "accrued_micros": 0, "reserved_micros": 0, "remaining_budget_micros": 0}},
+                                 "overage": {"enabled": False, "currency": currency, "budget_micros": 0, "accrued_micros": 0, "reserved_micros": 0, "remaining_budget_micros": 0}},
                      "quotas": [{"kind": k, "used": 0, "limit": limit, "remaining": limit, "reset_at": "2026-10-04T00:00:00Z"}
                                 for k, limit in (("send_minute", 2), ("send_global", 10_000))]}]
 
@@ -101,6 +102,11 @@ class ProbeContractTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0][1:3], ["--machine", "send-status"])
             run.return_value = error("retry_later")
             with self.assertRaisesRegex(probe.ProbeFailure, "missing_intent_no_resend"):
+                probe.progressive_surfaces(Path("amail"), {})
+            # Historical CNY remains readable elsewhere, not acceptable as current USD status.
+            currency = "CNY"
+            run.return_value = error("stop")
+            with self.assertRaisesRegex(probe.ProbeFailure, "sending_status_overage_budget"):
                 probe.progressive_surfaces(Path("amail"), {})
 
 
