@@ -1,5 +1,6 @@
 /** Native scheduled Billing reconciliation using real quota SQL and isolated D1/R2. */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -8,7 +9,12 @@ import { applyMigrations, seedResourceAccount } from "./migration-fixture.mjs";
 import { workerModuleRules } from "./worker-module-rules.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const issuer = "https://identity-staging.moesegfault.dev";
+// Load the actual deployment variables: fixture-only issuer injection hid a live failure.
+const stagingVars = JSON.parse(execFileSync(process.env.PYTHON || (process.platform === "win32" ? "python" : "python3"),
+  ["-c", "import json,tomllib; print(json.dumps(tomllib.load(open('crates/mail-worker/wrangler-maintenance.toml','rb'))['env']['staging']['vars']))"],
+  { cwd: root, encoding: "utf8" }));
+const issuer = stagingVars.IDENTITY_ISSUER;
+assert.equal(issuer, "https://identity-staging.moesegfault.dev");
 const subject = "synthetic-outbox-owner";
 const ownerId = "synthetic-opaque-billing-owner";
 const authorizationId = "abcdefghijklmnopqrstuvwx01234567";
@@ -18,7 +24,9 @@ const originalServerSpan = "abcdef0123456789";
 const originContext = `00-${originalTrace}-${originalServerSpan}-01`;
 
 /** Generate one real overage event through production reservation/acceptance triggers. */
-async function fixture(run) {
+async function fixture(run, { omitIssuer = false } = {}) {
+  const deploymentVars = { ...stagingVars };
+  if (omitIssuer) delete deploymentVars.IDENTITY_ISSUER;
   const calls = [], liabilities = new Map(), records = [], waiters = [], eventTraceparents = [];
   let failure = false;
   const workers = [{
@@ -27,12 +35,8 @@ async function fixture(run) {
     modulesRoot: root, modulesRules: workerModuleRules,
     d1Databases: ["MAIL_DB"], r2Buckets: ["MAIL_BODIES"],
     queueProducers: { TRACE_EVENTS: "synthetic-outbox-traces" },
-    bindings: { IDENTITY_ISSUER: issuer, MAIL_DOMAIN: "mail-staging.moesegfault.dev",
-      CF_ZONE_ID: "synthetic-zone", CF_EMAIL_ROUTING_TOKEN: "synthetic-routing-token",
-      EMAIL_INGRESS_WORKER_NAME: "synthetic-ingress",
-      BILLING_BASE_URL: "https://billing-staging.moesegfault.dev",
-      BILLING_SUBSCRIBE_ORIGIN: "https://subscribe-staging.moesegfault.dev",
-      BILLING_RETURN_URL: "https://amail-staging.moesegfault.dev/billing/return",
+    bindings: { ...deploymentVars, CF_ZONE_ID: "synthetic-zone",
+      CF_EMAIL_ROUTING_TOKEN: "synthetic-routing-token",
       BILLING_SERVICE_KEY: "synthetic-outbox-service-key" },
     async outboundService(request) {
       if (request.method === "GET" && request.url === "https://api.cloudflare.com/client/v4/zones/synthetic-zone/email/routing/rules?per_page=50&page=1") {
@@ -153,3 +157,11 @@ test("lost local ACK replays the same immutable event rather than a second liabi
   assert.equal(liabilities.size, 1, "same event must remain one logical external liability");
   assert.ok(Number.isInteger((await row()).delivered_at));
 }));
+
+
+test("missing deployed issuer retains pending liability without contacting Billing", async () => fixture(async ({ tick, row, calls, liabilities }) => {
+  await tick();
+  assert.equal((await row()).delivered_at, null);
+  assert.equal(calls.length, 0, "configuration fails before external Billing egress");
+  assert.equal(liabilities.size, 0);
+}, { omitIssuer: true }));

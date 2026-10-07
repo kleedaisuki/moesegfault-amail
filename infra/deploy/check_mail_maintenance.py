@@ -19,13 +19,15 @@ from pin_staging_mail import ACCOUNT, UUID, _bindings_match, mail_resources, ser
 REALMS = ("production", "staging")
 SECRETS = ("CF_EMAIL_ROUTING_TOKEN", "OPENROUTER_API_KEY")
 VARS = ("MAIL_DOMAIN", "CF_ZONE_ID", "EMAIL_INGRESS_WORKER_NAME", "OPENROUTER_EMBEDDING_MODEL")
-BILLING_VARS = ("BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN", "BILLING_RETURN_URL")
+BILLING_VARS = ("IDENTITY_ISSUER", "BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN", "BILLING_RETURN_URL")
 
 
 def realm_vars(realm: str) -> tuple[str, ...]:
     """Billing settlement capabilities are admitted only for staging."""
     return VARS + BILLING_VARS if realm == "staging" else VARS
 
+
+MISSING_ISSUER_PREDECESSOR = "5281d8ef-f3c0-42d4-8331-bafa01923b40"
 
 CADENCE = ("*/5 * * * *",)
 STATES = ("legacy-pinned", "prepared", "old-draining", "paused", "active", "new-draining", "legacy-recovery")
@@ -155,7 +157,8 @@ def expected_schedules(state: str) -> tuple[str, ...]:
 
 
 def verify(realm: str, state: str, account: str, token: str, version: str, queue_id: str,
-           *, api_crons: tuple[str, ...] = (), predecessor: bool = False) -> None:
+           *, api_crons: tuple[str, ...] = (), predecessor: bool = False,
+           missing_issuer_predecessor: bool = False) -> None:
     """Bracket the exact serving deployment around immutable and non-versioned reads.
 
     Routes/domains/callers are checked by the enclosing realm graph, not inferred
@@ -163,6 +166,13 @@ def verify(realm: str, state: str, account: str, token: str, version: str, queue
     """
     cadence = expected_schedules(state)
     expected = expected_bindings(realm, queue_id, active=state == "active", predecessor=predecessor)
+    if missing_issuer_predecessor:
+        # This is one immutable failed v0.2 cohort, not a generally optional issuer.
+        # The old v0.1 cohort remains separately defined by predecessor=True.
+        if (realm != "staging" or state != "active" or predecessor or api_crons
+                or version != MISSING_ISSUER_PREDECESSOR):
+            raise ValueError("maintenance_issuer_predecessor_unreviewed")
+        del expected["IDENTITY_ISSUER"]
     if ACCOUNT.fullmatch(account) is None or not token or UUID.fullmatch(version) is None:
         raise ValueError("maintenance_pin_unreviewed")
     script = script_name(realm)
@@ -188,6 +198,17 @@ def verify(realm: str, state: str, account: str, token: str, version: str, queue
         raise ValueError("api_schedule_unverified")
     if serving_deployment(read("deployments?per_page=1&page=1")) != first:
         raise ValueError("maintenance_deployment_changed")
+
+
+def verify_missing_issuer_predecessor(account: str, token: str, queue_id: str) -> None:
+    """Admit only the fixed failed staging cohort for a maintenance-only repair.
+
+    The caller must separately bracket the unchanged API, sink and complete queue
+    graph. All normal replacement readbacks require the issuer; this exception
+    retains the predecessor's Billing secret and every other exact capability.
+    """
+    verify("staging", "active", account, token, MISSING_ISSUER_PREDECESSOR, queue_id,
+           missing_issuer_predecessor=True)
 
 
 def public_surfaces_absent(account: str, token: str, script: str) -> None:

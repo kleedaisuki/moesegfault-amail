@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging-inspect, staging, staging-e2e, staging-billing-diagnose, production-inspect, production, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [checks, staging-inspect, staging, staging-e2e, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
         description: Documented RUN_* or INSPECT_* confirmation; normal split upgrade preserves live policy
         required: false
@@ -89,7 +89,7 @@ permissions:
 # Checks can supersede obsolete checks; shared-state manual operations never cancel each other.
 # Keep the existing manual group so in-flight acceptance remains mutually exclusive.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose' || inputs.target == 'staging-maintenance-repair')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
@@ -539,7 +539,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       github.event_name == 'pull_request' ||
-      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online')))
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || inputs.target == 'staging-maintenance-repair' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online')))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -675,7 +675,7 @@ jobs:
       always() && (
         github.event_name == 'push' ||
         github.event_name == 'pull_request' ||
-        (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online')))
+        (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || inputs.target == 'staging-maintenance-repair' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online')))
       )
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -747,7 +747,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       github.event_name == 'pull_request' ||
-      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online')))
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging' || inputs.target == 'staging-maintenance-repair' || (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -1749,3 +1749,57 @@ jobs:
           python-version: '3.12'
       - name: Project only fixed synthetic outbox and safe retained spans
         run: python infra/tests/staging_billing_diagnose.py
+
+  staging-maintenance-repair:
+    name: Repair pinned staging scheduled Billing realm
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging-maintenance-repair' && inputs.confirm == 'RUN_STAGING_MAINTENANCE_ISSUER_REPAIR_V020' && github.ref == 'refs/heads/codex/v0.2.0-billing'
+    needs: [worker-build, worker, dns]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
+      AMAIL_STAGING_ISSUER_REPAIR_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_STAGING_DEPLOY_CONFIRM: RUN_STAGING_V020
+      AMAIL_EXPECTED_WORKER_VERSION: 1f4a056f-5342-46a5-8e32-7eebaea5f7a2
+      AMAIL_EXPECTED_MAINTENANCE_VERSION: 5281d8ef-f3c0-42d4-8331-bafa01923b40
+      AMAIL_EXPECTED_TRACE_SINK_VERSION: 56c17824-679f-4427-bcc9-4584d2510208
+      AMAIL_TRACE_QUEUE_ID: fcee510036af42c189e28c0b6ff9508e
+      AMAIL_TRACE_DLQ_ID: f023f804b7bd4d8691fbfcb60416a001
+      AMAIL_TRACE_TOPOLOGY: api-scheduled
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.worker-build.outputs.artifact_id }}
+          path: .temp/ci/worker-built
+          merge-multiple: true
+      - name: Restore exact same-run tested modules
+        run: python infra/ci/worker_artifact.py restore
+      - name: Install pinned deployment client
+        run: npm install --global wrangler@4.142.0
+      - name: Repair only the pinned scheduled Worker
+        run: python infra/deploy/repair_staging_billing_issuer.py
+      - name: Preserve safe repair evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-maintenance-issuer-repair-${{ github.run_id }}
+          path: .temp/staging-maintenance-issuer-repair.json
+          if-no-files-found: ignore
+          retention-days: 14

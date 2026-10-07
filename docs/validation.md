@@ -6,7 +6,7 @@ in Git history, not competing current-state documents. Evidence recorded on
 
 ## Delivered v0.1.2 — current release
 
-### Delivered v0.2.0 staging; additional metering acceptance in progress
+### Delivered v0.2.0 staging; scheduled Billing configuration repair in progress
 
 The owner requested Billing integration and staging delivery on 2026-10-07, not
 production publication. Candidate branch `codex/v0.2.0-billing` starts at
@@ -109,9 +109,14 @@ finished **successfully**, using exact admitted `de427af` candidate bytes:
 
 The latest local helper-only suite passes 219 infrastructure tests. An additional
 explicitly opted-in real address-overage/normal-Cron/Billing-ledger acceptance is
-implemented but **not yet executed**. Its temporary synthetic budget must return
-to zero, its task addresses must retire, and positive liabilities must remain
-`pending_settlement`, not falsely described as payment collection. No production
+executed in [37625486364](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37625486364)
+from `9e91fa1`, but failed with `billing_metering_event_not_delivered`. The helper
+completed independent mandatory task-address retirement and zero-budget restoration
+before entering that failed delivery poll. Source diagnosis found that the real
+scheduled Worker config omitted `IDENTITY_ISSUER`, required by the Billing bridge;
+the native outbox fixture supplied that variable manually and masked the mismatch.
+A staging-only configuration correction and config-derived regression are in progress.
+Positive liabilities remain `pending_settlement`, never payment collection. No production
 deployment, public Release/tag or Identity-sector change was performed.
 
 ### v0.1.2 publication evidence

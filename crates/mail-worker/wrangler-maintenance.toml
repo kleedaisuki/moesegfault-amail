@@ -58,7 +58,8 @@ routes = []
 logpush = false
 
 [env.staging.vars]
-# Scheduled usage outbox settlement uses only the staging Billing authority.
+# Scheduled usage reconciliation loads the same issuer-scoped Billing contract as the API.
+IDENTITY_ISSUER = "https://identity-staging.moesegfault.dev"
 BILLING_BASE_URL = "https://billing-staging.moesegfault.dev"
 BILLING_SUBSCRIBE_ORIGIN = "https://subscribe-staging.moesegfault.dev"
 BILLING_RETURN_URL = "https://amail-staging.moesegfault.dev/billing/return"

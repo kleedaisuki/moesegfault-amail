@@ -86,13 +86,15 @@ class MailDeployTests(unittest.TestCase):
         """New desired readback requires Billing; historical cohort excludes exactly those keys."""
         from pin_staging_mail import expected_bindings
         from check_mail_maintenance import expected_bindings as maintenance_bindings
-        for make in (lambda realm, predecessor: expected_bindings("queue-api", "b" * 32, realm=realm, predecessor=predecessor),
-                     lambda realm, predecessor: maintenance_bindings(realm, "b" * 32, predecessor=predecessor)):
+        makers = (lambda realm, predecessor: expected_bindings("queue-api", "b" * 32, realm=realm, predecessor=predecessor),
+                     lambda realm, predecessor: maintenance_bindings(realm, "b" * 32, predecessor=predecessor))
+        for make in makers:
             current = make("staging", False)
             old = make("staging", True)
             names = {"BILLING_SERVICE_KEY", "BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN", "BILLING_RETURN_URL"}
-            self.assertEqual(set(current) - set(old), names)
-            self.assertEqual({name: value for name, value in current.items() if name not in names}, old)
+            expected_names = names | ({"IDENTITY_ISSUER"} if make == makers[1] else set())
+            self.assertEqual(set(current) - set(old), expected_names)
+            self.assertEqual({name: value for name, value in current.items() if name not in expected_names}, old)
             self.assertTrue(names.isdisjoint(make("production", False)))
 
     def test_default_production_and_explicit_staging_capture_exact_pin(self):

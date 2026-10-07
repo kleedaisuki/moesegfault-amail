@@ -16,7 +16,7 @@ identity and file hashes, and refuses changed bytes. API is fetch-only with empt
 Cron; private maintenance alone owns scheduled work. Trace sink is Queue-only,
 and realm-isolated lifecycle/ingress graphs remain independently read back.
 Production admission and confirmations are unchanged. Initial V020 predecessor
-admission may omit the four Billing bindings only for the exact source-owned
+admission may omit the four API Billing bindings (and the maintenance issuer) only for the exact source-owned
 V012 API `01f14a8e-d5b1-41f9-9f8c-325c2e288ba7` and maintenance
 `3d23d537-6379-4fcb-84c2-2c1b8a9f4857` cohort. Every other graph and all
 post-deploy readbacks require the full desired binding set; there is no generic
@@ -93,3 +93,43 @@ and preserves fixed downstream failure labels without exposing provider text.
 A focused regression reproduces successful inspection with missing caller pins,
 proves refusal and zero snapshot writes, and confirms observed IDs remain unable
 to replace reviewed ownership. All 21 staging-rollout tests pass locally.
+
+
+## Missing maintenance issuer repair (2026-10-07)
+
+The real extra metering run `37625486364` retained three positive address-second
+liabilities but could not deliver them. Fixed diagnostic run `37627785234`
+observed 15 accrued micros (7 + 4 + 4), zero Billing events, zero active task
+addresses, and the human budget restored to zero. `billing::Configuration::load`
+requires `IDENTITY_ISSUER`; the deployed maintenance TOML omitted it, while the
+native outbox fixture independently injected it. Thus scheduling and durable
+metering succeeded, but bridge configuration failed before the dependency call.
+This is a deployment-contract defect, not evidence that the event was paid or
+that lowering the cap should erase an already-authorized liability.
+
+The desired staging maintenance vars now include the same explicit issuer as
+the API. Production config is unchanged. The native outbox fixture loads the
+actual staging TOML vars rather than independently inventing a configuration;
+a negative case removes only the issuer and asserts that pending liability
+survives with no Billing egress. Normal immutable readback requires the issuer.
+
+`verify_missing_issuer_predecessor(account, token, queue_id)` admits only active
+staging maintenance version `5281d8ef-f3c0-42d4-8331-bafa01923b40`, absent exactly
+`IDENTITY_ISSUER`. It still requires all Billing URLs, the Billing service secret,
+D1/R2/Queue/version bindings, private scheduled-only surface, capture-off metadata,
+five-minute cadence and empty API Cron. Its caller must bracket the full graph,
+including unchanged API `1f4a056f-5342-46a5-8e32-7eebaea5f7a2` and sink
+`56c17824-679f-4427-bcc9-4584d2510208`, before a maintenance-only submit of the
+same-run tested artifact, then perform strict normal graph readback. This
+exception grants no production, other-version, queue, secret or generic missing
+binding fallback. No repair has been deployed merely by changing this source.
+
+Actual fixed diagnostic [37627785234](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37627785234)
+confirmed Lite, zero budget, zero registered addresses, accrued 15 CNY micros,
+three undelivered address events (quantities 7/3/4, amounts 7/4/4 micros), two
+attempts each, zero Billing events/amount, and no Billing usage-request spans.
+This matches configuration failure before a dependency span/request is created.
+The repair uses an explicit staging-only CI target, same-run compiled/workerd
+artifact and infrastructure gates, full graph brackets, one existing maintenance
+submit and strict post-readback. API, sink, queue graph, public send hold and
+five-minute cadence must remain unchanged. No backlog is seeded, edited or deleted.

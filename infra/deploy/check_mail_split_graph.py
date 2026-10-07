@@ -152,7 +152,7 @@ def direct_forward_snapshot(realm: str, account: str, token: str) -> object:
     return {"role": None}
 
 
-def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_policy: dict | None = None, allow_v012_predecessor: bool = False) -> dict:
+def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_policy: dict | None = None, allow_v012_predecessor: bool = False, allow_missing_issuer_predecessor: bool = False) -> dict:
     """Require exact selected graph, independent privacy and unchanged serving brackets."""
     if expected_policy is not None and (realm != "production" or state != "active" or old_crons):
         raise ValueError("split_policy_unverified")
@@ -192,6 +192,10 @@ def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_
         from staging_resume import ACTIVE_API, ACTIVE_MAINTENANCE
         predecessor = (realm == "staging" and state == "active"
                        and pins[api] == ACTIVE_API and pins[maintenance] == ACTIVE_MAINTENANCE)
+    if allow_missing_issuer_predecessor and (realm != "staging" or state != "active"
+            or allow_v012_predecessor or pins[api] != "1f4a056f-5342-46a5-8e32-7eebaea5f7a2"
+            or pins.get(maintenance) != "5281d8ef-f3c0-42d4-8331-bafa01923b40"):
+        raise ValueError("split_pins_unverified")
     before = serving(account, token, pins)
     check_policy()
     forwards = direct_forward_snapshot(realm, account, token)
@@ -208,7 +212,11 @@ def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_
     if legacy:
         maintenance_absent(account, token, maintenance)
     else:
-        maintenance_verify(realm, state, account, token, pins[maintenance], queue, api_crons=api_crons, predecessor=predecessor)
+        if allow_missing_issuer_predecessor:
+            maintenance_verify(realm, state, account, token, pins[maintenance], queue,
+                               api_crons=api_crons, missing_issuer_predecessor=True)
+        else:
+            maintenance_verify(realm, state, account, token, pins[maintenance], queue, api_crons=api_crons, predecessor=predecessor)
     queues.reconcile(account, token, realm, "readback", topology)
     check_policy()
     if direct_forward_snapshot(realm, account, token) != forwards or serving(account, token, pins) != before:
