@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging-inspect, staging, staging-e2e, production-inspect, production, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [checks, staging-inspect, staging, staging-e2e, staging-billing-diagnose, production-inspect, production, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
         description: Documented RUN_* or INSPECT_* confirmation; normal split upgrade preserves live policy
         required: false
@@ -89,7 +89,7 @@ permissions:
 # Checks can supersede obsolete checks; shared-state manual operations never cancel each other.
 # Keep the existing manual group so in-flight acceptance remains mutually exclusive.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
@@ -1732,3 +1732,20 @@ jobs:
         run: python crates/mail-worker/check_observability.py --realm staging --mode sink
       - name: Verify staging public sending remains held after sink readback
         run: python infra/operator/check_send_hold.py --target staging
+
+  staging-billing-diagnose:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging-billing-diagnose' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'DIAGNOSE_STAGING_METERING_37625486364'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: staging
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Project only fixed synthetic outbox and safe retained spans
+        run: python infra/tests/staging_billing_diagnose.py
