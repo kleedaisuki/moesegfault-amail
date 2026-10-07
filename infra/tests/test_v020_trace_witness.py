@@ -107,11 +107,12 @@ class TraceWitnessTest(unittest.TestCase):
                 """Respect the reader's requested maximum bytes."""
                 return json.dumps(envelope).encode()[:limit]
 
-        with patch("urllib.request.OpenerDirector.open", return_value=Reply()):
+        with patch("urllib.request.OpenerDirector.open", return_value=Reply()) as call:
             result = trace.read_records("a" * 32, "SYNTHETIC_PRIVATE_API_TOKEN",
                                         trace.SCRIPTS["mail_api"], TRACE, 1000, 2000)
         self.assertEqual(result, [row])
         self.assertNotIn("private", json.dumps(result))
+        self.assertEqual(call.call_args.args[0].get_header("User-agent"), "amail-staging-witness/0.2.0")
 
     def test_service_reader_uses_fixed_post_and_auth_header_only(self):
         """Billing/Subscribe spans are D1 records, never HTTP console metadata."""
@@ -138,6 +139,7 @@ class TraceWitnessTest(unittest.TestCase):
         request = call.call_args.args[0]
         self.assertEqual(request.full_url, "https://billing-staging.moesegfault.dev/v1/service/amail/trace-query")
         self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("User-agent"), "amail-staging-witness/0.2.0")
         self.assertEqual(json.loads(request.data), {"trace_id": TRACE})
         self.assertEqual(result, [row])
         self.assertNotIn("SYNTHETIC_PRIVATE_SERVICE_KEY", json.dumps(result))

@@ -202,3 +202,49 @@ targeted `rustfmt` parsing and `node --check` for the expanded compiled sink tes
 passed; scoped `git diff --check` passed. Rust/native sink execution and live
 retained delivery remain hosted/staging acceptance requirements, not inferred
 from these static and mocked checks.
+
+### Real retained-reader client identification failure and repair
+
+The Free browser journey in run
+[37619464034](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37619464034)
+completed cancellation, approval, return-page navigation and the authoritative CLI
+receipt. Its terminal failure was the retained reader's fixed diagnostic
+`billing_retained_trace_unverified_billing_read_retained_trace_service_forbidden`.
+The safe journey coordinates are retained in
+`.temp/v020-free-37619464034/staging-billing-evidence.json`.
+
+A bounded follow-up compared the same machine, fixed Billing/Subscribe staging
+`POST /v1/service/amail/trace-query`, identical valid service credential and the
+same trace ID from that evidence. The credential stayed in process memory. Only
+status, media type, known response keys and validated span counts were printed;
+error response bodies, headers, reason strings and raw provider prose were not
+read or persisted.
+
+| Client | Billing result | Subscribe result |
+| --- | --- | --- |
+| Python urllib default client identifier | 403, `text/plain` | 403, `text/plain` |
+| Same Python request with `User-Agent: amail-staging-witness/0.2.0` | 200, `application/json`, `{schema_version, spans}` | 200, `application/json`, `{schema_version, spans}` |
+| Node fetch default client | 200, `application/json`, same schema | 200, `application/json`, same schema |
+
+This controlled comparison establishes a client-identifier-dependent response
+difference and rules out an invalid service key as the explanation for these
+specific 403 responses. It does **not** identify a particular WAF rule, bot score,
+network intermediary or policy implementation. No security settings, permissions,
+credentials, authentication flow or deployed production code were changed.
+
+The witness now identifies itself honestly with that fixed product/version user
+agent, without impersonating a browser. Focused tests assert this header on both
+fixed readers while preserving all scope, redirect, authentication and byte limits.
+All ten reader/diagnostic tests passed with `ResourceWarning` treated as errors;
+syntax and scoped diff checks passed.
+
+Using the repaired reader against only the six evidence trace IDs subsequently
+validated 11 Billing spans and eight Subscribe spans. The approval creation trace
+contained four validated spans from each service, including the closed approval
+operation. A second bounded read of those same six IDs confirmed one actual
+Subscribe approval server → Subscribe dependency client → Billing authorization
+server parent chain on the approval trace. `connected_authorization` also returned
+true using the recorded creation-context ancestor set, without inventing any
+Mail or CLI span. This confirms the service read and safe-envelope path after the fix;
+it does not substitute for the final hosted Mail-sink/CLI/Billing/Subscribe retained
+ancestor-chain witness, which must be rerun against the admitted helper artifact.

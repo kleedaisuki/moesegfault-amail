@@ -19,6 +19,9 @@ SERVICE_ORIGINS = {"billing": "https://billing-staging.moesegfault.dev",
                    "subscribe": "https://subscribe-staging.moesegfault.dev"}
 MAX_REPLY = 2_000_000
 MAX_EVENTS = 128
+# Identify the actual test client; Python's default identifier receives an edge 403 on staging.
+# This is not browser impersonation and does not change authentication or edge policy.
+USER_AGENT = "amail-staging-witness/0.2.0"
 SAFE_INTEGER = (1 << 53) - 1
 BASE_FIELDS = {"schema_version", "event_id", "service", "operation", "phase",
                "trace_id", "span_id", "parent_span_id", "occurred_at_ms",
@@ -192,7 +195,8 @@ def read_records(account: str, token: str, script: str, trace_id: str, start_ms:
     body = query_body(script, trace_id, start_ms, end_ms)
     request = urllib.request.Request(f"https://api.cloudflare.com/client/v4/accounts/{account}/workers/observability/telemetry/query",
                                     data=json.dumps(body).encode(), method="POST",
-                                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+                                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                                             "User-Agent": USER_AGENT})
     try:
         with urllib.request.build_opener(RejectRedirect).open(request, timeout=20) as response:
             raw = response.read(MAX_REPLY + 1)
@@ -241,7 +245,8 @@ def read_service_records(service: str, service_key: str, trace_id: str) -> list[
         raise TraceWitnessError("retained_trace_scope_or_credentials_invalid")
     request = urllib.request.Request(f"{SERVICE_ORIGINS[service]}/v1/service/amail/trace-query",
                                     data=json.dumps({"trace_id": trace_id}).encode(), method="POST",
-                                    headers={"Authorization": f"Bearer {service_key}", "Content-Type": "application/json"})
+                                    headers={"Authorization": f"Bearer {service_key}", "Content-Type": "application/json",
+                                             "User-Agent": USER_AGENT})
     try:
         with urllib.request.build_opener(RejectRedirect).open(request, timeout=20) as response:
             raw = response.read(MAX_REPLY + 1)
