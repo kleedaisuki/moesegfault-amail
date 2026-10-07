@@ -44,10 +44,11 @@ function ownerId() {
 /** A fresh native Worker/database with a closed, inspectable service transport. */
 async function fixture(run, { traceCapture = false } = {}) {
   const calls = [], records = [], waiters = [];
-  let remoteState = "pending", failure = false, incorrectOwner = false;
+  let remoteState = "pending", failure = false, incorrectOwner = false, legacyCurrency = false;
   const jwk = publicKey.export({ format: "jwk" });
   const binding = () => ({ owner_id: incorrectOwner ? "foreign-owner" : ownerId(), product_id: "amail",
-    plan_id: "amail-lite", currency: "CNY", contract_version: "amail-v0.2.0",
+    plan_id: "amail-lite", currency: legacyCurrency ? "CNY" : "USD",
+    contract_version: legacyCurrency ? "amail-v0.2.0" : "amail-v0.2.0-usd-v1",
     overage_budget_micros: 5_000_000, valid_until: Math.floor(Date.now() / 1000) + 86400,
     updated_at: Math.floor(Date.now() / 1000), authorization_id: remote });
   const workers = [{
@@ -75,6 +76,7 @@ async function fixture(run, { traceCapture = false } = {}) {
       if (failure) return Response.json({ private: "SYNTHETIC_PRIVATE_PROVIDER_ERROR" }, { status: 503 });
       if (request.method === "POST" && request.url === `${billing}/v1/service/amail/authorizations`) {
         assert.equal(body.owner_id, ownerId());
+        assert.equal(body.currency, "USD");
         assert.equal(body.overage_budget_micros, 0, "agent cannot grant itself spending consent");
         return Response.json({ authorization_id: remote, authorization_url: authorizationUrl,
           expires_at: Math.floor(Date.now() / 1000) + 1800 });
@@ -131,7 +133,8 @@ async function fixture(run, { traceCapture = false } = {}) {
     };
     await run({ request, create, account, db, calls, traces,
       state: value => { remoteState = value; }, fail: value => { failure = value; },
-      wrongOwner: value => { incorrectOwner = value; } });
+      wrongOwner: value => { incorrectOwner = value; },
+      legacyCurrency: value => { legacyCurrency = value; } });
   } finally { await mf.dispose(); }
 }
 
@@ -208,3 +211,19 @@ test("CLI-to-Mail-to-Billing causality uses the exact native retained client spa
   }
   assert.doesNotMatch(JSON.stringify(records), /synthetic-service-credential|amail\/authorize|synthetic-billing-owner|SYNTHETIC_PRIVATE/);
 }, { traceCapture: true }));
+
+/** Historical paid rights remain usable; a CNY approval never grants USD spending. */
+test("legacy CNY authority preserves Lite access but requires fresh USD spending consent", async () => fixture(async ({ create, request, account, state, legacyCurrency }) => {
+  assert.equal((await create()).status, 200);
+  state("approved"); legacyCurrency(true);
+  assert.equal((await request(`/v1/billing/sessions/${key}`)).status, 200);
+  assert.deepEqual(await account(), { plan: "lite", overage_budget_micros: 0 });
+  const response = await request("/v1/billing");
+  assert.equal(response.status, 200);
+  const status = await response.json();
+  assert.equal(status.account.currency, "USD");
+  assert.equal(status.rates.currency, "USD");
+  assert.equal(status.rates.outbound_micros, 1000);
+  assert.equal(status.rates.storage_gb_month_micros, 150000);
+  assert.equal(status.rates.address_month_micros, 500000);
+}));

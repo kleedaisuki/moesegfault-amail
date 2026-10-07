@@ -12,8 +12,8 @@ or Idempotency-Key. Decimal bytes and UTC calendar months are intentional.
 | lite | 1,000 | 2,000,000,000 | 3 |
 | plus | 5,000 | 10,000,000,000 | 5 |
 
-Variable tariffs: 5,000 CNY micros per excess accepted recipient, 1,000,000 micros
-per excess decimal GB-month, 3,000,000 micros per excess address-month. One CNY is
+Active variable tariffs: 1,000 USD micros per excess accepted recipient, 150,000 micros
+per excess decimal GB-month, 500,000 micros per excess address-month. One USD is
 1,000,000 micros. Byte-seconds and address-seconds are integrated against actual
 calendar-period seconds; fractional micros carry between observations. Final invoice
 cent rounding belongs to Billing, not per-send or per-observation rounding.
@@ -192,3 +192,35 @@ Content-free local evidence is `.temp/v020-pinned-splitter-evidence.json`.
 This client-parser probe alone does not establish remote D1 parser behavior;
 run 37617246563's successful Apply D1 migrations step and the independent
 post-migration SELECT above provide that stronger remote evidence.
+
+## Fixed USD cutover (0015)
+
+Migration `0015_usd_resource_billing.sql` is additive; the applied CNY migrations
+0013/0014 remain immutable. D1's migration transaction refuses nonzero CNY spending
+caps, undelivered outbox events, or unresolved resource reservations. Unbilled legacy
+provider journals remain untouched and do not block cutover. Resolve genuine old
+financial uncertainty normally; never discard it to pass deployment.
+
+Every old period's accrued CNY micros, stock fractional carries and accounting
+baseline are copied to `resource_legacy_cny_periods`, explicitly CNY and protected
+against inserts, updates and deletion after the snapshot. Active USD monetary amounts
+and fractions restart at zero; accounting time starts at cutover, not retrospectively.
+Period boundaries, included/accepted/reserved recipient counters, plan rights,
+grandfather floors, addresses and provider journals are not reset. Existing outbox
+and terminal reservation rows default to CNY, and denomination is immutable. New
+reservations must explicitly say USD; every new stock/send event explicitly says USD.
+
+Active account/rate projections use USD. Billing authority accepts only exact
+currency/contract pairs: USD with `amail-v0.2.0-usd-v1`, historical CNY with
+`amail-v0.2.0`. Historical paid grants retain access but their spending cap projects
+to zero: fresh USD human approval is mandatory for new USD overage. Usage delivery
+sends the event's recorded currency and only acknowledges matching event ID,
+currency and exact integer amount. No foreign-exchange conversion or combined
+cross-currency monetary total exists.
+
+Local evidence: the actual 0001–0015 chain preserves six delivered CNY events totaling
+22 micros, immutable fractional snapshots and recipient usage, refuses unsafe
+cutovers atomically, preserves unbilled unknown journals, and exercises exact USD
+recipient/storage/address prices. Native workerd boundary cases additionally assert
+USD proposal fields, legacy plan-only projection and refusal of a wrong-currency
+usage acknowledgement; compiled execution belongs to the subsequent CI run.

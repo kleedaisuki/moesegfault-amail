@@ -110,8 +110,8 @@ class UpgradePreservationTests(unittest.TestCase):
         self.upgrade()
         self.db.execute("UPDATE send_requests SET state='submitting' WHERE idem_key='synthetic-unknown'")
         self.db.execute(
-            "INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units) "
-            "SELECT owner_iss,owner_sub,'synthetic-unknown',period_start,1 FROM resource_current "
+            "INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,currency) "
+            "SELECT owner_iss,owner_sub,'synthetic-unknown',period_start,1,'USD' FROM resource_current "
             "WHERE owner_iss=? AND owner_sub=?", (ISSUER, SUBJECT),
         )
         before = self.db.total_changes

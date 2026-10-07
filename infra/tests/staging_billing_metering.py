@@ -16,18 +16,18 @@ import uuid
 
 
 CONFIRMATION = "RUN_STAGING_BILLING_METERING_V020"
-BUDGET_MICROS = 3_000_000
+BUDGET_MICROS = 500_000
 MAX_ACTUAL_MICROS = 10_000
 DELIVERY_SECONDS = 660
-# Two bounded network reads (25 seconds each) and the parent's final flush (60).
+# Three bounded network reads (25 seconds each) and the parent's final flush (60).
 # Poll admission must leave this room inside the 810-second evidence envelope.
-FINALIZATION_SECONDS = 110
+FINALIZATION_SECONDS = 135
 CAPACITY_SQL = "SELECT COUNT(*) AS n FROM addresses WHERE state!='retired'"
 OWNER_SQL = ("SELECT owner_iss,owner_sub,COUNT(*) AS n FROM addresses "
              "WHERE address IN (?1,?2,?3,?4) GROUP BY owner_iss,owner_sub")
 EVENT_SQL = ("SELECT event_id,billing_owner_id,meter,quantity,amount_micros,occurred_at,"
-             "period_start,period_end,delivered_at,origin_traceparent FROM resource_outbox "
-             "WHERE owner_iss=?1 AND owner_sub=?2 AND period_start=?3 ORDER BY occurred_at,event_id LIMIT 65")
+             "period_start,period_end,delivered_at,origin_traceparent,currency FROM resource_outbox "
+             "WHERE owner_iss=?1 AND owner_sub=?2 AND period_start=?3 AND currency='USD' ORDER BY occurred_at,event_id LIMIT 65")
 READ_QUERIES = {CAPACITY_SQL, OWNER_SQL, EVENT_SQL}
 
 
@@ -81,28 +81,30 @@ def d1_read(sql: str, params: list) -> list[dict]:
     return result
 
 
-def usage_read(owner: str, period: int) -> dict:
+def usage_read(owner: str, period: int, currency: str = "USD") -> dict:
     """Read actual Billing liabilities; the service credential never enters the CLI."""
     from staging_trace_witness import USER_AGENT
-    check(isinstance(owner, str) and bool(re.fullmatch(r"[0-9a-f]{64}", owner)) and type(period) is int,
+    check(isinstance(owner, str) and bool(re.fullmatch(r"[0-9a-f]{64}", owner)) and type(period) is int
+          and currency in {"USD", "CNY"},
           "metering_usage_scope_invalid")
     key = os.environ.get("BILLING_SERVICE_KEY", "")
     check(bool(key), "metering_service_key_missing")
     request = urllib.request.Request(
-        f"https://billing-staging.moesegfault.dev/v1/service/amail/accounts/{owner}/usage?period_start={period}",
+        f"https://billing-staging.moesegfault.dev/v1/service/amail/accounts/{owner}/usage?period_start={period}&currency={currency}",
         headers={"Authorization": f"Bearer {key}", "User-Agent": USER_AGENT})
     return read_json(request)
 
 
 def preflight(account: dict, addresses: list[dict], registered: int, provider_rules: int) -> None:
     """Admit only an empty synthetic Lite account with four genuinely available slots."""
-    check(account.get("plan") == "lite" and account.get("included_addresses") == 3
+    check(account.get("plan") == "lite" and account.get("currency") == "USD" and account.get("included_addresses") == 3
           and account.get("grandfathered_addresses") == 0 and account.get("address_count") == 0
           and account.get("overage_budget_micros") == 0 and not addresses,
           "metering_account_not_pristine_lite")
     check(type(account.get("storage_bytes")) is int and type(account.get("included_storage_bytes")) is int
           and 0 <= account["storage_bytes"] <= account["included_storage_bytes"]
-          and account.get("outbound_reserved") == 0, "metering_other_resource_exposure")
+          and account.get("outbound_reserved") == 0
+          and account.get("accrued_micros") == 0 and account.get("reserved_micros") == 0, "metering_other_resource_exposure")
     check(type(registered) is int and 0 <= registered <= 194
           and type(provider_rules) is int and 0 <= provider_rules <= 196,
           "metering_four_slots_unavailable")
@@ -125,7 +127,7 @@ def verify_delivery(events: list[dict], usage: dict, started: int, period: int) 
         amount = event.get("amount_micros")
         check(type(amount) is int and amount >= 0 and type(event.get("delivered_at")) is int,
               "metering_event_not_delivered")
-        check(event.get("period_start") == period, "metering_event_period_invalid")
+        check(event.get("period_start") == period and event.get("currency") == "USD", "metering_event_period_invalid")
         total += amount
         if event.get("occurred_at", 0) >= started and event.get("meter") == "address_seconds":
             check(type(event.get("quantity")) is int and event["quantity"] > 0, "metering_quantity_invalid")
@@ -136,20 +138,30 @@ def verify_delivery(events: list[dict], usage: dict, started: int, period: int) 
                   "metering_original_trace_missing")
             trace_ids.add(context[3:35])
     check(0 < task_total <= MAX_ACTUAL_MICROS, "metering_actual_charge_out_of_bounds")
-    check(usage.get("owner_id") == events[0].get("billing_owner_id")
+    check(usage.get("currency") == "USD" and usage.get("owner_id") == events[0].get("billing_owner_id")
           and usage.get("period_start") == period and type(usage.get("amount_micros")) is int
           and usage.get("amount_micros") == total and type(usage.get("events_count")) is int
           and usage.get("events_count") == len(events)
           and usage.get("overage_budget_micros") == 0
           and usage.get("settlement_status") == "pending_settlement", "metering_billing_totals_mismatch")
-    return {"schema_version": 1, "address_seconds": task_quantity, "amount_micros": task_total,
+    return {"schema_version": 1, "currency": "USD", "address_seconds": task_quantity, "amount_micros": task_total,
             "events_delivered": len(events), "budget_restored_micros": 0,
             "settlement_status": "pending_settlement", "payment_collection_verified": False,
             "trace_ids": sorted(trace_ids)}
 
 
+def verify_legacy_usage(usage: dict, owner: str, period: int) -> None:
+    """Keep the accepted staging CNY ledger immutable and separate from USD."""
+    check(usage.get("currency") == "CNY" and usage.get("owner_id") == owner
+          and usage.get("period_start") == period and type(usage.get("amount_micros")) is int
+          and usage.get("amount_micros") == 22 and type(usage.get("events_count")) is int
+          and usage.get("events_count") == 6
+          and usage.get("settlement_status") == "pending_settlement",
+          "metering_legacy_cny_changed")
+
+
 def execute(binary: Path, home: Path, run_dir: Path, *, evidence_started_at_ms: int | None = None) -> dict:
-    """Authorize 3 CNY ceiling, briefly occupy one extra slot, retire all, restore zero."""
+    """Authorize a 0.50 USD ceiling, briefly occupy one extra slot, retire all, restore zero."""
     check(os.environ.get("AMAIL_STAGING_BILLING_METERING_CONFIRM") == CONFIRMATION
           and os.environ.get("AMAIL_STAGING_BILLING_CONFIRM") == "RUN_STAGING_BILLING_V020"
           and os.environ.get("AMAIL_STAGING_BILLING_PLAN") == "lite"
@@ -206,7 +218,7 @@ def execute(binary: Path, home: Path, run_dir: Path, *, evidence_started_at_ms: 
         raise MeteringError(label)
 
     def budget(micros: int) -> None:
-        """Normal human-simulation Manage UI grants only the reviewed 3 or 0 CNY cap."""
+        """Normal human-simulation Manage UI grants only the reviewed 0.50 or 0 USD cap."""
         check(micros in {0, BUDGET_MICROS}, "metering_budget_invalid")
         intent = cli("billing", "manage", "--no-browser", "--idempotency-key", str(uuid.uuid4()))[-1]
         check(intent.get("state") == "pending", "metering_manage_not_pending")
@@ -229,7 +241,7 @@ def execute(binary: Path, home: Path, run_dir: Path, *, evidence_started_at_ms: 
               "metering_authorization_plan_changed")
         check(not needs_activation(subscription_view(browser), "lite", int(time.time())),
               "metering_existing_lite_grant_required")
-        browser.fill("#amail-budget", "3.00" if micros else "0")
+        browser.fill("#amail-budget", "0.50" if micros else "0")
         browser.click(".consent-check input[type=checkbox]")
         browser.click(".authorization-panel .form-footer button:not([type=button])")
         wait("!document.querySelector('#amail-plan')&&document.body.innerText.includes('授权已完成')",
@@ -237,7 +249,7 @@ def execute(binary: Path, home: Path, run_dir: Path, *, evidence_started_at_ms: 
         check(cli("billing", "session", intent["session_id"], "--wait-seconds", "30")[-1].get("state") == "completed",
               "metering_budget_receipt_missing")
         state = cli("billing", "status")[-1].get("account", {})
-        check(state.get("plan") == "lite" and state.get("overage_budget_micros") == micros,
+        check(state.get("plan") == "lite" and state.get("currency") == "USD" and state.get("overage_budget_micros") == micros,
               "metering_budget_readback_mismatch")
 
     try:
@@ -260,8 +272,8 @@ def execute(binary: Path, home: Path, run_dir: Path, *, evidence_started_at_ms: 
               and owners[0].get("owner_iss") == "https://identity-staging.moesegfault.dev"
               and isinstance(owners[0].get("owner_sub"), str), "metering_owned_identity_unverified")
         owner = (owners[0]["owner_iss"], owners[0]["owner_sub"])
-        # The production meter uses integer seconds; two real seconds make the fee positive.
-        time.sleep(2.1)
+        # The production meter uses integer seconds; six real seconds make the 0.50 USD/month fee positive.
+        time.sleep(6.1)
     except Exception as error:
         failure = str(error) if isinstance(error, MeteringError) else "metering_action_failed"
     finally:
@@ -309,6 +321,9 @@ def execute(binary: Path, home: Path, run_dir: Path, *, evidence_started_at_ms: 
             check(all(row.get("billing_owner_id") == billing_owner for row in events), "metering_owner_changed")
             summary = verify_delivery(events, usage_read(billing_owner, initial["period_start"]), started,
                                       initial["period_start"])
+            historical = usage_read(billing_owner, initial["period_start"], "CNY")
+            verify_legacy_usage(historical, billing_owner, initial["period_start"])
+            summary["legacy_cny"] = {"currency": "CNY", "amount_micros": 22, "events_count": 6}
             summary["addresses_created_and_retired"] = 4
             summary["human_simulation"] = "protected_synthetic_identity"
             print("staging_billing_real_address_overage_pending_settlement_verified")

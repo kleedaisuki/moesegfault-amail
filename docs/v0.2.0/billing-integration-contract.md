@@ -1,3 +1,8 @@
+> USD amendment approved2026-10-07: current tariffs below supersede original
+> CNY prices. Original wire examples and CNY acceptance records farther below
+> remain historical examples; new DTO requirements are in usd-cutover.md.
+> Deployment/real USD acceptance is still in progress, not inferred from CNY runs.
+
 # Billing integration contract for amail v0.2.0
 
 ## Established service contract (2026-10-07)
@@ -16,15 +21,15 @@ Billing keys accounts by `(issuer, sub)`, and Identity issues pairwise subjects.
 
 Preferred bridge: amail creates a service-authenticated, short-lived authorization intent bound to its immutable local account ID; a human authenticates and approves through Subscribe; amail retrieves the authoritative receipt over the service boundary. No editable email joins, browser bearer exposure, agent-granted paid plan, or agent-raised spend cap. The implemented session API is specified below; actual staging acceptance is recorded at the end of this contract.
 
-## Accepted community tariff
+## Current owner-approved community tariff — USD
 
-| Plan | CNY/month | Outbound recipient deliveries/month | Storage bytes | Active addresses |
+| Plan | USD/month | Outbound recipient deliveries/month | Storage bytes | Active addresses |
 | --- | ---: | ---: | ---: | ---: |
 | Free | 0 | 100 | 200,000,000 | 1 |
-| Lite | 9 | 1,000 | 2,000,000,000 | 3 |
-| Plus | 29 | 5,000 | 10,000,000,000 | 5 |
+| Lite | 1.50 | 1,000 | 2,000,000,000 | 3 |
+| Plus | 4.50 | 5,000 | 10,000,000,000 | 5 |
 
-Shared overage: outbound CNY 0.005/recipient delivery; storage CNY 1/decimal GB-month; addresses CNY 3/address-month. No inbound-count, stored-message-count, or semantic-search commercial quota. Human authorization is required for paid grants and a nonzero overage budget. Existing addresses are grandfathered intact while existing users become Free.
+Owner-approved fixed USD overage: outbound USD 0.001/recipient delivery; storage USD 0.15/decimal GB-month; addresses USD 0.50/address-month. No inbound-count, stored-message-count, or semantic-search commercial quota. Human authorization is required for paid grants and a nonzero overage budget. Existing addresses are grandfathered intact while existing users become Free.
 
 ## Release boundaries
 
@@ -65,7 +70,7 @@ The request lasts 30 minutes. Exact retries preserve the original result; differ
 
 Pending/cancelled/expired receipts have no binding. Routine authoritative refresh: `GET /v1/service/amail/accounts/{owner_id}` returns `{binding,settlement_mode}`; unbound account returns `binding:null`. Expired paid grants project to `amail-free` with budget 0 without deleting the payer association or any amail address. A paid projection is bounded by its real activation subscription period. Free `valid_until` is null.
 
-One CNY equals **1,000,000 integer micros**, not cents and not floating-point currency. Maximum human-selected budget is 1,000,000 CNY. Product is always `amail`; contract version is `amail-v0.2.0`.
+One USD equals **1,000,000 integer micros**, not cents and not floating-point currency. Maximum human-selected budget is 1,000,000 USD. Product is always `amail`; the new contract is `amail-v0.2.0-usd-v1`. Original CNY receipts retain `amail-v0.2.0` and their original denomination.
 
 ### Hosted human API (Subscribe BFF only)
 
@@ -164,3 +169,18 @@ events originated before subsequent consent reductions; their valid historical
 receipts survived and normal Cron/backoff delivered them without editing usage.
 The new seven-micro test is included in that 22-micro period total. This proves
 actual pending-settlement accrual, not automatic monetary collection.
+
+## USD amendment wire contract
+
+New service creation includes `currency:"USD"` explicitly; new browser approval
+also includes `currency:"USD"`. The binding/authorization returns persisted
+currency and `amail-v0.2.0-usd-v1`; historical CNY rows retain their original
+contract. New usage events require explicit USD; summaries explicitly select
+`?period_start=...&currency=USD`. Legacy omitted currency preserves CNY request
+hash/replay/query interpretation, never a silent USD reinterpretation. USD and
+CNY totals/caps cannot be combined. Original valid CNY backlog remains CNY.
+
+New applied migration0015 snapshots old CNY period money/fractions while keeping
+quota counters and plan/address rights. It refuses active old caps, undelivered
+outbox or reserved sends. Billing additive0006 appends after existing0005trace.
+See `usd-cutover.md` for guarded cutover, tests and actual delivery status.

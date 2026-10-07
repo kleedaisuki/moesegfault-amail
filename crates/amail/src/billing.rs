@@ -8,7 +8,7 @@
 //! never replace it merely because HTTP or polling timed out.
 //!
 //! A completed session proves authorization completion, not payment settlement.
-//! Read authoritative effective resources and integer CNY micros from billing status.
+//! Read authoritative effective resources and currency-labeled integer micros (current USD; historical CNY) from billing status.
 use crate::{api::Api, emit, machine};
 use anyhow::{ensure, Context, Result};
 use clap::{Subcommand, ValueEnum};

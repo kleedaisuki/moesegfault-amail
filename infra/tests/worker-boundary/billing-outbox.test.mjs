@@ -28,7 +28,7 @@ async function fixture(run, { omitIssuer = false } = {}) {
   const deploymentVars = { ...stagingVars };
   if (omitIssuer) delete deploymentVars.IDENTITY_ISSUER;
   const calls = [], liabilities = new Map(), records = [], waiters = [], eventTraceparents = [];
-  let failure = false;
+  let failure = false, wrongCurrency = false;
   const workers = [{
     name: "maintenance", modules: true, compatibilityDate: "2026-08-06",
     scriptPath: path.join(root, "crates/mail-worker/entry/maintenance.mjs"),
@@ -54,14 +54,15 @@ async function fixture(run, { omitIssuer = false } = {}) {
       assert.ok(event.authorized_at <= event.occurred_at);
       assert.equal(event.meter, "outbound_recipients");
       assert.equal(event.quantity, 1);
-      assert.equal(event.amount_micros, 5000);
+      assert.equal(event.amount_micros, 1000);
+      assert.equal(event.currency, "USD");
       assert.doesNotMatch(JSON.stringify(event), /synthetic-outbox-service-key|synthetic-outbox-owner|@/);
       calls.push(event);
       eventTraceparents.push(request.headers.get("traceparent"));
       if (failure) return Response.json({ code: "synthetic_unavailable" }, { status: 503 });
       if (liabilities.has(event.event_id)) assert.deepEqual(liabilities.get(event.event_id), event);
       else liabilities.set(event.event_id, event);
-      return Response.json({ event_id: event.event_id, amount_micros: 5000, settlement_status: "pending_settlement" });
+      return Response.json({ event_id: event.event_id, currency: wrongCurrency ? "CNY" : "USD", amount_micros: 1000, settlement_status: "pending_settlement" });
     },
   }, {
     name: "capture", modules: true, compatibilityDate: "2026-08-06",
@@ -85,12 +86,12 @@ async function fixture(run, { omitIssuer = false } = {}) {
     await seedResourceAccount(db, issuer, subject);
     await db.prepare("UPDATE resource_accounts SET billing_owner_id=?1,authorization_id=?2,overage_budget_micros=10000,authority_updated_at=unixepoch() WHERE owner_iss=?3 AND owner_sub=?4")
       .bind(ownerId, authorizationId, issuer, subject).run();
-    await db.prepare("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,authorization_id,authorized_at,origin_traceparent) SELECT ?1,?2,?3,period_start,101,?4,unixepoch()-5,?5 FROM resource_current WHERE owner_iss=?1 AND owner_sub=?2")
+    await db.prepare("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,authorization_id,authorized_at,origin_traceparent,currency) SELECT ?1,?2,?3,period_start,101,?4,unixepoch()-5,?5,'USD' FROM resource_current WHERE owner_iss=?1 AND owner_sub=?2")
       .bind(issuer, subject, idem, authorizationId, originContext).run();
     await db.prepare("UPDATE resource_send_reservations SET state='accepted' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3")
       .bind(issuer, subject, idem).run();
     const row = () => db.prepare("SELECT * FROM resource_outbox").first();
-    assert.equal((await row()).amount_micros, 5000);
+    assert.equal((await row()).amount_micros, 1000);
     assert.equal((await row()).delivered_at, null);
     const tick = () => mf.getWorker().then(worker => worker.scheduled());
     const traces = async () => {
@@ -105,7 +106,7 @@ async function fixture(run, { omitIssuer = false } = {}) {
       } finally { clearTimeout(timer); }
       return records;
     };
-    await run({ db, row, tick, calls, liabilities, traces, eventTraceparents, fail: value => { failure = value; } });
+    await run({ db, row, tick, calls, liabilities, traces, eventTraceparents, fail: value => { failure = value; }, wrongCurrency: value => { wrongCurrency = value; } });
   } finally { await mf.dispose(); }
 }
 
@@ -165,3 +166,13 @@ test("missing deployed issuer retains pending liability without contacting Billi
   assert.equal(calls.length, 0, "configuration fails before external Billing egress");
   assert.equal(liabilities.size, 0);
 }, { omitIssuer: true }));
+
+/** Same numeric amount in another denomination is not an acknowledgement. */
+test("mismatched currency receipt retains USD liability for safe retry", async () => fixture(async ({ tick, row, calls, wrongCurrency }) => {
+  wrongCurrency(true);
+  await tick();
+  assert.equal(calls.length, 1);
+  assert.equal((await row()).currency, "USD");
+  assert.equal((await row()).delivered_at, null);
+  assert.equal((await row()).attempts, 1);
+}));

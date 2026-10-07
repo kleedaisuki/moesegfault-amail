@@ -1,5 +1,6 @@
 //! Account-scoped v0.2 resource admission and durable, provider-aware usage accounting.
-//! All amounts are integer CNY micros; storage uses decimal bytes and periods use UTC seconds.
+//! Active amounts use integer USD micros; immutable historical records retain CNY.
+//! Storage uses decimal bytes and periods use UTC seconds.
 
 use crate::{auth::Principal, bind_num, bind_str, database::Database, AppError, AppResult};
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,8 @@ pub(crate) struct Snapshot {
 #[derive(Deserialize, Serialize)]
 pub(crate) struct Account {
     pub plan: String,
+    /// Denomination of active accrual and human spending approval.
+    pub currency: String,
     pub included_outbound: i64,
     pub included_storage_bytes: i64,
     pub included_addresses: i64,
@@ -83,7 +86,7 @@ impl Account {
             "outbound":{"meter":"outbound_recipients","included":self.included_outbound,
                 "accepted":self.outbound_accepted,"reserved":self.outbound_reserved,
                 "remaining_included":(self.included_outbound-self.outbound_accepted-self.outbound_reserved).max(0)},
-            "overage":{"enabled":self.overage_enabled(),"currency":"CNY",
+            "overage":{"enabled":self.overage_enabled(),"currency":"USD",
                 "budget_micros":self.overage_budget_micros,"accrued_micros":self.accrued_micros,
                 "reserved_micros":self.reserved_micros,
                 "remaining_budget_micros":(self.overage_budget_micros-self.accrued_micros-self.reserved_micros).max(0)}
@@ -190,7 +193,7 @@ pub(crate) async fn reserve_send(
         .map(bind_str)
         .unwrap_or(wasm_bindgen::JsValue::NULL);
     ensure_account(database, user).await?;
-    let result=database.prepare("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,authorization_id,origin_traceparent) SELECT ?1,?2,?3,period_start,?4,authorization_id,?5 FROM resource_current WHERE owner_iss=?1 AND owner_sub=?2 AND NOT EXISTS(SELECT 1 FROM resource_send_reservations r WHERE r.owner_iss=?1 AND r.owner_sub=?2 AND r.idem_key=?3)")
+    let result=database.prepare("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,authorization_id,origin_traceparent,currency) SELECT ?1,?2,?3,period_start,?4,authorization_id,?5,'USD' FROM resource_current WHERE owner_iss=?1 AND owner_sub=?2 AND NOT EXISTS(SELECT 1 FROM resource_send_reservations r WHERE r.owner_iss=?1 AND r.owner_sub=?2 AND r.idem_key=?3)")
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(idem),bind_num(units),origin])?.run().await;
     if let Err(error) = result {
         if error.to_string().contains("outbound_quota_exhausted") {
@@ -238,6 +241,7 @@ mod projection_tests {
     fn account() -> Account {
         Account {
             plan: "free".into(),
+            currency: "USD".into(),
             included_outbound: 100,
             included_storage_bytes: 200_000_000,
             included_addresses: 1,

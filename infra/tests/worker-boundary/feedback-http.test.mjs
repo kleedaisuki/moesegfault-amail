@@ -145,7 +145,7 @@ test("feedback spaces preserve owner isolation, bounded discovery and stable con
     assert.deepEqual(status.body.billing.outbound,
       { meter: "outbound_recipients", included: 100, accepted: 0, reserved: 0, remaining_included: 100 });
     assert.deepEqual(status.body.billing.overage,
-      { enabled: false, currency: "CNY", budget_micros: 0, accrued_micros: 0, reserved_micros: 0, remaining_budget_micros: 0 });
+      { enabled: false, currency: "USD", budget_micros: 0, accrued_micros: 0, reserved_micros: 0, remaining_budget_micros: 0 });
     assert.ok(status.body.billing.period_end > status.body.billing.period_start);
     assert.equal(status.body.limits.per_recipient_daily, undefined);
     assert.equal(status.body.links.billing, "/v1/billing");

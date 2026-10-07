@@ -21,16 +21,16 @@ BILLING_SPEC.loader.exec_module(billing)
 
 def account():
     """Return an independent empty Lite/zero-budget acceptance fixture."""
-    return {"plan": "lite", "included_addresses": 3, "grandfathered_addresses": 0,
+    return {"plan": "lite", "currency": "USD", "included_addresses": 3, "grandfathered_addresses": 0,
             "address_count": 0, "overage_budget_micros": 0, "period_start": 100,
-            "storage_bytes": 0, "included_storage_bytes": 2_000_000_000, "outbound_reserved": 0,
+            "storage_bytes": 0, "included_storage_bytes": 2_000_000_000, "outbound_reserved": 0, "accrued_micros": 0, "reserved_micros": 0,
             "period_end": int(time.time()) + 86400, "valid_until": int(time.time()) + 86400}
 
 
 def event():
     """One actual-address-second liability fixture, not production usage seeding."""
     return {"event_id": "synthetic-event", "billing_owner_id": "a" * 64,
-            "meter": "address_seconds", "quantity": 7, "amount_micros": 7,
+            "meter": "address_seconds", "currency": "USD", "quantity": 7, "amount_micros": 7,
             "occurred_at": int(time.time()), "period_start": 100,
             "period_end": int(time.time()) + 86400, "delivered_at": int(time.time()),
             "origin_traceparent": "00-0123456789abcdef0123456789abcdef-abcdef0123456789-01"}
@@ -38,7 +38,7 @@ def event():
 
 def usage():
     """Authoritative usage totals must remain pending settlement, never paid."""
-    return {"owner_id": "a" * 64, "period_start": 100, "amount_micros": 7, "events_count": 1,
+    return {"owner_id": "a" * 64, "currency": "USD", "period_start": 100, "amount_micros": 7, "events_count": 1,
             "overage_budget_micros": 0, "settlement_status": "pending_settlement"}
 
 
@@ -65,10 +65,10 @@ class MeteringTests(unittest.TestCase):
     def test_admission_requires_empty_lite_zero_budget_and_four_slots(self):
         """Existing allocations, grandfather rights or near expiry are not this fixture."""
         probe.preflight(account(), [], 194, 196)
-        for changed in [{"plan": "free"}, {"included_addresses": 5}, {"grandfathered_addresses": 1},
+        for changed in [{"plan": "free"}, {"currency": "CNY"}, {"included_addresses": 5}, {"grandfathered_addresses": 1},
                         {"address_count": 1}, {"overage_budget_micros": 1},
                         {"valid_until": int(time.time()) + 30}, {"storage_bytes": 2_000_000_001},
-                        {"outbound_reserved": 1}]:
+                        {"outbound_reserved": 1}, {"accrued_micros": 1}, {"reserved_micros": 1}]:
             with self.assertRaises(probe.MeteringError):
                 probe.preflight(account() | changed, [], 194, 196)
         for owned, registered, provider in [([{}], 194, 196), ([], 195, 196), ([], 194, 197)]:
@@ -93,15 +93,35 @@ class MeteringTests(unittest.TestCase):
         self.assertFalse(result["payment_collection_verified"])
         self.assertNotIn("billing_owner_id", result)
         self.assertNotIn("event_id", result)
-        for changed in [{"delivered_at": None}, {"amount_micros": 0}, {"amount_micros": 10_001},
+        for changed in [{"currency": "CNY"}, {"delivered_at": None}, {"amount_micros": 0}, {"amount_micros": 10_001},
                         {"quantity": 0}, {"period_start": 101}, {"origin_traceparent": None}]:
             with self.assertRaises(probe.MeteringError):
                 probe.verify_delivery([event() | changed], usage(), int(time.time()) - 10, 100)
-        for changed in [{"amount_micros": 8}, {"amount_micros": 7.0}, {"events_count": 2},
-                        {"owner_id": "b" * 64}, {"overage_budget_micros": 3_000_000},
+        for changed in [{"currency": "CNY"}, {"amount_micros": 8}, {"amount_micros": 7.0}, {"events_count": 2},
+                        {"owner_id": "b" * 64}, {"overage_budget_micros": 500_000},
                         {"settlement_status": "paid"}]:
             with self.assertRaises(probe.MeteringError):
                 probe.verify_delivery([event()], usage() | changed, int(time.time()) - 10, 100)
+
+    def test_currency_partition_is_explicit_and_legacy_totals_are_immutable(self):
+        """A USD charge cannot be accepted as CNY, or alter the old six-event ledger."""
+        self.assertIn("currency='USD'", probe.EVENT_SQL)
+        legacy = usage() | {"currency": "CNY", "amount_micros": 22, "events_count": 6}
+        probe.verify_legacy_usage(legacy, "a" * 64, 100)
+        for changed in [{"currency": "USD"}, {"amount_micros": 23}, {"events_count": 7},
+                        {"owner_id": "b" * 64}, {"period_start": 101}, {"settlement_status": "paid"}]:
+            with self.assertRaises(probe.MeteringError):
+                probe.verify_legacy_usage(legacy | changed, "a" * 64, 100)
+        requests = []
+        with patch.dict("sys.modules", {"staging_trace_witness": SimpleNamespace(USER_AGENT="synthetic")}), \
+                patch.dict(os.environ, {"BILLING_SERVICE_KEY": "synthetic"}), \
+                patch.object(probe, "read_json", side_effect=lambda request: requests.append(request.full_url) or {}):
+            probe.usage_read("a" * 64, 100)
+            probe.usage_read("a" * 64, 100, "CNY")
+            with self.assertRaises(probe.MeteringError):
+                probe.usage_read("a" * 64, 100, "EUR")
+        self.assertTrue(requests[0].endswith("period_start=100&currency=USD"))
+        self.assertTrue(requests[1].endswith("period_start=100&currency=CNY"))
 
     def run_workflow(self, *, fail_action=False, fail_cleanup=False, fail_restore=False,
                      evidence_age_seconds=0):
@@ -132,7 +152,7 @@ class MeteringTests(unittest.TestCase):
                 if selector == "#amail-budget":
                     if value == "0" and fail_restore:
                         raise RuntimeError("synthetic restore failure")
-                    state["budget"] = 3_000_000 if value == "3.00" else 0
+                    state["budget"] = 500_000 if value == "0.50" else 0
                     state["budgets"].append(state["budget"])
 
             def click(self, _selector):
@@ -153,7 +173,7 @@ class MeteringTests(unittest.TestCase):
             if args[:2] == ("address", "list"):
                 return list(state["addresses"].values())
             if args[:2] == ("address", "add"):
-                self.assertEqual(state["budget"], 3_000_000)
+                self.assertEqual(state["budget"], 500_000)
                 address = args[2] + "@mail-staging.moesegfault.dev"
                 state["addresses"][address] = {"address": address, "state": "active"}
                 if fail_action and len(state["addresses"]) == 2:
@@ -186,7 +206,8 @@ class MeteringTests(unittest.TestCase):
                 patch.dict("sys.modules", {"staging_identity_cdp": identity, "staging_mail_e2e": mail,
                                            "staging_billing_e2e": billing}), \
                 patch.object(probe, "d1_read", side_effect=read), \
-                patch.object(probe, "usage_read", return_value=usage()), \
+                patch.object(probe, "usage_read", side_effect=lambda _owner, _period, currency="USD":
+                    usage() if currency == "USD" else usage() | {"currency": "CNY", "amount_micros": 22, "events_count": 6}), \
                 patch.object(probe.time, "sleep"), \
                 patch.object(probe.time, "monotonic", side_effect=count()), patch("builtins.print"):
             try:
@@ -199,7 +220,7 @@ class MeteringTests(unittest.TestCase):
     def test_workflow_simulation_cleans_four_addresses_and_restores_budget_before_wait(self):
         """The normal flow closes stock and consent before any delivery polling."""
         state, result = self.run_workflow()
-        self.assertEqual(state["budgets"], [3_000_000, 0])
+        self.assertEqual(state["budgets"], [500_000, 0])
         self.assertEqual(state["addresses"], {})
         self.assertEqual(state["actions"].count(("address", "add")), 4)
         self.assertEqual(state["actions"].count(("address", "delete")), 4)

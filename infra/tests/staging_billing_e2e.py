@@ -208,7 +208,8 @@ def execute(binary: Path, home: Path, run_dir: Path) -> dict:
             raise BillingProbeError("billing_authoritative_receipt_missing")
         final = cli("billing", "status")[-1]
         account = final.get("account", {})
-        if (account.get("plan") != plan or account.get("overage_budget_micros") != 0
+        if (account.get("plan") != plan or account.get("currency") != "USD"
+                or account.get("overage_budget_micros") != 0
                 or final.get("payment_collection_available") is not False):
             raise BillingProbeError("billing_entitlement_readback_invalid")
         metering = None
@@ -241,7 +242,7 @@ def execute(binary: Path, home: Path, run_dir: Path) -> dict:
         if int(time.time() * 1000) - started_at_ms >= 810_000:
             raise BillingProbeError("billing_trace_scope_exceeded")
         print(f"staging_billing_browser_cancel_and_{plan}_receipt_verified")
-        return {"schema_version": 1, "plan": plan, "cancelled": True, "browser_return_verified": True,
+        return {"schema_version": 1, "currency": "USD", "plan": plan, "cancelled": True, "browser_return_verified": True,
                 "grant_source": grant_source,
                 **({"metering": metering} if metering else {}),
                 "human_simulation": "protected_synthetic_identity", "payment_collection_verified": False,

@@ -202,6 +202,14 @@ struct Binding {
     authorization_id: String,
 }
 
+/// Historical CNY receipts may preserve plan access, never authorize new USD spending.
+fn valid_binding_currency(currency: &str, contract: &str) -> bool {
+    matches!(
+        (currency, contract),
+        ("USD", "amail-v0.2.0-usd-v1") | ("CNY", "amail-v0.2.0")
+    )
+}
+
 fn unavailable() -> AppError {
     AppError {
         status: 503,
@@ -301,7 +309,7 @@ pub(crate) async fn create(
         "/v1/service/amail/authorizations",
         Some(json!({
             "owner_id":owner_id(user),"plan_id":format!("amail-{requested_plan}"),
-            "overage_budget_micros":0,"return_url":config.return_url
+            "overage_budget_micros":0,"currency":"USD","return_url":config.return_url
         })),
         Some(&key),
         request_id,
@@ -348,8 +356,7 @@ async fn apply(database: &Database, user: &Principal, value: &Value) -> AppResul
     let selected = plan(&binding.plan_id).map_err(|_| unavailable())?;
     if binding.owner_id != owner_id(user)
         || binding.product_id != "amail"
-        || binding.currency != "CNY"
-        || binding.contract_version != "amail-v0.2.0"
+        || !valid_binding_currency(&binding.currency, &binding.contract_version)
         || binding.overage_budget_micros < 0
         || binding.overage_budget_micros > 1_000_000_000_000
         || binding.updated_at < 0
@@ -379,7 +386,7 @@ async fn apply(database: &Database, user: &Principal, value: &Value) -> AppResul
                 selected.into()
             },
             billing_owner_id: binding.owner_id,
-            overage_budget_micros: if expired {
+            overage_budget_micros: if expired || binding.currency != "USD" {
                 0
             } else {
                 binding.overage_budget_micros
@@ -524,7 +531,7 @@ pub(crate) async fn status(
     }
     Ok(Response::from_json(
         &json!({"api_version":"2","version":"0.2.0","account":account,
-        "rates":{"currency":"CNY","outbound_micros":5000,"storage_gb_month_micros":1_000_000,"address_month_micros":3_000_000},
+        "rates":{"currency":"USD","outbound_micros":1000,"storage_gb_month_micros":150_000,"address_month_micros":500_000},
         "settlement_state":"accrued_unsettled","payment_collection_available":false}),
     )?)
 }
@@ -532,6 +539,8 @@ pub(crate) async fn status(
 /// Minimal durable delivery metadata; neither message contents nor addresses are sent.
 #[derive(Deserialize)]
 struct Usage {
+    /// Immutable denomination captured with the usage event.
+    currency: String,
     event_id: String,
     billing_owner_id: String,
     period_start: i64,
@@ -544,6 +553,14 @@ struct Usage {
     authorized_at: i64,
     /// Opaque validated durable handoff, not a Billing payload field.
     origin_traceparent: Option<String>,
+}
+
+/// A successful transport is not settlement acknowledgement for another denomination.
+fn usage_receipt_matches(receipt: &Value, event: &Usage) -> bool {
+    let record = receipt.get("event").unwrap_or(receipt);
+    record.get("event_id").and_then(Value::as_str) == Some(event.event_id.as_str())
+        && record.get("currency").and_then(Value::as_str) == Some(event.currency.as_str())
+        && record.get("amount_micros").and_then(Value::as_i64) == Some(event.amount_micros)
 }
 
 /// Fair bounded accounting and at-least-once outbox delivery share the scheduled
@@ -572,25 +589,20 @@ pub(crate) async fn maintain(
         .await
         .map_err(|_| worker::Error::RustError("billing_reconciliation_failed".into()))?;
     }
-    let events=database.prepare("SELECT event_id,billing_owner_id,period_start,period_end,meter,quantity,amount_micros,occurred_at,authorization_id,authorized_at,origin_traceparent FROM resource_outbox WHERE delivered_at IS NULL AND next_attempt_at<=unixepoch() ORDER BY next_attempt_at,occurred_at,event_id LIMIT 3")
+    let events=database.prepare("SELECT event_id,billing_owner_id,period_start,period_end,meter,quantity,amount_micros,occurred_at,authorization_id,authorized_at,origin_traceparent,currency FROM resource_outbox WHERE delivered_at IS NULL AND next_attempt_at<=unixepoch() ORDER BY next_attempt_at,occurred_at,event_id LIMIT 3")
         .all().await?.results::<Usage>()?;
     let mut failed = false;
     for event in events {
         database.ensure_remaining(1)?;
         let result=call(env,Method::Post,"/v1/service/amail/usage",Some(json!({
-            "event_id":event.event_id,"owner_id":event.billing_owner_id,
+            "event_id":event.event_id,"owner_id":event.billing_owner_id,"currency":event.currency,
             "period_start":event.period_start,"period_end":event.period_end,"meter":event.meter,
                 "quantity":event.quantity,"amount_micros":event.amount_micros,"occurred_at":event.occurred_at,
                 "authorization_id":event.authorization_id,"authorized_at":event.authorized_at
         })),Some(&event.event_id),request_id,trace,event.origin_traceparent.as_deref()).await;
-        let valid = result.as_ref().is_ok_and(|receipt| {
-            receipt.get("event_id").and_then(Value::as_str) == Some(event.event_id.as_str())
-                || receipt
-                    .get("event")
-                    .and_then(|value| value.get("event_id"))
-                    .and_then(Value::as_str)
-                    == Some(event.event_id.as_str())
-        });
+        let valid = result
+            .as_ref()
+            .is_ok_and(|receipt| usage_receipt_matches(receipt, &event));
         if valid {
             database.prepare("UPDATE resource_outbox SET delivered_at=unixepoch() WHERE event_id=?1 AND delivered_at IS NULL")
                 .bind(&[bind_str(&event.event_id)])?.run().await?;
@@ -611,6 +623,49 @@ pub(crate) async fn maintain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receipt_currency_and_contract_must_agree() {
+        assert!(valid_binding_currency("USD", "amail-v0.2.0-usd-v1"));
+        assert!(valid_binding_currency("CNY", "amail-v0.2.0"));
+        assert!(!valid_binding_currency("CNY", "amail-v0.2.0-usd-v1"));
+        assert!(!valid_binding_currency("USD", "amail-v0.2.0"));
+        assert!(!valid_binding_currency("EUR", "amail-v0.2.0-usd-v1"));
+    }
+
+    #[test]
+    fn acknowledgement_cannot_relabel_historical_money() {
+        let event = Usage {
+            event_id: "event".into(),
+            billing_owner_id: "owner".into(),
+            period_start: 1,
+            period_end: 2,
+            meter: "address_seconds".into(),
+            quantity: 1,
+            amount_micros: 22,
+            occurred_at: 1,
+            authorization_id: "receipt".into(),
+            authorized_at: 1,
+            origin_traceparent: None,
+            currency: "CNY".into(),
+        };
+        assert!(usage_receipt_matches(
+            &json!({"event_id":"event","currency":"CNY","amount_micros":22}),
+            &event
+        ));
+        assert!(!usage_receipt_matches(
+            &json!({"event_id":"event","currency":"USD","amount_micros":22}),
+            &event
+        ));
+        assert!(!usage_receipt_matches(
+            &json!({"event_id":"event","amount_micros":22}),
+            &event
+        ));
+        assert!(!usage_receipt_matches(
+            &json!({"event_id":"event","currency":"CNY","amount_micros":23}),
+            &event
+        ));
+    }
+
     #[test]
     fn immutable_owner_keys_are_domain_separated_and_unambiguous() {
         let one = Principal {

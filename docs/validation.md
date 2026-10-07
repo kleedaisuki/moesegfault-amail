@@ -6,7 +6,12 @@ in Git history, not competing current-state documents. Evidence recorded on
 
 ## Delivered v0.1.2 — current release
 
-### Delivered v0.2.0 staging — accepted
+### Delivered v0.2.0 staging — CNY baseline accepted; USD amendment in progress
+
+The owner subsequently approved fixed USD tariffs: Free0, Lite1.50, Plus4.50
+per month; overage0.001/recipient,0.15/GB-month,0.50/address-month. Currency
+cutover is tracked in `v0.2.0/usd-cutover.md`; earlier CNY evidence below is not
+reinterpreted as USD acceptance. Current local full infra suite233tests PASS.
 
 The owner requested Billing integration and staging delivery on 2026-10-07, not
 production publication. Candidate branch `codex/v0.2.0-billing` starts at

@@ -29,8 +29,8 @@ class ResourceConcurrencyTests(unittest.TestCase):
                            "VALUES('synthetic','owner',unixepoch('now','start of month'),"
                            "unixepoch('now','start of month','+1 month'),unixepoch())")
                 period = db.execute("SELECT period_start FROM resource_periods").fetchone()[0]
-                db.execute("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units) "
-                           "VALUES('synthetic','owner','initial',?,99)", (period,))
+                db.execute("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,currency) "
+                           "VALUES('synthetic','owner','initial',?,99,'USD')", (period,))
                 db.commit()
             barrier = Barrier(2)
 
@@ -39,8 +39,8 @@ class ResourceConcurrencyTests(unittest.TestCase):
                 with closing(sqlite3.connect(filename, timeout=10)) as db:
                     barrier.wait(timeout=10)
                     try:
-                        db.execute("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units) "
-                                   "VALUES('synthetic','owner',?,?,1)", (key, period))
+                        db.execute("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,currency) "
+                                   "VALUES('synthetic','owner',?,?,1,'USD')", (key, period))
                         db.commit()
                         return "accepted"
                     except sqlite3.IntegrityError as error:

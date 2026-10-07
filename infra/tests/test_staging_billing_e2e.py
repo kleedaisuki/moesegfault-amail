@@ -96,7 +96,7 @@ class BillingHarnessTests(unittest.TestCase):
             if args[1:3] == ["billing", "status"]:
                 state["statuses"] += 1
                 plan = mail_plan if state["statuses"] == 1 else "lite"
-                output = {"account": {"plan": plan, "overage_budget_micros": 0}, "payment_collection_available": False}
+                output = {"account": {"plan": plan, "currency": "USD", "overage_budget_micros": 0}, "payment_collection_available": False}
             elif args[1:3] == ["billing", "subscribe"]:
                 state["plan"] = args[3]
                 key = args[-1]
