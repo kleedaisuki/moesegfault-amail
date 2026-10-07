@@ -12,7 +12,7 @@ from staging_billing_metering import read_json, usage_read
 from staging_trace_witness import USER_AGENT, read_service_records
 
 # The exact failed run's UTC window; never accept caller-supplied SQL or owners.
-OWNER = "SELECT DISTINCT owner_iss,owner_sub FROM addresses WHERE address LIKE 'meter-%@mail-staging.moesegfault.dev' AND created_at BETWEEN unixepoch('2026-10-07 13:03:00') AND unixepoch('2026-10-07 13:16:00')"
+OWNER = "SELECT DISTINCT owner_iss,owner_sub FROM addresses WHERE address LIKE 'meter-%@mail-staging.moesegfault.dev' AND created_at BETWEEN unixepoch('2026-10-07 13:03:00')*1000 AND unixepoch('2026-10-07 13:16:00')*1000"
 EVENTS = "SELECT billing_owner_id,meter,quantity,amount_micros,occurred_at,period_start,delivered_at,attempts,next_attempt_at,origin_traceparent FROM resource_outbox WHERE owner_iss=?1 AND owner_sub=?2 ORDER BY occurred_at LIMIT 65"
 ACCOUNT = "SELECT plan,overage_budget_micros,address_count,accrued_micros FROM resource_current WHERE owner_iss=?1 AND owner_sub=?2"
 
@@ -53,6 +53,7 @@ def main():
             traces.add(context[3:35])
     if len(traces)>8:
         raise ValueError('diagnostic_trace_scope_exceeded')
+    print(json.dumps({'failed_run':37625486364,'account':query(ACCOUNT,scope),'outbox':projected},sort_keys=True))
     usage=usage_read(events[0]['billing_owner_id'],events[0]['period_start'])
     spans=[]
     for trace in sorted(traces):
