@@ -42,6 +42,8 @@ jobs:
           test -n "$version"
           site_version=$(python -c 'import json; print(json.load(open("site/package.json"))["version"])')
           test "$site_version" = "$version"
+          # A missing note must fail before the expensive five-platform build.
+          test -s "docs/releases/v$version.md"
           recover=false
           publish=false
           source_sha="$GITHUB_SHA"
