@@ -4,6 +4,13 @@
 use crate::{auth::Principal, bind_num, bind_str, database::Database, AppError, AppResult};
 use serde::{Deserialize, Serialize};
 
+/// Uniform service-safety burst bound, independent of a commercial plan.
+pub(crate) const SENDS_PER_MINUTE: i64 = 2;
+/// Shared provider-exposure ceiling; this is not an individual monthly entitlement.
+pub(crate) const GLOBAL_OUTBOUND_RECIPIENTS_PER_DAY: i64 = 10_000;
+/// Routing platform slots remain independent of included/grandfathered addresses.
+pub(crate) const OWNER_ADDRESS_PLATFORM_LIMIT: i64 = 10;
+
 /// Verified Billing authority, never accepted directly from an agent request.
 pub(crate) struct Snapshot {
     /// Closed tariff identifier, independent of marketing display strings.
@@ -46,6 +53,42 @@ pub(crate) struct Account {
     pub outbound_reserved: i64,
     pub storage_bytes: i64,
     pub address_count: i64,
+}
+
+impl Account {
+    /// Human consent, not a paid plan alone, permits variable-resource growth.
+    pub(crate) fn overage_enabled(&self) -> bool {
+        self.overage_budget_micros > 0
+            && self.billing_owner_id.is_some()
+            && self.authorization_id.is_some()
+    }
+
+    /// Included address slots preserve legacy allocations without pretending all ten are free.
+    pub(crate) fn address_limits(&self) -> serde_json::Value {
+        let effective = self.included_addresses.max(self.grandfathered_addresses);
+        serde_json::json!({
+            "limit":effective,"limit_kind":"effective_included_addresses",
+            "included_limit":self.included_addresses,
+            "grandfathered_limit":self.grandfathered_addresses,
+            "effective_included_limit":effective,
+            "platform_limit":OWNER_ADDRESS_PLATFORM_LIMIT,
+            "overage_enabled":self.overage_enabled()
+        })
+    }
+
+    /// Closed commercial projection excludes payer IDs, authorization receipts and causal context.
+    pub(crate) fn sending_allowance(&self) -> serde_json::Value {
+        serde_json::json!({
+            "plan":self.plan,"period_start":self.period_start,"period_end":self.period_end,
+            "outbound":{"meter":"outbound_recipients","included":self.included_outbound,
+                "accepted":self.outbound_accepted,"reserved":self.outbound_reserved,
+                "remaining_included":(self.included_outbound-self.outbound_accepted-self.outbound_reserved).max(0)},
+            "overage":{"enabled":self.overage_enabled(),"currency":"CNY",
+                "budget_micros":self.overage_budget_micros,"accrued_micros":self.accrued_micros,
+                "reserved_micros":self.reserved_micros,
+                "remaining_budget_micros":(self.overage_budget_micros-self.accrued_micros-self.reserved_micros).max(0)}
+        })
+    }
 }
 
 /// Initialize a permanent Free account and roll calendar periods without releasing unknown sends.
@@ -185,4 +228,80 @@ pub(crate) async fn release_send(
             .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(idem)])?,
     ]).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    /// Fixture uses private sentinels to ensure introspection cannot leak authority or tracing IDs.
+    fn account() -> Account {
+        Account {
+            plan: "free".into(),
+            included_outbound: 100,
+            included_storage_bytes: 200_000_000,
+            included_addresses: 1,
+            grandfathered_addresses: 0,
+            billing_owner_id: None,
+            authorization_id: None,
+            origin_traceparent: None,
+            overage_budget_micros: 0,
+            valid_until: None,
+            authority_updated_at: 0,
+            period_start: 1,
+            period_end: 2,
+            accrued_micros: 0,
+            reserved_micros: 0,
+            outbound_accepted: 0,
+            outbound_reserved: 0,
+            storage_bytes: 0,
+            address_count: 0,
+        }
+    }
+
+    #[test]
+    fn address_projection_distinguishes_inclusion_grandfathering_and_platform_capacity() {
+        let mut owner = account();
+        let free = owner.address_limits();
+        assert_eq!(free["limit"], 1);
+        assert_eq!(free["included_limit"], 1);
+        assert_eq!(free["platform_limit"], 10);
+        assert_eq!(free["overage_enabled"], false);
+        owner.grandfathered_addresses = 7;
+        assert_eq!(owner.address_limits()["effective_included_limit"], 7);
+        owner.included_addresses = 5;
+        owner.overage_budget_micros = 5_000;
+        assert_eq!(owner.address_limits()["limit"], 7);
+        assert_eq!(
+            owner.address_limits()["overage_enabled"],
+            false,
+            "a budget without human authority is not consent"
+        );
+        owner.billing_owner_id = Some("private-payer".into());
+        owner.authorization_id = Some("private-authority".into());
+        assert_eq!(owner.address_limits()["overage_enabled"], true);
+    }
+
+    #[test]
+    fn sending_projection_reports_monthly_shared_holds_without_private_ids() {
+        let mut owner = account();
+        owner.outbound_accepted = 97;
+        owner.outbound_reserved = 4;
+        owner.overage_budget_micros = 10_000;
+        owner.accrued_micros = 2_000;
+        owner.reserved_micros = 5_000;
+        owner.billing_owner_id = Some("private-payer".into());
+        owner.authorization_id = Some("private-authority".into());
+        owner.origin_traceparent = Some("private-context".into());
+        let value = owner.sending_allowance();
+        assert_eq!(value["outbound"]["included"], 100);
+        assert_eq!(value["outbound"]["accepted"], 97);
+        assert_eq!(value["outbound"]["reserved"], 4);
+        assert_eq!(value["outbound"]["remaining_included"], 0);
+        assert_eq!(value["overage"]["remaining_budget_micros"], 3_000);
+        assert_eq!(value["overage"]["enabled"], true);
+        for sentinel in ["private-payer", "private-authority", "private-context"] {
+            assert!(!value.to_string().contains(sentinel));
+        }
+    }
 }

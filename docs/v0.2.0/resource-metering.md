@@ -134,3 +134,24 @@ remain aggregate changes=1: the former does not name `state`; the latter sees an
 already committed resource reservation. The simulation hook must verify the exact
 owned journal's committed pre/post state, not require aggregate changes=1. The
 production projection CAS semantics do not need to be weakened.
+
+
+### Agent-facing resource introspection
+
+`GET /v1/addresses` reports `limit` as effective *included* slots, with
+`limit_kind=effective_included_addresses`, `included_limit`, `grandfathered_limit`,
+`effective_included_limit`, `platform_limit=10`, and `overage_enabled`. A new Free
+owner therefore sees one included slot, not ten allegedly entitled addresses.
+An old Free owner with seven registered addresses sees seven preserved included
+slots. Paid overage does not remove the independent ten-slot platform ceiling.
+
+`GET /v1/sending/status` keeps policy/canary semantics and distinguishes commercial
+`billing.outbound` (UTC period, included/accepted/reserved/remaining recipient
+units) from `billing.overage` (human-approved micros budget, accrued and unresolved
+held micros). Its `quotas` lists only the actual two-submission/minute account
+safety guard and 10,000-canonical-recipient/day global safety guard. Legacy 50/day,
+20/day, five/hour and per-recipient/day observations are not active enforcement.
+Shared constants drive both the actual admission and reported safety thresholds.
+These observations are advisory, not a reservation or recipient authorization;
+remaining budget does not promise a new stock allocation will fit its remaining-
+period liability. Private payer, authority and trace IDs are excluded.

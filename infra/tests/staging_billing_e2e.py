@@ -146,6 +146,11 @@ def execute(binary: Path, home: Path, run_dir: Path) -> dict:
         browser.click(".authorization-panel .form-footer button:not([type=button])")
         wait_for("!document.querySelector('#amail-plan') && document.body.innerText.includes('授权已完成')",
                  "billing_browser_approval_missing")
+        browser.click('a[href="https://amail-staging.moesegfault.dev/billing/return"]')
+        wait_for("location.origin === 'https://amail-staging.moesegfault.dev' "
+                 "&& location.pathname === '/billing/return' "
+                 "&& document.querySelector('h1')?.innerText.includes('回到你的 Agent')",
+                 "billing_return_page_missing")
         if cli("billing", "session", session_id, "--wait-seconds", "30")[-1].get("state") != "completed":
             raise BillingProbeError("billing_authoritative_receipt_missing")
         final = cli("billing", "status")[-1]
@@ -167,7 +172,7 @@ def execute(binary: Path, home: Path, run_dir: Path) -> dict:
         if not traces or any(not re.fullmatch(r"[0-9a-f]{32}", trace) for trace in traces):
             raise BillingProbeError("billing_cli_trace_ids_missing")
         print(f"staging_billing_browser_cancel_and_{plan}_receipt_verified")
-        return {"schema_version": 1, "plan": plan, "cancelled": True,
+        return {"schema_version": 1, "plan": plan, "cancelled": True, "browser_return_verified": True,
                 "human_simulation": "protected_synthetic_identity", "payment_collection_verified": False,
                 "trace_ids": traces, "started_at_ms": started_at_ms, "ended_at_ms": int(time.time() * 1000)}
     finally:

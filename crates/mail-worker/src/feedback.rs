@@ -357,30 +357,33 @@ pub(crate) async fn sending_status(
     let database = db(env)?;
     let policy = sending_policy(&database, user).await?;
     let allowed = policy.public_allowed;
+    let account = crate::resource::status(&database, user).await?;
     let at = now();
     #[derive(Deserialize)]
     struct Quota {
         kind: String,
         used: i64,
     }
-    let rows = database.prepare("SELECT kind,used FROM daily_usage WHERE owner_iss=?1 AND owner_sub=?2 AND ((kind IN ('send','send_messages') AND day=?3) OR (kind='send_hour' AND day=?4))")
-        .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_num(at / 86_400_000),bind_num(at / 3_600_000)])?
+    let rows = database.prepare("SELECT kind,used FROM daily_usage WHERE (kind='send_minute' AND owner_iss=?1 AND owner_sub=?2 AND day=?3) OR (kind='send_global' AND owner_iss='_global' AND owner_sub='_global' AND day=?4)")
+        .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_num(at/60_000),bind_num(at/86_400_000)])?
         .all().await?.results::<Quota>()?;
-    let quota = |kind: &str, limit: i64, window: i64| {
+    let quota = |kind: &str, limit: i64, window: i64, scope: &str, units: &str| {
         let used = rows
             .iter()
             .find(|row| row.kind == kind)
             .map_or(0, |row| row.used);
-        serde_json::json!({"kind":kind,"used":used,"limit":limit,
+        serde_json::json!({"kind":kind,"scope":scope,"units":units,"used":used,"limit":limit,
             "remaining":(limit-used).max(0),"reset_at":iso((at/window+1)*window)})
     };
     Ok(Response::from_json(&serde_json::json!({
         "policy":{"state":if allowed {"allowed"} else {"held"},"code":if allowed {serde_json::Value::Null} else {"send_held".into()}},
         "canary":{"active":policy.canary_active,"new_intent_available":policy.canary_unused,"scope":"single_recipient_single_intent"},
-        "quotas":[quota("send",50,86_400_000),quota("send_messages",20,86_400_000),quota("send_hour",5,3_600_000)],
-        "limits":{"recipients_per_message":50,"attachments_per_message":32,"per_recipient_daily":10},
+        "billing":account.sending_allowance(),
+        "quotas":[quota("send_minute",crate::resource::SENDS_PER_MINUTE,60_000,"account","submissions"),
+            quota("send_global",crate::resource::GLOBAL_OUTBOUND_RECIPIENTS_PER_DAY,86_400_000,"service","recipients")],
+        "limits":{"recipients_per_message":50,"attachments_per_message":32},
         "interpretation":"advisory_not_reservation_or_recipient_authorization",
-        "links":{"events":"/v1/events","send_receipt":"/v1/sends/{idempotency_key}"},
+        "links":{"events":"/v1/events","send_receipt":"/v1/sends/{idempotency_key}","billing":"/v1/billing"},
         "request_id":request_id
     }))?)
 }

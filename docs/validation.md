@@ -11,7 +11,7 @@ in Git history, not competing current-state documents. Evidence recorded on
 The owner requested Billing integration and staging delivery on 2026-10-07, not
 production publication. Candidate branch `codex/v0.2.0-billing` starts at
 `b07646e04f1337b482011d63e0aeb40a9202c738`; coordinated Billing/Subscribe source is
-`ae19b1bc3421a6dd278d190f4b53a40d6c98bb26` on
+`c77b7ddf19d64e5c71c281fd378cfb774d19a559` on
 `codex/amail-v0.2.0-integration` in the subscriptions repository.
 
 Hosted initial checks: [Mail 37614032629](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37614032629)
@@ -27,9 +27,23 @@ regressions distinguish top-level changes from trigger-inclusive total changes.
 The initial Billing run passed Rust/Wasm and domain/frontend contracts but failed
 the existing audit gate on newly reported `sharp < 0.35.5`. The targeted patched
 override retains Wrangler and the audit gate. The subsequent Billing staging
-delivery is [37615238720](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37615238720),
-not yet accepted. Causal-trace handoff changes and fixture repairs require fresh
-exact-source build/runtime evidence before Mail deployment.
+delivery [37615238720](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37615238720)
+stopped on D1 migration parsing. Remote readback proved that the new tables had
+not committed. Removing an ambiguous trigger CASE boundary preserved the same
+contract; [37616090490](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37616090490)
+then successfully deployed Billing and Subscribe to staging from `3e2c4e8`.
+The explicit staging Issues-capture disable/readback patch is now building in
+[37617117905](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37617117905).
+
+Mail [37615319193](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37615319193)
+passed the complete compiled/native/workerd/site gates at `00acf56`, including
+the repaired interleaving and actual Queue trace cases, but stopped before the
+first provider mutator: reviewed staging Queue ownership variables were missing.
+Bounded inspection matched the exact source-owned predecessor graph. Those two
+independently reviewed Queue/DLQ IDs are now provisioned and read back in GitHub's
+staging environment. A focused regression preserves refusal when pins are absent;
+no observed-ID fallback was introduced. Latest local infrastructure checks pass
+193 tests; truthful resource-introspection changes still need a fresh hosted build.
 
 The intended contract is Free/Lite/Plus, free incoming mail, no retained-message
 count or per-account semantic-query quota, byte/address/outbound metering, human

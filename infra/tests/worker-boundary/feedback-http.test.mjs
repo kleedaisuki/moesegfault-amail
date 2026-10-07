@@ -139,7 +139,43 @@ test("feedback spaces preserve owner isolation, bounded discovery and stable con
     const status = await get("/v1/sending/status");
     assert.equal(status.status, 200);
     assert.equal(status.body.policy.state, "held");
-    assert.equal(status.body.quotas.length, 3);
+    assert.deepEqual(status.body.quotas.map((q) => [q.kind, q.scope, q.units, q.limit]),
+      [["send_minute", "account", "submissions", 2], ["send_global", "service", "recipients", 10000]]);
+    assert.equal(status.body.billing.plan, "free");
+    assert.deepEqual(status.body.billing.outbound,
+      { meter: "outbound_recipients", included: 100, accepted: 0, reserved: 0, remaining_included: 100 });
+    assert.deepEqual(status.body.billing.overage,
+      { enabled: false, currency: "CNY", budget_micros: 0, accrued_micros: 0, reserved_micros: 0, remaining_budget_micros: 0 });
+    assert.ok(status.body.billing.period_end > status.body.billing.period_start);
+    assert.equal(status.body.limits.per_recipient_daily, undefined);
+    assert.equal(status.body.links.billing, "/v1/billing");
+    const freeAddresses = await get("/v1/addresses");
+    assert.equal(freeAddresses.status, 200);
+    assert.equal(freeAddresses.body.limit, 1);
+    assert.equal(freeAddresses.body.limit_kind, "effective_included_addresses");
+    assert.equal(freeAddresses.body.included_limit, 1);
+    assert.equal(freeAddresses.body.grandfathered_limit, 0);
+    assert.equal(freeAddresses.body.effective_included_limit, 1);
+    assert.equal(freeAddresses.body.platform_limit, 10);
+    assert.equal(freeAddresses.body.overage_enabled, false);
+    await db.prepare("UPDATE resource_accounts SET grandfathered_addresses=4 WHERE owner_sub='owner'").run();
+    assert.equal((await get("/v1/addresses")).body.limit, 4, "existing addresses remain included on Free");
+    await db.prepare("UPDATE resource_accounts SET plan='lite',included_addresses=3,included_outbound=1000,valid_until=unixepoch()+3600 WHERE owner_sub='owner'").run();
+    const liteAddresses = (await get("/v1/addresses")).body;
+    assert.equal(liteAddresses.included_limit, 3);
+    assert.equal(liteAddresses.effective_included_limit, 4);
+    await db.prepare("UPDATE resource_accounts SET plan='plus',included_addresses=5,included_outbound=5000,billing_owner_id='private-payer',authorization_id='private-authority',overage_budget_micros=5000 WHERE owner_sub='owner'").run();
+    const plusAddresses = (await get("/v1/addresses")).body;
+    assert.equal(plusAddresses.limit, 5);
+    assert.equal(plusAddresses.platform_limit, 10);
+    assert.equal(plusAddresses.overage_enabled, true);
+    const paidStatus = await get("/v1/sending/status");
+    assert.equal(paidStatus.body.billing.plan, "plus");
+    assert.equal(paidStatus.body.billing.outbound.included, 5000);
+    assert.equal(paidStatus.body.billing.overage.enabled, true);
+    for (const sentinel of ["private-payer", "private-authority"]) {
+      assert.equal(JSON.stringify([paidStatus.body, plusAddresses]).includes(sentinel), false);
+    }
     const sensitive = JSON.stringify([receipt.body, status.body, first.body]);
     for (const sentinel of ["private-provider-id", "private-payload-hash", "private subject", "private body"]) {
       assert.equal(sensitive.includes(sentinel), false, "read contract excludes unrelated sensitive fields");

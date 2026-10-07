@@ -46,7 +46,8 @@ class StagingRolloutTests(unittest.TestCase):
                 "GITHUB_OUTPUT": str(ROOT / ".temp/unused-test-output"),
                 "AMAIL_STAGING_DEPLOY_CONFIRM": rollout.CONFIRM,
                 "CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "synthetic",
-                "AMAIL_EXPECTED_WORKER_VERSION": "new-api", "AMAIL_TRACE_QUEUE_ID": "b" * 32}
+                "AMAIL_EXPECTED_WORKER_VERSION": "new-api", "AMAIL_TRACE_QUEUE_ID": "b" * 32,
+                "AMAIL_TRACE_DLQ_ID": "c" * 32}
 
     def predecessor(self, kind: str = "legacy") -> dict:
         """Return a projected snapshot without mail, addresses or credentials."""
@@ -79,6 +80,8 @@ class StagingRolloutTests(unittest.TestCase):
     def test_main_logs_only_closed_failure_reason_and_read_dispatch(self):
         """Unknown provider prose never enters logs and inspection selects only reads."""
         for error, expected in ((ValueError("staging_resume_dirty_tracked_tree"), "staging_resume_dirty_tracked_tree"),
+                                (ValueError("split_pins_unverified"), "split_pins_unverified"),
+                                (ValueError("staging_trace_ownership_pins_missing"), "staging_trace_ownership_pins_missing"),
                                 (ValueError("private arbitrary provider text"), "unknown"),
                                 (RuntimeError("staging_resume_dirty_tracked_tree"), "unknown")):
             output = io.StringIO()
@@ -230,9 +233,32 @@ class StagingRolloutTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.admit_partial(value, owned, confirm=False)
 
+    def test_split_preflight_requires_owned_queue_pins_even_after_successful_inspection(self):
+        """Reproduce run 37615319193: observed queue IDs cannot fill missing environment ownership."""
+        environment = self.environment()
+        environment.update(AMAIL_TRACE_QUEUE_ID="", AMAIL_TRACE_DLQ_ID="")
+        snapshot = {"scripts": {
+            rollout.API: {"capture_off": True, "handlers": ["fetch"], "crons": []},
+            rollout.MAINTENANCE: {"present": True, "crons": list(rollout.CADENCE)},
+        }}
+        def observed():
+            """A successful inventory finds queues, but does not grant adoption."""
+            os.environ.update(AMAIL_TRACE_QUEUE_ID="b" * 32, AMAIL_TRACE_DLQ_ID="c" * 32)
+            return snapshot
+        with patch.dict(os.environ, environment, clear=True), \
+             patch.object(rollout, "inspect", side_effect=observed), \
+             patch.object(rollout.graph, "verify") as verify, patch.object(rollout, "write") as write:
+            with self.assertRaisesRegex(ValueError, "^staging_trace_ownership_pins_missing$"):
+                rollout.preflight()
+            verify.assert_not_called()
+            write.assert_not_called()
+            self.assertEqual(os.environ["AMAIL_TRACE_QUEUE_ID"], "")
+            self.assertEqual(os.environ["AMAIL_TRACE_DLQ_ID"], "")
+
     def test_diagnostic_observed_ids_do_not_replace_reviewed_pins(self):
         """An inspection failure still restores caller-reviewed ownership pins."""
         environment = self.environment()
+        environment.pop("AMAIL_TRACE_DLQ_ID")
         def observed():
             """Simulate a failed diagnostic after it projected observed IDs."""
             os.environ["AMAIL_TRACE_QUEUE_ID"] = "observed-unowned"

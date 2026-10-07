@@ -64,3 +64,32 @@ realm-isolation checks passed. No local heavy Rust/Wasm/site build or provider
 write was performed. Root coordinates secret provisioning, immutable source
 commit, one hosted workflow dispatch, live observation and actual user/Billing
 end-to-end verification; this note is not evidence that deployment has occurred.
+
+## Initial V020 preflight failure and verified correction
+
+Hosted staging run `37615319193`, source `00acf56749fe2cd9af9ac0ab827d46f4a9921eb1`,
+passed compiled acceptance but stopped before the first mutator. Both staging
+GitHub Queue ownership variables were empty. Inspection temporarily projects
+observed identities for diagnostics, then preflight intentionally restores
+caller-reviewed ownership values. The subsequent exact graph check therefore
+refused missing pins; an incomplete diagnostic vocabulary rendered this safe
+failure as `reason=unknown`. This was configuration admission failure, not proof
+of an unsafe or absent live resource, and grants no replay of any provider write.
+
+A local authorized, bounded provider inspection on 2026-10-07 used the existing
+Wrangler OAuth cache in memory (with proxy variables removed). Its content-free
+snapshot is `.temp/v020-staging-inspection.json`. API, maintenance, sink and both
+adapters exactly match the source-owned historical cohort; full split and adapter
+checks both returned `exact_graph=true`. Trace Queue
+`fcee510036af42c189e28c0b6ff9508e` has exactly API and maintenance producers;
+DLQ `f023f804b7bd4d8691fbfcb60416a001` has no producer. Both retain the reviewed
+bounded Queue settings. No resource, policy, code or secret was changed.
+
+The operational correction is to provision those independently verified IDs as
+staging environment variables `AMAIL_TRACE_QUEUE_ID_STAGING` and
+`AMAIL_TRACE_DLQ_ID_STAGING`, not to adopt arbitrary observed IDs automatically.
+Preflight now reports `staging_trace_ownership_pins_missing` before graph reads,
+and preserves fixed downstream failure labels without exposing provider text.
+A focused regression reproduces successful inspection with missing caller pins,
+proves refusal and zero snapshot writes, and confirms observed IDs remain unable
+to replace reviewed ownership. All 21 staging-rollout tests pass locally.

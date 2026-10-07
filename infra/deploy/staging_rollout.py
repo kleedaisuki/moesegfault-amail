@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -54,6 +55,16 @@ FAILURES = frozenset({
     "staging_resume_adapter_component_unreviewed", "staging_resume_adapter_submit_unverified",
     "staging_resume_adapter_graph_unverified",
     "staging_resume_old_api_changed", "staging_resume_partial_graph_unverified", "staging_resume_phase_changed",
+})
+# Fixed downstream diagnostic vocabularies remain content-free at the orchestration boundary.
+FAILURES |= graph.FAILURES | frozenset({
+    "staging_trace_ownership_pins_missing", "staging_credentials_unverified",
+    "staging_inventory_unverified", "staging_role_metadata_unverified",
+    "staging_serving_unverified", "staging_handlers_unverified", "staging_schedules_unverified",
+    "staging_serving_changed", "staging_queue_unverified", "staging_producer_unreviewed",
+    "maintenance_pin_unreviewed", "maintenance_serving_unverified", "maintenance_bindings_unverified",
+    "maintenance_privacy_unverified", "maintenance_surface_unverified", "maintenance_schedule_unverified",
+    "maintenance_deployment_changed", "api_schedule_unverified",
 })
 PREDECESSOR = ROOT / ".temp/staging-rollout-predecessor.json"
 WITNESS = ROOT / ".temp/staging-cutover.json"
@@ -164,6 +175,9 @@ def preflight(*, read_only: bool = False) -> None:
                 or not maintenance["present"] or maintenance["crons"] != list(CADENCE)):
             raise ValueError("staging_split_predecessor_unverified")
         resume = os.getenv("AMAIL_STAGING_RESUME_RUN", "")
+        if not resume and any(not re.fullmatch(r"[0-9a-f]{32}", os.getenv(name, ""))
+                              for name in ("AMAIL_TRACE_QUEUE_ID", "AMAIL_TRACE_DLQ_ID")):
+            raise ValueError("staging_trace_ownership_pins_missing")
         if resume:
             from staging_resume import load_resume
             owned = load_resume(resume)

@@ -81,9 +81,12 @@ class ProbeContractTests(unittest.TestCase):
                 return []
             return [{"policy": {"state": "held", "code": "send_held"},
                      "interpretation": "advisory_not_reservation_or_recipient_authorization",
-                     "links": {"events": "/v1/events", "send_receipt": "/v1/sends/{idempotency_key}"},
-                     "quotas": [{"kind": k, "used": 0, "limit": 5, "remaining": 5, "reset_at": "2026-10-04T00:00:00Z"}
-                                for k in ("send", "send_messages", "send_hour")]}]
+                     "links": {"events": "/v1/events", "send_receipt": "/v1/sends/{idempotency_key}", "billing": "/v1/billing"},
+                     "billing": {"plan": "free", "period_start": 1, "period_end": 2,
+                                 "outbound": {"meter": "outbound_recipients", "included": 100, "accepted": 0, "reserved": 0, "remaining_included": 100},
+                                 "overage": {"enabled": False, "currency": "CNY", "budget_micros": 0, "accrued_micros": 0, "reserved_micros": 0, "remaining_budget_micros": 0}},
+                     "quotas": [{"kind": k, "used": 0, "limit": limit, "remaining": limit, "reset_at": "2026-10-04T00:00:00Z"}
+                                for k, limit in (("send_minute", 2), ("send_global", 10_000))]}]
 
         def error(action):
             """Keep synthetic machine failures in memory."""

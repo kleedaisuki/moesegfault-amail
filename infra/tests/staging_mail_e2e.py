@@ -311,13 +311,31 @@ def progressive_surfaces(binary: Path, env: dict[str, str]) -> None:
           "staging_sending_not_held")
     check(value.get("interpretation") == "advisory_not_reservation_or_recipient_authorization"
           and value.get("links") == {"events": "/v1/events",
-                                     "send_receipt": "/v1/sends/{idempotency_key}"},
+                                     "send_receipt": "/v1/sends/{idempotency_key}",
+                                     "billing": "/v1/billing"},
           "sending_status_semantics")
     quotas = value.get("quotas")
-    check(isinstance(quotas, list) and len(quotas) == 3
+    check(isinstance(quotas, list) and len(quotas) == 2
           and all(isinstance(q, dict) for q in quotas)
-          and {q.get("kind") for q in quotas} == {"send", "send_messages", "send_hour"},
+          and {q.get("kind") for q in quotas} == {"send_minute", "send_global"},
           "sending_status_quotas")
+    check({q["kind"]: q["limit"] for q in quotas} == {"send_minute": 2, "send_global": 10_000},
+          "sending_status_actual_safety_limits")
+    billing = value.get("billing")
+    check(isinstance(billing, dict) and billing.get("plan") in {"free", "lite", "plus"}
+          and type(billing.get("period_start")) is int and type(billing.get("period_end")) is int
+          and billing["period_end"] > billing["period_start"], "sending_status_billing_period")
+    outbound = billing.get("outbound", {})
+    check(outbound.get("meter") == "outbound_recipients"
+          and all(type(outbound.get(key)) is int and outbound[key] >= 0
+                  for key in ("included", "accepted", "reserved", "remaining_included"))
+          and outbound["remaining_included"] == max(0, outbound["included"] - outbound["accepted"] - outbound["reserved"]),
+          "sending_status_monthly_allowance")
+    overage = billing.get("overage", {})
+    check(type(overage.get("enabled")) is bool and overage.get("currency") == "CNY"
+          and all(type(overage.get(key)) is int and overage[key] >= 0
+                  for key in ("budget_micros", "accrued_micros", "reserved_micros", "remaining_budget_micros")),
+          "sending_status_overage_budget")
     for quota in quotas:
         check(all(type(quota.get(key)) is int and quota[key] >= 0
                   for key in ("used", "limit", "remaining"))

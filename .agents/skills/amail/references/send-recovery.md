@@ -54,11 +54,15 @@ are advisory,
 not quota reservation or recipient authorization; the send still validates and
 reserves. A narrow operator canary does not open ordinary global sending.
 
-Source limits: 50 recipient entries/account/UTC day, 20 sends/account/UTC day,
-5 sends/account/UTC hour, 10 entries/account/normalized recipient/UTC day; one
-message permits 50 recipient entries and 32 attachments. A global 10,000-entry
-daily guard also applies. To/Cc/Bcc and duplicate entries all count. Earlier
-reservations can remain consumed if a later check or submission fails.
+v0.2.0 safety limits are shared across plans: two new submissions/account/minute
+and 10,000 canonical distinct recipient units/service/UTC day. There is no separate
+50-recipient/day, 20-send/day, five-send/hour or per-recipient daily account quota.
+One message permits 50 recipient entries and 32 attachments. Safety counters can
+remain conservatively consumed after a failed attempt; they are not money charges.
+`amail sending-status` separates these safety buckets from `billing.outbound`
+(monthly included, accepted, reserved and remaining units) and `billing.overage`
+(explicit human budget, accrued and unresolved held micros). Policy and canary
+fields keep their existing applicability semantics.
 
 The separate v0.2.0 monthly billable unit is one distinct normalized envelope
 recipient across To/Cc/Bcc: identical recipients are charged once per message.

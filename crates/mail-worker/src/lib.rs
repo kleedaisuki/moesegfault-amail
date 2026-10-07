@@ -1763,6 +1763,7 @@ async fn flag_active_address(database: &Database, address: &str, user: &Principa
 
 async fn list_addresses(env: &Env, user: &Principal, request_id: &str) -> AppResult<Response> {
     let database = db(env)?;
+    let account = resource::status(&database, user).await?;
     let result = database.prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE owner_iss=?1 AND owner_sub=?2 AND state!='retired' ORDER BY created_at")
         .bind(&[bind_str(&user.iss), bind_str(&user.sub)])?.all().await?;
     let addresses = result.results::<AddressRow>()?.into_iter().map(|a| serde_json::json!({"address":a.address,"state":if a.state=="provisioning" {"pending"} else {a.state.as_str()},"created_at":iso(a.created_at)})).collect::<Vec<_>>();
@@ -1777,9 +1778,16 @@ async fn list_addresses(env: &Env, user: &Principal, request_id: &str) -> AppRes
         .first::<CapacityRow>(None)
         .await?
         .map_or(0, |row| row.n);
-    Ok(Response::from_json(
-        &serde_json::json!({"addresses":addresses,"limit":10,"capacity":{"limit":USER_ADDRESS_CAPACITY,"registered":used,"remaining_estimate":(USER_ADDRESS_CAPACITY-used).max(0)},"request_id":request_id}),
-    )?)
+    let mut response = account.address_limits();
+    let fields = response.as_object_mut().ok_or_else(|| AppError {
+        status: 503,
+        code: "resource_account_missing",
+    })?;
+    fields.insert("addresses".into(), serde_json::json!(addresses));
+    fields.insert("plan".into(), serde_json::json!(account.plan));
+    fields.insert("capacity".into(),serde_json::json!({"limit":USER_ADDRESS_CAPACITY,"registered":used,"remaining_estimate":(USER_ADDRESS_CAPACITY-used).max(0)}));
+    fields.insert("request_id".into(), serde_json::json!(request_id));
+    Ok(Response::from_json(&response)?)
 }
 
 async fn add_address(
@@ -2690,10 +2698,18 @@ async fn charge_outbound_quotas(
         "send_global",
         &global,
         outbound_recipient_count(draft),
-        10_000,
+        resource::GLOBAL_OUTBOUND_RECIPIENTS_PER_DAY,
     )
     .await?;
-    reserve_window_quota(database, "send_minute", user, 1, 2, 60_000).await?;
+    reserve_window_quota(
+        database,
+        "send_minute",
+        user,
+        1,
+        resource::SENDS_PER_MINUTE,
+        60_000,
+    )
+    .await?;
     resource::reserve_send(
         database,
         user,
