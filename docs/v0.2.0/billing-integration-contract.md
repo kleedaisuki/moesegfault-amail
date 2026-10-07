@@ -1,7 +1,7 @@
-> USD amendment approved2026-10-07: current tariffs below supersede original
-> CNY prices. Original wire examples and CNY acceptance records farther below
-> remain historical examples; new DTO requirements are in usd-cutover.md.
-> Deployment/real USD acceptance is still in progress, not inferred from CNY runs.
+> Fixed USD amendment approved 2026-10-07: current tariffs and wire examples
+> below supersede the original CNY contract for new requests. Historical CNY
+> acceptance records remain explicitly denominated; see usd-cutover.md for the
+> additive migration and actual USD deployment/acceptance evidence.
 
 # Billing integration contract for amail v0.2.0
 
@@ -51,7 +51,7 @@ Service requests use a dedicated `Authorization: Bearer <AMAIL_SERVICE_KEY>` sec
 `POST /v1/service/amail/authorizations`, required original UUID `Idempotency-Key`:
 
 ```json
-{"owner_id":"opaque_account_hash_here","plan_id":"amail-lite","overage_budget_micros":0,"return_url":"https://amail-staging.moesegfault.dev/billing/return"}
+{"owner_id":"opaque_account_hash_here","plan_id":"amail-lite","overage_budget_micros":0,"return_url":"https://amail-staging.moesegfault.dev/billing/return","currency":"USD"}
 ```
 
 ```json
@@ -65,7 +65,7 @@ The request lasts 30 minutes. Exact retries preserve the original result; differ
 `GET /v1/service/amail/authorizations/{authorization_id}`:
 
 ```json
-{"authorization":{"id":"opaque_192_bit_handle","owner_id":"opaque_account_hash_here","product_id":"amail","plan_id":"amail-lite","overage_budget_micros":5000000,"return_url":"https://amail-staging.moesegfault.dev/billing/return","status":"approved","expires_at":1791388800,"approved_at":1791387100,"currency":"CNY","contract_version":"amail-v0.2.0"},"binding":{"owner_id":"opaque_account_hash_here","account_id":"opaque_billing_payer_id","product_id":"amail","plan_id":"amail-lite","overage_budget_micros":5000000,"currency":"CNY","contract_version":"amail-v0.2.0","valid_until":1793979100,"entitlements":["amail.plan.lite","amail.outbound.monthly.1000","amail.storage.bytes.2000000000","amail.addresses.3"],"authorization_id":"opaque_192_bit_handle","updated_at":1791387100},"settlement_mode":"activation_code_and_accrual"}
+{"authorization":{"id":"opaque_192_bit_handle","owner_id":"opaque_account_hash_here","product_id":"amail","plan_id":"amail-lite","overage_budget_micros":5000000,"return_url":"https://amail-staging.moesegfault.dev/billing/return","status":"approved","expires_at":1791388800,"approved_at":1791387100,"currency":"USD","contract_version":"amail-v0.2.0-usd-v1"},"binding":{"owner_id":"opaque_account_hash_here","account_id":"opaque_billing_payer_id","product_id":"amail","plan_id":"amail-lite","overage_budget_micros":5000000,"currency":"USD","contract_version":"amail-v0.2.0-usd-v1","valid_until":1793979100,"entitlements":["amail.plan.lite","amail.outbound.monthly.1000","amail.storage.bytes.2000000000","amail.addresses.3"],"authorization_id":"opaque_192_bit_handle","updated_at":1791387100},"settlement_mode":"activation_code_and_accrual"}
 ```
 
 Pending/cancelled/expired receipts have no binding. Routine authoritative refresh: `GET /v1/service/amail/accounts/{owner_id}` returns `{binding,settlement_mode}`; unbound account returns `binding:null`. Expired paid grants project to `amail-free` with budget 0 without deleting the payer association or any amail address. A paid projection is bounded by its real activation subscription period. Free `valid_until` is null.
@@ -77,7 +77,7 @@ One USD equals **1,000,000 integer micros**, not cents and not floating-point cu
 Authenticated same-origin browser calls `GET /api/amail/authorizations/{id}` and CSRF-protected `POST /api/amail/authorizations/{id}/approve` with:
 
 ```json
-{"acknowledge":true,"plan_id":"amail-lite","overage_budget_micros":5000000}
+{"acknowledge":true,"plan_id":"amail-lite","overage_budget_micros":5000000,"currency":"USD"}
 ```
 
 Billing verifies the current user's real active matching amail subscription for paid approval; otherwise returns `409 activation_required`. Existing activation-code form remains available. Free requires no code. Approval and payer binding commit atomically; a different payer cannot replace an existing association. Cancel uses the corresponding `/cancel` POST. The stored approved fixed return URL is offered as an explicit navigation, never treated as proof of payment.
@@ -87,18 +87,18 @@ Billing verifies the current user's real active matching amail subscription for 
 `POST /v1/service/amail/usage`:
 
 ```json
-{"event_id":"stable_unique_event_id","owner_id":"opaque_account_hash_here","period_start":1790812800,"period_end":1793491200,"meter":"outbound_recipients","quantity":1,"amount_micros":5000,"occurred_at":1791387100}
+{"event_id":"stable_unique_event_id","owner_id":"opaque_account_hash_here","period_start":1790812800,"period_end":1793491200,"meter":"outbound_recipients","quantity":1,"amount_micros":1000,"currency":"USD","authorization_id":"opaque_192_bit_handle","authorized_at":1791387000,"occurred_at":1791387100}
 ```
 
 Meters: `outbound_recipients`, `storage_byte_seconds`, `address_seconds`. Root amail owns resource counters, reservations, exact rate computation and durable outbox; Billing owns consent ceiling and immutable idempotent liability ledger. Positive liabilities require existing human payer binding and cannot exceed the approved period budget. Identical event replay returns its existing receipt; payload mutation returns 409. Quantities can exceed JavaScript's safe integer limit internally and are preserved as SQLite integers by textual binding. Monetary amounts stay below safe integer limits. Charges remain `pending_settlement`, never falsely `paid`.
 
-`GET /v1/service/amail/accounts/{owner_id}/usage?period_start=...` returns `{owner_id,period_start,amount_micros,overage_budget_micros,settlement_status:"pending_settlement",events_count}`. Overlapping periods for the same owner are rejected to prevent changing a period key to reset budget.
+`GET /v1/service/amail/accounts/{owner_id}/usage?period_start=...&currency=USD` returns `{owner_id,period_start,currency,amount_micros,overage_budget_micros,settlement_status:"pending_settlement",events_count}`. Overlapping periods for the same owner and denomination are rejected to prevent changing a period key to reset budget. An unqualified legacy query remains CNY; never combine its totals with USD.
 
 ### Deployment additions (staging only)
 
 - Billing secret `AMAIL_SERVICE_KEY`, shared only with the staging amail worker through its environment.
 - Billing vars `SUBSCRIBE_ORIGIN` and `AMAIL_RETURN_URL_ALLOWLIST` pinned to the fixed staging hosts above.
-- Billing D1 migrations `0003_amail_authorizations.sql`, `0004_amail_usage.sql`.
+- Billing D1 migrations `0003_amail_authorizations.sql`, `0004_amail_usage.sql`, and additive `0006_amail_usd.sql`. Existing applied migrations are not rewritten.
 - Staging catalog `amail-free`, `amail-lite`, `amail-plus`; production catalog and audience/Identity registrations are unchanged.
 
 
@@ -108,7 +108,7 @@ Usage ingestion additionally **requires** `authorization_id` and `authorized_at`
 all events, including zero-charge fractional stock events:
 
 ```json
-{"event_id":"stable_unique_event_id","owner_id":"opaque_account_hash_here","period_start":1790812800,"period_end":1793491200,"meter":"outbound_recipients","quantity":1,"amount_micros":5000,"authorization_id":"opaque_192_bit_handle","authorized_at":1791387000,"occurred_at":1793491300}
+{"event_id":"stable_unique_event_id","owner_id":"opaque_account_hash_here","period_start":1790812800,"period_end":1793491200,"meter":"outbound_recipients","quantity":1,"amount_micros":1000,"currency":"USD","authorization_id":"opaque_192_bit_handle","authorized_at":1791387000,"occurred_at":1793491300}
 ```
 
 The original resource-admission timestamp and human receipt are captured before the
@@ -119,7 +119,7 @@ across receipts, never reset per receipt. New admissions under a lower cap canno
 the old receipt. Future observation tolerance is 300 seconds. No fallback to current
 consent is accepted, because v0.2.0 has no legacy usage producer contract.
 
-## Actual staged service acceptance — 2026-10-07
+## Historical CNY staged service acceptance — 2026-10-07
 
 Billing/Subscribe runtime source is `c77b7ddf19d64e5c71c281fd378cfb774d19a559`:
 
@@ -151,7 +151,7 @@ full integration acceptance is recorded below rather than inferred from smoke te
 Detailed evidence and the previous migration/dependency repairs are retained in
 Subscriptions `docs/deployment/staging.md` and its linked incident notes.
 
-### Final real integration acceptance
+### Final historical CNY integration acceptance
 
 [Mail 37630962022](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37630962022)
 completed successfully with exact candidate `d1291b8`, a real existing Lite grant,

@@ -6,12 +6,34 @@ in Git history, not competing current-state documents. Evidence recorded on
 
 ## Delivered v0.1.2 — current release
 
-### Delivered v0.2.0 staging — CNY baseline accepted; USD amendment in progress
+### Delivered v0.2.0 staging — fixed USD deployed; final mail recheck pending
 
 The owner subsequently approved fixed USD tariffs: Free0, Lite1.50, Plus4.50
 per month; overage0.001/recipient,0.15/GB-month,0.50/address-month. Currency
 cutover is tracked in `v0.2.0/usd-cutover.md`; earlier CNY evidence below is not
 reinterpreted as USD acceptance. Current local full infra suite233tests PASS.
+
+Actual USD deployments passed: Mail source `27c5818` in
+[37642433233](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37642433233),
+and Billing/Subscribe source `86bb06e` in
+[37641220454](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37641220454).
+Applied additive migrations0015/0006 preserve original CNY history, included
+resource counters, existing addresses and paid grants. CNY consent does not
+authorize USD spending. Current versions are recorded in `v0.2.0/usd-cutover.md`.
+
+The real USD financial/trace portion of
+[37644087065](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37644087065)
+passed: normal browser USD approval, existing Lite grant, 14 actual excess
+address-seconds, 2 USD micros acknowledged in two events through normal Cron,
+all four meter addresses retired and budget restored zero. Separate historical
+reads still returned exactly 6 CNY events / 22 CNY micros. Safe artifact
+`11494520444` proves ordinary14-span and charged-origin18-span ancestry plus
+one separately retained scheduled root. This is liability, not automatic payment.
+The later mail probe failed on its obsolete CNY status assertion. The helper-only
+correction at `aae6029` requires USD and rejects CNY; the remaining ordinary
+mail/self-send acceptance must not repeat charged usage.
+
+#### Historical CNY baseline and preceding delivery
 
 The owner requested Billing integration and staging delivery on 2026-10-07, not
 production publication. Candidate branch `codex/v0.2.0-billing` starts at

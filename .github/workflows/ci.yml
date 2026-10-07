@@ -68,7 +68,7 @@ on:
         default: false
         type: boolean
       billing_metering_confirm:
-        description: Optional RUN_STAGING_BILLING_METERING_V020 authorizes synthetic Lite budget 3 CNY then 0 and four temporary addresses
+        description: Optional RUN_STAGING_BILLING_METERING_V020 authorizes synthetic Lite budget USD 0.50 then 0 and four temporary addresses
         required: false
         type: string
 

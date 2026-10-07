@@ -267,15 +267,17 @@ only this explicitly requested path receives 50 minutes.
 
 The protected synthetic account must have a real existing Lite grant, exactly
 three included addresses, no grandfathered addresses, no registered addresses and
-zero budget. Storage must remain within its included allowance, outbound
+zero budget and zero current USD accrued/reserved money. Historical CNY balances
+remain separate and are not a reason to replay a charged test. Storage must remain
+within its included allowance, outbound
 reservations must be zero, and entitlement/month boundaries must be more than
 1,200 seconds away. Fixed read-only Mail D1 counts and normal provider rule lists
 must leave four slots within the 198-user-address / 200-provider-rule ceilings.
 No activation material is accepted by the metering helper.
 
-The normal Manage browser UI temporarily authorizes a 3.00 CNY spending ceiling.
+The normal Manage browser UI temporarily authorizes a USD 0.50 spending ceiling.
 The normal CLI creates four nonce-scoped task addresses, observes all four active,
-and holds them for at least two real seconds. Normal CLI retirement closes every
+and holds them for at least 6.1 real seconds. Normal CLI retirement closes every
 task address; the same browser restores zero budget and checks the authoritative
 receipt/readback **before** delivery polling. A lost creation acknowledgement
 still triggers retirement of the attempted task address if listed. Cleanup and
@@ -285,14 +287,14 @@ or both, is an explicit failure and cannot become a successful evidence artifact
 The helper does not send mail, seed usage, write D1, invoke a synthetic scheduler,
 mint codes, or exercise a payment processor. It waits for the existing five-minute
 Cron to deliver actual durable outbox liabilities. Its provider adapter accepts
-only three fixed SELECT statements. Delivered markers, the exact period, positive
+only fixed SELECT statements. Delivered markers, the exact period, positive
 address-seconds, an original trace context, and the authoritative Billing usage
 amount/event count must agree. Task liability must be positive and at most 10,000
-CNY micros (0.01 CNY); the 3 CNY ceiling is not the expected charge. Billing must
+USD micros ($0.01); the $0.50 ceiling is not the expected charge. Billing must
 report zero current budget and `pending_settlement`, never payment collection.
 
 Polling is bounded by 660 seconds and the shared 810-second Billing evidence
-envelope. Last-poll admission reserves 50 seconds for its two bounded reads and
+envelope. Last-poll admission reserves 75 seconds for its three bounded reads and
 60 seconds for the parent's final telemetry flush; the outer retained-reader
 15-minute window consequently retains its 90-second reserve. Long setup can
 shorten the polling opportunity rather than silently widening the evidence scope.
@@ -305,7 +307,7 @@ late evidence-window admission, default-zero behavior, and optional trace union
 before final flush. These simulations do not establish live Cron delivery or a
 hosted metering pass; that requires the explicitly confirmed staging run.
 
-### Actual hosted result
+### Historical CNY hosted result (superseded tariff, preserved evidence)
 
 [37630962022](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37630962022)
 passed the full optional path at exact source `d1291b80923d7d463e596bcd702a6e251039797f`;

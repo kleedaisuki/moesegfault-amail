@@ -10,10 +10,10 @@ $0.50/address-month. Included quotas stay 100/1000/5000 recipients,
 One USD = 1,000,000 integer micros. Rates are 1000/150000/500000 USD micros.
 Production/Identity deployment remains out of scope.
 
-## Existing state and invariants
+## Historical pre-cutover baseline and invariants
 
-Accepted staging source Mail d1291b8 (current docs-only HEAD b0c596b), Billing
-runtime c77b7dd (current docs-only HEAD 6ab8aa7). API version
+The accepted pre-cutover staging source was Mail d1291b8 (then docs-only HEAD
+b0c596b), Billing runtime c77b7dd (then docs-only HEAD 6ab8aa7). API version
 1f4a056f-5342-46a5-8e32-7eebaea5f7a2; maintenance
 eb38afe1-51fe-4d6b-8e82-661b5932dcbf; sink
 56c17824-679f-4427-bcc9-4584d2510208. Final readback37634410400 found
@@ -138,6 +138,7 @@ readbacks. No failed-attempt provenance override was added. Current versions:
 | Private Mail trace sink | f70bf19f-8f08-45a3-b142-244d34890db7 |
 | Ingress | 7ef1314c-1d4d-418e-8c3e-44025854271f |
 | Lifecycle | bbf2df6b-ceb7-433c-90da-b9ee459cf5b6 |
+| Staging site | b69e4782-9ce6-4ff4-a8a3-8b06e217f57c |
 
 Successful exact-source candidate bundle11492059864 belongs to37642433233.
 Controlled real USD acceptance37644087065 completed the browser and monetary

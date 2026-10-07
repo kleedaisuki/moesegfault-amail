@@ -161,3 +161,40 @@ CNY micros in both Mail and Billing, zero registered addresses and zero budget.
 Every retained Billing usage server reported HTTP 200/success. This includes the
 15-micro historical backlog plus the seven-micro final test; all remain liabilities
 marked `pending_settlement`, never a claim of monetary payment.
+
+
+## Current fixed USD staging delivery (2026-10-07)
+
+Owner-approved tariff: Free $0, Lite $1.50, Plus $4.50/month; excess accepted
+recipient $0.001, decimal GB-month $0.15, address-month $0.50. Included resources
+and unmetered inbound/semantic search are unchanged. This is not FX conversion.
+
+Billing/Subscribe source `86bb06e` deployed successfully in
+[37641220454](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37641220454).
+Mail source `27c5818` deployed successfully in
+[37642433233](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37642433233),
+including additive migrations0006/0015 and exact private graph/capture readbacks.
+All original applied migrations and production/Identity resources stay unchanged.
+
+| Surface | Current USD serving version |
+| --- | --- |
+| Mail API | `c33b65b1-d2a4-4902-9fa3-15e74baf1819` |
+| Maintenance | `acbf4790-6e80-4bd3-aab2-095c9937759d` |
+| Mail trace sink | `f70bf19f-8f08-45a3-b142-244d34890db7` |
+| Ingress | `7ef1314c-1d4d-418e-8c3e-44025854271f` |
+| Lifecycle | `bbf2df6b-ceb7-433c-90da-b9ee459cf5b6` |
+| Staging site | `b69e4782-9ce6-4ff4-a8a3-8b06e217f57c` |
+| Billing | `7a85d66d-b33a-42f2-bc30-5c6e1cafc2c4` |
+| Subscribe | `dd8b046a-8f9e-4c3a-9947-3cf96e6cffbb` |
+
+The preceding failed Mail run `37641189250` had a GitHub workflow-level Internal
+server error after a known successful sink submit/readback; all later mutator jobs
+were never created. A fresh same-source workflow used fresh exact graph brackets
+and same-run artifacts, without failed-artifact provenance exceptions. See
+`usd-cutover.md` for the bounded incident and recovery facts.
+
+Actual USD monetary/trace acceptance `37644087065` acknowledged 2 USD micros in
+two normal-Cron events, retired all four metering addresses and restored zero
+budget. Original 6 CNY events / 22 CNY micros remained unchanged. A stale CNY
+assertion later stopped the ordinary mail probe; the helper-only correction
+`aae6029` changes no deployed runtime bytes and must not replay charged usage.

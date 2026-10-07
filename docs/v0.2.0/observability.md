@@ -260,8 +260,9 @@ Billing journey of 810 seconds. Restore approval traces therefore remain availab
 to the retained-reader witness; observing an outbox trace never replaces browser
 authorization-chain evidence.
 
-Only safe aggregate facts are returned: positive address-seconds, integer CNY
-micros, delivered-event count, four created/retired addresses, zero restored
+Only safe aggregate facts are returned: positive address-seconds, explicitly
+denominated integer micros (USD for new usage, CNY only for separate history),
+delivered-event count, four created/retired addresses, zero restored
 budget, `pending_settlement`, and validated random trace IDs. Raw owner IDs,
 addresses, event IDs, authorization URLs, activation codes, credentials and
 provider response bodies remain in memory and are not evidence fields. The three
@@ -270,8 +271,8 @@ fixed D1 SELECTs and Billing usage GET use the existing honest
 redirects. Their success proves actual ledger acknowledgement, not payment
 collection or native vendor tracing.
 
-The final polling admission leaves 110 seconds inside the 810-second envelope for
-two 25-second reads and the parent's 60-second final flush. Together with the
+The current polling admission leaves 135 seconds inside the 810-second envelope for
+three 25-second reads and the parent's 60-second final flush. Together with the
 existing 90-second retained-query reserve, this avoids admitting a last read whose
 bounded completion alone would push the journey outside the 15-minute scope.
 
@@ -324,3 +325,30 @@ client's link selected the exact separately retained scheduled root; wall-clock
 proximity was not substituted for causality. Zero current budget and six delivered
 period events matched the real pending-settlement ledger. The same run repeated
 SMTP/archive/search and controlled self-send recovery/delivery acceptance.
+
+
+### Actual fixed USD asynchronous proof (2026-10-07)
+
+The monetary/retained-trace portion of
+[37644087065](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37644087065)
+passed on deployed Mail `27c5818` and Billing/Subscribe `86bb06e`. Safe artifact
+`11494520444` records 14 ordinary human/CLI spans, 18 charged-origin spans and
+one separately retained scheduled root. Normal allocation/retirement generated
+14 excess address-seconds and 2 USD micros in two delivered events. The original
+6 CNY events / 22 CNY micros remain independently readable and unchanged.
+
+| Causal boundary | Actual USD retained identity |
+| --- | --- |
+| Charged origin trace | `1b9162ed6e2993a35b1fca190b80a25d` |
+| Creation Mail server | `17fa27721f094203` |
+| Successful maintenance usage client | `ddadf7d9a09845f8` |
+| Successful Billing usage server | `718b4f69f9975bb6` |
+| Linked actual scheduled trace | `82999ef829c749359d95bbcd5bfb82ce` |
+| Exact parentless scheduled root | `361d2df4052e4289` |
+
+This proves real asynchronous causal linkage, not inferred wall-clock proximity.
+The same run's later mail-sending status assertion incorrectly required CNY;
+therefore the overall run was not green. Ordinary mail acceptance is repeated
+with the helper corrected, without the real-meter flag or another charged test.
+Existing liability and original trace evidence are preserved, not reset or
+synthesized to make a rerun look clean.
