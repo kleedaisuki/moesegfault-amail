@@ -155,3 +155,40 @@ Shared constants drive both the actual admission and reported safety thresholds.
 These observations are advisory, not a reservation or recipient authorization;
 remaining budget does not promise a new stock allocation will fit its remaining-
 period liability. Private payer, authority and trace IDs are excluded.
+
+
+### Actual staging migration witness (2026-10-07)
+
+For authoritative staging run 37617246563 / source 938de59, a fixed staging-only
+Wrangler D1 SELECT captured pre-migration address tuples at 11:59:37 UTC and
+compared them after migration at 12:01:49 UTC. Raw address/owner/rule tuples stayed
+in one Python process's RAM; only whole-set commitments and aggregate counts were
+saved to `.temp/v020-address-preservation.json`. `WRANGLER_WRITE_LOGS=false`
+prevented the configured CLI from retaining private query output. No credential
+cache was inspected; no D1 mutation or production query was performed.
+
+Before: 15 historical address rows, one historical owner, every address already
+retired, no non-retired allocations, and migrations through 0012 only. After:
+0013 and 0014 present; every original tuple unchanged, zero missing/changed/new
+rows. Canonical address+local-part+immutable-ownership+slot+rule+state+creation-time
+set SHA-256 remained
+`2a0b18e52b5bc806de30e1c7597917b51a07d737cc9c47ba748a402729342f7c`.
+One resource owner has exact Free defaults (100 recipients, 200,000,000 bytes,
+one included address, zero variable budget); non-Free owners=0,
+grandfathered-address total=0 and effective included-address total=1.
+
+Because all staging baseline addresses were retired, the *actual staging*
+non-retired-grandfather preservation comparison is empty. Ten-active-address
+preservation remains separately established by the real production-migration SQL
+fixture, not falsely attributed to live staging data.
+
+The exact official npm Wrangler 4.142.0 bundle's `splitSqlQuery` functions and
+transition table were also executed without installing dependencies, then every
+split statement was passed individually to SQLite. All 0001–0014 migrations
+succeeded; 0013 produced 27 statements and 0014 six, integrity_check=ok.
+Vendor CLI SHA-256:
+`c69202296b8e562a8168fd1732b630c2ecec111e2eca9b4ef0b9f0e3f76b0e90`.
+Content-free local evidence is `.temp/v020-pinned-splitter-evidence.json`.
+This client-parser probe alone does not establish remote D1 parser behavior;
+run 37617246563's successful Apply D1 migrations step and the independent
+post-migration SELECT above provide that stronger remote evidence.

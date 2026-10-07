@@ -51,6 +51,50 @@ def rows(stdout: str) -> list[dict]:
         raise BillingProbeError("billing_cli_response_invalid") from None
 
 
+def needs_activation(view: object, plan: str, timestamp: int) -> bool:
+    """Reuse a real unexpired matching Billing grant, independently of Mail projection."""
+    if not isinstance(view, dict) or type(view.get("requires_activation")) is not bool:
+        raise BillingProbeError("billing_subscription_readback_invalid")
+    subscription = view.get("subscription")
+    if subscription is not None and not isinstance(subscription, dict):
+        raise BillingProbeError("billing_subscription_readback_invalid")
+    if subscription is None:
+        return True
+    end = subscription.get("current_period_end")
+    matching = (subscription.get("product_id") == "amail"
+                and subscription.get("plan_id") == f"amail-{plan}"
+                and subscription.get("status") == "active"
+                and type(end) is int and end > timestamp)
+    if matching and view["requires_activation"]:
+        raise BillingProbeError("billing_subscription_readback_invalid")
+    return not matching
+
+
+def subscription_view(browser) -> dict:
+    """Read minimal current grant fields through the authenticated same-origin BFF.
+
+    This is a GET only. Approval, cancellation and redemption remain ordinary
+    visible UI actions; no CSRF token, bearer or payer identity is extracted.
+    """
+    expression = """(async()=>{
+      if(location.origin!=='https://subscribe-staging.moesegfault.dev') throw Error('origin');
+      const match=/^\\/amail\\/authorize\\/([A-Za-z0-9_-]{24,128})$/.exec(location.pathname);
+      if(!match) throw Error('path');
+      const response=await fetch('/api/amail/authorizations/'+match[1],{credentials:'same-origin'});
+      if(!response.ok) throw Error('read');
+      const raw=await response.text(); if(raw.length>65536) throw Error('size');
+      const view=JSON.parse(raw),s=view.subscription;
+      return {requires_activation:view.requires_activation,subscription:s==null?null:{
+        product_id:s.product_id,plan_id:s.plan_id,status:s.status,current_period_end:s.current_period_end}};
+    })()"""
+    result = browser.call("Runtime.evaluate", {"expression": expression,
+                          "returnByValue": True, "awaitPromise": True}, timeout=30)
+    value = result.get("result", {}).get("value")
+    if result.get("exceptionDetails") or not isinstance(value, dict):
+        raise BillingProbeError("billing_subscription_readback_failed")
+    return value
+
+
 def execute(binary: Path, home: Path, run_dir: Path) -> dict:
     """Run proposal→browser cancel/approve→authoritative CLI receipt on one owner."""
     started_at_ms = int(time.time() * 1000)
@@ -61,8 +105,6 @@ def execute(binary: Path, home: Path, run_dir: Path) -> dict:
         raise BillingProbeError("billing_test_plan_invalid")
     # Remove before any child is launched. Browser typing is the only consumer.
     code = os.environ.pop("STAGING_E2E_AMAIL_ACTIVATION_CODE", "")
-    if plan == "lite" and not 16 <= len(code) <= 256:
-        raise BillingProbeError("billing_legitimate_activation_code_required")
     if plan == "free" and code:
         raise BillingProbeError("billing_unexpected_activation_material")
     from staging_identity_cdp import Browser, load_credential, ProbeError
@@ -83,8 +125,8 @@ def execute(binary: Path, home: Path, run_dir: Path) -> dict:
         return rows(result.stdout)
 
     baseline = cli("billing", "status")[-1]
-    if baseline.get("account", {}).get("plan") != "free":
-        raise BillingProbeError("billing_synthetic_account_not_free")
+    if baseline.get("account", {}).get("plan") not in {"free", plan}:
+        raise BillingProbeError("billing_synthetic_account_plan_conflict")
     username, password, _ = load_credential(run_dir)
     browser = Browser(run_dir / f"billing-browser-{uuid.uuid4().hex}")
 
@@ -135,12 +177,23 @@ def execute(binary: Path, home: Path, run_dir: Path) -> dict:
         session_id = open_intent(plan)
         if browser.evaluate("document.querySelector('#amail-plan').value") != f"amail-{plan}":
             raise BillingProbeError("billing_browser_plan_mismatch")
+        grant_source = "not_required"
         if plan == "lite":
-            browser.wait_dom("#activation-code")
-            browser.fill("#activation-code", code)
+            activation_needed = needs_activation(subscription_view(browser), plan, int(time.time()))
+            grant_source = "existing"
+            if activation_needed:
+                if not 16 <= len(code) <= 256:
+                    raise BillingProbeError("billing_legitimate_activation_code_required")
+                browser.wait_dom("#activation-code")
+                browser.fill("#activation-code", code)
+                code = ""
+                browser.click("#activation-code + button")
+                wait_for("Boolean(document.querySelector('.notice-success'))", "billing_activation_not_confirmed")
+                if needs_activation(subscription_view(browser), plan, int(time.time())):
+                    raise BillingProbeError("billing_activated_grant_missing")
+                grant_source = "redeemed"
+            # A stale configured code must never be re-redeemed on an existing grant.
             code = ""
-            browser.click("#activation-code + button")
-            wait_for("Boolean(document.querySelector('.notice-success'))", "billing_activation_not_confirmed")
         browser.fill("#amail-budget", "0")
         browser.click(".consent-check input[type=checkbox]")
         browser.click(".authorization-panel .form-footer button:not([type=button])")
@@ -148,7 +201,7 @@ def execute(binary: Path, home: Path, run_dir: Path) -> dict:
                  "billing_browser_approval_missing")
         browser.click('a[href="https://amail-staging.moesegfault.dev/billing/return"]')
         wait_for("location.origin === 'https://amail-staging.moesegfault.dev' "
-                 "&& location.pathname === '/billing/return' "
+                 "&& ['/billing/return','/billing/return/'].includes(location.pathname) "
                  "&& document.querySelector('h1')?.innerText.includes('回到你的 Agent')",
                  "billing_return_page_missing")
         if cli("billing", "session", session_id, "--wait-seconds", "30")[-1].get("state") != "completed":
@@ -173,6 +226,7 @@ def execute(binary: Path, home: Path, run_dir: Path) -> dict:
             raise BillingProbeError("billing_cli_trace_ids_missing")
         print(f"staging_billing_browser_cancel_and_{plan}_receipt_verified")
         return {"schema_version": 1, "plan": plan, "cancelled": True, "browser_return_verified": True,
+                "grant_source": grant_source,
                 "human_simulation": "protected_synthetic_identity", "payment_collection_verified": False,
                 "trace_ids": traces, "started_at_ms": started_at_ms, "ended_at_ms": int(time.time() * 1000)}
     finally:

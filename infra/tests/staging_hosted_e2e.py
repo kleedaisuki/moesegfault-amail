@@ -121,6 +121,7 @@ def retained_billing_trace(evidence: dict) -> dict:
     if not account or not token or not service_key:
         raise HostedProbeError("billing_trace_credentials_missing")
     deadline = time.monotonic() + 90
+    last_stage = "no_read_attempt"
     while time.monotonic() < deadline:
         end = int(time.time() * 1000)
         if not 0 < end - started <= 900_000:
@@ -128,17 +129,23 @@ def retained_billing_trace(evidence: dict) -> dict:
         for trace in traces:
             if time.monotonic() >= deadline:
                 break
+            stage = "mail_sink_read"
             try:
                 records = read_records(account, token, "amail-trace-sink-staging", trace, started, end)
+                stage = "billing_read"
                 records += read_service_records("billing", service_key, trace)
+                stage = "subscribe_read"
                 records += read_service_records("subscribe", service_key, trace)
+                stage = "chain_validation"
                 return witness(records, trace, require_cli=True, require_authorization=True)
-            except TraceWitnessError:
+            except TraceWitnessError as error:
                 # Persisted read visibility can lag; bounded reads never replay an action.
+                # Only fixed stage/allowlisted failure labels survive the retry boundary.
+                last_stage = f"{stage}_{error.safe_label}"
                 continue
         if time.monotonic() < deadline:
             time.sleep(3)
-    raise HostedProbeError("billing_retained_trace_unverified")
+    raise HostedProbeError(f"billing_retained_trace_unverified_{last_stage}")
 
 
 def execute() -> None:

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import unittest
-from unittest.mock import patch
+import urllib.error
+from unittest.mock import Mock, patch
 
 from infra.tests import staging_trace_witness as trace
+from infra.tests import staging_hosted_e2e as hosted
 
 
 TRACE = "0123456789abcdef0123456789abcdef"
@@ -149,6 +152,75 @@ class TraceWitnessTest(unittest.TestCase):
             del invalid[key]
             with self.assertRaises(trace.TraceWitnessError):
                 trace.validate_span(invalid, "mail_api", TRACE)
+
+    def test_http_errors_keep_only_fixed_numeric_status_classification(self):
+        """Real forbidden/unauthorized reads must be actionable without exposing HTTPError prose."""
+        marker = "SYNTHETIC_PRIVATE_HTTP_REASON_TOKEN_URL"
+        cases = {401: "unauthorized", 403: "forbidden", 404: "not_found",
+                 429: "rate_limited", 503: "server_error", 302: "redirect_rejected",
+                 418: "client_error"}
+        for status, kind in cases.items():
+            for boundary in ["provider", "service"]:
+                with self.subTest(status=status, boundary=boundary):
+                    body = Mock()
+                    body.read.side_effect = AssertionError("HTTP error bodies must never be read")
+                    error = urllib.error.HTTPError(f"https://private.invalid/{marker}", status,
+                                                   marker, {"private-header": marker}, body)
+                    with patch("urllib.request.OpenerDirector.open", side_effect=error):
+                        with self.assertRaises(trace.TraceWitnessError) as failure:
+                            if boundary == "provider":
+                                trace.read_records("a" * 32, marker, trace.SCRIPTS["mail_api"], TRACE, 1000, 2000)
+                            else:
+                                trace.read_service_records("billing", marker, TRACE)
+                    self.assertEqual(failure.exception.safe_label, f"retained_trace_{boundary}_{kind}")
+                    self.assertNotIn(marker, str(failure.exception))
+                    body.read.assert_not_called()
+
+    def test_retained_retry_reports_exact_safe_stage_and_cause(self):
+        """The bounded loop must not erase which retained boundary failed."""
+        environment = {"CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "private",
+                       "BILLING_SERVICE_KEY": "private"}
+        evidence = {"trace_ids": [TRACE], "started_at_ms": 1000}
+        for stage, label in [("mail_sink_read", "retained_trace_provider_forbidden"),
+                             ("billing_read", "retained_trace_service_unauthorized"),
+                             ("subscribe_read", "retained_span_fields_invalid"),
+                             ("chain_validation", "retained_trace_chain_incomplete")]:
+            with self.subTest(stage=stage), patch.dict(os.environ, environment, clear=True), \
+                    patch.dict("sys.modules", {"staging_trace_witness": trace}), \
+                    patch.object(hosted.time, "monotonic", side_effect=[0, 1, 2, 91, 92]), \
+                    patch.object(hosted.time, "time", return_value=2), \
+                    patch.object(hosted.time, "sleep") as sleep, \
+                    patch.object(trace, "read_records", return_value=[]) as mail, \
+                    patch.object(trace, "read_service_records", return_value=[]) as service, \
+                    patch.object(trace, "witness", return_value={}) as witness:
+                failure = trace.TraceWitnessError(label)
+                if stage == "mail_sink_read":
+                    mail.side_effect = failure
+                elif stage == "billing_read":
+                    service.side_effect = failure
+                elif stage == "subscribe_read":
+                    service.side_effect = [[], failure]
+                else:
+                    witness.side_effect = failure
+                with self.assertRaises(hosted.HostedProbeError) as result:
+                    hosted.retained_billing_trace(evidence)
+                self.assertEqual(str(result.exception), f"billing_retained_trace_unverified_{stage}_{label}")
+                sleep.assert_not_called()
+
+    def test_unknown_exception_labels_cannot_escape_retained_retry(self):
+        """A future misconstructed typed error still cannot turn private text into diagnostics."""
+        marker = "SYNTHETIC_PRIVATE_FUTURE_PROVIDER_TEXT"
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a" * 32,
+                                     "CLOUDFLARE_API_TOKEN": marker, "BILLING_SERVICE_KEY": marker}, clear=True), \
+                patch.dict("sys.modules", {"staging_trace_witness": trace}), \
+                patch.object(hosted.time, "monotonic", side_effect=[0, 1, 2, 91, 92]), \
+                patch.object(hosted.time, "time", return_value=2), \
+                patch.object(trace, "read_records", side_effect=trace.TraceWitnessError(marker)):
+            with self.assertRaises(hosted.HostedProbeError) as result:
+                hosted.retained_billing_trace({"trace_ids": [TRACE], "started_at_ms": 1000})
+        self.assertEqual(str(result.exception),
+                         "billing_retained_trace_unverified_mail_sink_read_retained_trace_unexpected_failure")
+        self.assertNotIn(marker, str(result.exception))
 
 
 if __name__ == "__main__":

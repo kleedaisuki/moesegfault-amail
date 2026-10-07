@@ -39,10 +39,45 @@ SUBSCRIBE_OPERATIONS = {"amail.authorization.approve", "amail.authorization.canc
 MAIL_PHASES = {"request_exit", "operation_exit", "billing_http", "d1_read",
                "d1_write", "r2_write", "provider_send", "routing_list", "routing_create"}
 MAIL_OPERATIONS = BILLING_OPERATIONS | {"messages_send", "maintenance"}
+HTTP_FAILURE_KINDS = {"unauthorized", "forbidden", "not_found", "rate_limited",
+                      "server_error", "redirect_rejected", "client_error", "unexpected_status"}
+FAILURE_LABELS = {
+    "retained_span_shape_invalid", "retained_span_fields_invalid",
+    "retained_span_identity_or_clock_invalid", "retained_span_operation_invalid",
+    "retained_span_phase_invalid", "retained_span_error_invalid",
+    "retained_span_link_invalid", "retained_span_measurement_invalid",
+    "retained_span_outcome_invalid", "retained_span_redelivery_conflict",
+    "retained_trace_scope_invalid", "retained_trace_window_invalid",
+    "retained_trace_credentials_missing", "retained_trace_provider_unavailable",
+    "retained_trace_response_invalid", "retained_trace_response_truncated_or_invalid",
+    "retained_trace_scope_or_credentials_invalid", "retained_trace_service_unavailable",
+    "retained_trace_chain_incomplete",
+} | {f"retained_trace_{boundary}_{kind}" for boundary in ("provider", "service")
+     for kind in HTTP_FAILURE_KINDS}
 
 
 class TraceWitnessError(Exception):
     """A fixed content-free diagnostic, safe for the hosted execution log."""
+
+    @property
+    def safe_label(self) -> str:
+        """Expose only a reviewed label; arbitrary exception text never reaches diagnostics."""
+        label = str(self)
+        return label if label in FAILURE_LABELS else "retained_trace_unexpected_failure"
+
+
+def http_failure_label(boundary: str, status: object) -> str:
+    """Classify only numeric HTTP facts; never inspect URL, headers, reason or body."""
+    if boundary not in {"provider", "service"}:
+        return "retained_trace_unexpected_failure"
+    kind = {401: "unauthorized", 403: "forbidden", 404: "not_found",
+            429: "rate_limited"}.get(status) if type(status) is int else None
+    if kind is None:
+        kind = ("server_error" if type(status) is int and 500 <= status <= 599 else
+                "redirect_rejected" if type(status) is int and 300 <= status <= 399 else
+                "client_error" if type(status) is int and 400 <= status <= 499 else
+                "unexpected_status")
+    return f"retained_trace_{boundary}_{kind}"
 
 
 class RejectRedirect(urllib.request.HTTPRedirectHandler):
@@ -162,6 +197,14 @@ def read_records(account: str, token: str, script: str, trace_id: str, start_ms:
         with urllib.request.build_opener(RejectRedirect).open(request, timeout=20) as response:
             raw = response.read(MAX_REPLY + 1)
             status = response.status
+    except urllib.error.HTTPError as error:
+        label = http_failure_label("provider", error.code)
+        # Close without reading: HTTPError finalizer warnings can otherwise include its private reason.
+        try:
+            error.close()
+        except (OSError, ValueError):
+            pass
+        raise TraceWitnessError(label) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise TraceWitnessError("retained_trace_provider_unavailable") from None
     if status != 200 or len(raw) > MAX_REPLY:
@@ -203,6 +246,13 @@ def read_service_records(service: str, service_key: str, trace_id: str) -> list[
         with urllib.request.build_opener(RejectRedirect).open(request, timeout=20) as response:
             raw = response.read(MAX_REPLY + 1)
             status = response.status
+    except urllib.error.HTTPError as error:
+        label = http_failure_label("service", error.code)
+        try:
+            error.close()
+        except (OSError, ValueError):
+            pass
+        raise TraceWitnessError(label) from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise TraceWitnessError("retained_trace_service_unavailable") from None
     if status != 200 or len(raw) > MAX_REPLY:

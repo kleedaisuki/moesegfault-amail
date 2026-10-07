@@ -32,8 +32,12 @@ stopped on D1 migration parsing. Remote readback proved that the new tables had
 not committed. Removing an ambiguous trigger CASE boundary preserved the same
 contract; [37616090490](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37616090490)
 then successfully deployed Billing and Subscribe to staging from `3e2c4e8`.
-The explicit staging Issues-capture disable/readback patch is now building in
-[37617117905](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37617117905).
+The explicit staging Issues-capture disable patch deployed both new runtime
+versions in [37617117905](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37617117905),
+then the workflow failed at an overly strict settings checker. No writer was
+replayed: independent pure-read [37618095870](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37618095870)
+accepted those same serving versions under documented opt-in Issues/default-off
+and disabled-Logs semantics. See the integration contract for exact safe flags.
 
 Mail [37615319193](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37615319193)
 passed the complete compiled/native/workerd/site gates at `00acf56`, including
@@ -42,8 +46,30 @@ first provider mutator: reviewed staging Queue ownership variables were missing.
 Bounded inspection matched the exact source-owned predecessor graph. Those two
 independently reviewed Queue/DLQ IDs are now provisioned and read back in GitHub's
 staging environment. A focused regression preserves refusal when pins are absent;
-no observed-ID fallback was introduced. Latest local infrastructure checks pass
-193 tests; truthful resource-introspection changes still need a fresh hosted build.
+no observed-ID fallback was introduced.
+
+The next exact-source staging delivery
+[37617246563](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/37617246563)
+completed successfully at source `938de595d48bae302b23e86fed1b1a1f0435b26a`.
+Its credential-free compiled/native/workerd/site gates, immutable artifact restore,
+additive D1 migrations, private sink, API/maintenance and retained adapter
+readbacks all passed. Actual serving versions are API
+`1f4a056f-5342-46a5-8e32-7eebaea5f7a2`, maintenance
+`5281d8ef-f3c0-42d4-8331-bafa01923b40`, trace sink
+`56c17824-679f-4427-bcc9-4584d2510208`, and staging site
+`2312f7e5-b54b-4def-8a52-a78aacaf9db4`.
+
+Independent live migration reads before/after the writer proved the same complete
+15-address tuple set (zero missing/changed/new records), one resource owner with
+exact Free defaults and no variable-spend consent. All baseline addresses were
+already retired; ten-active-address grandfathering is separately covered by the
+real migration SQL fixture, not claimed as populated live staging evidence.
+Direct unauthenticated staging HTTP probes returned 426/required_client_version
+for missing and old headers, and 401 for the current header without credentials.
+The latest helper-only local suite passes 202 infrastructure tests; it repairs
+return-path normalization, existing paid-grant recovery without reusing one-use
+codes, and safe actionable retained-trace diagnostics. These changes do not alter
+the deployed runtime and need a same-source candidate producer for browser E2E.
 
 The intended contract is Free/Lite/Plus, free incoming mail, no retained-message
 count or per-account semantic-query quota, byte/address/outbound metering, human
@@ -52,9 +78,14 @@ on Free. HTTP producers keep provider capture off; private Mail Queue records an
 typed Billing/Subscribe D1 spans provide content-free retention. Billing's existing
 activation grants plus usage accrual do not constitute monetary collection.
 
-Real migration/concurrency simulations and source implementation are present, but
-staging deployment, browser acceptance, and retained end-to-end tracing are **not
-yet accepted**. The delivered public release and production runtime remain v0.1.2.
+Staging runtime deployment and migration are accepted. Browser acceptance and
+retained end-to-end tracing are **not yet accepted**. The delivered public release
+and production runtime remain v0.1.2. A single legitimate staging Lite issuance
+was retrieved from the explicitly authorized owned mailbox through ordinary
+amail search/ZIP operations and passed privately into the protected test secret;
+no raw capability appeared in logs/artifacts or an agent context. The synthetic
+test must redeem it at most once, recover an existing grant on rerun, and remove
+the temporary input after confirmed consumption.
 
 ### v0.1.2 publication evidence
 

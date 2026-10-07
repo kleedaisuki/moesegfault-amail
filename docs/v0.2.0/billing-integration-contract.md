@@ -113,3 +113,35 @@ invalidate previously admitted liabilities. Total period liability remains share
 across receipts, never reset per receipt. New admissions under a lower cap cannot use
 the old receipt. Future observation tolerance is 300 seconds. No fallback to current
 consent is accepted, because v0.2.0 has no legacy usage producer contract.
+
+## Actual staged service acceptance — 2026-10-07
+
+Billing/Subscribe runtime source is `c77b7ddf19d64e5c71c281fd378cfb774d19a559`:
+
+| Service | Actual 100% serving version |
+| --- | --- |
+| Billing | `2fa3e271-3e93-4b03-a67d-2332f14f0e1d` |
+| Subscribe | `f4682841-2008-4a0f-8b6e-9016c64ca9ca` |
+
+[Delivery 37617117905](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37617117905)
+passed builds, security/domain tests, artifact verification and deployed both
+versions, then ended failure at an overly strict normalized capture-settings
+checker. Do not characterize that workflow as green. No code writer was replayed.
+
+[Pure-read privacy acceptance 37618095870](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/37618095870)
+completed successfully at 2026-10-07 12:01:57 UTC / 20:01:57 UTC+8. Checker source
+`4fc22988e6e7e90c9d62de74b85259bed27caa0c` matches the independently established
+Mail canonical capture contract and official Cloudflare opt-in Issues semantics.
+Actual current-resource root/Logs/Traces switches were explicitly false; inactive
+invocation_logs preference was true; Issues section was absent under its documented
+opt-in-off rule. The checker rejects unknown root/Logs/Traces and present
+unknown/enabled Issues. Legacy views did not contradict the authoritative resource.
+Serving versions stayed unchanged across both read-only diagnosis and verification.
+No build, package, deploy or production job ran in that acceptance workflow.
+
+Actual public staging smoke subsequently passed Billing health, Subscribe HTML/CSP,
+guest session and protected personal-API boundaries. This removes the service
+privacy/readiness prerequisite for the controlled human OAuth test; it does not
+claim that the full amail billing/mail/trace user workflow has already passed.
+Detailed evidence and the previous migration/dependency repairs are retained in
+Subscriptions `docs/deployment/staging.md` and its linked incident notes.

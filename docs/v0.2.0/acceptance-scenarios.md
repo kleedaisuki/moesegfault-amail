@@ -147,7 +147,7 @@ Required runner inputs (secret values must not appear in commands/logs):
 | `AMAIL_STAGING_BILLING_CONFIRM` | Explicit `RUN_STAGING_BILLING_V020` |
 | `AMAIL_STAGING_BILLING_PLAN` | `free` (default) or `lite` |
 | `STAGING_E2E_USERNAME` / `STAGING_E2E_PASSWORD` | Existing protected synthetic account, never a customer |
-| `STAGING_E2E_AMAIL_ACTIVATION_CODE` | Only for Lite; legitimately issued amail-lite capability injected privately |
+| `STAGING_E2E_AMAIL_ACTIVATION_CODE` | Only needed for Lite's first redemption when no matching active Billing grant exists; inject privately, then delete after consumption |
 | Other artifact/mail/provider inputs | Unchanged existing hosted harness contract |
 
 Invoke the existing runner entry, not a parallel deployment command:
@@ -156,14 +156,19 @@ Invoke the existing runner entry, not a parallel deployment command:
 python infra/tests/staging_hosted_e2e.py
 ```
 
-The hosted workflow must explicitly pass the new confirmation/plan/private code
+The hosted workflow must explicitly pass the new confirmation/plan and, only when needed, private code
 before this optional branch runs. The runner retrieves its credentials through
 the already stored same-user DPAPI blob, navigates the exact staging authorization
 path, completes normal Subscribe→Identity→Subscribe SSO and types only at checked
 first-party origins. It first cancels a fresh Free intent, verifies the CLI's
 cancelled receipt, then approves a new Free/Lite intent through the visible
-checkbox/form. Lite types the private activation code into the ordinary existing
-activation form before approval. This is synthetic-human validation, not consent
+checkbox/form. Lite first reads the current authorization's minimal subscription
+projection through the authenticated same-origin BFF GET. An active, unexpired
+matching amail-lite grant is reused without typing or redeeming a code, including
+when Mail is still Free because a prior redemption succeeded before approval.
+Only a genuinely missing matching grant permits one ordinary UI redemption of a
+legitimate private code; the helper then verifies the authoritative grant again.
+This is synthetic-human validation, not consent
 from a real paying customer. Approved budget is deliberately zero.
 
 CLI reads back the effective plan and `payment_collection_available:false`.
@@ -176,9 +181,18 @@ the existing parent cleanup removes all private browser/profile/credential files
 Retained cross-service witness queries must still prove the collected IDs; local
 journal presence is not remote retention evidence.
 
-Paid baseline must initially be Free. The helper refuses to downgrade an already
-paid account merely to make a rerun pass. A successful Lite run is not permission
-to redeem another code or reset the account; use its existing receipt and evidence.
+Mail baseline may be Free or the requested Lite plan. The helper refuses to
+downgrade a different paid plan merely to make a rerun pass. A successful Lite
+run is not permission to redeem another code or reset the account. Repeated
+validation uses the existing grant; it does not require another activation code.
+Activation codes are single-use: retrying the original redemption with its same
+idempotency key only returns the original result, never another grant or period.
+Delete the temporary `STAGING_E2E_AMAIL_ACTIVATION_CODE` GitHub staging secret
+after the first confirmed redemption. A stale configured code is ignored when
+the matching grant is already active. Missing/uncertain subscription readback
+never triggers automatic code issuance, hidden approval or a new-key retry.
+The safe evidence's `grant_source` distinguishes `existing`, `redeemed` and
+`not_required`; no activation material is included.
 
 Legitimate issuance is the existing subscriptions command
 `node scripts/admin-issue.mjs --plan amail-lite` after the staging catalog exists.
@@ -193,6 +207,14 @@ Local harness verification: `python -m unittest discover -s infra/tests` passes
 183 tests on 2026-10-07; the new two tests check exact URL routing/privacy and
 bounded object-only CLI JSONL parsing. Python compile checks pass. These results
 do not execute Chrome, SSO, activation, hosted Mail or retained trace retrieval.
+
+The grant-recovery revision adds offline helper-flow cases for Mail Free with an
+already redeemed Billing grant, already projected Lite with a stale code, first
+redemption exactly once, missing grant/code, conflicting paid baseline and
+expired/mismatched subscription metadata. The helper's eight tests pass, and the
+full infrastructure checkpoint passes 199 tests. These mocked branch tests assert
+code removal before child execution and no duplicate UI redemption; they are not
+new hosted activation evidence.
 
 ## Hosted compiled checkpoint and concrete fixture correction
 
