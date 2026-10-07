@@ -8,7 +8,7 @@ availability. `amail discover billing` is the offline command index.
 
 | Monthly included resources | Free | Lite | Plus |
 | --- | --- | --- | --- |
-| Community price, CNY | 0 | 9 | 29 |
+| Community price, USD | 0 | 1.50 | 4.50 |
 | Outbound recipient deliveries | 100 | 1,000 | 5,000 |
 | Stored mail and attachments | 200 MB | 2 GB | 10 GB |
 | Addresses | 1 | 3 | 5 |
@@ -19,10 +19,13 @@ unmetered; they occupy storage. No retained-message-count limit or per-plan
 semantic-search fee/count quota applies. Service protection, sending policy and
 provider capacity remain independent of the subscription.
 
-Overage rates are CNY 0.005 per outbound recipient delivery, CNY 1 per GB-month
-and CNY 3 per address-month, accrued for actual stock time. All financial fields
-use integer micros: **CNY 1 = 1,000,000 micros**. Monthly included outbound units
+Overage rates are USD 0.001 per outbound recipient delivery, USD 0.15 per GB-month
+and USD 0.50 per address-month, accrued for actual stock time. All financial fields
+use integer micros: **USD 1 = 1,000,000 micros**. Monthly included outbound units
 follow the server's UTC period; upgrades do not erase accepted or unresolved use.
+The current contract is `amail-v0.2.0-usd-v1`. Historical CNY receipts and
+liabilities remain CNY, not exchanged or relabeled. Read `account.currency` and
+require fresh human USD approval; an old CNY budget does not authorize USD spend.
 
 One message to the same normalized address in multiple To/Cc/Bcc entries uses
 one billable outbound delivery. Accepted submissions remain consumed after later

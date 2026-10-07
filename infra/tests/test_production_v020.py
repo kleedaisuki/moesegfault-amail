@@ -17,6 +17,14 @@ import check_mail_maintenance as maintenance
 class ProductionV020Tests(unittest.TestCase):
     """A new release must not weaken the original graph or replay a financial action."""
 
+    def test_published_skill_matches_agent_usd_prices(self):
+        """Packaging must not ship stale CNY pricing beside a USD executable."""
+        published = (ROOT / "skills/amail/references/billing.md").read_text(encoding="utf-8")
+        self.assertEqual(published, (ROOT / ".agents/skills/amail/references/billing.md").read_text(encoding="utf-8"))
+        self.assertIn("USD 0.001", published)
+        self.assertIn("amail-v0.2.0-usd-v1", published)
+        self.assertNotIn("Community price, CNY", published)
+
     def test_current_realms_require_billing_and_old_production_exception_is_exact(self):
         """Only the two immutable old versions can omit new capabilities."""
         expected = api.expected_bindings("queue-api", "a" * 32, realm="production")
