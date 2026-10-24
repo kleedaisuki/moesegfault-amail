@@ -263,6 +263,23 @@ fn address_problem_code(problem: &Value) -> &'static str {
         Some("address_unavailable") => "address_unavailable",
         Some("capacity_exhausted") => "capacity_exhausted",
         Some("reserved_or_invalid_name") => "reserved_or_invalid_name",
+        Some("user_profile_required") => "user_profile_required",
+        Some("profile_session_required") => "profile_session_required",
+        Some("profile_session_expired") => "profile_session_expired",
+        Some("profile_in_use") => "profile_in_use",
+        Some("profile_not_registered") => "profile_not_registered",
+        Some("profile_exists_or_limit") => "profile_exists_or_limit",
+        Some("invalid_profile") => "invalid_profile",
+        Some("invalid_lease") => "invalid_lease",
+        Some("invalid_lease_mode") => "invalid_lease_mode",
+        Some("mailbox_in_use") => "mailbox_in_use",
+        Some("mailbox_lease_required") => "mailbox_lease_required",
+        Some("mailbox_lease_expired") => "mailbox_lease_expired",
+        Some("mailbox_generation_expired") => "mailbox_generation_expired",
+        Some("invalid_address_kind") => "invalid_address_kind",
+        Some("tmpaddr_limit") => "tmpaddr_limit",
+        Some("tmpaddr_unconfigured") => "tmpaddr_unconfigured",
+        Some("address_expired") => "address_expired",
         _ => "http_error",
     }
 }
@@ -1104,6 +1121,101 @@ mod tests {
             address_problem_code(&serde_json::json!({"message":"secret"})),
             "http_error"
         );
+        assert_eq!(
+            address_problem_code(&serde_json::json!({
+                "code":"private-address@example.org","error_code":"user_profile_required"
+            })),
+            "http_error"
+        );
+    }
+
+    #[test]
+    fn shipped_tenant_address_codes_preserve_their_closed_wire_identity() {
+        for code in [
+            "user_profile_required",
+            "profile_session_required",
+            "profile_session_expired",
+            "profile_in_use",
+            "profile_not_registered",
+            "profile_exists_or_limit",
+            "invalid_profile",
+            "invalid_lease",
+            "invalid_lease_mode",
+            "mailbox_in_use",
+            "mailbox_lease_required",
+            "mailbox_lease_expired",
+            "mailbox_generation_expired",
+            "invalid_address_kind",
+            "tmpaddr_limit",
+            "tmpaddr_unconfigured",
+            "address_expired",
+        ] {
+            assert_eq!(
+                address_problem_code(&serde_json::json!({"code":code})),
+                code
+            );
+            assert_eq!(
+                address_problem_code(&serde_json::json!({"error_code":code})),
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn real_address_problem_responses_keep_tenant_codes_without_reflecting_provider_prose() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+        };
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let home = tempfile::tempdir_in(root).unwrap();
+        let cfg = telemetry::tests::config(home.path());
+        let preference = telemetry::enabled();
+        telemetry::set_enabled(false);
+        let api = Api::new(&cfg).unwrap();
+        for (status, code, expected) in [
+            (403, "user_profile_required", "user_profile_required"),
+            (403, "profile_session_expired", "profile_session_expired"),
+            (409, "mailbox_in_use", "mailbox_in_use"),
+            (409, "address_expired", "address_expired"),
+            (409, "tmpaddr_limit", "tmpaddr_limit"),
+            (503, "tmpaddr_unconfigured", "tmpaddr_unconfigured"),
+            (502, "private-address@example.org", "http_error"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0; 1];
+                while !request.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                    assert!(request.len() <= 8192);
+                }
+                let body = serde_json::json!({
+                    "type":"about:blank","title":code,"status":status,"code":code,
+                    "detail":"private provider prose","request_id":"123e4567-e89b-42d3-a456-426614174000"
+                }).to_string();
+                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            });
+            let error = api
+                .execute_request(
+                    api.http.post(format!("http://{address}/v1/addresses")),
+                    "addresses.add",
+                    telemetry::RequestSpan::new(&cfg, "addresses.add"),
+                )
+                .unwrap_err();
+            server.join().unwrap();
+            assert_eq!(error.downcast_ref::<ApiFailure>().unwrap().code, expected);
+            assert_eq!(crate::machine::error_record(&error)["code"], expected);
+            assert!(!error.to_string().contains("private"));
+        }
+        telemetry::set_enabled(preference);
     }
 
     #[test]
