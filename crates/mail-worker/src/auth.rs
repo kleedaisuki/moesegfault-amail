@@ -19,6 +19,8 @@ thread_local! {
 pub struct Principal {
     pub iss: String,
     pub sub: String,
+    pub(crate) profile: Option<crate::profiles::Session>,
+    pub(crate) enrollment_fence: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -98,6 +100,8 @@ pub async fn authenticate(req: &Request, env: &Env) -> Result<Principal> {
     Ok(Principal {
         iss: claims.iss,
         sub: claims.sub,
+        profile: None,
+        enrollment_fence: false,
     })
 }
 

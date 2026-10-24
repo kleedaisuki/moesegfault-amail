@@ -1,17 +1,61 @@
 //! Durable send idempotency state, independent of diagnostic collection.
 //!
-//! Telemetry opt-out and journal failures must not rotate unresolved keys. The
-//! legacy table and filename are retained for concurrent older CLI processes.
+//! Telemetry opt-out and journal failures must not rotate unresolved keys.
+//! User receipts retain the historical table and filename during upgrades. Agent
+//! profiles have generation-scoped stores, so name reuse cannot expose receipts
+//! or inherit another profile's unresolved send intent.
 
 use crate::{config::Runtime, local_store};
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 /// Initialize only the command-state table, preserving every existing key.
 fn db(cfg: &Runtime) -> Result<Connection> {
-    let conn = local_store::open(cfg, Duration::from_secs(30))?;
+    let scope = crate::session::local_profile_scope();
+    let account = crate::session::account_scope();
+    db_for_profile(
+        cfg,
+        scope
+            .as_ref()
+            .map(|(id, name)| (id.as_str(), name.as_str())),
+        account.as_deref(),
+    )
+}
+
+fn db_for_profile(
+    cfg: &Runtime,
+    scope: Option<(&str, &str)>,
+    account: Option<&str>,
+) -> Result<Connection> {
+    if let Some(account) = account {
+        ensure!(
+            account.len() == 64
+                && account
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "invalid account scope"
+        );
+    }
+    let account_home = account.map(|account| cfg.home.join("accounts").join(account));
+    let legacy = local_store::open(cfg, Duration::from_secs(30))?;
+    let legacy_owner = account
+        .map(|account| owns_legacy(&legacy, account))
+        .transpose()?
+        .unwrap_or(true);
+    let conn = match scope {
+        Some((id, name)) if name != "user" => {
+            let id = uuid::Uuid::parse_str(id).context("invalid local profile generation")?;
+            let root = account_home.as_ref().unwrap_or(&cfg.home).join("profiles");
+            let directory = root.join(id.hyphenated().to_string());
+            isolated_store(&directory)?
+        }
+        _ if !legacy_owner => {
+            isolated_store(account_home.as_ref().context("missing account home")?)?
+        }
+        _ => legacy,
+    };
     conn.execute_batch("CREATE TABLE IF NOT EXISTS send_attempts (
         payload_hash TEXT PRIMARY KEY, attempt_key TEXT NOT NULL, accepted INTEGER NOT NULL DEFAULT 0
     )")?;
@@ -20,6 +64,52 @@ fn db(cfg: &Runtime) -> Result<Connection> {
         attempt_key TEXT PRIMARY KEY, receipt TEXT NOT NULL, accepted_at INTEGER NOT NULL
     )",
     )?;
+    Ok(conn)
+}
+
+/// Bind unknown historical rows once, without moving or deleting unresolved keys.
+fn owns_legacy(conn: &Connection, account: &str) -> Result<bool> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS send_state_owner (
+        id INTEGER PRIMARY KEY CHECK(id=1), account_scope TEXT NOT NULL
+    )",
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO send_state_owner(id,account_scope) VALUES(1,?1)",
+        [account],
+    )?;
+    let owner: String = conn.query_row(
+        "SELECT account_scope FROM send_state_owner WHERE id=1",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(owner == account)
+}
+
+/// Preserve the known predecessor's journal ownership before login or logout.
+pub fn bind_account(cfg: &Runtime) -> Result<()> {
+    if let Some(account) = crate::session::account_scope() {
+        owns_legacy(&local_store::open(cfg, Duration::from_secs(30))?, &account)?;
+    }
+    Ok(())
+}
+
+fn isolated_store(directory: &Path) -> Result<Connection> {
+    std::fs::create_dir_all(directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let path = directory.join("sends.sqlite3");
+    let conn = Connection::open(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    conn.busy_timeout(Duration::from_secs(30))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     Ok(conn)
 }
 
@@ -109,6 +199,122 @@ pub fn receipts(cfg: &Runtime, limit: u32) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switching_accounts_cannot_reuse_or_read_the_primary_owners_intents() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir_in(root).unwrap();
+        let cfg = crate::telemetry::tests::config(temp.path());
+        let primary = "a".repeat(64);
+        let other = "b".repeat(64);
+        let legacy = db_for_profile(&cfg, None, None).unwrap();
+        legacy
+            .execute(
+                "INSERT INTO send_attempts(payload_hash,attempt_key) VALUES('same','legacy-key')",
+                [],
+            )
+            .unwrap();
+        let user = Some(("unused-user-generation", "user"));
+        let first = db_for_profile(&cfg, user, Some(&primary)).unwrap();
+        let count: i64 = first
+            .query_row(
+                "SELECT COUNT(*) FROM send_attempts WHERE attempt_key='legacy-key'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        let second = db_for_profile(&cfg, user, Some(&other)).unwrap();
+        let count: i64 = second
+            .query_row("SELECT COUNT(*) FROM send_attempts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        second
+            .execute(
+                "INSERT INTO send_attempts(payload_hash,attempt_key) VALUES('same','other-key')",
+                [],
+            )
+            .unwrap();
+        let key: String = first
+            .query_row(
+                "SELECT attempt_key FROM send_attempts WHERE payload_hash='same'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(key, "legacy-key");
+        let id = uuid::Uuid::new_v4().to_string();
+        let agent_one = db_for_profile(&cfg, Some((&id, "agent")), Some(&primary)).unwrap();
+        agent_one
+            .execute(
+                "INSERT INTO send_attempts(payload_hash,attempt_key) VALUES('same','agent-key')",
+                [],
+            )
+            .unwrap();
+        let agent_two = db_for_profile(&cfg, Some((&id, "agent")), Some(&other)).unwrap();
+        let count: i64 = agent_two
+            .query_row("SELECT COUNT(*) FROM send_attempts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        assert!(db_for_profile(&cfg, user, Some("../escape")).is_err());
+    }
+
+    #[test]
+    fn profile_generations_isolate_receipts_and_unresolved_keys() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir_in(root).unwrap();
+        let cfg = crate::telemetry::tests::config(temp.path());
+        let user_key = uuid::Uuid::new_v4().to_string();
+        let first_key = uuid::Uuid::new_v4().to_string();
+        crate::session::clear();
+        send_key(&cfg, "same-payload", &user_key).unwrap();
+        record_accepted(&cfg, "other-payload", &user_key, &json!({"id":"user-mail"})).unwrap();
+        let original = crate::profiles::ActiveProfile {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "agent".into(),
+        };
+        crate::session::install("terminal", original.clone());
+        assert_eq!(receipts(&cfg, 20).unwrap()["receipts"], json!([]));
+        assert_eq!(
+            send_key(&cfg, "same-payload", &first_key).unwrap(),
+            first_key
+        );
+        record_accepted(
+            &cfg,
+            "other-payload",
+            &first_key,
+            &json!({"id":"agent-mail"}),
+        )
+        .unwrap();
+        assert!(receipt(&cfg, &user_key).is_err());
+
+        crate::session::install(
+            "terminal",
+            crate::profiles::ActiveProfile {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: "agent".into(),
+            },
+        );
+        assert_eq!(receipts(&cfg, 20).unwrap()["receipts"], json!([]));
+        assert!(receipt(&cfg, &first_key).is_err());
+        crate::session::install("terminal", original);
+        assert_eq!(receipt(&cfg, &first_key).unwrap()["id"], "agent-mail");
+        crate::session::install(
+            "terminal",
+            crate::profiles::ActiveProfile {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: "user".into(),
+            },
+        );
+        assert_eq!(receipt(&cfg, &user_key).unwrap()["id"], "user-mail");
+        assert_eq!(
+            send_key(&cfg, "same-payload", "replacement").unwrap(),
+            user_key
+        );
+        crate::session::clear();
+    }
 
     /// Acceptance is discoverable before stdout; explicit acceptance cannot rotate a different intent.
     #[test]

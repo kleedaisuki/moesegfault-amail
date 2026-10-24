@@ -45,17 +45,30 @@ const OWNERSHIP: &str = "EXISTS (SELECT 1 FROM storage_reservations r
         OR m.r2_key!=?8 OR m.storage_bytes!=?7
         OR COALESCE(json_extract(m.metadata_json,'$.message_id'),'')!=?6))";
 
-/// Identity and live lease are checked inside each submitted SQL statement.
-const JOURNAL: &str = "EXISTS (
+pub(crate) fn lifetime(alias: &str) -> String {
+    format!("{alias}.content_purged_at IS NULL AND ({alias}.mailbox_generation='' OR EXISTS (
+        SELECT 1 FROM addresses lifetime_address WHERE lifetime_address.address={alias}.mailbox_address
+        AND lifetime_address.owner_iss={alias}.owner_iss AND lifetime_address.owner_sub={alias}.owner_sub
+        AND lifetime_address.generation={alias}.mailbox_generation AND lifetime_address.state='active'
+        AND lifetime_address.released_at IS NULL AND lifetime_address.expires_at>CAST(unixepoch('subsec')*1000 AS INTEGER)))")
+}
+
+/// Identity, mailbox lifetime and projection lease are checked at each write.
+fn journal() -> String {
+    format!(
+        "EXISTS (
     SELECT 1 FROM send_requests s
     WHERE s.message_id=?1 AND s.owner_iss=?2 AND s.owner_sub=?3
       AND s.idem_key=?4 AND s.payload_hash=?5 AND s.provider_id=?6
       AND s.state='accepted' AND s.index_projection_token=?9
-      AND s.index_projection_lease_until>?10)";
+      AND s.index_projection_lease_until>?10 AND {})",
+        lifetime("s")
+    )
+}
 
 /// Combine the two fixed predicates; values are always separate bound parameters.
 fn guard() -> String {
-    format!("{JOURNAL} AND {OWNERSHIP}")
+    format!("{} AND {OWNERSHIP}", journal())
 }
 
 impl Projection<'_> {
@@ -190,8 +203,10 @@ fn message_statement(
         "INSERT INTO messages(
         id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,
         body_text,metadata_json,received_at,is_read,has_html,has_text,
-        attachment_count,r2_key,size_bytes,storage_bytes)
-        SELECT ?1,?12,?2,?3,'outbound',?12,?13,?14,?15,?16,?17,1,?18,1,?19,?8,?7,?7
+        attachment_count,r2_key,size_bytes,storage_bytes,mailbox_generation)
+        SELECT ?1,?12,?2,?3,'outbound',?12,?13,?14,?15,?16,?17,1,?18,1,?19,?8,?7,?7,
+            (SELECT captured.mailbox_generation FROM send_requests captured WHERE captured.message_id=?1
+             AND captured.owner_iss=?2 AND captured.owner_sub=?3 AND captured.idem_key=?4)
         WHERE {} AND {}
         ON CONFLICT(id) DO UPDATE SET body_text=excluded.body_text,
             embedding_json=NULL,embedding_model=NULL,embedding_dimensions=NULL,
@@ -233,7 +248,8 @@ async fn claim(db: &Database, projection: &Projection<'_>, key: &str, token: &st
         SET index_projection_token=?9,index_projection_lease_until=?11
         WHERE message_id=?1 AND owner_iss=?2 AND owner_sub=?3 AND idem_key=?4
           AND payload_hash=?5 AND provider_id=?6 AND state='accepted'
-          AND index_projection_lease_until<=?10 AND {OWNERSHIP}"
+          AND index_projection_lease_until<=?10 AND {OWNERSHIP} AND {}",
+            lifetime("send_requests")
         ))
         .bind(&values)?
         .run()
@@ -393,4 +409,82 @@ async fn finished(
 /// Return a fixed diagnostic without SQL, provider, owner or archive content.
 fn pending() -> Error {
     Error::RustError("send_index_pending".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::{params, Connection};
+
+    fn database() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE addresses(address TEXT,owner_iss TEXT,owner_sub TEXT,generation TEXT,state TEXT,released_at INTEGER,expires_at INTEGER);
+            CREATE TABLE send_requests(message_id TEXT,owner_iss TEXT,owner_sub TEXT,idem_key TEXT,payload_hash TEXT,provider_id TEXT,state TEXT,index_projection_token TEXT,index_projection_lease_until INTEGER,content_purged_at INTEGER,mailbox_generation TEXT,mailbox_address TEXT);
+            CREATE TABLE storage_reservations(id TEXT,owner_iss TEXT,owner_sub TEXT,bytes INTEGER);
+            CREATE TABLE messages(id TEXT,owner_iss TEXT,owner_sub TEXT,direction TEXT,r2_key TEXT,storage_bytes INTEGER,metadata_json TEXT);
+            INSERT INTO addresses VALUES('test@tmpaddr.moesegfault.dev','iss','sub','generation-1','active',NULL,9999999999999);
+            INSERT INTO send_requests VALUES('message','iss','sub','idem','hash','provider','accepted','projection-token',9999999999999,NULL,'generation-1','test@tmpaddr.moesegfault.dev');
+            INSERT INTO storage_reservations VALUES('message','iss','sub',100);").unwrap();
+        db
+    }
+
+    fn authorized(db: &Connection) -> bool {
+        db.query_row(
+            &format!("SELECT CASE WHEN {} THEN 1 ELSE 0 END", guard()),
+            params![
+                "message",
+                "iss",
+                "sub",
+                "idem",
+                "hash",
+                "provider",
+                100,
+                "messages/message.zip",
+                "projection-token",
+                10
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn released_lifetime_cannot_publish_even_with_live_projection_token() {
+        let db = database();
+        assert!(authorized(&db));
+        db.execute("UPDATE addresses SET state='deleting',released_at=20", [])
+            .unwrap();
+        assert!(!authorized(&db));
+        db.execute(
+            "UPDATE addresses SET state='active',released_at=NULL,generation='generation-2'",
+            [],
+        )
+        .unwrap();
+        assert!(!authorized(&db));
+    }
+
+    #[test]
+    fn absolute_expiry_and_content_purge_fence_all_staging() {
+        let db = database();
+        db.execute("UPDATE addresses SET expires_at=1", []).unwrap();
+        assert!(!authorized(&db));
+        db.execute("UPDATE addresses SET expires_at=9999999999999", [])
+            .unwrap();
+        assert!(authorized(&db));
+        db.execute("UPDATE send_requests SET content_purged_at=1", [])
+            .unwrap();
+        assert!(!authorized(&db));
+    }
+
+    #[test]
+    fn legacy_journals_remain_recoverable_but_never_after_content_purge() {
+        let db = database();
+        db.execute("UPDATE send_requests SET mailbox_generation=''", [])
+            .unwrap();
+        db.execute("DELETE FROM addresses", []).unwrap();
+        assert!(authorized(&db));
+        db.execute("UPDATE send_requests SET content_purged_at=1", [])
+            .unwrap();
+        assert!(!authorized(&db));
+    }
 }

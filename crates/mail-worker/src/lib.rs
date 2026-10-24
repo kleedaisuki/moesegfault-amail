@@ -13,9 +13,11 @@ mod maintenance;
 #[cfg(test)]
 mod performance;
 mod platform;
+mod profiles;
 mod resource;
 mod search_jobs;
 mod telemetry_read;
+mod tmpaddr;
 mod trace;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -245,12 +247,17 @@ async fn maintain_phase(
     let database = budget.database(env, phase)?;
     match phase {
         MaintenancePhase::Addresses => {
+            profiles::cleanup(&database).await?;
+            tmpaddr::expire(&database).await?;
             reconcile_addresses(env, &database, &mut phase_turn, diagnostics).await
         }
         MaintenancePhase::Outbound => reconcile_outbound(env, &database, &mut phase_turn).await,
         MaintenancePhase::Embeddings => reindex(env, &database, &mut phase_turn, diagnostics).await,
         MaintenancePhase::Storage => reconcile_storage(&database).await,
-        MaintenancePhase::Deleted => garbage_collect(env, &database, &mut phase_turn).await,
+        MaintenancePhase::Deleted => {
+            tmpaddr::purge(env, &database, &mut phase_turn).await?;
+            garbage_collect(env, &database, &mut phase_turn).await
+        }
         MaintenancePhase::Orphans => clean_orphans(env, &database, &mut phase_turn).await,
         MaintenancePhase::Search => search_jobs::cleanup(&database).await,
         MaintenancePhase::Abuse => expire_abuse_data(&database).await,
@@ -290,7 +297,7 @@ async fn garbage_collect(env: &Env, database: &Database, turn: &mut PhaseTurn<'_
         r2_key: String,
     }
     let rows = database
-        .prepare("SELECT id,r2_key FROM messages WHERE deleted_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.state='accepted') LIMIT 20")
+        .prepare("SELECT id,r2_key FROM messages WHERE deleted_at IS NOT NULL AND mailbox_generation='' AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.state='accepted') LIMIT 20")
         .all()
         .await?
         .results::<Deleted>()?;
@@ -329,7 +336,7 @@ async fn clean_orphans(env: &Env, database: &Database, turn: &mut PhaseTurn<'_>)
     struct SendState {
         state: String,
     }
-    let rows=database.prepare("SELECT r.id FROM storage_reservations r LEFT JOIN messages m ON m.id=r.id WHERE m.id IS NULL AND r.created_at<?1 LIMIT 20")
+    let rows=database.prepare("SELECT r.id FROM storage_reservations r LEFT JOIN messages m ON m.id=r.id WHERE m.id IS NULL AND r.mailbox_generation='' AND r.created_at<?1 LIMIT 20")
         .bind(&[bind_num(now()-60*60_000)])?.all().await?.results::<Orphan>()?;
     let bucket = env.bucket("MAIL_BODIES")?;
     for row in rows {
@@ -728,6 +735,11 @@ const ACCEPTED_DUE_SQL: &str = "SELECT s.owner_iss,s.owner_sub,s.idem_key,s.payl
     FROM send_requests s WHERE s.state='accepted' AND s.message_id IS NOT NULL
       AND s.provider_id IS NOT NULL AND s.index_next_attempt_at<=?1
       AND s.index_projection_lease_until<=?1
+      AND s.content_purged_at IS NULL AND (s.mailbox_generation='' OR EXISTS(
+        SELECT 1 FROM addresses lifetime_address WHERE lifetime_address.address=s.mailbox_address
+        AND lifetime_address.owner_iss=s.owner_iss AND lifetime_address.owner_sub=s.owner_sub
+        AND lifetime_address.generation=s.mailbox_generation AND lifetime_address.state='active'
+        AND lifetime_address.released_at IS NULL AND lifetime_address.expires_at>CAST(unixepoch('subsec')*1000 AS INTEGER)))
     ORDER BY s.index_next_attempt_at,s.created_at,s.message_id LIMIT 5";
 
 /// Recover already-accepted sends without resubmission. Per-item failures do not
@@ -784,13 +796,14 @@ async fn advance_accepted_due(
     scan_at: i64,
 ) -> Result<bool> {
     let advanced = database
-        .prepare(
+        .prepare(format!(
             "UPDATE send_requests SET index_next_attempt_at=?1
         WHERE message_id=?2 AND owner_iss=?3 AND owner_sub=?4 AND idem_key=?5
           AND payload_hash=?6 AND provider_id=?7 AND state='accepted'
           AND index_next_attempt_at=?8 AND index_next_attempt_at<=?9
-          AND index_projection_lease_until<=?9 RETURNING message_id",
-        )
+          AND index_projection_lease_until<=?9 AND {} RETURNING message_id",
+            accepted::lifetime("send_requests"),
+        ))
         .bind(&[
             bind_num(scan_at + 5 * 60_000),
             bind_str(&row.message_id),
@@ -857,7 +870,7 @@ async fn repair_accepted(
     let m = &draft.manifest;
     let envelope = outbound_envelope_json(&draft)?;
     if row.created_at >= now() - 90 * 86_400_000 {
-        database.prepare("UPDATE send_requests SET sender=COALESCE(sender,?1),envelope_json=COALESCE(envelope_json,?2) WHERE message_id=?3 AND provider_id=?4 AND owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND payload_hash=?8 AND state='accepted'")
+        database.prepare(format!("UPDATE send_requests SET sender=COALESCE(sender,?1),envelope_json=COALESCE(envelope_json,?2) WHERE message_id=?3 AND provider_id=?4 AND owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND payload_hash=?8 AND state='accepted' AND {}",accepted::lifetime("send_requests")))
             .bind(&[bind_str(&m.from),bind_str(&envelope),bind_str(&row.message_id),bind_str(&row.provider_id),bind_str(&row.owner_iss),bind_str(&row.owner_sub),bind_str(&row.idem_key),bind_str(&row.payload_hash)])?.run().await?;
     }
     accepted::publish(
@@ -1013,13 +1026,14 @@ async fn claim_embedding<'a>(
     let token = uuid::Uuid::new_v4().to_string();
     let claimed_at = now();
     let claim = database
-        .prepare(
+        .prepare(format!(
             "UPDATE embedding_work SET lease_until=?1,lease_token=?2
              WHERE message_id=?3 AND state='pending'
                AND next_attempt_at<=?4 AND lease_until<=?4
                AND EXISTS (SELECT 1 FROM messages
-                           WHERE id=?3 AND deleted_at IS NULL AND embedding_json IS NULL AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted'))",
-        )
+                           WHERE id=?3 AND deleted_at IS NULL AND embedding_json IS NULL AND {} AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted'))",
+            tmpaddr::message_filter("messages"),
+        ))
         .bind(&[
             bind_num(claimed_at + EMBEDDING_LEASE_MS),
             bind_str(&token),
@@ -1051,13 +1065,14 @@ async fn read_leased_embedding(
     lease: &EmbeddingLease<'_>,
 ) -> Result<Option<EmbeddingPending>> {
     database
-        .prepare(
+        .prepare(format!(
             "SELECT m.subject,m.body_text,w.attempts
              FROM messages m JOIN embedding_work w ON w.message_id=m.id
              WHERE m.id=?1 AND m.deleted_at IS NULL AND m.embedding_json IS NULL
                AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=m.id AND s.owner_iss=m.owner_iss AND s.owner_sub=m.owner_sub AND s.state='accepted')
-               AND w.lease_token=?2 AND w.lease_until>?3",
-        )
+               AND w.lease_token=?2 AND w.lease_until>?3 AND {}",
+            tmpaddr::message_filter("m"),
+        ))
         .bind(&[
             bind_str(lease.message_id),
             bind_str(&lease.token),
@@ -1118,14 +1133,15 @@ async fn persist_embedding_success(
     let model = env.var("OPENROUTER_EMBEDDING_MODEL")?.to_string();
     // The trigger removes work only after this conditional active-row update.
     database
-        .prepare(
+        .prepare(format!(
             "UPDATE messages
              SET embedding_json=?1,embedding_model=?2,embedding_dimensions=256,
                  embedding_input_version=1,embedding_truncated=?3
              WHERE id=?4 AND deleted_at IS NULL AND embedding_json IS NULL
                AND EXISTS (SELECT 1 FROM embedding_work
-                           WHERE message_id=?4 AND lease_token=?5 AND lease_until>?6)",
-        )
+                           WHERE message_id=?4 AND lease_token=?5 AND lease_until>?6) AND {}",
+            tmpaddr::message_filter("messages"),
+        ))
         .bind(&[
             bind_str(&serialized),
             bind_str(&model),
@@ -1219,7 +1235,7 @@ async fn dispatch(
     if req.method() == Method::Get && path == "/health" {
         trace.operation(Operation::Health);
         return Ok(Response::from_json(
-            &serde_json::json!({"status":"ok","request_id":request_id,"version":"0.2.0","api_version":"2"}),
+            &serde_json::json!({"status":"ok","request_id":request_id,"version":"0.3.0","api_version":"2"}),
         )?);
     }
     if path == "/internal/inbound" && req.method() == Method::Post {
@@ -1233,7 +1249,7 @@ async fn dispatch(
             code: "required_client_version",
         });
     }
-    let user = auth::authenticate(&req, &env).await.map_err(|_| AppError {
+    let mut user = auth::authenticate(&req, &env).await.map_err(|_| AppError {
         status: 401,
         code: "unauthorized",
     })?;
@@ -1241,6 +1257,17 @@ async fn dispatch(
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
     trace.accept_parent(req.headers().get("traceparent").ok().flatten().as_deref());
     trace.operation(operation_for(req.method(), &segments));
+    let database = db(&env)?;
+    if let Some(response) = profiles::dispatch(&mut req, &env, &database, &user, &path).await? {
+        return Ok(response);
+    }
+    if !matches!(
+        segments.as_slice(),
+        ["v1", "telemetry"] | ["v1", "telemetry", "attempts"]
+    ) {
+        user.profile = profiles::resolve(&req, &database, &user).await?;
+        user.enrollment_fence = true;
+    }
     if req.method() == Method::Post
         && matches!(
             segments.as_slice(),
@@ -1742,6 +1769,12 @@ fn local_part(raw: &str) -> Option<String> {
 #[serde(deny_unknown_fields)]
 struct AddAddress {
     local_part: String,
+    #[serde(default = "default_address_kind")]
+    kind: String,
+}
+
+fn default_address_kind() -> String {
+    "mail".into()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1750,6 +1783,14 @@ struct AddressRow {
     state: String,
     created_at: i64,
     cf_rule_id: Option<String>,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    generation: String,
+    #[serde(default)]
+    expires_at: Option<i64>,
+    #[serde(default)]
+    released_at: Option<i64>,
 }
 
 /// Schedule state-aware duplicate pruning when a provider side effect may have
@@ -1764,9 +1805,9 @@ async fn flag_active_address(database: &Database, address: &str, user: &Principa
 async fn list_addresses(env: &Env, user: &Principal, request_id: &str) -> AppResult<Response> {
     let database = db(env)?;
     let account = resource::status(&database, user).await?;
-    let result = database.prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE owner_iss=?1 AND owner_sub=?2 AND state!='retired' ORDER BY created_at")
+    let result = database.prepare("SELECT address,state,created_at,cf_rule_id,kind,generation,expires_at FROM addresses WHERE owner_iss=?1 AND owner_sub=?2 AND state!='retired' AND (kind='mail' OR (released_at IS NULL AND expires_at>CAST(unixepoch('subsec')*1000 AS INTEGER))) ORDER BY created_at")
         .bind(&[bind_str(&user.iss), bind_str(&user.sub)])?.all().await?;
-    let addresses = result.results::<AddressRow>()?.into_iter().map(|a| serde_json::json!({"address":a.address,"state":if a.state=="provisioning" {"pending"} else {a.state.as_str()},"created_at":iso(a.created_at)})).collect::<Vec<_>>();
+    let addresses = result.results::<AddressRow>()?.into_iter().map(|a| serde_json::json!({"address":a.address,"state":if a.state=="provisioning" {"pending"} else {a.state.as_str()},"created_at":iso(a.created_at),"kind":a.kind,"generation":a.generation,"expires_at":a.expires_at})).collect::<Vec<_>>();
     #[derive(Deserialize)]
     struct CapacityRow {
         n: i64,
@@ -1785,6 +1826,14 @@ async fn list_addresses(env: &Env, user: &Principal, request_id: &str) -> AppRes
     })?;
     fields.insert("addresses".into(), serde_json::json!(addresses));
     fields.insert("plan".into(), serde_json::json!(account.plan));
+    fields.insert(
+        "tmpaddr_included_limit".into(),
+        serde_json::json!(match account.plan.as_str() {
+            "plus" => 10,
+            "lite" => 6,
+            _ => 3,
+        }),
+    );
     fields.insert("capacity".into(),serde_json::json!({"limit":USER_ADDRESS_CAPACITY,"registered":used,"remaining_estimate":(USER_ADDRESS_CAPACITY-used).max(0)}));
     fields.insert("request_id".into(), serde_json::json!(request_id));
     Ok(Response::from_json(&response)?)
@@ -1805,16 +1854,40 @@ async fn add_address(
         .map_err(|_| AppError::bad("invalid_json"))?;
     let part = local_part(&input.local_part)
         .ok_or_else(|| AppError::conflict("reserved_or_invalid_name"))?;
-    let address = format!("{part}@{}", env.var("MAIL_DOMAIN")?.to_string());
+    let registration = tmpaddr::registration(&input.kind)?;
+    if input.kind == "tmpaddr" && user.profile.is_none() {
+        return Err(AppError {
+            status: 403,
+            code: "profile_session_required",
+        });
+    }
+    if input.kind == "mail"
+        && user
+            .profile
+            .as_ref()
+            .is_some_and(|profile| !profile.is_user)
+    {
+        return Err(AppError {
+            status: 403,
+            code: "user_profile_required",
+        });
+    }
+    let address = format!("{part}@{}", tmpaddr::domain(env, &input.kind)?);
     diagnostic.enter(AddressDiagStage::D1Lookup);
     let database = db(env)?;
     resource::ensure_account(&database, user).await?;
+    tmpaddr::prepare_registration(&database, &address).await?;
     let existing = database
-        .prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1")
+        .prepare("SELECT address,state,created_at,cf_rule_id,kind,generation,expires_at,released_at FROM addresses WHERE address=?1")
         .bind(&[bind_str(&address)])?
         .first::<AddressRow>(None)
         .await?;
     if let Some(row) = existing {
+        if row.kind == "tmpaddr"
+            && (row.released_at.is_some() || row.expires_at.is_some_and(|until| until <= now()))
+        {
+            return Err(AppError::conflict("address_expired"));
+        }
         if row.state == "retired" {
             diagnostic.fail(AddressDiagKind::State, None, None);
             return Err(AppError::conflict("address_retired"));
@@ -1826,6 +1899,9 @@ async fn add_address(
             return Err(AppError::conflict("address_unavailable"));
         }
         if row.state == "active" {
+            if let Some(session) = &user.profile {
+                profiles::claim(&database, user, session, &address, "write").await?;
+            }
             diagnostic.enter(AddressDiagStage::ResponseEncode);
             let response = Response::from_json(
                 &serde_json::json!({"address":address,"state":"active","created_at":iso(row.created_at),"request_id":request_id}),
@@ -1850,7 +1926,8 @@ async fn add_address(
             n: i64,
         }
         let count = database
-            .prepare("SELECT COUNT(*) AS n FROM addresses WHERE state!='retired'")
+            .prepare("SELECT COUNT(*) AS n FROM addresses WHERE state!='retired' AND kind=?1")
+            .bind(&[bind_str(registration.kind)])?
             .first::<CountRow>(None)
             .await?
             .map_or(0, |r| r.n);
@@ -1859,7 +1936,7 @@ async fn add_address(
             return Err(AppError::conflict("capacity_exhausted"));
         }
         // One conditional SQLite statement allocates a free slot; a partial unique index resolves races.
-        let query = "WITH slots(slot) AS (VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,cf_rule_id,state,created_at) SELECT ?1,?2,?3,?4,slots.slot,NULL,'pending',?5 FROM slots WHERE NOT EXISTS (SELECT 1 FROM addresses a WHERE a.owner_iss=?3 AND a.owner_sub=?4 AND a.slot=slots.slot AND a.state!='retired') ORDER BY slots.slot LIMIT 1";
+        let query = "WITH slots(slot) AS (VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,cf_rule_id,state,created_at,kind,generation,expires_at) SELECT ?1,?2,?3,?4,slots.slot,NULL,'pending',?5,?6,?7,?8 FROM slots WHERE NOT EXISTS (SELECT 1 FROM addresses a WHERE a.owner_iss=?3 AND a.owner_sub=?4 AND a.slot=slots.slot AND a.kind=?6 AND a.state!='retired') ORDER BY slots.slot LIMIT 1";
         let result = database
             .prepare(query)
             .bind(&[
@@ -1868,6 +1945,12 @@ async fn add_address(
                 bind_str(&user.iss),
                 bind_str(&user.sub),
                 bind_num(now()),
+                bind_str(registration.kind),
+                bind_str(&registration.generation),
+                registration
+                    .expires_at
+                    .map(bind_num)
+                    .unwrap_or(JsValue::NULL),
             ])?
             .run()
             .await;
@@ -1876,6 +1959,8 @@ async fn add_address(
             let message = error.to_string();
             let code = if message.contains("address_limit") {
                 "address_limit"
+            } else if message.contains("tmpaddr_limit") {
+                "tmpaddr_limit"
             } else if message.contains("capacity_exhausted") {
                 "capacity_exhausted"
             } else {
@@ -2014,6 +2099,9 @@ async fn add_address(
         });
     }
     diagnostic.enter(AddressDiagStage::ResponseEncode);
+    if let Some(session) = &user.profile {
+        profiles::claim(&database, user, session, &address, "write").await?;
+    }
     let response = Response::from_json(&serde_json::json!({"address":address,"state":row.state,"created_at":iso(row.created_at),"request_id":request_id}))?.with_status(201);
     diagnostic.success();
     Ok(response)
@@ -2035,12 +2123,13 @@ async fn delete_address(
         .await
         .map_err(|_| AppError::bad("invalid_json"))?;
     let address = input.address.to_ascii_lowercase();
-    if !address.ends_with(&format!("@{}", env.var("MAIL_DOMAIN")?.to_string()))
-        || !valid_address(&address)
-    {
+    if !valid_address(&address) {
         return Err(AppError::bad("invalid_address"));
     }
     let database = db(env)?;
+    if let Some(session) = &user.profile {
+        profiles::authorized_address(&database, user, session, &address, true).await?;
+    }
     let row = database.prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3")
         .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.first::<AddressRow>(None).await?.ok_or_else(AppError::not_found)?;
     if row.state == "retired" {
@@ -2049,8 +2138,11 @@ async fn delete_address(
         )?
         .with_status(202));
     }
-    database.prepare("UPDATE addresses SET state='deleting',next_reconcile_at=-1 WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state!='retired'")
-        .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.run().await?;
+    let transition = database.prepare(format!("UPDATE addresses SET state='deleting',next_reconcile_at=-1 WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state!='retired' AND {} RETURNING address",profiles::address_filter(user,"addresses",true)))
+        .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.first::<serde_json::Value>(None).await?;
+    if transition.is_none() {
+        return Err(AppError::conflict("mailbox_lease_required"));
+    }
     // Re-read after transition: creation may have installed a rule between first read and UPDATE.
     let current = database.prepare("SELECT address,state,created_at,cf_rule_id FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3")
         .bind(&[bind_str(&address),bind_str(&user.iss),bind_str(&user.sub)])?.first::<AddressRow>(None).await?.ok_or_else(AppError::not_found)?;
@@ -2142,7 +2234,10 @@ const MESSAGE_DETAIL_SQL: &str = "SELECT id,address,direction,sender,recipients_
 
 async fn one_message(env: &Env, user: &Principal, id: &str) -> AppResult<MessageRow> {
     db(env)?
-        .prepare(MESSAGE_DETAIL_SQL)
+        .prepare(format!(
+            "{MESSAGE_DETAIL_SQL} AND {}",
+            profiles::message_filter(user, "messages")
+        ))
         .bind(&[bind_str(id), bind_str(&user.iss), bind_str(&user.sub)])?
         .first::<MessageRow>(None)
         .await?
@@ -2176,12 +2271,12 @@ async fn get_archive(env: &Env, user: &Principal, id: &str) -> AppResult<Respons
         .execute()
         .await?
         .ok_or_else(AppError::not_found)?;
-    let bytes = object
+    let body = object
         .body()
         .ok_or_else(AppError::not_found)?
-        .bytes()
-        .await?;
-    let mut response = Response::from_bytes(bytes)?;
+        .response_body()?;
+    one_message(env, user, id).await?;
+    let mut response = Response::from_body(body)?;
     response
         .headers_mut()
         .set("Content-Type", "application/zip")?;
@@ -2212,17 +2307,30 @@ async fn mark_message(
         .json()
         .await
         .map_err(|_| AppError::bad("invalid_json"))?;
-    one_message(env, user, id).await?;
-    db(env)?
-        .prepare(MARK_MESSAGE_SQL)
+    let row = one_message(env, user, id).await?;
+    let database = db(env)?;
+    if let Some(session) = &user.profile {
+        profiles::authorized_address(&database, user, session, &row.address, true).await?;
+    }
+    if row.is_read == i64::from(input.read) {
+        return get_message(env, user, id, request_id).await;
+    }
+    let changed = database
+        .prepare(format!(
+            "{MARK_MESSAGE_SQL} AND {} RETURNING id",
+            profiles::message_write_filter(user, "messages")
+        ))
         .bind(&[
             bind_num(input.read as i64),
             bind_str(id),
             bind_str(&user.iss),
             bind_str(&user.sub),
         ])?
-        .run()
+        .first::<serde_json::Value>(None)
         .await?;
+    if changed.is_none() {
+        return Err(AppError::conflict("mailbox_lease_required"));
+    }
     get_message(env, user, id, request_id).await
 }
 
@@ -2232,7 +2340,7 @@ async fn delete_message(env: &Env, user: &Principal, id: &str) -> AppResult<Resp
     // RETURNING identifies the matched delivery, not trigger-sensitive aggregate
     // change counts. The same atomic predicate handles hidden legacy projections,
     // foreign IDs and repeated deletion without a separate existence race.
-    let deleted = db(env)?.prepare("UPDATE messages SET deleted_at=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND deleted_at IS NULL RETURNING id")
+    let deleted = db(env)?.prepare(format!("UPDATE messages SET deleted_at=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND deleted_at IS NULL AND {} RETURNING id",profiles::message_write_filter(user,"messages")))
         .bind(&[bind_num(now()),bind_str(id),bind_str(&user.iss),bind_str(&user.sub)])?.first::<serde_json::Value>(None).await?;
     if deleted.is_none() {
         return Err(AppError::not_found());
@@ -2451,6 +2559,10 @@ fn search_page_query(
     marker: Option<&(i64, String)>,
 ) -> (String, Vec<JsValue>) {
     let mut sql = search_projection(input);
+    sql.push_str(&format!(
+        " AND {}",
+        profiles::message_filter(user, "messages")
+    ));
     let mut binds = vec![bind_str(&user.iss), bind_str(&user.sub)];
     if let Some(mailbox) = input.mailbox.as_deref() {
         sql.push_str(&format!(" AND address=?{}", binds.len() + 1));
@@ -2692,6 +2804,8 @@ async fn charge_outbound_quotas(
     let global = Principal {
         iss: "_global".into(),
         sub: "_global".into(),
+        profile: None,
+        enrollment_fence: false,
     };
     reserve_quota(
         database,
@@ -2772,16 +2886,20 @@ async fn send_message(
     let draft = parse_draft(&bytes).map_err(|_| AppError::bad("invalid_archive"))?;
     validate_draft(&draft)?;
     let database = db(env)?;
-    let mine = database.prepare("SELECT 1 AS mine FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='active'")
-        .bind(&[bind_str(&draft.manifest.from),bind_str(&user.iss),bind_str(&user.sub)])?.first::<serde_json::Value>(None).await?.is_some();
-    if !mine {
+    #[derive(Deserialize)]
+    struct MailboxLifetime {
+        generation: String,
+    }
+    let lifetime = database.prepare(format!("SELECT generation FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='active' AND {}",profiles::address_filter(user,"addresses",true)))
+        .bind(&[bind_str(&draft.manifest.from),bind_str(&user.iss),bind_str(&user.sub)])?.first::<MailboxLifetime>(None).await?;
+    let Some(lifetime) = lifetime else {
         return Err(AppError {
             status: 403,
             code: "sender_not_owned",
         });
-    }
+    };
     if let Some(reply) = &draft.manifest.reply_to {
-        let owned = database.prepare("SELECT 1 AS mine FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='active'")
+        let owned = database.prepare(format!("SELECT 1 AS mine FROM addresses WHERE address=?1 AND owner_iss=?2 AND owner_sub=?3 AND state='active' AND {}",profiles::address_filter(user,"addresses",true)))
             .bind(&[bind_str(reply),bind_str(&user.iss),bind_str(&user.sub)])?.first::<serde_json::Value>(None).await?.is_some();
         if !owned {
             return Err(AppError {
@@ -2802,8 +2920,10 @@ async fn send_message(
         rejection_code: Option<String>,
         created_at: i64,
     }
-    let existing = database.prepare("SELECT payload_hash,message_id,state,quota_reserved,rejection_code,created_at FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3")
-        .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.first::<SendRow>(None).await?;
+    let send_scope = profiles::send_scope(user);
+    let legacy_recovery = user.profile.as_ref().is_some_and(|session| session.is_user);
+    let existing = database.prepare("SELECT payload_hash,message_id,state,quota_reserved,rejection_code,created_at FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND (profile_scope=?4 OR (profile_scope='' AND ?5=1)) AND content_purged_at IS NULL")
+        .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem),bind_str(&send_scope),bind_num(i64::from(legacy_recovery))])?.first::<SendRow>(None).await?;
     let (id, quota_reserved, inserted_new, created_at) = if let Some(row) = existing {
         if row.payload_hash != payload_hash {
             return Err(AppError::conflict("idempotency_payload_mismatch"));
@@ -2835,8 +2955,8 @@ async fn send_message(
         check_send_policy(env, &database, user, &draft, &idem).await?;
         let id = uuid::Uuid::new_v4().to_string();
         let created_at = now();
-        let admitted = database.prepare("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,state,created_at) VALUES(?1,?2,?3,?4,?5,'preparing',?6)")
-            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem),bind_str(&payload_hash),bind_str(&id),bind_num(created_at)])?.run().await;
+        let admitted = database.prepare(format!("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,state,created_at,profile_scope,mailbox_generation,mailbox_address) SELECT ?1,?2,?3,?4,?5,'preparing',?6,?7,?8,?9 WHERE EXISTS(SELECT 1 FROM addresses WHERE address=?9 AND generation=?8 AND {})",profiles::address_filter(user,"addresses",true)))
+            .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem),bind_str(&payload_hash),bind_str(&id),bind_num(created_at),bind_str(&send_scope),bind_str(&lifetime.generation),bind_str(&draft.manifest.from)])?.run().await;
         if admitted.is_err() {
             // The SQL trigger may have raced an operator hold; preserve the
             // public hold code instead of misreporting that race as a replay.
@@ -2872,6 +2992,7 @@ async fn send_message(
         }
         return Err(err);
     }
+    tmpaddr::track_reservation(&database, &id, &draft.manifest.from, &lifetime.generation).await?;
     let started = js_sys::Date::now();
     let archive_write = env
         .bucket("MAIL_BODIES")?
@@ -2888,7 +3009,13 @@ async fn send_message(
         resource::release_send(&database, user, &idem).await?;
         return Err(error.into());
     }
-    let transition = database.prepare("UPDATE send_requests SET state='submitting' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing' AND quota_reserved=1")
+    if let Err(error) =
+        tmpaddr::track_reservation(&database, &id, &draft.manifest.from, &lifetime.generation).await
+    {
+        env.bucket("MAIL_BODIES")?.delete(&r2_key).await?;
+        return Err(error);
+    }
+    let transition = database.prepare(format!("UPDATE send_requests SET state='submitting' WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND state='preparing' AND quota_reserved=1 AND content_purged_at IS NULL AND EXISTS(SELECT 1 FROM addresses WHERE address=send_requests.mailbox_address AND generation=send_requests.mailbox_generation AND {})",profiles::address_filter(user,"addresses",true)))
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
     if transition.meta()?.and_then(|m| m.changes).unwrap_or(0) != 1 {
         return Err(AppError::conflict("send_in_progress"));
@@ -2900,6 +3027,24 @@ async fn send_message(
             .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
         resource::release_send(&database, user, &idem).await?;
         return Err(err);
+    }
+    if let Some(session) = &user.profile {
+        profiles::authorized_address(&database, user, session, &draft.manifest.from, true).await?;
+    }
+    let still_owned = database
+        .prepare(format!(
+            "SELECT 1 AS present FROM addresses WHERE address=?1 AND generation=?2 AND state='active' AND {}",
+            profiles::address_filter(user, "addresses", true)
+        ))
+        .bind(&[
+            bind_str(&draft.manifest.from),
+            bind_str(&lifetime.generation),
+        ])?
+        .first::<serde_json::Value>(None)
+        .await?
+        .is_some();
+    if !still_owned {
+        return Err(AppError::conflict("mailbox_lease_required"));
     }
     let started = js_sys::Date::now();
     let send_result = platform::send(env, &draft).await;
@@ -2925,8 +3070,19 @@ async fn send_message(
             });
         }
     };
-    database.prepare("UPDATE send_requests SET state='accepted',provider_id=?1,sender=?2,envelope_json=?3,request_id=?4 WHERE owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND state='submitting'")
-        .bind(&[bind_str(&provider_id),bind_str(&draft.manifest.from),bind_str(&envelope_json),bind_str(request_id),bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.run().await?;
+    let live = "content_purged_at IS NULL AND (mailbox_generation='' OR EXISTS(SELECT 1 FROM addresses a WHERE a.address=send_requests.mailbox_address AND a.generation=send_requests.mailbox_generation AND a.state='active' AND a.released_at IS NULL AND a.expires_at>CAST(unixepoch('subsec')*1000 AS INTEGER)))";
+    #[derive(Deserialize)]
+    struct Acceptance {
+        live: i64,
+    }
+    let acceptance = database.prepare(format!("UPDATE send_requests SET state='accepted',provider_id=?1,sender=CASE WHEN {live} THEN ?2 ELSE NULL END,envelope_json=CASE WHEN {live} THEN ?3 ELSE NULL END,request_id=?4 WHERE owner_iss=?5 AND owner_sub=?6 AND idem_key=?7 AND state='submitting' RETURNING CASE WHEN {live} THEN 1 ELSE 0 END AS live"))
+        .bind(&[bind_str(&provider_id),bind_str(&draft.manifest.from),bind_str(&envelope_json),bind_str(request_id),bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem)])?.first::<Acceptance>(None).await?.ok_or_else(||AppError::conflict("send_outcome_unknown"))?;
+    if acceptance.live == 0 {
+        return Ok(Response::from_json(
+            &serde_json::json!({"id":id,"state":"accepted","request_id":request_id}),
+        )?
+        .with_status(202));
+    }
     accepted::publish(
         &database,
         &accepted::Projection {
@@ -3045,10 +3201,11 @@ async fn inbound(
     struct Owner {
         owner_iss: String,
         owner_sub: String,
+        generation: String,
     }
     let started = js_sys::Date::now();
     let owner_result = database
-        .prepare("SELECT owner_iss,owner_sub FROM addresses WHERE address=?1 AND state='active'")
+        .prepare("SELECT owner_iss,owner_sub,generation FROM addresses WHERE address=?1 AND state='active' AND (expires_at IS NULL OR expires_at>CAST(unixepoch('subsec')*1000 AS INTEGER))")
         .bind(&[bind_str(&envelope_to)])?
         .first::<Owner>(None)
         .await;
@@ -3070,10 +3227,14 @@ async fn inbound(
     let user = Principal {
         iss: owner.owner_iss.clone(),
         sub: owner.owner_sub.clone(),
+        profile: None,
+        enrollment_fence: false,
     };
     let storage_bytes = (raw.len() + archive.len()) as i64;
     reserve_storage(&database, &id, &user, storage_bytes).await?;
+    tmpaddr::track_reservation(&database, &id, &envelope_to, &owner.generation).await?;
     let r2_key = format!("messages/{id}.zip");
+    let archive_len = archive.len();
     // Preserve original MIME separately for forensic recovery; never expose raw headers to the agent archive.
     let started = js_sys::Date::now();
     let raw_write = env
@@ -3091,7 +3252,7 @@ async fn inbound(
     let started = js_sys::Date::now();
     let archive_write = env
         .bucket("MAIL_BODIES")?
-        .put(&r2_key, archive.clone())
+        .put(&r2_key, archive)
         .execute()
         .await;
     trace.phase(
@@ -3101,6 +3262,14 @@ async fn inbound(
         trace::elapsed_ms(started),
     );
     archive_write?;
+    if let Err(error) =
+        tmpaddr::track_reservation(&database, &id, &envelope_to, &owner.generation).await
+    {
+        let bucket = env.bucket("MAIL_BODIES")?;
+        bucket.delete(&r2_key).await?;
+        bucket.delete(format!("raw/{id}.eml")).await?;
+        return Err(error);
+    }
     let attachments = metadata
         .get("attachments")
         .and_then(|v| v.as_array())
@@ -3108,8 +3277,8 @@ async fn inbound(
     let metadata = metadata.to_string();
     let first_text = store_text(&database, &id, &text).await?;
     let started = js_sys::Date::now();
-    let insert = database.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,storage_bytes,embedding_json,embedding_model,embedding_dimensions) VALUES(?1,?2,?3,?4,'inbound',?5,?6,?7,?8,?9,?10,0,?11,?12,?13,?14,?15,?16,?17,?18,?19)")
-        .bind(&[bind_str(&id),bind_str(&envelope_to),bind_str(&owner.owner_iss),bind_str(&owner.owner_sub),bind_str(&sender),bind_str(&serde_json::to_string(&to).unwrap_or_default()),bind_str(&subject),bind_str(&first_text),bind_str(&metadata),bind_num(received_at),bind_num(has_html as i64),bind_num(has_text as i64),bind_num(attachments as i64),bind_str(&r2_key),bind_num(archive.len() as i64),bind_num(storage_bytes),JsValue::NULL,JsValue::NULL,JsValue::NULL])?.run().await;
+    let insert = database.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,is_read,has_html,has_text,attachment_count,r2_key,size_bytes,storage_bytes,embedding_json,embedding_model,embedding_dimensions,mailbox_generation) VALUES(?1,?2,?3,?4,'inbound',?5,?6,?7,?8,?9,?10,0,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)")
+        .bind(&[bind_str(&id),bind_str(&envelope_to),bind_str(&owner.owner_iss),bind_str(&owner.owner_sub),bind_str(&sender),bind_str(&serde_json::to_string(&to).unwrap_or_default()),bind_str(&subject),bind_str(&first_text),bind_str(&metadata),bind_num(received_at),bind_num(has_html as i64),bind_num(has_text as i64),bind_num(attachments as i64),bind_str(&r2_key),bind_num(archive_len as i64),bind_num(storage_bytes),JsValue::NULL,JsValue::NULL,JsValue::NULL,bind_str(&owner.generation)])?.run().await;
     trace.phase(
         request_id,
         Phase::D1Write,

@@ -584,6 +584,8 @@ pub(crate) async fn maintain(
             &Principal {
                 iss: owner.owner_iss,
                 sub: owner.owner_sub,
+                profile: None,
+                enrollment_fence: false,
             },
         )
         .await
@@ -671,10 +673,14 @@ mod tests {
         let one = Principal {
             iss: "ab".into(),
             sub: "c".into(),
+            profile: None,
+            enrollment_fence: false,
         };
         let two = Principal {
             iss: "a".into(),
             sub: "bc".into(),
+            profile: None,
+            enrollment_fence: false,
         };
         assert_ne!(owner_id(&one), owner_id(&two));
         assert_eq!(owner_id(&one).len(), 64);

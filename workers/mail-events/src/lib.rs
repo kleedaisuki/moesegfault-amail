@@ -60,8 +60,9 @@ struct Attribution {
     owner_sub: String,
     local_message_id: String,
     request_id: Option<String>,
-    sender: String,
-    envelope_json: String,
+    sender: Option<String>,
+    envelope_json: Option<String>,
+    expired: i64,
 }
 
 /// Queue entry point: acknowledge only committed events; retry failures into the DLQ.
@@ -106,12 +107,21 @@ async fn process(body: &Value, env: &Env) -> Result<Option<(String, Option<Strin
     let event: SendingEvent = serde_json::from_value(body.clone())?;
     let account = env.var("CF_ACCOUNT_ID")?.to_string();
     let zone = env.var("CF_ZONE_ID")?.to_string();
-    let domain = env.var("MAIL_DOMAIN")?.to_string();
-    let normalized = validate(&event, &account, &zone, &domain)
+    let mail_domain = env.var("MAIL_DOMAIN")?.to_string();
+    let tmp_domain = env
+        .var("MAIL_TMP_DOMAIN")
+        .ok()
+        .map(|value| value.to_string());
+    let domain = if tmp_domain.as_deref() == Some(event.source.domain.as_str()) {
+        event.source.domain.as_str()
+    } else {
+        mail_domain.as_str()
+    };
+    let normalized = validate(&event, &account, &zone, domain)
         .ok_or_else(|| worker::Error::RustError("lifecycle event invalid".into()))?;
     let db = env.d1("MAIL_DB")?;
     let rows = db
-        .prepare("SELECT owner_iss,owner_sub,message_id AS local_message_id,request_id,sender,envelope_json FROM send_requests WHERE provider_id=?1 AND state IN ('accepted','sent') AND message_id IS NOT NULL AND sender IS NOT NULL AND envelope_json IS NOT NULL LIMIT 2")
+        .prepare("SELECT s.owner_iss,s.owner_sub,s.message_id AS local_message_id,s.request_id,s.sender,s.envelope_json,CASE WHEN s.content_purged_at IS NOT NULL OR EXISTS(SELECT 1 FROM addresses a WHERE a.address=s.mailbox_address AND a.kind='tmpaddr' AND (a.generation!=s.mailbox_generation OR a.released_at IS NOT NULL OR a.expires_at<=CAST(unixepoch('subsec')*1000 AS INTEGER) OR a.state!='active')) THEN 1 ELSE 0 END AS expired FROM send_requests s WHERE s.provider_id=?1 AND s.state IN ('accepted','sent') AND s.message_id IS NOT NULL LIMIT 2")
         .bind(&[JsValue::from_str(&event.payload.message_id)])?
         .all()
         .await?
@@ -123,8 +133,16 @@ async fn process(body: &Value, env: &Env) -> Result<Option<(String, Option<Strin
             "lifecycle attribution unavailable".into(),
         ));
     };
-    let envelope: Vec<String> = serde_json::from_str(&row.envelope_json)?;
-    if !matches_envelope(&row.sender, &envelope, &event.payload) {
+    if row.expired != 0 {
+        return Ok(None);
+    }
+    let (Some(sender), Some(envelope_json)) = (&row.sender, &row.envelope_json) else {
+        return Err(worker::Error::RustError(
+            "lifecycle attribution unavailable".into(),
+        ));
+    };
+    let envelope: Vec<String> = serde_json::from_str(envelope_json)?;
+    if !matches_envelope(sender, &envelope, &event.payload) {
         return Err(worker::Error::RustError(
             "lifecycle envelope mismatch".into(),
         ));
@@ -141,7 +159,7 @@ async fn process(body: &Value, env: &Env) -> Result<Option<(String, Option<Strin
         JsValue::from_f64(timestamp(&event.metadata.timestamp).unwrap_or_default() as f64),
         JsValue::from_f64(received_at as f64),
     ];
-    let result = db.prepare("INSERT OR IGNORE INTO provider_events(event_id,provider_id,local_message_id,owner_iss,owner_sub,recipient,kind,occurred_at,received_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)")
+    let result = db.prepare("INSERT OR IGNORE INTO provider_events(event_id,provider_id,local_message_id,owner_iss,owner_sub,recipient,kind,occurred_at,received_at) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9 WHERE EXISTS(SELECT 1 FROM send_requests s WHERE s.provider_id=?2 AND s.message_id=?3 AND s.owner_iss=?4 AND s.owner_sub=?5 AND s.content_purged_at IS NULL AND NOT EXISTS(SELECT 1 FROM addresses a WHERE a.address=s.mailbox_address AND a.kind='tmpaddr' AND (a.generation!=s.mailbox_generation OR a.released_at IS NOT NULL OR a.expires_at<=CAST(unixepoch('subsec')*1000 AS INTEGER) OR a.state!='active')))")
         .bind(&args)?.run().await?;
     if result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 0 {
         return Ok(None);

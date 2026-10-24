@@ -352,6 +352,8 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let home = tempfile::tempdir_in(root).unwrap();
         let cfg = Runtime {
+            yolo: false,
+            daemon: Default::default(),
             home: home.path().to_owned(),
             api_base: "https://mail.example.test".into(),
             issuer: "https://identity.example.test".into(),

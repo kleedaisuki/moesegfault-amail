@@ -687,6 +687,8 @@ mod journal_tests {
         std::fs::create_dir_all(&root).unwrap();
         let home = tempfile::tempdir_in(root).unwrap();
         let cfg = Runtime {
+            yolo: false,
+            daemon: Default::default(),
             home: home.path().into(),
             api_base: "https://mail.example.test".into(),
             issuer: "https://identity.example.test".into(),
@@ -744,6 +746,8 @@ mod tests {
 
     fn config(issuer: &str) -> Runtime {
         Runtime {
+            yolo: false,
+            daemon: Default::default(),
             api_base: "https://mail.example.test".into(),
             issuer: issuer.into(),
             client_id: "amail-cli-test".into(),

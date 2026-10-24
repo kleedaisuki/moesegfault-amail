@@ -424,6 +424,8 @@ pub(crate) mod tests {
     /// Synthetic configuration never opens the real user credential store.
     pub(crate) fn config(home: &std::path::Path) -> Runtime {
         Runtime {
+            yolo: false,
+            daemon: Default::default(),
             home: home.to_owned(),
             api_base: "https://mail.example.test".into(),
             issuer: "https://identity.example.test".into(),

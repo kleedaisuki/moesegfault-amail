@@ -8,7 +8,7 @@ use worker::{Env, Request, Response};
 
 use crate::{
     auth::Principal, bind_num, bind_str, db, direct_role_contact_ready, iso, now, parse_date,
-    stored_rejection, AppError, AppResult, Database,
+    profiles, stored_rejection, AppError, AppResult, Database,
 };
 
 /// Closed provider feedback vocabulary; no arbitrary reason or payload is accepted.
@@ -34,7 +34,10 @@ async fn outbound_visible(env: &Env, user: &Principal, id: &str) -> AppResult<bo
         visible: i64,
     }
     Ok(db(env)?
-        .prepare(OUTBOUND_VISIBLE_SQL)
+        .prepare(format!(
+            "{OUTBOUND_VISIBLE_SQL} AND {}",
+            profiles::message_filter(user, "m")
+        ))
         .bind(&[bind_str(id), bind_str(&user.iss), bind_str(&user.sub)])?
         .first::<Witness>(None)
         .await?
@@ -69,8 +72,8 @@ pub(crate) async fn send_receipt(
     request_id: &str,
 ) -> AppResult<Response> {
     uuid::Uuid::parse_str(key).map_err(|_| AppError::bad("invalid_idempotency_key"))?;
-    let row = db(env)?.prepare("SELECT message_id,state,created_at,rejection_code FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3")
-        .bind(&[bind_str(&user.iss), bind_str(&user.sub), bind_str(key)])?
+    let row = db(env)?.prepare("SELECT message_id,state,created_at,rejection_code FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND content_purged_at IS NULL AND (profile_scope=?4 OR (?5=1 AND profile_scope=''))")
+        .bind(&[bind_str(&user.iss), bind_str(&user.sub), bind_str(key), bind_str(&profiles::send_scope(user)), bind_num(user.profile.as_ref().is_some_and(|profile| profile.is_user) as i64)])?
         .first::<SendRow>(None).await?.ok_or_else(AppError::not_found)?;
     let mut value = serde_json::json!({
         "idempotency_key":key, "id":row.message_id,
@@ -119,7 +122,7 @@ pub(crate) async fn outcomes(
     request_id: &str,
 ) -> AppResult<Response> {
     outbound_owned(env, user, id).await?;
-    let rows = db(env)?.prepare("SELECT recipient,kind,occurred_at,event_id FROM recipient_outcomes WHERE local_message_id=?1 AND owner_iss=?2 AND owner_sub=?3 ORDER BY recipient LIMIT 50")
+    let rows = db(env)?.prepare(format!("SELECT recipient,kind,occurred_at,event_id FROM recipient_outcomes WHERE local_message_id=?1 AND owner_iss=?2 AND owner_sub=?3 AND EXISTS (SELECT 1 FROM messages m WHERE m.id=recipient_outcomes.local_message_id AND {}) ORDER BY recipient LIMIT 50", profiles::message_filter(user, "m")))
         .bind(&[bind_str(id), bind_str(&user.iss), bind_str(&user.sub)])?
         .all().await?.results::<OutcomeRow>()?;
     let outcomes = rows.into_iter().map(|row| serde_json::json!({
@@ -205,7 +208,12 @@ struct EventCursor {
 
 /// Bind a continuation to canonical filters and the authenticated immutable identity.
 fn scope(query: &EventQuery, user: &Principal) -> String {
-    let bytes = serde_json::to_vec(&(query, &user.iss, &user.sub)).unwrap_or_default();
+    let bytes = if user.profile.is_some() {
+        serde_json::to_vec(&(query, &user.iss, &user.sub, profiles::scope(user)))
+    } else {
+        serde_json::to_vec(&(query, &user.iss, &user.sub))
+    }
+    .unwrap_or_default();
     format!("{:x}", Sha256::digest(bytes))
 }
 
@@ -246,8 +254,8 @@ struct EventRow {
 
 /// Shared owner-scoped SQL construction keeps account discovery and message history
 /// identical. Indexed filters are assembled only from this fixed allowlist.
-fn event_sql(query: &EventQuery, cursor: Option<&EventCursor>) -> String {
-    let mut sql = String::from("SELECT e.event_id,e.local_message_id,e.recipient,e.kind,e.occurred_at,e.received_at FROM provider_events e WHERE e.owner_iss=?1 AND e.owner_sub=?2 AND e.rowid<=?3 AND EXISTS (SELECT 1 FROM messages m WHERE m.id=e.local_message_id AND m.owner_iss=e.owner_iss AND m.owner_sub=e.owner_sub AND m.direction='outbound' AND m.deleted_at IS NULL) AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=e.local_message_id AND s.owner_iss=e.owner_iss AND s.owner_sub=e.owner_sub AND s.state='accepted')");
+fn event_sql(query: &EventQuery, cursor: Option<&EventCursor>, visibility: &str) -> String {
+    let mut sql = format!("SELECT e.event_id,e.local_message_id,e.recipient,e.kind,e.occurred_at,e.received_at FROM provider_events e WHERE e.owner_iss=?1 AND e.owner_sub=?2 AND e.rowid<=?3 AND EXISTS (SELECT 1 FROM messages m WHERE m.id=e.local_message_id AND m.owner_iss=e.owner_iss AND m.owner_sub=e.owner_sub AND m.direction='outbound' AND m.deleted_at IS NULL AND {visibility}) AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=e.local_message_id AND s.owner_iss=e.owner_iss AND s.owner_sub=e.owner_sub AND s.state='accepted')");
     if query.kind.is_some() {
         sql.push_str(" AND e.kind=?4");
     }
@@ -300,7 +308,11 @@ pub(crate) async fn events(
             .bind(&[bind_str(&user.iss),bind_str(&user.sub)])?
             .first::<HighWater>(None).await?.map_or(0, |row| row.high_water)
     };
-    let sql = event_sql(&query, cursor.as_ref());
+    let sql = event_sql(
+        &query,
+        cursor.as_ref(),
+        &profiles::message_filter(user, "m"),
+    );
     let mut rows = database
         .prepare(&sql)
         .bind(&[
@@ -438,10 +450,75 @@ pub(crate) async fn sending_policy(
 mod tests {
     use super::*;
 
+    #[test]
+    fn mailbox_feedback_requires_current_session_and_generation() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE messages(id TEXT PRIMARY KEY,owner_iss TEXT,owner_sub TEXT,direction TEXT,deleted_at INTEGER,address TEXT,mailbox_generation TEXT); CREATE TABLE addresses(address TEXT PRIMARY KEY,generation TEXT,state TEXT,expires_at INTEGER); CREATE TABLE mail_profiles(id TEXT PRIMARY KEY,session_token TEXT,session_expires_at INTEGER); CREATE TABLE mailbox_leases(address TEXT,address_generation TEXT,profile_id TEXT,session_token TEXT,mode TEXT,lease_token TEXT); CREATE TABLE send_requests(message_id TEXT,owner_iss TEXT,owner_sub TEXT,state TEXT); CREATE TABLE provider_events(event_id TEXT PRIMARY KEY,local_message_id TEXT,owner_iss TEXT,owner_sub TEXT,recipient TEXT,kind TEXT,occurred_at INTEGER,received_at INTEGER);
+        INSERT INTO messages VALUES('m','iss','owner','outbound',NULL,'box','generation-1');
+        INSERT INTO addresses VALUES('box','generation-1','active',NULL);
+        INSERT INTO mail_profiles VALUES('profile','session',CAST(unixepoch('subsec')*1000 AS INTEGER)+60000);
+        INSERT INTO mailbox_leases VALUES('box','generation-1','profile','session','read','lease');
+        INSERT INTO provider_events VALUES('event','m','iss','owner','recipient','delivered',10,10);")
+            .unwrap();
+        let user = Principal {
+            iss: "iss".into(),
+            sub: "owner".into(),
+            enrollment_fence: false,
+            profile: Some(profiles::Session {
+                profile_id: "profile".into(),
+                name: "agent".into(),
+                session_token: "session".into(),
+                is_user: false,
+                expires_at: 0,
+                lease_tokens: [("box".to_string(), "lease".to_string())]
+                    .into_iter()
+                    .collect(),
+            }),
+        };
+        let sql = event_sql(
+            &EventQuery::default(),
+            None,
+            &profiles::message_filter(&user, "m"),
+        );
+        let count = || {
+            db.prepare(&sql)
+                .unwrap()
+                .query_map(
+                    rusqlite::params!["iss", "owner", 100, "", "", 0, 0, "", 20],
+                    |_| Ok(()),
+                )
+                .unwrap()
+                .count()
+        };
+        assert_eq!(count(), 1);
+        db.execute("UPDATE addresses SET generation='generation-2'", [])
+            .unwrap();
+        assert_eq!(count(), 0);
+        db.execute(
+            "UPDATE addresses SET generation='generation-1',expires_at=CAST(unixepoch('subsec')*1000 AS INTEGER)-1",
+            [],
+        )
+        .unwrap();
+        assert_eq!(count(), 0);
+        db.execute("UPDATE addresses SET expires_at=NULL", [])
+            .unwrap();
+        db.execute("UPDATE mail_profiles SET session_token='replacement'", [])
+            .unwrap();
+        assert_eq!(count(), 0);
+        db.execute(
+            "UPDATE mail_profiles SET session_token='session',session_expires_at=0",
+            [],
+        )
+        .unwrap();
+        assert_eq!(count(), 0);
+    }
+
     /// Canonical query binding excludes page size but never identity or filters.
     #[test]
     fn scope_binds_identity_and_filters() {
         let owner = Principal {
+            profile: None,
+            enrollment_fence: false,
             iss: "issuer".into(),
             sub: "owner".into(),
         };
@@ -456,6 +533,8 @@ mod tests {
             scope(
                 &EventQuery::default(),
                 &Principal {
+                    profile: None,
+                    enrollment_fence: false,
                     iss: "issuer".into(),
                     sub: "other".into()
                 }
@@ -567,7 +646,7 @@ mod tests {
             event_id: "b".into(),
         };
         db.execute(insert, ["c", "owner"]).unwrap();
-        let sql = event_sql(&query, Some(&cursor));
+        let sql = event_sql(&query, Some(&cursor), "1=1");
         let ids = |sql: &str, kind: &str, message: &str| {
             db.prepare(sql)
                 .unwrap()
@@ -581,8 +660,9 @@ mod tests {
         };
         assert_eq!(ids(&sql, "", ""), vec!["a"]);
         query.kind = Some("delivered".into());
-        let sql = event_sql(&query, Some(&cursor));
+        let sql = event_sql(&query, Some(&cursor), "1=1");
         assert_eq!(ids(&sql, "delivered", ""), vec!["a"]);
+        assert!(ids(&event_sql(&query, Some(&cursor), "0=1"), "delivered", "").is_empty());
         let plan: String = db
             .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
             .unwrap()
@@ -598,7 +678,7 @@ mod tests {
         assert!(!plan.contains("USE TEMP B-TREE"));
         query.message_id = Some("m".into());
         assert_eq!(
-            ids(&event_sql(&query, Some(&cursor)), "delivered", "m"),
+            ids(&event_sql(&query, Some(&cursor), "1=1"), "delivered", "m"),
             vec!["a"]
         );
         db.execute("UPDATE messages SET deleted_at=1 WHERE id='m'", [])
