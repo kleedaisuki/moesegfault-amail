@@ -6,6 +6,13 @@ CLI bounded SQLite diagnostics and local command spans join opaque API request/
 trace coordinates. Typed events cross the private Queue to a queue-only sink.
 Local command UUID, request ID and native W3C span are different coordinates.
 Upload acceptance is not retained delivery or a complete native trace waterfall.
+In v0.3.0, normal local uploads use one bounded daemon-owned worker and the shared
+HTTP connection pool, not one CLI subprocess per flush. The durable 30-second
+scheduling throttle, attempt UUIDs, claim receipts and telemetry opt-out remain
+unchanged. The uploader clears profile context and cannot renew an idle profile.
+Queue saturation is a definite pre-network admission failure; pending events stay
+durable for a later attempt. `_telemetry-flush` remains an explicit compatibility
+command, not the normal scheduler.
 v0.2.0 adds exact API/dependency clocks, stable pre-transport Billing client span
 IDs, and scheduled root/stage spans; these are real application spans, not native
 Cloudflare auto-instrumentation. See [v0.2.0 tracing](v0.2.0/observability.md) for
