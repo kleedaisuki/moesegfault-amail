@@ -100,6 +100,22 @@ pub(crate) async fn resolve(
     }))
 }
 
+pub(crate) fn is_route(method: Method, path: &str) -> bool {
+    matches!(
+        (method, path),
+        (Method::Get, "/v1/profiles")
+            | (
+                Method::Post,
+                "/v1/profiles"
+                    | "/v1/profiles/activate"
+                    | "/v1/profiles/release"
+                    | "/v1/leases/acquire"
+                    | "/v1/leases/renew"
+                    | "/v1/leases/release"
+            )
+    )
+}
+
 pub(crate) async fn dispatch(
     req: &mut Request,
     _env: &Env,
@@ -107,7 +123,7 @@ pub(crate) async fn dispatch(
     user: &Principal,
     path: &str,
 ) -> AppResult<Option<Response>> {
-    if !path.starts_with("/v1/profiles") && !path.starts_with("/v1/leases/") {
+    if !is_route(req.method(), path) {
         return Ok(None);
     }
     cleanup(db).await?;

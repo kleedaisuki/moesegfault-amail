@@ -1256,18 +1256,29 @@ async fn dispatch(
     trace.authenticated();
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
     trace.accept_parent(req.headers().get("traceparent").ok().flatten().as_deref());
-    trace.operation(operation_for(req.method(), &segments));
+    let operation = operation_for(req.method(), &segments);
+    trace.operation(operation);
+    if operation == Operation::TelemetryUpload {
+        if segments.as_slice() == ["v1", "telemetry"] {
+            return telemetry(&mut req, request_id, trace).await;
+        }
+        if env.queue("TRACE_EVENTS").is_err() {
+            return Err(AppError {
+                status: 503,
+                code: "service_unavailable",
+            });
+        }
+        return telemetry_attempts(&mut req, request_id, trace).await;
+    }
+    if operation == Operation::Unknown && !profiles::is_route(req.method(), &path) {
+        return Err(AppError::not_found());
+    }
     let database = db(&env)?;
     if let Some(response) = profiles::dispatch(&mut req, &env, &database, &user, &path).await? {
         return Ok(response);
     }
-    if !matches!(
-        segments.as_slice(),
-        ["v1", "telemetry"] | ["v1", "telemetry", "attempts"]
-    ) {
-        user.profile = profiles::resolve(&req, &database, &user).await?;
-        user.enrollment_fence = true;
-    }
+    user.profile = profiles::resolve(&req, &database, &user).await?;
+    user.enrollment_fence = true;
     if req.method() == Method::Post
         && matches!(
             segments.as_slice(),
@@ -1361,17 +1372,6 @@ async fn dispatch(
             mark_message(&mut req, &env, &user, id, request_id).await
         }
         (Method::Delete, ["v1", "messages", id]) => delete_message(&env, &user, id).await,
-        (Method::Post, ["v1", "telemetry"]) => telemetry(&mut req, request_id, trace).await,
-        (Method::Post, ["v1", "telemetry", "attempts"]) => {
-            // Refuse before JSON parsing: no enrichment admission without the required safe sink boundary.
-            if env.queue("TRACE_EVENTS").is_err() {
-                return Err(AppError {
-                    status: 503,
-                    code: "service_unavailable",
-                });
-            }
-            telemetry_attempts(&mut req, request_id, trace).await
-        }
         _ => Err(AppError::not_found()),
     }
 }
