@@ -82,3 +82,23 @@ profile-less client. Non-enrolled legacy owners retain their existing behavior.
 A source-only check does not establish runtime acceptance. A passing local mock
 cannot establish Cloudflare routing or SMTP delivery. Record the concrete hosted
 run and tested source in `docs/validation.md` when these journeys actually finish.
+
+## Real staging multi-tenant native journey
+
+`infra/tests/staging_v030_profiles.py` is called by the confirmed hosted browser /
+SMTP harness after its original permanent-mailbox journey. It borrows that native
+binary and authenticated private home, preserving the original terminal identity.
+A fixed user-created `v030-probe-anchor` is the only retained durable test profile;
+the anchor creates two run-scoped ephemeral profiles for separate terminal IDs.
+The test releases both ephemeral profiles and the anchor, then reactivates `user`.
+There is no privileged profile-delete shortcut or production operation.
+
+The journey registers one temporary mailbox from an agent profile, checks the
+absolute deadline and automatic writer, exercises incompatible requests and
+shared readers, then submits exactly one additional synthetic SMTP fixture.
+Its mailbox export must contain that receipt-verified message and the original
+body in the nested ZIP. After address retirement, list/search/get/archive all
+exclude its history, and the exact literal route must be absent. No six-hour
+sleep or remote clock mutation is used; cutoff/reuse interleavings belong in the
+compiled Worker HTTP tests. Hosted execution, not this test's presence, establishes
+whether these staging assertions passed.

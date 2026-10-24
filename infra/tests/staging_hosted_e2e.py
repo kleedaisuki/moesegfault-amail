@@ -229,6 +229,21 @@ def execute() -> None:
                 raise HostedProbeError(f"mail_{safe_stage_code(error)}") from None
             if outcome != 0:
                 raise HostedProbeError("inbound_acceptance_failed")
+            if os.environ.get("GITHUB_REF") == "refs/heads/codex/v0.3.0-multitenant":
+                import staging_v030_profiles
+                try:
+                    profile_evidence = staging_v030_profiles.execute(binary, home, run_dir, nonce)
+                except staging_mail_e2e.ProbeFailure as error:
+                    raise HostedProbeError(f"profiles_{safe_stage_code(error)}") from None
+                if (not isinstance(profile_evidence, dict)
+                        or profile_evidence.get("schema") != "amail-staging-profiles/v1"
+                        or len(profile_evidence) > 32
+                        or any(not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", key)
+                               or (key != "schema" and type(value) not in (bool, int))
+                               for key, value in profile_evidence.items())):
+                    raise HostedProbeError("profiles_evidence_shape_invalid")
+                (TEMP / "staging-v030-evidence.json").write_text(
+                    json.dumps(profile_evidence, sort_keys=True), encoding="utf-8")
             send_confirmation = os.environ.get("AMAIL_STAGING_CANARY_CONFIRM", "")
             if send_confirmation:
                 if send_confirmation != "RUN_STAGING_OWNED_SEND_V020":

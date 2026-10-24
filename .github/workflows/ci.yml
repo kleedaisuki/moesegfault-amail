@@ -524,6 +524,15 @@ jobs:
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_hosted_e2e.py
 
+      - name: Preserve only content-free profile and temporary mailbox evidence
+        if: always() && github.ref == 'refs/heads/codex/v0.3.0-multitenant'
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-v030-profile-evidence-${{ github.run_id }}
+          path: .temp/staging-v030-evidence.json
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Preserve only content-free Billing acceptance evidence
         if: always() && inputs.billing_confirm == 'RUN_STAGING_BILLING_V020'
         uses: actions/upload-artifact@v4
