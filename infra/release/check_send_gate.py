@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+from typing import Any
 import urllib.error
 import urllib.request
 
@@ -36,7 +38,7 @@ class GateError(Exception):
     """失败关闭，不携带远端响应。 / Fail closed without remote response data."""
 
 
-def _json_request(request: urllib.request.Request) -> dict:
+def _json_request(request: urllib.request.Request) -> dict[str, Any]:
     """只解析有界 JSON，不泄漏 URL 或正文。 / Parse bounded JSON without logging inputs."""
 
     try:
@@ -57,7 +59,7 @@ def _json_request(request: urllib.request.Request) -> dict:
     return payload
 
 
-def release_ready(payload: dict) -> bool:
+def release_ready(payload: dict[str, Any]) -> bool:
     """要求唯一全局许可与四项确认均为 1。 / Require exactly one allowed global row and four attestations."""
 
     if payload.get("success") is not True:
@@ -88,6 +90,13 @@ def run() -> None:
     health = _json_request(urllib.request.Request(MAIL_HEALTH, headers={"User-Agent": USER_AGENT}))
     if health.get("status") != "ok":
         raise GateError("production mail health is not OK")
+    expected = os.environ.get("AMAIL_RELEASE_VERSION", "")
+    if expected:
+        version = expected.removeprefix("v")
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+            raise GateError("release version is invalid")
+        if health.get("version") != version:
+            raise GateError("production runtime does not match the release version")
 
     url = f"{API}/accounts/{account}/d1/database/{PRODUCTION_D1_ID}/query"
     body = json.dumps({"sql": READINESS_SQL}, separators=(",", ":")).encode("utf-8")
