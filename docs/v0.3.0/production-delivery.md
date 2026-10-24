@@ -116,3 +116,32 @@ checksum, attestation and public-asset/site gates. The actual public state is
 available at [GitHub Releases](https://github.com/kleedaisuki/moesegfault-amail/releases)
 and the latest [validation ledger](../validation.md); it is not inferred merely
 from a successful backend deployment.
+
+## Formal publication and local installation
+
+[Release workflow 40118186853](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40118186853)
+completed successfully for immutable tag `v0.3.0`, source
+`df757dd422c1e1c0845a44ae5d1d8e378ca611d1`. That source differs from the admitted
+production runtime only in delivery documentation. All five native builds and
+daemon/profile journeys, attestations, assembled/published asset checks and public
+site smoke passed. The formal nondraft, non-prerelease
+[v0.3.0 release](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.3.0)
+was published on 2026-10-25 Asia/Singapore.
+
+The owner explicitly requested upgrading every local amail entrypoint and the
+global amail Skill. Downloaded Windows and Skill archives matched the public
+manifest and their GitHub attestations; installed Skill files additionally matched
+the immutable-tag source. The canonical CLI is in `~/.amail/bin`, existing PATH
+entrypoints are synchronized for compatibility, and all eleven global Skill files
+match the official package. Previous binaries/instructions are retained in private
+versioned `.amail/backups` storage; no credentials or YOLO preference were reset.
+
+| Verified artifact | SHA-256 |
+| --- | --- |
+| Windows ZIP | `a3941a52145b3ddc5c98f7792d7bde24a6a09d65bbacf9f7b893ba8989541e7a` |
+| Agent Skill ZIP | `8775abc5c5c19a1f5be0138818bcf9e620a87d5ebc3d20b898b17937545f9e5a` |
+| Installed Windows executable | `8011d59a5ff9ba5fe52340c79b98e50957dc639971c34ea9593560f8f04d0293` |
+
+Local verification used only version/help/offline discovery, not production mail
+access or an implicitly approved user-profile action. Backups are recovery
+material, not permission to bypass enrollment or restore consumed refresh tokens.

@@ -4,7 +4,7 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
-## v0.3.0 production backend — delivered
+## v0.3.0 production release — delivered
 
 The owner authorized production promotion on 2026-10-25. After the legacy
 `preparing`-intent compatibility repair, source `1e9dd13` passed complete staging
@@ -31,6 +31,19 @@ backend readiness. Consult the actual GitHub Release and its checksum/attestatio
 results rather than inferring asset publication from backend health. No optional
 spending authority, delivery-canary grant, user mailbox read or production test
 send was added by this rollout.
+
+Formal [v0.3.0](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.3.0)
+publication completed in
+[40118186853](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40118186853),
+source `df757dd422c1e1c0845a44ae5d1d8e378ca611d1` (runtime inputs unchanged from
+the production deployment). Five native platforms, real daemon/profile journeys,
+checksums, attestations, every public asset and the published site passed. The
+requested local CLI entrypoints and global amail Skill were then synchronized to
+the verified official package with private rollback copies; all eleven Skill
+files and both active executable locations matched their trusted hashes. Version,
+offline discovery and new command help passed, while credentials and explicit
+YOLO choice remained untouched. Full public hashes and installation boundaries
+are recorded in [production delivery](v0.3.0/production-delivery.md).
 
 ## v0.3.0 multi-tenant candidate — deployed to staging
 
