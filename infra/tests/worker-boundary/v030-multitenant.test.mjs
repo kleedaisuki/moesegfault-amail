@@ -201,9 +201,9 @@ test("tmpaddr registration auto-owns a six-hour generation; deadline and reuse n
     assert.equal(await archiveStatus(id, agent), 404);
     assert.equal((await json("GET", "/v1/addresses", agent)).body.addresses.some((row) => row.address === address), false);
     assert.deepEqual((await json("POST", "/v1/messages/search", agent, { mailbox: address })).body.messages, []);
-    // Complete this fixture's already-confirmed provider retirement/purge and advance
-    // cooldown bookkeeping. Native lifecycle tests exercise the scheduled purger;
-    // these HTTP reads check that recycled names cannot become authorization keys.
+    // Advance completed-cleanup and cooldown bookkeeping only to isolate generation
+    // authorization. The standalone compiled-maintenance scenario below proves
+    // actual content purge; recycled names must never become authorization keys.
     await db.prepare("DELETE FROM messages WHERE id=?1").bind(id).run();
     await db.prepare("UPDATE addresses SET needs_reconcile=0,purged_at=1,cooldown_until=1 WHERE address=?1 AND state='retired' AND cf_rule_id IS NULL")
       .bind(address).run();
@@ -270,4 +270,78 @@ test("an uncertain provision preserves the creator's writer reservation through 
     assert.equal((await json("GET", `/v1/messages/${id}`, creator)).body.code, "profile_session_expired");
     assert.equal((await json("GET", `/v1/messages/${id}`, rival)).status, 200);
   }, { ambiguousCreates: 1, maintenance: true });
+});
+
+test("actual maintenance purges released temporary content and credits storage once while retaining cooldown fences", async () => {
+  await fixture(async ({ db, bucket, json, activate, message, scheduled, rules }) => {
+    const user = await activate("user");
+    const address = `retention-proof@${temporaryDomain}`;
+    assert.equal((await json("POST", "/v1/addresses", user,
+      { local_part: "retention-proof", kind: "tmpaddr" })).status, 201);
+    const generation = (await json("GET", "/v1/addresses", user)).body.addresses
+      .find((row) => row.address === address).generation;
+    const controlBytes = 37;
+    const controlId = randomUUID();
+    await db.prepare("INSERT INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at) VALUES(?1,?2,'owner',?3,'reserved',?4)")
+      .bind(controlId, issuer, controlBytes, Date.now()).run();
+    const ids = [];
+    let temporaryBytes = 0;
+    for (const kind of ["vector", "pending"]) {
+      const id = await message(address, generation, `private ${kind} subject`);
+      ids.push(id);
+      const raw = Buffer.from(`synthetic private raw ${kind} MIME`);
+      const bytes = 4 + raw.byteLength;
+      temporaryBytes += bytes;
+      await bucket.put(`raw/${id}.eml`, raw);
+      await db.prepare("INSERT INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at,mailbox_address,mailbox_generation) VALUES(?1,?2,'owner',?3,'indexed',?4,?5,?6)")
+        .bind(id, issuer, bytes, Date.now(), address, generation).run();
+      await db.prepare("UPDATE messages SET storage_bytes=?2,metadata_json=?3 WHERE id=?1")
+        .bind(id, bytes, JSON.stringify({ private: `metadata-${kind}`, attachments: [{ name: "private-attachment" }] })).run();
+      await db.prepare("INSERT INTO message_text_chunks(message_id,chunk_index,body) VALUES(?1,1,'private retained body chunk')")
+        .bind(id).run();
+      const timestamp = Math.floor(Date.now() / 1000);
+      await db.prepare("INSERT INTO provider_events(event_id,provider_id,local_message_id,owner_iss,owner_sub,recipient,kind,occurred_at,received_at) VALUES(?1,?2,?3,?4,'owner','synthetic@example.invalid','delivered',?5,?5)")
+        .bind(randomUUID(), `synthetic-provider-${kind}`, id, issuer, timestamp).run();
+      assert.ok(await bucket.get(`messages/${id}.zip`));
+      assert.ok(await bucket.get(`raw/${id}.eml`));
+      if (kind === "vector") {
+        await db.prepare("UPDATE messages SET embedding_json=?2,embedding_model='qwen/qwen3-embedding-8b',embedding_dimensions=256,embedding_input_version=1 WHERE id=?1")
+          .bind(id, JSON.stringify(Array(256).fill(0.0625))).run();
+      }
+    }
+    const usage = async () => (await db.prepare("SELECT used_bytes FROM storage_usage WHERE owner_iss=?1 AND owner_sub='owner'")
+      .bind(issuer).first()).used_bytes;
+    assert.equal(await usage(), controlBytes + temporaryBytes);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM embedding_work").first()).n, 1,
+      "the fixture contains automatic indexing work as well as a persisted vector");
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM recipient_outcomes").first()).n, 2);
+    assert.equal((await json("DELETE", "/v1/addresses", user, { address })).status, 202);
+    assert.equal(rules.size, 0, "the real release path retires the exact provider route");
+    assert.equal(await usage(), controlBytes + temporaryBytes, "hiding content alone is not storage reclamation");
+    await scheduled();
+    for (const id of ids) {
+      assert.equal(await bucket.get(`messages/${id}.zip`), null, "scheduled purge removes the immutable archive");
+      assert.equal(await bucket.get(`raw/${id}.eml`), null, "scheduled purge removes original MIME");
+      for (const [table, column] of [["messages", "id"], ["message_text_chunks", "message_id"],
+        ["embedding_work", "message_id"], ["provider_events", "local_message_id"], ["recipient_outcomes", "local_message_id"]]) {
+        assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column}=?1`).bind(id).first()).n, 0,
+          `${table} cannot retain released temporary mail`);
+      }
+    }
+    const tombstones = (await db.prepare("SELECT id,bytes,mailbox_address,mailbox_generation,tmpaddr_purged_at FROM storage_reservations WHERE mailbox_address=?1 ORDER BY id")
+      .bind(address).all()).results;
+    assert.equal(tombstones.length, 2, "cooldown keeps late-I/O fences rather than prematurely freeing the name");
+    for (const row of tombstones) {
+      assert.equal(row.bytes, 0);
+      assert.equal(row.mailbox_address, address);
+      assert.equal(row.mailbox_generation, generation);
+      assert.ok(Number.isFinite(row.tmpaddr_purged_at) && row.tmpaddr_purged_at > 0);
+    }
+    assert.equal(await usage(), controlBytes, "only physical temporary content is credited, not another reservation");
+    await scheduled();
+    assert.equal(await usage(), controlBytes, "repeated maintenance cannot credit the same bytes twice");
+    assert.deepEqual((await db.prepare("SELECT id,bytes,mailbox_address,mailbox_generation,tmpaddr_purged_at FROM storage_reservations WHERE mailbox_address=?1 ORDER BY id")
+      .bind(address).all()).results, tombstones);
+    assert.equal((await db.prepare("SELECT bytes FROM storage_reservations WHERE id=?1").bind(controlId).first()).bytes, controlBytes);
+  }, { maintenance: true });
 });
