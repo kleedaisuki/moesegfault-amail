@@ -1810,14 +1810,23 @@ async fn list_addresses(env: &Env, user: &Principal, request_id: &str) -> AppRes
     let addresses = result.results::<AddressRow>()?.into_iter().map(|a| serde_json::json!({"address":a.address,"state":if a.state=="provisioning" {"pending"} else {a.state.as_str()},"created_at":iso(a.created_at),"kind":a.kind,"generation":a.generation,"expires_at":a.expires_at})).collect::<Vec<_>>();
     #[derive(Deserialize)]
     struct CapacityRow {
+        kind: String,
         n: i64,
     }
     // D1 shows known allocations; Cloudflare's route-limit response remains authoritative.
     // D1 显示已知分配量；Cloudflare 的路由上限响应仍是最终依据。
-    let used = database
-        .prepare("SELECT COUNT(*) AS n FROM addresses WHERE state!='retired'")
-        .first::<CapacityRow>(None)
+    let counts = database
+        .prepare("SELECT kind,COUNT(*) AS n FROM addresses WHERE state!='retired' GROUP BY kind")
+        .all()
         .await?
+        .results::<CapacityRow>()?;
+    let used = counts
+        .iter()
+        .find(|row| row.kind == "mail")
+        .map_or(0, |row| row.n);
+    let temporary_used = counts
+        .iter()
+        .find(|row| row.kind == "tmpaddr")
         .map_or(0, |row| row.n);
     let mut response = account.address_limits();
     let fields = response.as_object_mut().ok_or_else(|| AppError {
@@ -1835,6 +1844,7 @@ async fn list_addresses(env: &Env, user: &Principal, request_id: &str) -> AppRes
         }),
     );
     fields.insert("capacity".into(),serde_json::json!({"limit":USER_ADDRESS_CAPACITY,"registered":used,"remaining_estimate":(USER_ADDRESS_CAPACITY-used).max(0)}));
+    fields.insert("tmpaddr_capacity".into(),serde_json::json!({"limit":USER_ADDRESS_CAPACITY,"registered":temporary_used,"remaining_estimate":(USER_ADDRESS_CAPACITY-temporary_used).max(0)}));
     fields.insert("request_id".into(), serde_json::json!(request_id));
     Ok(Response::from_json(&response)?)
 }
