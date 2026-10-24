@@ -62,6 +62,52 @@ class FakeProvider:
 
 
 class TemporaryDomainTests(unittest.TestCase):
+    def test_verification_txt_coexists_with_generated_spf(self) -> None:
+        provider = FakeProvider()
+        name = "cf-bounce." + provision.DOMAIN
+        verification = {"name": name, "type": "TXT", "content": "provider-verification=synthetic"}
+        provider.records = [verification.copy()]
+        provider.required = [{"name": name, "type": "TXT", "content": "v=spf1 include:_spf.mx.cloudflare.net ~all"}]
+        provision.ensure_sending(provider, True)
+        self.assertIn(verification, provider.records)
+        self.assertEqual(2, len(provider.records))
+        report = provision.inspect(provider, provider)
+        facts = report["sending_dns"]["requirements"][0]
+        self.assertEqual("spf", facts["purpose"])
+        self.assertTrue(facts["exact_present"])
+        self.assertFalse(facts["conflict"])
+        self.assertFalse(facts["spf_merge_attempted"])
+
+    def test_other_mx_values_are_retained_in_the_rrset(self) -> None:
+        provider = FakeProvider()
+        original = {"name": "cf-bounce." + provision.DOMAIN, "type": "MX", "content": "old.mx.cloudflare.net", "priority": 30}
+        provider.records = [original.copy()]
+        provision.ensure_sending(provider, True)
+        self.assertIn(original, provider.records)
+        self.assertTrue(all(method not in ("PUT", "DELETE") for method, _, _ in provider.calls))
+
+    def test_conflicting_spf_and_dmarc_are_not_added_or_merged(self) -> None:
+        for name, old, new in (
+            ("cf-bounce." + provision.DOMAIN, "v=spf1 -all", "v=spf1 include:_spf.mx.cloudflare.net ~all"),
+            ("_dmarc." + provision.DOMAIN, "v=DMARC1; p=reject", "v=DMARC1; p=none"),
+        ):
+            with self.subTest(name=name):
+                provider = FakeProvider()
+                original = {"name": name, "type": "TXT", "content": old}
+                provider.records = [original.copy()]
+                provider.required = [{"name": name, "type": "TXT", "content": new}]
+                with self.assertRaisesRegex(provision.ProvisionError, "sending_existing_dns_conflict"):
+                    provision.ensure_sending(provider, True)
+                self.assertEqual([original], provider.records)
+                self.assertFalse(any(path.endswith("/dns_records") for _, path, _ in provider.calls))
+
+    def test_cname_is_exclusive_even_with_non_mail_records(self) -> None:
+        cname = {"name": "selector._domainkey." + provision.DOMAIN, "type": "CNAME", "content": "target.example.invalid"}
+        address = {"name": cname["name"], "type": "A", "content": "192.0.2.1"}
+        self.assertTrue(provision.requirement_facts(cname, [address])["conflict"])
+        txt = {"name": cname["name"], "type": "TXT", "content": "verification=synthetic"}
+        self.assertTrue(provision.requirement_facts(txt, [cname])["conflict"])
+
     def test_apply_uses_deployment_credential_for_domain_onboarding(self) -> None:
         deployment = FakeProvider()
         runtime = FakeProvider()

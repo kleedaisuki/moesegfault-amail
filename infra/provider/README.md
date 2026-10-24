@@ -22,6 +22,18 @@ mean configuration is ready, and successful read access does not prove Write
 permission. In particular, Routing DNS onboarding requires Zone Settings Write;
 a successful rules-only query cannot establish that permission.
 
+Sending DNS inspection also reports each generated requirement's closed role,
+record type/purpose, equality, existing type/count and conflict predicates. It
+does not expose names, values, keys or identifiers. DNS RRsets can contain
+multiple MX values and unrelated TXT purposes; these are retained, not replaced.
+A different existing SPF/DMARC policy or DKIM selector candidate remains a
+conflict, as does CNAME coexistence. No SPF merging is performed. This follows
+[RFC 7208 section 3](https://www.rfc-editor.org/rfc/rfc7208#section-3): unrelated
+TXT is permitted, but multiple SPF policies at the same owner name are not.
+Cloudflare's [authentication documentation](https://developers.cloudflare.com/email-service/concepts/email-authentication/)
+places Routing SPF at the domain and Sending SPF separately at `cf-bounce`;
+those names must not be conflated into a synthetic merged record.
+
 Restore and verify the same-run tested artifact before the first command, and
 retain the existing workflow staging writer lock. Apply requires GitHub Actions,
 the exact candidate branch, first run attempt, `AMAIL_STAGING_ENVIRONMENT=staging`

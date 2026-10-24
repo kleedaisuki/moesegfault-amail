@@ -202,6 +202,67 @@ def normalized_record(value: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def record_role(record: dict[str, Any]) -> str:
+    name = record["name"]
+    if name == DOMAIN:
+        return "domain"
+    if name == "cf-bounce." + DOMAIN:
+        return "return_path"
+    if name == "_dmarc." + DOMAIN:
+        return "dmarc"
+    if name.endswith("._domainkey." + DOMAIN):
+        return "dkim"
+    return "other_scoped"
+
+
+def txt_purpose(content: str) -> str:
+    if content.startswith("v=spf1"):
+        return "spf"
+    if content.startswith("v=DMARC1"):
+        return "dmarc"
+    if content.startswith("v=DKIM1"):
+        return "dkim"
+    return "other"
+
+
+def dns_conflict(record: dict[str, Any], current: list[dict[str, Any]]) -> bool:
+    """RRsets admit multiple MX/TXT values, but CNAME and mail policies differ."""
+    if record in current:
+        return False
+    if record["type"] == "CNAME":
+        return bool(current)
+    if any(row.get("type") == "CNAME" for row in current):
+        return True
+    if record["type"] != "TXT":
+        return False
+    same_type = [row for row in current if row.get("type") == "TXT"]
+    purpose = txt_purpose(record["content"])
+    if purpose in ("spf", "dmarc"):
+        return any(txt_purpose(str(row.get("content", ""))) == purpose for row in same_type)
+    # A selector lookup must not introduce a second, ambiguous DKIM key candidate.
+    if purpose == "dkim" or record_role(record) == "dkim":
+        return bool(same_type)
+    return False
+
+
+def requirement_facts(record: dict[str, Any], current: list[dict[str, Any]]) -> dict[str, Any]:
+    """Only closed roles, record classes and comparisons enter public diagnostics."""
+    existing = [normalized_record(row) for row in current if row.get("type") in ("MX", "TXT", "CNAME")]
+    comparable = existing + [{"type": row.get("type")} for row in current if row.get("type") not in ("MX", "TXT", "CNAME")]
+    known_types = {"A", "AAAA", "CAA", "CNAME", "MX", "NS", "SRV", "TXT"}
+    return {
+        "role": record_role(record),
+        "type": record["type"],
+        "purpose": txt_purpose(record["content"]) if record["type"] == "TXT" else "not_txt",
+        "exact_present": record in existing,
+        "same_type_count": sum(row.get("type") == record["type"] for row in current),
+        "existing_types": sorted({row["type"] if row.get("type") in known_types else "other" for row in current}),
+        "existing_spf_count": sum(row.get("type") == "TXT" and txt_purpose(str(row.get("content", "")).strip('"')) == "spf" for row in current),
+        "conflict": dns_conflict(record, comparable),
+        "spf_merge_attempted": False,
+    }
+
+
 def ensure_sending(client: Provider, apply: bool) -> None:
     domain = sending_domain(client, apply)
     path = f"{PREFIX}/email/sending/subdomains/{domain['tag']}"
@@ -217,7 +278,7 @@ def ensure_sending(client: Provider, apply: bool) -> None:
         existing = [normalized_record(row) for row in current if row.get("type") in ("MX", "TXT", "CNAME")]
         if record in existing:
             continue
-        if any((row["type"] == record["type"] and row not in wanted) or row["type"] == "CNAME" or record["type"] == "CNAME" for row in existing) or (record["type"] == "CNAME" and current):
+        if requirement_facts(record, current)["conflict"]:
             raise ProvisionError("sending_existing_dns_conflict")
         if not apply:
             raise ProvisionError("sending_dns_required")
@@ -286,10 +347,13 @@ def inspect(dns: Provider, routing: Provider) -> dict[str, Any]:
             if not wanted:
                 raise ProvisionError("sending_dns_requirements_missing")
             present = 0
+            facts: list[dict[str, Any]] = []
             for record in wanted:
-                existing = [normalized_record(row) for row in dns_records(dns, record["name"]) if row.get("type") in ("MX", "TXT", "CNAME")]
+                current = dns_records(dns, record["name"])
+                existing = [normalized_record(row) for row in current if row.get("type") in ("MX", "TXT", "CNAME")]
                 present += int(record in existing)
-            report["sending_dns"] = {"state": "observed", "required_count": len(wanted), "present_count": present, "ready": present == len(wanted)}
+                facts.append(requirement_facts(record, current))
+            report["sending_dns"] = {"state": "observed", "required_count": len(wanted), "present_count": present, "ready": present == len(wanted), "requirements": facts}
     except ProvisionError as error:
         report["sending_probe"] = inspection_failure(error)
     return report

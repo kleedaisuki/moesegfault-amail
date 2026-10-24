@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 import sys
 import tempfile
+from typing import Any
 import time
 import tomllib
 
@@ -84,7 +85,7 @@ SINK_INPUTS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo",
                "infra/deploy/worker_deploy_result.py")
 
 
-def unchanged_v030_sink(value: dict) -> bool:
+def unchanged_v030_sink(value: dict[str, Any]) -> bool:
     """Reuse only the fully verified sink submitted by successful job120897847181.
 
     Run40102215366 accepted this component before its later domain-onboarding
