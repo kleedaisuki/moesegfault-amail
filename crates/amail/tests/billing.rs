@@ -1,6 +1,9 @@
 //! Public billing command contracts without account, network, or browser side effects.
+#[allow(dead_code)]
+mod common;
+
 use serde_json::Value;
-use std::{path::Path, process::Command};
+use std::path::Path;
 
 /// Keep all CLI fixtures within the repository scratch directory.
 fn home() -> tempfile::TempDir {
@@ -12,12 +15,12 @@ fn home() -> tempfile::TempDir {
 #[test]
 fn billing_discovery_explains_human_consent_and_unsettled_usage_offline() {
     let home = home();
-    let output = Command::new(env!("CARGO_BIN_EXE_amail"))
-        .args(["discover", "billing"])
-        .env("AMAIL_HOME", home.path())
-        .env("AMAIL_API_BASE", "deliberately-invalid")
-        .output()
-        .unwrap();
+    let output = common::output(
+        common::command(home.path())
+            .args(["discover", "billing"])
+            .env("AMAIL_HOME", home.path())
+            .env("AMAIL_API_BASE", "deliberately-invalid"),
+    );
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let body: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -55,11 +58,11 @@ fn billing_rejects_unknown_plans_invalid_ids_and_unbounded_polling_before_runtim
         ],
     ] {
         let home = home();
-        let output = Command::new(env!("CARGO_BIN_EXE_amail"))
-            .args(args)
-            .env("AMAIL_HOME", home.path())
-            .output()
-            .unwrap();
+        let output = common::output(
+            common::command(home.path())
+                .args(args)
+                .env("AMAIL_HOME", home.path()),
+        );
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
         let body: Value = serde_json::from_slice(&output.stderr).unwrap();

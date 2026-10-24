@@ -1,33 +1,30 @@
 //! Hosted process-level checks for best-effort diagnostic storage.
 
-use std::process::Command;
-use std::process::Stdio;
+mod common;
 
 /// Run ordinary config commands with synthetic homes and no business network activity.
 fn config_command(home: &std::path::Path, enabled: bool) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_amail"))
-        .arg("config")
-        .env("AMAIL_HOME", home)
-        .env("AMAIL_TELEMETRY", if enabled { "on" } else { "off" })
-        .env("AMAIL_API_BASE", "https://mail.example.test")
-        .env("AMAIL_ISSUER", "https://identity.example.test")
-        .output()
-        .unwrap()
+    common::output(
+        common::command(home)
+            .arg("config")
+            .env("AMAIL_HOME", home)
+            .env("AMAIL_TELEMETRY", if enabled { "on" } else { "off" })
+            .env("AMAIL_API_BASE", "https://mail.example.test")
+            .env("AMAIL_ISSUER", "https://identity.example.test"),
+    )
 }
 
 /// A diagnostic-only SQLite failure cannot break a successful public command.
 #[test]
 fn config_survives_journal_failure_without_polluting_json_stdout() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
-    std::fs::create_dir_all(&root).unwrap();
-    let temp = tempfile::tempdir_in(root).unwrap();
+    let temp = common::Fixture::new();
     std::fs::create_dir(temp.path().join("telemetry.sqlite3")).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_amail"))
-        .args(["config"])
-        .env("AMAIL_HOME", temp.path())
-        .env("AMAIL_TELEMETRY", "on")
-        .output()
-        .unwrap();
+    let output = common::output(
+        common::command(temp.path())
+            .args(["config"])
+            .env("AMAIL_HOME", temp.path())
+            .env("AMAIL_TELEMETRY", "on"),
+    );
     assert!(output.status.success());
     let config: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(config["telemetry_enabled"], true);
@@ -39,15 +36,13 @@ fn config_survives_journal_failure_without_polluting_json_stdout() {
 /// Opt-out skips even initialization, not just uploads and event insertion.
 #[test]
 fn telemetry_opt_out_does_not_open_a_diagnostic_store() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
-    std::fs::create_dir_all(&root).unwrap();
-    let temp = tempfile::tempdir_in(root).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_amail"))
-        .args(["config"])
-        .env("AMAIL_HOME", temp.path())
-        .env("AMAIL_TELEMETRY", "off")
-        .output()
-        .unwrap();
+    let temp = common::Fixture::new();
+    let output = common::output(
+        common::command(temp.path())
+            .args(["config"])
+            .env("AMAIL_HOME", temp.path())
+            .env("AMAIL_TELEMETRY", "off"),
+    );
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     assert!(!temp.path().join("telemetry.sqlite3").exists());
@@ -58,9 +53,7 @@ fn telemetry_opt_out_does_not_open_a_diagnostic_store() {
 /// The actual hidden child persists auth failure despite null stdout/stderr.
 #[test]
 fn next_normal_command_reports_child_failure_once_without_changing_json_or_exit() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
-    std::fs::create_dir_all(&root).unwrap();
-    let home = tempfile::tempdir_in(root).unwrap();
+    let home = common::Fixture::new();
     assert!(config_command(home.path(), true).status.success());
     let conn = rusqlite::Connection::open(home.path().join("telemetry.sqlite3")).unwrap();
     conn.execute(
@@ -69,19 +62,17 @@ fn next_normal_command_reports_child_failure_once_without_changing_json_or_exit(
         [],
     )
     .unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_amail"))
-        .arg("_telemetry-flush")
-        .env("AMAIL_HOME", home.path())
-        .env("AMAIL_TELEMETRY", "on")
-        .env("AMAIL_API_BASE", "https://mail.example.test")
-        .env("AMAIL_ISSUER", "https://identity.example.test")
-        // Guard fails before looking up OS credentials or making any request.
-        .env("AMAIL_CLIENT_ID", "")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap();
-    assert!(child.success());
+    let child = common::output(
+        common::command(home.path())
+            .arg("_telemetry-flush")
+            .env("AMAIL_HOME", home.path())
+            .env("AMAIL_TELEMETRY", "on")
+            .env("AMAIL_API_BASE", "https://mail.example.test")
+            .env("AMAIL_ISSUER", "https://identity.example.test")
+            // Guard fails before looking up OS credentials or making any request.
+            .env("AMAIL_CLIENT_ID", ""),
+    );
+    assert!(child.status.success());
     let output = config_command(home.path(), true);
     assert!(output.status.success());
     let config: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -114,9 +105,7 @@ fn next_normal_command_reports_child_failure_once_without_changing_json_or_exit(
 /// Interrupted scheduled/running receipts are unresolved, never invented failures or acceptance.
 #[test]
 fn unresolved_receipts_and_retention_loss_are_visible_but_opt_out_does_not_touch_existing_store() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
-    std::fs::create_dir_all(&root).unwrap();
-    let home = tempfile::tempdir_in(root).unwrap();
+    let home = common::Fixture::new();
     assert!(config_command(home.path(), true).status.success());
     let path = home.path().join("telemetry.sqlite3");
     let conn = rusqlite::Connection::open(&path).unwrap();
