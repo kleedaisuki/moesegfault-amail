@@ -734,6 +734,55 @@ mod tests {
     }
 
     #[test]
+    fn daemon_sweep_expires_profiles_outside_its_thread_account_realm() {
+        let mut store = store();
+        let expired = now() - IDLE_SECONDS - 10;
+        store.activate_at("owner", "user", expired).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO local_profiles(realm,id,name,durable,terminal,last_used_at)
+             VALUES ('other-account','other-id','temporary',0,'other-terminal',?1)",
+                [expired],
+            )
+            .unwrap();
+        let released = store.sweep_all().unwrap();
+        assert!(released.iter().any(|profile| profile.id == "other-id"));
+        let remaining: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_profiles WHERE realm='other-account'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+        assert!(store.peek_active("owner").unwrap().is_none());
+    }
+
+    #[test]
+    fn importing_cloud_names_is_idempotent_and_preserves_local_identity() {
+        let mut store = store();
+        store.import_cloud_profile("shared", true).unwrap();
+        let first = store
+            .list("viewer")
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.name == "shared")
+            .unwrap();
+        store.import_cloud_profile("shared", true).unwrap();
+        let second = store
+            .list("viewer")
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.name == "shared")
+            .unwrap();
+        assert_eq!(first.id, second.id);
+        assert!(second.durable);
+        assert!(store.import_cloud_profile("../unsafe", true).is_err());
+    }
+
+    #[test]
     fn deactivate_retains_exclusive_reservation_until_expiry() {
         let mut store = store();
         let profile = store.activate_at("a", "user", 100).unwrap();
