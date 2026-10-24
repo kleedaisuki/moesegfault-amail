@@ -83,6 +83,12 @@ ALTER TABLE storage_reservations ADD COLUMN mailbox_address TEXT;
 ALTER TABLE storage_reservations ADD COLUMN mailbox_generation TEXT NOT NULL DEFAULT '';
 ALTER TABLE storage_reservations ADD COLUMN tmpaddr_purged_at INTEGER;
 CREATE INDEX storage_reservations_tmpaddr_cleanup ON storage_reservations(mailbox_address,mailbox_generation,tmpaddr_purged_at);
+CREATE TRIGGER tmpaddr_purged_reservation_release AFTER UPDATE OF tmpaddr_purged_at ON storage_reservations
+ WHEN OLD.tmpaddr_purged_at IS NULL AND NEW.tmpaddr_purged_at IS NOT NULL AND NEW.mailbox_generation!='' BEGIN
+ UPDATE resource_accounts SET accounting_tick=unixepoch() WHERE owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub;
+ UPDATE storage_usage SET used_bytes=used_bytes-NEW.bytes WHERE owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub;
+ UPDATE storage_reservations SET bytes=0 WHERE id=NEW.id;
+END;
 CREATE TRIGGER tmpaddr_retired_storage_guard BEFORE DELETE ON addresses WHEN OLD.kind='tmpaddr' BEGIN
  SELECT RAISE(ABORT,'tmpaddr_reuse_not_ready') WHERE EXISTS(SELECT 1 FROM storage_reservations r WHERE r.mailbox_address=OLD.address AND r.mailbox_generation=OLD.generation);
 END;

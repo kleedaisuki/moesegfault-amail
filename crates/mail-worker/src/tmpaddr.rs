@@ -308,4 +308,41 @@ mod tests {
             .is_err());
         assert!(connection.execute("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at,kind,generation,expires_at) VALUES('long@tmpaddr.moesegfault.dev','long','issuer','owner',1,'active',1,'tmpaddr','22222222-2222-2222-2222-222222222222',21600002)",[]).is_err());
     }
+
+    #[test]
+    fn purged_content_releases_billable_bytes_once_while_tracking_tombstone_remains() {
+        let connection = database();
+        account(&connection, "free");
+        connection.execute("INSERT INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at,mailbox_generation) VALUES('mail','issuer','owner',50,'indexed',1,''),('temporary','issuer','owner',100,'indexed',1,'11111111-1111-1111-1111-111111111111')",[]).unwrap();
+        let used = || {
+            connection.query_row("SELECT used_bytes FROM storage_usage WHERE owner_iss='issuer' AND owner_sub='owner'",[],|row|row.get::<_,i64>(0)).unwrap()
+        };
+        assert_eq!(used(), 150);
+        connection
+            .execute(
+                "UPDATE storage_reservations SET tmpaddr_purged_at=1 WHERE id='temporary'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(used(), 50);
+        let tracking: (i64, Option<i64>) = connection
+            .query_row(
+                "SELECT bytes,tmpaddr_purged_at FROM storage_reservations WHERE id='temporary'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tracking, (0, Some(1)));
+        connection
+            .execute(
+                "UPDATE storage_reservations SET tmpaddr_purged_at=2 WHERE id='temporary'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(used(), 50);
+        connection
+            .execute("DELETE FROM storage_reservations WHERE id='temporary'", [])
+            .unwrap();
+        assert_eq!(used(), 50);
+    }
 }
