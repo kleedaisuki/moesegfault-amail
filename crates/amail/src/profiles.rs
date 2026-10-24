@@ -32,22 +32,6 @@ pub struct CloudSession {
     pub expires_at: i64,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    Read,
-    Write,
-}
-
-impl Mode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Read => "read",
-            Self::Write => "write",
-        }
-    }
-}
-
 pub struct Store {
     conn: Connection,
     realm: String,
@@ -93,14 +77,6 @@ impl Store {
                 terminal TEXT NOT NULL,
                 profile_id TEXT NOT NULL,
                 PRIMARY KEY(realm,terminal), UNIQUE(realm,profile_id),
-                FOREIGN KEY(realm,profile_id) REFERENCES local_profiles(realm,id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS local_profile_mailboxes (
-                realm TEXT NOT NULL,
-                mailbox TEXT NOT NULL,
-                profile_id TEXT NOT NULL,
-                mode TEXT NOT NULL CHECK(mode IN ('read','write')),
-                PRIMARY KEY(realm,mailbox,profile_id),
                 FOREIGN KEY(realm,profile_id) REFERENCES local_profiles(realm,id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS local_profiles_expiry
@@ -560,64 +536,6 @@ impl Store {
         tx.commit()?;
         Ok(released)
     }
-
-    pub fn claim(&mut self, terminal: &str, mailbox: &str, mode: Mode) -> Result<ActiveProfile> {
-        self.claim_at(terminal, mailbox, mode, now())
-    }
-
-    pub fn claim_at(
-        &mut self,
-        terminal: &str,
-        mailbox: &str,
-        mode: Mode,
-        time: i64,
-    ) -> Result<ActiveProfile> {
-        valid_terminal(terminal)?;
-        ensure!(
-            !mailbox.is_empty() && mailbox.len() <= 254 && mailbox.is_ascii(),
-            "invalid mailbox"
-        );
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        expire(&tx, &self.realm, time)?;
-        let profile = require_current(&tx, &self.realm, terminal)?;
-        let busy: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM local_profile_mailboxes
-                WHERE realm=?1 AND mailbox=?2 AND profile_id<>?3 AND (mode='write' OR ?4='write'))",
-            params![self.realm, mailbox, profile.id, mode.as_str()],
-            |row| row.get(0),
-        )?;
-        ensure!(
-            !busy,
-            "mailbox_busy: ownership cannot preempt another profile"
-        );
-        tx.execute(
-            "INSERT INTO local_profile_mailboxes(realm,mailbox,profile_id,mode) VALUES (?1,?2,?3,?4)
-             ON CONFLICT(realm,mailbox,profile_id) DO UPDATE SET mode=excluded.mode",
-            params![self.realm, mailbox, profile.id, mode.as_str()],
-        )?;
-        touch(&tx, &self.realm, &profile.id, time)?;
-        tx.commit()?;
-        Ok(profile)
-    }
-
-    pub fn unclaim(&mut self, terminal: &str, mailbox: &str) -> Result<ActiveProfile> {
-        let time = now();
-        valid_terminal(terminal)?;
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        expire(&tx, &self.realm, time)?;
-        let profile = require_current(&tx, &self.realm, terminal)?;
-        tx.execute(
-            "DELETE FROM local_profile_mailboxes WHERE realm=?1 AND mailbox=?2 AND profile_id=?3",
-            params![self.realm, mailbox, profile.id],
-        )?;
-        touch(&tx, &self.realm, &profile.id, time)?;
-        tx.commit()?;
-        Ok(profile)
-    }
 }
 
 fn now() -> i64 {
@@ -680,10 +598,6 @@ fn release_id(tx: &Transaction<'_>, realm: &str, id: &str, time: i64) -> Result<
     )?;
     tx.execute(
         "DELETE FROM local_profile_sessions WHERE realm=?1 AND profile_id=?2",
-        params![realm, id],
-    )?;
-    tx.execute(
-        "DELETE FROM local_profile_mailboxes WHERE realm=?1 AND profile_id=?2",
         params![realm, id],
     )?;
     tx.execute(
@@ -830,45 +744,29 @@ mod tests {
     }
 
     #[test]
-    fn read_sharing_and_exclusive_write_are_nonpreemptible() {
-        for first in [Mode::Read, Mode::Write] {
-            for second in [Mode::Read, Mode::Write] {
-                let mut store = store();
-                agents(&mut store);
-                store
-                    .claim_at("terminal-a", "box@example.test", first, 101)
-                    .unwrap();
-                let acquired = store.claim_at("terminal-b", "box@example.test", second, 101);
-                assert_eq!(
-                    acquired.is_ok(),
-                    first == Mode::Read && second == Mode::Read
-                );
-                store.release_at("terminal-a", "alice", 102).unwrap();
-                store
-                    .claim_at("terminal-b", "box@example.test", Mode::Write, 103)
-                    .unwrap();
-            }
-        }
-    }
-
-    #[test]
-    fn same_terminal_processes_share_activity_and_release_clears_claims() {
+    fn same_terminal_processes_share_activity_and_expiry_clears_capabilities() {
         let mut store = store();
         agents(&mut store);
         let first = store.active_at("terminal-a", 1000).unwrap().unwrap();
         assert_eq!(store.active_at("terminal-a", 2000).unwrap().unwrap(), first);
         store
-            .claim_at("terminal-a", "box@example.test", Mode::Write, 2000)
+            .set_cloud_session(&first.id, "cloud-profile", "session", 3800)
             .unwrap();
-        store.activate_at("terminal-b", "bob", 2000).unwrap();
-        assert!(store
-            .claim_at("terminal-b", "box@example.test", Mode::Read, 2001)
-            .is_err());
-        store.sweep_at(3800).unwrap();
-        store.activate_at("terminal-b", "bob", 3800).unwrap();
         store
-            .claim_at("terminal-b", "box@example.test", Mode::Write, 3800)
+            .set_lease(
+                &first.id,
+                "box@example.test",
+                "lease",
+                "generation",
+                "write",
+            )
             .unwrap();
+        store.sweep_at(3800).unwrap();
+        assert!(store.cloud_session(&first.id).unwrap().is_none());
+        assert!(store
+            .lease(&first.id, "box@example.test")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
