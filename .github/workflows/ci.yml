@@ -296,6 +296,14 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Test CLI
         run: cargo test -p amail --locked --all-targets
+      - name: Preserve Windows debug executable for local failure reproduction only
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-debug-cli-${{ github.run_id }}
+          path: target/debug/amail.exe
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Check CLI help
         run: cargo run -p amail --locked -- --help
       - uses: actions/setup-python@v5
