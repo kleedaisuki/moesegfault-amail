@@ -15,7 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import time
-from typing import Any
+from typing import Any, Literal
 import uuid
 import zipfile
 
@@ -23,6 +23,15 @@ import staging_mail_e2e as mail
 
 TMP_DOMAIN: str = "tmpaddr-staging.moesegfault.dev"
 ANCHOR: str = "v030-probe-anchor"
+DenialCase = Literal["permanent", "reader_during_writer", "writer_during_readers"]
+SAFE_DENIAL_CODES: frozenset[str] = frozenset({
+    "user_profile_required", "profile_session_required", "profile_session_expired",
+    "profile_request_failed", "profile_transport_unknown", "profile_in_use",
+    "mailbox_in_use", "mailbox_lease_expired", "mailbox_lease_required",
+    "credential_unavailable", "account_changed", "transport_failed",
+    "response_incomplete", "http_error", "local_error", "unauthorized",
+    "forbidden", "required_client_version", "tmpaddr_limit", "tmpaddr_unconfigured",
+})
 
 
 class ProfileProbeError(mail.ProbeFailure):
@@ -44,23 +53,44 @@ def one(binary: Path, env: dict[str, str], *args: str) -> dict[str, Any]:
     return values[0]
 
 
-def rejected(binary: Path, env: dict[str, str], args: list[str], expected: str) -> None:
+def check_rejection(returncode: int, stdout: bytes, stderr: bytes, expected: str,
+                    case: DenialCase) -> None:
+    check(expected in {"user_profile_required", "mailbox_in_use"}, "profiles_denial_contract_invalid")
+    prefix: str = f"profiles_{case}"
+    check(returncode != 0 and not stdout, prefix + "_forbidden_operation_succeeded")
+    check(len(stderr) <= 65_536, prefix + "_rejection_output_oversized")
+    try:
+        records: list[Any] = [json.loads(line) for line in stderr.splitlines() if line.strip()]
+    except (ValueError, UnicodeDecodeError):
+        raise ProfileProbeError(prefix + "_rejection_output_invalid") from None
+    errors: list[dict[str, Any]] = [record for record in records if isinstance(record, dict)
+        and record.get("schema") == "amail.machine.v1" and record.get("event") == "error"]
+    data: Any = errors[0].get("data") if len(errors) == 1 else None
+    actual: str = "unknown"
+    status: str = "none"
+    if isinstance(data, dict):
+        candidate: Any = data.get("code")
+        if isinstance(candidate, str) and candidate in SAFE_DENIAL_CODES:
+            actual = candidate
+        raw_status: Any = data.get("http_status")
+        if raw_status is None and isinstance(data.get("details"), dict):
+            raw_status = data["details"].get("status")
+        if type(raw_status) is int and 100 <= raw_status <= 599:
+            status = str(raw_status)
+    count: str = str(len(errors)) if len(errors) < 10 else "many"
+    check(len(errors) == 1 and isinstance(data, dict) and data.get("code") == expected,
+          f"{prefix}_expected_{expected}_actual_{actual}_http{status}_errors{count}")
+
+
+def rejected(binary: Path, env: dict[str, str], args: list[str], expected: str,
+             *, case: DenialCase) -> None:
     try:
         result: subprocess.CompletedProcess[bytes] = subprocess.run(
             [str(binary), "--machine", *args], env=env, capture_output=True,
             timeout=90, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        raise ProfileProbeError("profiles_rejection_process_failed") from None
-    check(result.returncode != 0 and not result.stdout, "profiles_forbidden_operation_succeeded")
-    check(len(result.stderr) <= 65_536, "profiles_rejection_output_oversized")
-    try:
-        records: list[Any] = [json.loads(line) for line in result.stderr.splitlines() if line.strip()]
-    except (ValueError, UnicodeDecodeError):
-        raise ProfileProbeError("profiles_rejection_output_invalid") from None
-    errors: list[dict[str, Any]] = [record for record in records if isinstance(record, dict)
-        and record.get("schema") == "amail.machine.v1" and record.get("event") == "error"]
-    check(len(errors) == 1 and isinstance(errors[0].get("data"), dict)
-          and errors[0]["data"].get("code") == expected, "profiles_rejection_code_mismatch")
+        raise ProfileProbeError(f"profiles_{case}_rejection_process_failed") from None
+    check_rejection(result.returncode, result.stdout, result.stderr, expected, case)
 
 
 def acquire(binary: Path, env: dict[str, str], address: str, mode: str) -> None:
@@ -164,7 +194,8 @@ def execute(binary: Path, home: Path, run_dir: Path, nonce: str) -> dict[str, bo
         evidence["ephemeral_profiles"] = 2
         print("staging_profiles_ephemeral_terminals_verified")
 
-        rejected(binary, env_b, ["address", "add", "v030-permanent-" + nonce], "user_profile_required")
+        rejected(binary, env_b, ["address", "add", "v030-permanent-" + nonce],
+                 "user_profile_required", case="permanent")
         creation_attempted = True
         added: dict[str, Any] = one(binary, env_a, "address", "add", "v030-" + nonce, "--tmp")
         check(added.get("address") == address and added.get("state") in ("active", "pending"),
@@ -178,12 +209,14 @@ def execute(binary: Path, home: Path, run_dir: Path, nonce: str) -> dict[str, bo
         check(type(expires) is int and 0 < expires - int(time.time() * 1000) <= 21_600_000,
               "profiles_temporary_lifetime_invalid")
         mail.assert_route(zone, route_token, address, True)
-        rejected(binary, env_b, ["mailbox", "acquire", address, "--mode", "read"], "mailbox_in_use")
+        rejected(binary, env_b, ["mailbox", "acquire", address, "--mode", "read"],
+                 "mailbox_in_use", case="reader_during_writer")
         # Registration's automatic writer is releasable without a manual acquire.
         one(binary, env_a, "mailbox", "release", address)
         acquire(binary, env_a, address, "read")
         acquire(binary, env_b, address, "read")
-        rejected(binary, env_a, ["mailbox", "acquire", address, "--mode", "write"], "mailbox_in_use")
+        rejected(binary, env_a, ["mailbox", "acquire", address, "--mode", "write"],
+                 "mailbox_in_use", case="writer_during_readers")
         one(binary, env_b, "mailbox", "release", address)
         acquire(binary, env_a, address, "write")
         evidence["distributed_read_write_ownership"] = True
