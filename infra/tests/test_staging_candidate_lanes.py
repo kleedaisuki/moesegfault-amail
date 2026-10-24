@@ -14,6 +14,15 @@ import staging_rollout as rollout
 
 
 class CandidateLaneTests(unittest.TestCase):
+    def test_temporary_domain_dns_parser_is_installed_before_each_helper(self) -> None:
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for job, following, relative in (("staging-inspect", "staging-e2e", ""),
+                                          ("staging-worker", "staging-ingress", "../../")):
+            body = source.split(f"  {job}:\n", 1)[1].split(f"  {following}:\n", 1)[0]
+            install = f"python -m pip install --only-binary=:all: -r {relative}infra/dns/requirements.txt"
+            helper = "python infra/provider/ensure_tmpaddr_staging.py"
+            self.assertLess(body.index(install), body.index(helper))
+
     def test_manual_dependency_cache_writes_stay_on_reviewed_refs(self) -> None:
         source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         conditions = [line.strip() for line in source.splitlines()

@@ -34,6 +34,18 @@ Cloudflare's [authentication documentation](https://developers.cloudflare.com/em
 places Routing SPF at the domain and Sending SPF separately at `cf-bounce`;
 those names must not be conflated into a synthetic merged record.
 
+TXT comparison uses the existing pinned `dnspython==2.8.0` dependency, shared
+through `infra/dns/txt_record.py`. Quoted DNS presentation is parsed into RDATA
+and its character strings concatenated without inserted spaces. Unquoted logical
+API content is preserved exactly: parsing it as zone text would incorrectly turn
+semicolons into comments and split meaningful spaces. The read-only sending DNS
+verifier uses the same parser for provider requirements and already concatenates
+authoritative response strings. This follows [RFC 1035 section 3.3.14](https://www.rfc-editor.org/rfc/rfc1035#section-3.3.14)
+and [RFC 6376 section 3.6.2.2](https://www.rfc-editor.org/rfc/rfc6376#section-3.6.2.2),
+not a DKIM key rotation. Diagnostics expose only logical-content/hash equality
+booleans and a presentation-changed count; neither key material nor hashes are
+retained. A genuinely different selector key remains a conflict.
+
 Restore and verify the same-run tested artifact before the first command, and
 retain the existing workflow staging writer lock. Apply requires GitHub Actions,
 the exact candidate branch, first run attempt, `AMAIL_STAGING_ENVIRONMENT=staging`

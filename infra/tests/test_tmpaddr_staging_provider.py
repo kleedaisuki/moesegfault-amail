@@ -14,6 +14,7 @@ import urllib.parse
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/provider"))
 import ensure_tmpaddr_staging as provision
+import verify_sending
 
 
 class FakeProvider:
@@ -62,6 +63,49 @@ class FakeProvider:
 
 
 class TemporaryDomainTests(unittest.TestCase):
+    def test_authoritative_verifier_shares_provider_txt_semantics(self) -> None:
+        name = "selector._domainkey." + provision.DOMAIN
+        logical = "v=DKIM1; p=" + "A" * 350
+        presentation = f'"{logical[:200]}" "{logical[200:]}"'
+        with patch.object(verify_sending, "DOMAIN", provision.DOMAIN):
+            record = verify_sending.normalize({"name": name, "type": "TXT", "content": presentation})
+            self.assertEqual(logical, record.content)
+            raw = " v=spf1  include:example.invalid ~all "
+            record = verify_sending.normalize({"name": provision.DOMAIN, "type": "TXT", "content": raw})
+            self.assertEqual(raw, record.content)
+
+    def test_txt_presentation_uses_logical_chunk_concatenation(self) -> None:
+        self.assertEqual("v=DKIM1; p=abcdef", provision.normalize_txt('"v=DKIM1; p=abc" "def"'))
+        self.assertEqual("v=spf1 include:example.invalid ~all", provision.normalize_txt('"v=spf1 include:example.invalid ~all"'))
+        self.assertEqual('quoted="value"; backslash=\\', provision.normalize_txt(r'"quoted=\"value\"; backslash=\\"'))
+
+    def test_txt_raw_content_and_spaces_are_preserved(self) -> None:
+        for content in (" v=spf1  include:example.invalid ~all ", 'v=DKIM1; n="quoted note"; p=abc', "v=DKIM1; p=" + "A" * 350):
+            with self.subTest(length=len(content)):
+                self.assertEqual(content, provision.normalize_txt(content))
+
+    def test_long_segmented_dkim_is_equal_without_mutation_or_key_output(self) -> None:
+        provider = FakeProvider()
+        logical = "v=DKIM1; p=" + "A" * 350
+        name = "selector._domainkey." + provision.DOMAIN
+        provider.required = [{"name": name, "type": "TXT", "content": logical}]
+        provider.records = [{"name": name, "type": "TXT", "content": f'"{logical[:200]}" "{logical[200:]}"'}]
+        provider.domain = {"name": provision.DOMAIN, "enabled": True, "tag": "a" * 32, "preview_enabled": False, "drop_suppressed_recipients": False}
+        provision.ensure_sending(provider, True)
+        report = provision.inspect(provider, provider)
+        facts = report["sending_dns"]["requirements"][0]
+        self.assertTrue(facts["exact_present"])
+        self.assertTrue(facts["txt_content_equal"])
+        self.assertTrue(facts["txt_sha256_equal"])
+        self.assertEqual(1, facts["txt_presentation_changed_count"])
+        self.assertFalse(facts["conflict"])
+        self.assertTrue(all(method == "GET" for method, _, _ in provider.calls))
+        self.assertNotIn("A" * 100, str(report))
+
+    def test_malformed_txt_is_a_closed_error(self) -> None:
+        with self.assertRaisesRegex(provision.ProvisionError, "^dns_txt_presentation_invalid$"):
+            provision.normalize_txt('"private-key-material-without-closing-quote')
+
     def test_verification_txt_coexists_with_generated_spf(self) -> None:
         provider = FakeProvider()
         name = "cf-bounce." + provision.DOMAIN

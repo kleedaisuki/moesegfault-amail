@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -25,6 +26,8 @@ DOMAIN = "tmpaddr-staging.moesegfault.dev"
 PREFIX = f"/zones/{ZONE}"
 MAX_REPLY = 512_000
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "infra/dns"))
+from txt_record import txt_content
 
 
 class ProvisionError(Exception):
@@ -147,7 +150,8 @@ def routing_ready(records: list[dict[str, Any]]) -> bool:
     mx = [row for row in records if row.get("type") == "MX"]
     if any(not str(row.get("content", "")).lower().rstrip(".").endswith(".mx.cloudflare.net") for row in mx):
         raise ProvisionError("routing_existing_mx_conflict")
-    spf = [str(row.get("content", "")).strip('"') for row in records if row.get("type") == "TXT" and str(row.get("content", "")).strip('"').startswith("v=spf1")]
+    contents = [normalize_txt(str(row.get("content", ""))) for row in records if row.get("type") == "TXT"]
+    spf = [content for content in contents if content.startswith("v=spf1")]
     if len(spf) > 1 or any("include:_spf.mx.cloudflare.net" not in value.split() for value in spf):
         raise ProvisionError("routing_existing_spf_conflict")
     return bool(mx and spf)
@@ -184,6 +188,13 @@ def sending_domain(client: Provider, apply: bool) -> dict[str, Any]:
     return value
 
 
+def normalize_txt(content: str) -> str:
+    try:
+        return txt_content(content)
+    except ValueError:
+        raise ProvisionError("dns_txt_presentation_invalid") from None
+
+
 def normalized_record(value: dict[str, Any]) -> dict[str, Any]:
     name = str(value.get("name", "")).lower().rstrip(".")
     if name != DOMAIN and not name.endswith("." + DOMAIN):
@@ -192,7 +203,7 @@ def normalized_record(value: dict[str, Any]) -> dict[str, Any]:
     content = value.get("content")
     if kind not in ("MX", "TXT", "CNAME") or not isinstance(content, str) or not content:
         raise ProvisionError("dns_requirement_invalid")
-    content = content.lower().rstrip(".") if kind in ("MX", "CNAME") else content.strip('"')
+    content = content.lower().rstrip(".") if kind in ("MX", "CNAME") else normalize_txt(content)
     result: dict[str, Any] = {"name": name, "type": kind, "content": content}
     if kind == "MX":
         priority = value.get("priority")
@@ -250,17 +261,26 @@ def requirement_facts(record: dict[str, Any], current: list[dict[str, Any]]) -> 
     existing = [normalized_record(row) for row in current if row.get("type") in ("MX", "TXT", "CNAME")]
     comparable = existing + [{"type": row.get("type")} for row in current if row.get("type") not in ("MX", "TXT", "CNAME")]
     known_types = {"A", "AAAA", "CAA", "CNAME", "MX", "NS", "SRV", "TXT"}
-    return {
+    facts: dict[str, Any] = {
         "role": record_role(record),
         "type": record["type"],
         "purpose": txt_purpose(record["content"]) if record["type"] == "TXT" else "not_txt",
         "exact_present": record in existing,
         "same_type_count": sum(row.get("type") == record["type"] for row in current),
         "existing_types": sorted({row["type"] if row.get("type") in known_types else "other" for row in current}),
-        "existing_spf_count": sum(row.get("type") == "TXT" and txt_purpose(str(row.get("content", "")).strip('"')) == "spf" for row in current),
+        "existing_spf_count": sum(row.get("type") == "TXT" and txt_purpose(row["content"]) == "spf" for row in existing),
         "conflict": dns_conflict(record, comparable),
         "spf_merge_attempted": False,
     }
+    if record["type"] == "TXT":
+        texts = [row["content"] for row in existing if row.get("type") == "TXT"]
+        wanted_hash = hashlib.sha256(record["content"].encode("utf-8")).digest()
+        facts.update({
+            "txt_content_equal": record["content"] in texts,
+            "txt_sha256_equal": any(hashlib.sha256(content.encode("utf-8")).digest() == wanted_hash for content in texts),
+            "txt_presentation_changed_count": sum(row.get("type") == "TXT" and normalize_txt(str(row.get("content", ""))) != row.get("content") for row in current),
+        })
+    return facts
 
 
 def ensure_sending(client: Provider, apply: bool) -> None:
