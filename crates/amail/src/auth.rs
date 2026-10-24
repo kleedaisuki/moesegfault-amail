@@ -571,6 +571,7 @@ fn acquire_access_token(cfg: &Runtime) -> Result<String> {
         bail!("previous refresh outcome unknown; local session cleared to prevent token-family replay");
     }
     let old = load(cfg)?;
+    crate::session::validate_account(cfg, &old.subject)?;
     if old.expires_at > now().saturating_add(60) {
         return Ok(old.access_token);
     }
@@ -624,6 +625,7 @@ fn acquire_access_token(cfg: &Runtime) -> Result<String> {
         "UPDATE refresh_state SET in_progress=0 WHERE session_key=?1",
         [&key],
     )?;
+    crate::session::validate_account(cfg, &new.subject)?;
     Ok(new.access_token)
 }
 

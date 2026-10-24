@@ -40,18 +40,29 @@ pub fn clear() {
 }
 
 pub fn set_account(cfg: &Runtime, subject: Option<&str>) {
-    use sha2::{Digest, Sha256};
     ACCOUNT.with(|account| {
-        *account.borrow_mut() = subject.map(|subject| {
-            let identity =
-                serde_json::to_vec(&(&cfg.api_base, &cfg.issuer, &cfg.client_id, subject))
-                    .expect("serializing string tuple cannot fail");
-            Sha256::digest(&identity)
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect()
-        })
+        *account.borrow_mut() = subject.map(|subject| account_identity(cfg, subject))
     });
+}
+
+fn account_identity(cfg: &Runtime, subject: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let identity = serde_json::to_vec(&(&cfg.api_base, &cfg.issuer, &cfg.client_id, subject))
+        .expect("serializing string tuple cannot fail");
+    Sha256::digest(&identity)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+pub fn validate_account(cfg: &Runtime, subject: &str) -> Result<()> {
+    if account_scope().is_some_and(|expected| expected != account_identity(cfg, subject)) {
+        return Err(machine::Failure {
+            code:"account_changed", next_action:"activate_profile", data:json!({}),
+            message:"the authenticated account changed during this operation; activate the intended profile and retry".into(),
+        }.into());
+    }
+    Ok(())
 }
 
 pub fn account_scope() -> Option<String> {
@@ -405,6 +416,22 @@ mod tests {
         assert_ne!(account_scope(), second);
         clear();
         assert!(account_scope().is_none());
+    }
+
+    #[test]
+    fn account_switch_rejects_a_new_bearer_without_destroying_the_old_context() {
+        let cfg = crate::telemetry::tests::config(std::path::Path::new("unused"));
+        clear();
+        set_account(&cfg, Some("owner-a"));
+        assert!(validate_account(&cfg, "owner-a").is_ok());
+        let error = validate_account(&cfg, "owner-b").unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<machine::Failure>().unwrap().code,
+            "account_changed"
+        );
+        assert!(validate_account(&cfg, "owner-a").is_ok());
+        clear();
+        assert!(validate_account(&cfg, "owner-b").is_ok());
     }
 
     #[test]

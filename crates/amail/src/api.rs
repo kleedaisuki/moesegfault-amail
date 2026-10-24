@@ -321,6 +321,12 @@ impl<'a> Api<'a> {
                     telemetry::Phase::Auth,
                     Some("credential_unavailable"),
                 );
+                if err
+                    .downcast_ref::<crate::machine::Failure>()
+                    .is_some_and(|failure| failure.code == "account_changed")
+                {
+                    return Err(err);
+                }
                 return Err(crate::machine::Failure {
                     code: "credential_unavailable",
                     next_action: "login",
