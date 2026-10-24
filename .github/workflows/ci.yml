@@ -289,7 +289,8 @@ jobs:
           shared-key: cli-dependencies-v1
           cache-bin: false
           cache-workspace-crates: false
-          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)) }}
+          cache-on-failure: true
+          save-if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)) }}
       - name: Check formatting
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
@@ -580,7 +581,8 @@ jobs:
           shared-key: worker-dependencies-v1
           cache-bin: false
           cache-workspace-crates: false
-          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)) }}
+          cache-on-failure: true
+          save-if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)) }}
       - name: Fingerprint the pinned public bundler compiler
         id: compiler
         shell: bash
@@ -644,7 +646,7 @@ jobs:
         working-directory: workers/role-monitor
         run: worker-build --release
       - name: Save trusted pinned check bundler
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)) && steps.worker-bundler-cache.outputs.cache-hit != 'true'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)) && steps.worker-bundler-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .cache/worker-build-check

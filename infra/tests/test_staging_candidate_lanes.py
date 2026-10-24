@@ -14,6 +14,20 @@ import staging_rollout as rollout
 
 
 class CandidateLaneTests(unittest.TestCase):
+    def test_manual_dependency_cache_writes_stay_on_reviewed_refs(self) -> None:
+        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        conditions = [line.strip() for line in source.splitlines()
+                      if "save-if:" in line or ("github.event_name" in line
+                          and "steps.worker-bundler-cache.outputs.cache-hit != 'true'" in line)]
+        self.assertEqual(len(conditions), 3)
+        for condition in conditions:
+            self.assertIn("(github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&", condition)
+            self.assertNotIn("pull_request", condition)
+            for ref in ("refs/heads/main", *LANES):
+                self.assertIn(ref, condition)
+        self.assertEqual(source.count("cache-workspace-crates: false"), 2)
+        self.assertEqual(source.count("cache-on-failure: true"), 2)
+
     def test_each_lane_requires_its_own_action_confirmation(self) -> None:
         for ref, confirmations in LANES.items():
             for read_only in (False, True):
