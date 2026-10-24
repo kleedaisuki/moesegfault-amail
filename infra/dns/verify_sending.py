@@ -26,7 +26,7 @@ import dns.rdatatype
 from txt_record import txt_content
 
 ZONE = "moesegfault.dev"
-DOMAINS = {"mail.moesegfault.dev", "mail-staging.moesegfault.dev", "tmpaddr-staging.moesegfault.dev"}
+DOMAINS = {"mail.moesegfault.dev", "mail-staging.moesegfault.dev", "tmpaddr-staging.moesegfault.dev", "tmpaddr.moesegfault.dev"}
 DOMAIN = os.environ.get("MAIL_SENDING_DOMAIN", "mail.moesegfault.dev").lower().rstrip(".")
 API = "https://api.cloudflare.com/client/v4"
 

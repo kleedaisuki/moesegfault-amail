@@ -1,14 +1,15 @@
-"""Onboard only the isolated temporary-mail staging domain through provider APIs.
+"""Onboard one of the two exact temporary-mail domains through provider APIs.
 
-Read-only by default. Run --apply inside the admitted staging writer after restoring
+Read-only and staging by default. Run --apply inside the admitted realm writer after restoring
 its checked artifact. Existing DNS is never overwritten or deleted; an uncertain
-mutation is never retried. No production domain is accepted as an argument.
+mutation is never retried. Production selection and its writer authority are explicit.
 """
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+from enum import Enum
 import json
 import hashlib
 import os
@@ -28,6 +29,15 @@ MAX_REPLY = 512_000
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "infra/dns"))
 from txt_record import txt_content
+
+
+class Target(Enum):
+    STAGING = DOMAIN
+    PRODUCTION = "tmpaddr.moesegfault.dev"
+
+    @property
+    def key(self) -> str:
+        return self.name.lower()
 
 
 class ProvisionError(Exception):
@@ -137,9 +147,9 @@ def inventory(client: Provider, path: str) -> list[dict[str, Any]]:
     raise ProvisionError("inventory_incomplete")
 
 
-def dns_records(client: Provider, name: str) -> list[dict[str, Any]]:
-    if name != DOMAIN and not name.endswith("." + DOMAIN):
-        raise ProvisionError("dns_outside_staging")
+def dns_records(client: Provider, name: str, target: Target = Target.STAGING) -> list[dict[str, Any]]:
+    if name != target.value and not name.endswith("." + target.value):
+        raise ProvisionError(f"dns_outside_{target.key}")
     query = urllib.parse.urlencode({"name": name})
     result = inventory(client, f"{PREFIX}/dns_records?{query}")
     if any(str(row.get("name", "")).lower().rstrip(".") != name for row in result):
@@ -158,33 +168,33 @@ def routing_ready(records: list[dict[str, Any]]) -> bool:
     return bool(mx and spf)
 
 
-def ensure_routing(dns: Provider, routing: Provider, apply: bool) -> None:
-    before = dns_records(dns, DOMAIN)
+def ensure_routing(dns: Provider, routing: Provider, apply: bool, target: Target = Target.STAGING) -> None:
+    before = dns_records(dns, target.value, target)
     if routing_ready(before):
         return
     if not apply:
         raise ProvisionError("routing_onboarding_required")
     # Cloudflare owns the MX/SPF values; never synthesize them from another domain.
-    payload = routing.request("POST", f"{PREFIX}/email/routing/dns", {"name": DOMAIN})
+    payload = routing.request("POST", f"{PREFIX}/email/routing/dns", {"name": target.value})
     result = payload.get("result")
-    if not isinstance(result, dict) or result.get("name") != DOMAIN or result.get("enabled") is not True:
+    if not isinstance(result, dict) or result.get("name") != target.value or result.get("enabled") is not True:
         raise ProvisionError("routing_submit_not_verified")
-    if not routing_ready(dns_records(dns, DOMAIN)):
+    if not routing_ready(dns_records(dns, target.value, target)):
         raise ProvisionError("routing_dns_not_ready")
 
 
-def sending_domain(client: Provider, apply: bool) -> dict[str, Any]:
+def sending_domain(client: Provider, apply: bool, target: Target = Target.STAGING) -> dict[str, Any]:
     path = f"{PREFIX}/email/sending/subdomains"
-    matches = [row for row in inventory(client, path) if row.get("name") == DOMAIN]
+    matches = [row for row in inventory(client, path) if row.get("name") == target.value]
     if len(matches) > 1:
         raise ProvisionError("sending_domain_ambiguous")
     if not matches or matches[0].get("enabled") is not True:
         if not apply:
             raise ProvisionError("sending_onboarding_required")
-        value = client.request("POST", path, {"name": DOMAIN}).get("result")
+        value = client.request("POST", path, {"name": target.value}).get("result")
     else:
         value = matches[0]
-    if not isinstance(value, dict) or value.get("name") != DOMAIN or value.get("enabled") is not True or not re.fullmatch(r"[0-9a-f]{32}", str(value.get("tag", ""))):
+    if not isinstance(value, dict) or value.get("name") != target.value or value.get("enabled") is not True or not re.fullmatch(r"[0-9a-f]{32}", str(value.get("tag", ""))):
         raise ProvisionError("sending_domain_not_verified")
     return value
 
@@ -196,10 +206,10 @@ def normalize_txt(content: str) -> str:
         raise ProvisionError("dns_txt_presentation_invalid") from None
 
 
-def normalized_record(value: dict[str, Any]) -> dict[str, Any]:
+def normalized_record(value: dict[str, Any], target: Target = Target.STAGING) -> dict[str, Any]:
     name = str(value.get("name", "")).lower().rstrip(".")
-    if name != DOMAIN and not name.endswith("." + DOMAIN):
-        raise ProvisionError("dns_outside_staging")
+    if name != target.value and not name.endswith("." + target.value):
+        raise ProvisionError(f"dns_outside_{target.key}")
     kind = value.get("type")
     content = value.get("content")
     if kind not in ("MX", "TXT", "CNAME") or not isinstance(content, str) or not content:
@@ -214,15 +224,15 @@ def normalized_record(value: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def record_role(record: dict[str, Any]) -> str:
+def record_role(record: dict[str, Any], target: Target = Target.STAGING) -> str:
     name = record["name"]
-    if name == DOMAIN:
+    if name == target.value:
         return "domain"
-    if name == "cf-bounce." + DOMAIN:
+    if name == "cf-bounce." + target.value:
         return "return_path"
-    if name == "_dmarc." + DOMAIN:
+    if name == "_dmarc." + target.value:
         return "dmarc"
-    if name.endswith("._domainkey." + DOMAIN):
+    if name.endswith("._domainkey." + target.value):
         return "dkim"
     return "other_scoped"
 
@@ -237,7 +247,7 @@ def txt_purpose(content: str) -> str:
     return "other"
 
 
-def dns_conflict(record: dict[str, Any], current: list[dict[str, Any]]) -> bool:
+def dns_conflict(record: dict[str, Any], current: list[dict[str, Any]], target: Target = Target.STAGING) -> bool:
     """RRsets admit multiple MX/TXT values, but CNAME and mail policies differ."""
     if record in current:
         return False
@@ -252,25 +262,25 @@ def dns_conflict(record: dict[str, Any], current: list[dict[str, Any]]) -> bool:
     if purpose in ("spf", "dmarc"):
         return any(txt_purpose(str(row.get("content", ""))) == purpose for row in same_type)
     # A selector lookup must not introduce a second, ambiguous DKIM key candidate.
-    if purpose == "dkim" or record_role(record) == "dkim":
+    if purpose == "dkim" or record_role(record, target) == "dkim":
         return bool(same_type)
     return False
 
 
-def requirement_facts(record: dict[str, Any], current: list[dict[str, Any]]) -> dict[str, Any]:
+def requirement_facts(record: dict[str, Any], current: list[dict[str, Any]], target: Target = Target.STAGING) -> dict[str, Any]:
     """Only closed roles, record classes and comparisons enter public diagnostics."""
-    existing = [normalized_record(row) for row in current if row.get("type") in ("MX", "TXT", "CNAME")]
+    existing = [normalized_record(row, target) for row in current if row.get("type") in ("MX", "TXT", "CNAME")]
     comparable = existing + [{"type": row.get("type")} for row in current if row.get("type") not in ("MX", "TXT", "CNAME")]
     known_types = {"A", "AAAA", "CAA", "CNAME", "MX", "NS", "SRV", "TXT"}
     facts: dict[str, Any] = {
-        "role": record_role(record),
+        "role": record_role(record, target),
         "type": record["type"],
         "purpose": txt_purpose(record["content"]) if record["type"] == "TXT" else "not_txt",
         "exact_present": record in existing,
         "same_type_count": sum(row.get("type") == record["type"] for row in current),
         "existing_types": sorted({row["type"] if row.get("type") in known_types else "other" for row in current}),
         "existing_spf_count": sum(row.get("type") == "TXT" and txt_purpose(row["content"]) == "spf" for row in existing),
-        "conflict": dns_conflict(record, comparable),
+        "conflict": dns_conflict(record, comparable, target),
         "spf_merge_attempted": False,
     }
     if record["type"] == "TXT":
@@ -284,44 +294,54 @@ def requirement_facts(record: dict[str, Any], current: list[dict[str, Any]]) -> 
     return facts
 
 
-def ensure_sending(client: Provider, apply: bool) -> None:
-    domain = sending_domain(client, apply)
+def ensure_sending(client: Provider, apply: bool, target: Target = Target.STAGING) -> None:
+    domain = sending_domain(client, apply, target)
     path = f"{PREFIX}/email/sending/subdomains/{domain['tag']}"
     if domain.get("preview_enabled") is not False or domain.get("drop_suppressed_recipients") is not False:
         if not apply:
             raise ProvisionError("sending_privacy_required")
         client.request("PATCH", path, {"preview_enabled": False, "drop_suppressed_recipients": False})
-    wanted = [normalized_record(row) for row in rows(client.request("GET", path + "/dns"))]
+    wanted = [normalized_record(row, target) for row in rows(client.request("GET", path + "/dns"))]
     if not wanted:
         raise ProvisionError("sending_dns_requirements_missing")
     for record in wanted:
-        current = dns_records(client, record["name"])
-        existing = [normalized_record(row) for row in current if row.get("type") in ("MX", "TXT", "CNAME")]
+        current = dns_records(client, record["name"], target)
+        existing = [normalized_record(row, target) for row in current if row.get("type") in ("MX", "TXT", "CNAME")]
         if record in existing:
             continue
-        if requirement_facts(record, current)["conflict"]:
+        if requirement_facts(record, current, target)["conflict"]:
             raise ProvisionError("sending_existing_dns_conflict")
         if not apply:
             raise ProvisionError("sending_dns_required")
         client.request("POST", f"{PREFIX}/dns_records", {**record, "ttl": 1, "proxied": False})
-        after = [normalized_record(row) for row in dns_records(client, record["name"]) if row.get("type") in ("MX", "TXT", "CNAME")]
+        after = [normalized_record(row, target) for row in dns_records(client, record["name"], target) if row.get("type") in ("MX", "TXT", "CNAME")]
         if record not in after:
             raise ProvisionError("sending_dns_not_verified")
     after = client.request("GET", path).get("result")
-    if not isinstance(after, dict) or after.get("name") != DOMAIN or after.get("enabled") is not True or after.get("preview_enabled") is not False or after.get("drop_suppressed_recipients") is not False:
+    if not isinstance(after, dict) or after.get("name") != target.value or after.get("enabled") is not True or after.get("preview_enabled") is not False or after.get("drop_suppressed_recipients") is not False:
         raise ProvisionError("sending_privacy_not_verified")
 
 
-def authorize_apply(environment: dict[str, str]) -> None:
+def authorize_apply(environment: dict[str, str], target: Target = Target.STAGING) -> None:
     required = {
         "GITHUB_ACTIONS": "true",
-        "GITHUB_REF": "refs/heads/codex/v0.3.0-multitenant",
-        "AMAIL_STAGING_CONFIRM": "RUN_STAGING_V030",
-        "AMAIL_STAGING_ENVIRONMENT": "staging",
         "GITHUB_RUN_ATTEMPT": "1",
     }
+    if target is Target.PRODUCTION:
+        required.update({
+            "GITHUB_REF": "refs/heads/main",
+            "AMAIL_PRODUCTION_CONFIRM": "RUN_PRODUCTION_V030",
+            "AMAIL_PRODUCTION_ENVIRONMENT": "production",
+            "AMAIL_PRODUCTION_GRAPH_FREEZE": "FREEZE_PRODUCTION_GRAPH_WRITERS",
+        })
+    else:
+        required.update({
+            "GITHUB_REF": "refs/heads/codex/v0.3.0-multitenant",
+            "AMAIL_STAGING_CONFIRM": "RUN_STAGING_V030",
+            "AMAIL_STAGING_ENVIRONMENT": "staging",
+        })
     if any(environment.get(key) != value for key, value in required.items()):
-        raise ProvisionError("staging_writer_required")
+        raise ProvisionError(f"{target.key}_writer_required")
 
 
 def inspection_failure(error: ProvisionError) -> dict[str, Any]:
@@ -334,11 +354,11 @@ def inspection_failure(error: ProvisionError) -> dict[str, Any]:
     return result
 
 
-def inspect(dns: Provider, routing: Provider) -> dict[str, Any]:
+def inspect(dns: Provider, routing: Provider, target: Target = Target.STAGING) -> dict[str, Any]:
     """Independent fixed-domain GET probes; no ensure/apply function is called."""
-    report: dict[str, Any] = {"schema": "amail.tmpaddr-staging-inspection.v1", "domain": DOMAIN}
+    report: dict[str, Any] = {"schema": f"amail.tmpaddr-{target.key}-inspection.v1", "domain": target.value}
     try:
-        records = dns_records(dns, DOMAIN)
+        records = dns_records(dns, target.value, target)
         report["dns"] = {"state": "observed", "record_count": len(records), "routing_ready": routing_ready(records)}
     except ProvisionError as error:
         report["dns"] = inspection_failure(error)
@@ -353,27 +373,27 @@ def inspect(dns: Provider, routing: Provider) -> dict[str, Any]:
             report[key] = inspection_failure(error)
     try:
         domains = inventory(dns, PREFIX + "/email/sending/subdomains")
-        matches = [domain for domain in domains if domain.get("name") == DOMAIN]
+        matches = [domain for domain in domains if domain.get("name") == target.value]
         if len(matches) > 1:
             raise ProvisionError("sending_domain_ambiguous")
         report["sending"] = {"state": "observed", "present": bool(matches)}
         if matches:
-            domain = sending_domain(dns, False)
+            domain = sending_domain(dns, False, target)
             report["sending"].update({
                 "enabled": True,
                 "preview_disabled": domain.get("preview_enabled") is False,
                 "partial_drop_disabled": domain.get("drop_suppressed_recipients") is False,
             })
-            wanted = [normalized_record(row) for row in rows(dns.request("GET", f"{PREFIX}/email/sending/subdomains/{domain['tag']}/dns"))]
+            wanted = [normalized_record(row, target) for row in rows(dns.request("GET", f"{PREFIX}/email/sending/subdomains/{domain['tag']}/dns"))]
             if not wanted:
                 raise ProvisionError("sending_dns_requirements_missing")
             present = 0
             facts: list[dict[str, Any]] = []
             for record in wanted:
-                current = dns_records(dns, record["name"])
-                existing = [normalized_record(row) for row in current if row.get("type") in ("MX", "TXT", "CNAME")]
+                current = dns_records(dns, record["name"], target)
+                existing = [normalized_record(row, target) for row in current if row.get("type") in ("MX", "TXT", "CNAME")]
                 present += int(record in existing)
-                facts.append(requirement_facts(record, current))
+                facts.append(requirement_facts(record, current, target))
             report["sending_dns"] = {"state": "observed", "required_count": len(wanted), "present_count": present, "ready": present == len(wanted), "requirements": facts}
     except ProvisionError as error:
         report["sending_probe"] = inspection_failure(error)
@@ -390,14 +410,16 @@ def write_inspection(path: str, report: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", choices=("staging", "production"), default="staging")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--inspect", action="store_true")
-    parser.add_argument("--output", default=".temp/tmpaddr-staging-inspection.json")
+    parser.add_argument("--output")
     args = parser.parse_args()
+    target = Target[args.target.upper()]
     try:
         if args.apply:
-            authorize_apply(dict(os.environ))
+            authorize_apply(dict(os.environ), target)
         token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
         routing_token = os.environ.get("CF_EMAIL_ROUTING_TOKEN", "")
         if not token or (args.inspect and not routing_token):
@@ -405,17 +427,17 @@ def main() -> int:
         client = Client(token)
         routing = Client(routing_token, "routing")
         if args.inspect:
-            report = inspect(client, routing)
-            write_inspection(args.output, report)
+            report = inspect(client, routing, target)
+            write_inspection(args.output or f".temp/tmpaddr-{target.key}-inspection.json", report)
             print(json.dumps(report, sort_keys=True))
             return 0
         # Domain onboarding is deployment configuration, not runtime rule management.
-        ensure_routing(client, client, args.apply)
-        ensure_sending(client, args.apply)
+        ensure_routing(client, client, args.apply, target)
+        ensure_sending(client, args.apply, target)
     except ProvisionError as error:
-        print(f"tmpaddr_staging={error}", file=sys.stderr)
+        print(f"tmpaddr_{target.key}={error}", file=sys.stderr)
         return 1
-    print("tmpaddr_staging=provider_config_verified")
+    print(f"tmpaddr_{target.key}=provider_config_verified")
     return 0
 
 

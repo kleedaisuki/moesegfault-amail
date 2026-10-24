@@ -18,14 +18,15 @@ import verify_sending
 
 
 class FakeProvider:
-    def __init__(self) -> None:
+    def __init__(self, target: provision.Target = provision.Target.STAGING) -> None:
+        self.name = target.value
         self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
         self.records: list[dict[str, Any]] = []
         self.domain: dict[str, Any] | None = None
         self.required: list[dict[str, Any]] = [
-            {"name": "cf-bounce." + provision.DOMAIN, "type": "MX", "priority": 10, "content": "a.mx.cloudflare.net"},
-            {"name": "cf-bounce." + provision.DOMAIN, "type": "MX", "priority": 20, "content": "b.mx.cloudflare.net"},
-            {"name": "selector._domainkey." + provision.DOMAIN, "type": "TXT", "content": "v=DKIM1; p=synthetic"},
+            {"name": "cf-bounce." + self.name, "type": "MX", "priority": 10, "content": "a.mx.cloudflare.net"},
+            {"name": "cf-bounce." + self.name, "type": "MX", "priority": 20, "content": "b.mx.cloudflare.net"},
+            {"name": "selector._domainkey." + self.name, "type": "TXT", "content": "v=DKIM1; p=synthetic"},
         ]
         self.reject: str | None = None
 
@@ -42,16 +43,16 @@ class FakeProvider:
             self.records.append(body)
             return {"result": copy.deepcopy(body)}
         if method == "POST" and path.endswith("/email/routing/dns"):
-            assert body == {"name": provision.DOMAIN}
+            assert body == {"name": self.name}
             self.records.extend([
-                {"name": provision.DOMAIN, "type": "MX", "content": "route1.mx.cloudflare.net", "priority": 10},
-                {"name": provision.DOMAIN, "type": "TXT", "content": "v=spf1 include:_spf.mx.cloudflare.net ~all"},
+                {"name": self.name, "type": "MX", "content": "route1.mx.cloudflare.net", "priority": 10},
+                {"name": self.name, "type": "TXT", "content": "v=spf1 include:_spf.mx.cloudflare.net ~all"},
             ])
-            return {"result": {"name": provision.DOMAIN, "enabled": True}}
+            return {"result": {"name": self.name, "enabled": True}}
         if "/email/sending/subdomains?" in path:
             return {"result": [copy.deepcopy(self.domain)] if self.domain else []}
         if method == "POST" and path.endswith("/email/sending/subdomains"):
-            self.domain = {"name": provision.DOMAIN, "enabled": True, "tag": "a" * 32, "preview_enabled": True, "drop_suppressed_recipients": False}
+            self.domain = {"name": self.name, "enabled": True, "tag": "a" * 32, "preview_enabled": True, "drop_suppressed_recipients": False}
             return {"result": copy.deepcopy(self.domain)}
         if method == "PATCH":
             assert self.domain is not None and body is not None
@@ -63,6 +64,53 @@ class FakeProvider:
 
 
 class TemporaryDomainTests(unittest.TestCase):
+    def test_production_target_is_explicit_and_keeps_staging_out_of_scope(self) -> None:
+        target = provision.Target.PRODUCTION
+        provider = FakeProvider(target)
+        provision.ensure_routing(provider, provider, True, target)
+        provision.ensure_sending(provider, True, target)
+        self.assertTrue(all(provision.DOMAIN not in str(call) for call in provider.calls))
+        provider.calls.clear()
+        report = provision.inspect(provider, provider, target)
+        self.assertEqual(target.value, report["domain"])
+        self.assertEqual("amail.tmpaddr-production-inspection.v1", report["schema"])
+        self.assertTrue(report["sending_dns"]["ready"])
+        self.assertTrue(all(method == "GET" for method, _, _ in provider.calls))
+        for name in (provision.DOMAIN, "mail.moesegfault.dev", "arbitrary.moesegfault.dev"):
+            with self.subTest(name=name), self.assertRaisesRegex(provision.ProvisionError, "dns_outside_production"):
+                provision.dns_records(provider, name, target)
+        with self.assertRaises(ValueError):
+            provision.Target("arbitrary.moesegfault.dev")
+
+    def test_production_authority_requires_trusted_main_full_freeze_and_exact_consent(self) -> None:
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ATTEMPT": "1", "AMAIL_PRODUCTION_ENVIRONMENT": "production", "AMAIL_PRODUCTION_CONFIRM": "RUN_PRODUCTION_V030", "AMAIL_PRODUCTION_GRAPH_FREEZE": "FREEZE_PRODUCTION_GRAPH_WRITERS"}
+        provision.authorize_apply(environment, provision.Target.PRODUCTION)
+        for key in environment:
+            with self.subTest(key=key), self.assertRaisesRegex(provision.ProvisionError, "production_writer_required"):
+                provision.authorize_apply({**environment, key: "wrong"}, provision.Target.PRODUCTION)
+        with self.assertRaisesRegex(provision.ProvisionError, "staging_writer_required"):
+            provision.authorize_apply(environment)
+
+    def test_production_apply_passes_only_the_explicit_target(self) -> None:
+        deployment = FakeProvider(provision.Target.PRODUCTION)
+        runtime = FakeProvider(provision.Target.PRODUCTION)
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/main", "GITHUB_RUN_ATTEMPT": "1", "AMAIL_PRODUCTION_ENVIRONMENT": "production", "AMAIL_PRODUCTION_CONFIRM": "RUN_PRODUCTION_V030", "AMAIL_PRODUCTION_GRAPH_FREEZE": "FREEZE_PRODUCTION_GRAPH_WRITERS", "CLOUDFLARE_API_TOKEN": "synthetic-deployment"}
+        with patch.dict(provision.os.environ, environment, clear=True), patch.object(sys, "argv", ["helper", "--target", "production", "--apply"]), patch.object(provision, "Client", side_effect=[deployment, runtime]), patch.object(provision, "ensure_routing") as routing, patch.object(provision, "ensure_sending") as sending, patch("builtins.print"):
+            self.assertEqual(0, provision.main())
+        routing.assert_called_once_with(deployment, deployment, True, provision.Target.PRODUCTION)
+        sending.assert_called_once_with(deployment, True, provision.Target.PRODUCTION)
+
+    def test_production_existing_safe_sender_settings_are_not_changed(self) -> None:
+        target = provision.Target.PRODUCTION
+        provider = FakeProvider(target)
+        provision.ensure_routing(provider, provider, True, target)
+        provision.ensure_sending(provider, True, target)
+        before = copy.deepcopy(provider.domain)
+        provider.calls.clear()
+        provision.ensure_sending(provider, True, target)
+        self.assertEqual(before, provider.domain)
+        self.assertTrue(all(method == "GET" for method, _, _ in provider.calls))
+
     def test_authoritative_verifier_shares_provider_txt_semantics(self) -> None:
         name = "selector._domainkey." + provision.DOMAIN
         logical = "v=DKIM1; p=" + "A" * 350
@@ -180,8 +228,8 @@ class TemporaryDomainTests(unittest.TestCase):
         environment = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/codex/v0.3.0-multitenant", "AMAIL_STAGING_CONFIRM": "RUN_STAGING_V030", "AMAIL_STAGING_ENVIRONMENT": "staging", "GITHUB_RUN_ATTEMPT": "1", "CLOUDFLARE_API_TOKEN": "synthetic-deployment"}
         with patch.dict(provision.os.environ, environment, clear=True), patch.object(sys, "argv", ["helper", "--apply"]), patch.object(provision, "Client", side_effect=[deployment, runtime]), patch.object(provision, "ensure_routing") as routing, patch.object(provision, "ensure_sending") as sending, patch("builtins.print"):
             self.assertEqual(0, provision.main())
-        routing.assert_called_once_with(deployment, deployment, True)
-        sending.assert_called_once_with(deployment, True)
+        routing.assert_called_once_with(deployment, deployment, True, provision.Target.STAGING)
+        sending.assert_called_once_with(deployment, True, provision.Target.STAGING)
 
     def test_inspection_of_missing_domain_is_get_only(self) -> None:
         provider = FakeProvider()
