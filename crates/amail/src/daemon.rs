@@ -27,6 +27,7 @@ pub(crate) struct Request {
     pub cwd: PathBuf,
     pub terminal: String,
     pub cfg: Runtime,
+    pub telemetry_enabled: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -189,6 +190,7 @@ pub(crate) fn forward(cfg: &Runtime, args: Vec<OsString>) -> Result<i32> {
         cwd: std::env::current_dir()?,
         terminal: terminal_id(cfg)?,
         cfg: cfg.clone(),
+        telemetry_enabled: crate::telemetry::enabled(),
     };
     let mut stream = connect(&endpoint)?;
     send_hello(&mut stream, &endpoint, Operation::Execute(request))?;

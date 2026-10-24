@@ -910,6 +910,7 @@ fn local_profile_operation(command: &Command) -> bool {
 }
 
 pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
+    telemetry::set_enabled(request.telemetry_enabled);
     machine::enable(machine::requested(request.args.clone()));
     session::clear();
     let mut cli = Cli::try_parse_from(request.args)
@@ -1200,7 +1201,7 @@ fn execute(mut cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) 
         }
         Command::Config => emit(
             &json!({"api_base":cfg.api_base,"issuer":cfg.issuer,"client_id":cfg.client_id,
-            "redirect_uri":cfg.redirect_uri,"home":cfg.home,"yolo":cfg.yolo,"daemon":cfg.daemon,"telemetry_enabled":std::env::var("AMAIL_TELEMETRY").ok().as_deref()!=Some("off")}),
+            "redirect_uri":cfg.redirect_uri,"home":cfg.home,"yolo":cfg.yolo,"daemon":cfg.daemon,"telemetry_enabled":telemetry::enabled()}),
             cli.human,
         )?,
         Command::TelemetryFlush { attempt_id } => {

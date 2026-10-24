@@ -5,6 +5,7 @@ use rand::RngCore;
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::Serialize;
 use std::{
+    cell::Cell,
     sync::{mpsc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -13,6 +14,20 @@ use crate::{config::Runtime, local_store};
 mod capability;
 mod delivery;
 mod upload;
+
+thread_local! {
+    static REQUEST_ENABLED: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+pub fn set_enabled(value: bool) {
+    REQUEST_ENABLED.with(|enabled| enabled.set(Some(value)));
+}
+
+pub fn enabled() -> bool {
+    REQUEST_ENABLED
+        .with(|enabled| enabled.get())
+        .unwrap_or_else(|| std::env::var("AMAIL_TELEMETRY").ok().as_deref() != Some("off"))
+}
 
 /// Legacy upload shape: never append fields rejected by older deployed servers.
 /// Mail content and personal identity are excluded, not operational identifiers.
@@ -101,7 +116,7 @@ fn ensure_event_columns(conn: &mut Connection) -> Result<()> {
 
 /// Prepare the diagnostic schema without taking ownership of auth/send tables.
 pub fn init(cfg: &Runtime) -> Result<()> {
-    if std::env::var("AMAIL_TELEMETRY").ok().as_deref() == Some("off") {
+    if !enabled() {
         return Ok(());
     }
     let conn = db(cfg)?;
@@ -213,7 +228,7 @@ impl<'a> RequestSpan<'a> {
     ) {
         // Freeze at the observed attempt boundary, before SQLite opens or waits.
         let elapsed = self.start.elapsed().as_millis().min(i64::MAX as u128) as i64;
-        if std::env::var("AMAIL_TELEMETRY").ok().as_deref() == Some("off") {
+        if !enabled() {
             return;
         }
         let result = (|| -> Result<()> {
@@ -305,6 +320,7 @@ fn uploader() -> &'static std::result::Result<mpsc::SyncSender<Upload>, Option<i
                 for upload in receiver {
                     crate::session::clear();
                     crate::machine::enable(false);
+                    set_enabled(true);
                     let _ = flush_pending(&upload.cfg, Some(&upload.attempt_id));
                     crate::session::clear();
                 }
@@ -361,7 +377,7 @@ fn maybe_schedule_flush(cfg: &Runtime, conn: &Connection) -> Result<()> {
 
 /// Upload a bounded pending batch without entering the profile/session API.
 pub fn flush_pending(cfg: &Runtime, attempt_id: Option<&uuid::Uuid>) -> Result<()> {
-    if std::env::var("AMAIL_TELEMETRY").ok().as_deref() == Some("off") {
+    if !enabled() {
         return Ok(());
     }
     upload::run(cfg, attempt_id)
@@ -370,6 +386,27 @@ pub fn flush_pending(cfg: &Runtime, attempt_id: Option<&uuid::Uuid>) -> Result<(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn simultaneous_requests_keep_their_own_telemetry_preference() {
+        use std::sync::{Arc, Barrier};
+        let barrier = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = [false, true]
+            .into_iter()
+            .map(|preference| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    set_enabled(preference);
+                    barrier.wait();
+                    assert_eq!(enabled(), preference);
+                })
+            })
+            .collect();
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    }
 
     /// A complete schema must not contend with an unrelated reserved writer.
     #[test]
