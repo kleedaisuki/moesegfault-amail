@@ -859,6 +859,23 @@ fn approval_summary(command: &Command) -> String {
     }
 }
 
+fn local_profile_operation(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Config
+            | Command::Pack { .. }
+            | Command::Unpack { .. }
+            | Command::SendReceipts { .. }
+            | Command::SendStatus { local: true, .. }
+            | Command::Auth {
+                command: AuthCommand::Status
+            }
+            | Command::Profile {
+                command: ProfileCommand::Status | ProfileCommand::Deactivate
+            }
+    )
+}
+
 pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
     machine::enable(machine::requested(request.args.clone()));
     session::clear();
@@ -884,7 +901,6 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
             command: ProfileCommand::Activate { .. }
         }
     );
-    let mut implicit_activation = false;
     if active.is_none() && !activation && !store.terminal_initialized(&terminal)? {
         if !cfg.yolo {
             approval::authorize_request(
@@ -896,7 +912,6 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
             )?;
         }
         active = Some(store.activate(&terminal, "user")?);
-        implicit_activation = true;
     } else if !cfg.yolo {
         let requested_user = matches!(&cli.command, Command::Profile { command: ProfileCommand::Activate { name } } if name == "user")
             || matches!(&cli.command, Command::Profile { command: ProfileCommand::Release { name:Some(name) } } if name == "user");
@@ -911,28 +926,21 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
     if let Some(profile) = active.as_ref() {
         session::install(&terminal, profile.clone());
         store.active(&terminal)?;
-        if implicit_activation
-            && session::account_scope().is_some()
-            && !matches!(
-                &cli.command,
-                Command::Auth {
-                    command: AuthCommand::Login { .. } | AuthCommand::Logout
-                } | Command::Login { .. }
-                    | Command::Logout
-            )
-        {
-            if let Err(error) = session::activate_cloud(&cfg) {
-                store.deactivate(&terminal)?;
-                return Err(error);
-            }
-        }
         if !matches!(
             &cli.command,
             Command::Profile {
                 command: ProfileCommand::Release { .. }
-            }
+            } | Command::Auth {
+                command: AuthCommand::Login { .. } | AuthCommand::Logout
+            } | Command::Login { .. }
+                | Command::Logout
         ) {
-            session::touch_existing_cloud(&cfg)?;
+            if let Err(error) =
+                session::prepare_activity(&cfg, local_profile_operation(&cli.command))
+            {
+                store.deactivate(&terminal)?;
+                return Err(error);
+            }
         }
     } else {
         ensure!(
@@ -1325,6 +1333,29 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_work_renews_activity_without_duplicate_mail_round_trips() {
+        for args in [
+            vec!["amail", "config"],
+            vec!["amail", "profile", "deactivate"],
+            vec!["amail", "profile", "status"],
+            vec!["amail", "send-status", "intent", "--local"],
+        ] {
+            assert!(local_profile_operation(
+                &Cli::try_parse_from(args).unwrap().command
+            ));
+        }
+        for args in [
+            vec!["amail", "address", "list"],
+            vec!["amail", "search"],
+            vec!["amail", "profile", "list"],
+        ] {
+            assert!(!local_profile_operation(
+                &Cli::try_parse_from(args).unwrap().command
+            ));
+        }
+    }
 
     /// Keep the third-party processing disclosure visible at first-use discovery points.
     #[test]

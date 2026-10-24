@@ -134,9 +134,15 @@ fn cloud_request_method(
 }
 
 fn token(cfg: &Runtime) -> Result<String> {
+    token_with_refresh(cfg, false)
+}
+
+fn token_with_refresh(cfg: &Runtime, force: bool) -> Result<String> {
     let current = context()?;
-    if let Some(token) = current.cloud {
-        return Ok(token);
+    if !force {
+        if let Some(token) = current.cloud {
+            return Ok(token);
+        }
     }
     let _guard = ENROLLMENT
         .lock()
@@ -145,7 +151,7 @@ fn token(cfg: &Runtime) -> Result<String> {
     let cached = store.cloud_session(&current.profile.id)?;
     let token = if let Some(cached) = cached
         .as_ref()
-        .filter(|cached| cached.expires_at > now() + 300)
+        .filter(|cached| !force && cached.expires_at > now() + 300)
     {
         cached.session_token.clone()
     } else {
@@ -219,7 +225,7 @@ pub fn create_cloud(cfg: &Runtime, name: &str, durable: bool) -> Result<()> {
 }
 
 pub fn activate_cloud(cfg: &Runtime) -> Result<()> {
-    token(cfg)?;
+    token_with_refresh(cfg, true)?;
     Ok(())
 }
 
@@ -280,12 +286,18 @@ pub fn list_cloud(cfg: &Runtime) -> Result<Value> {
     cloud_request_method(cfg, Method::GET, "/v1/profiles", &json!({}), Some(&token))
 }
 
-/// Coalesce activity-driven renewal; idle daemons never keep profiles alive.
-pub fn touch_existing_cloud(cfg: &Runtime) -> Result<()> {
+/// Local work must renew the cloud clock too; ordinary mail requests already do.
+pub fn prepare_activity(cfg: &Runtime, local_only: bool) -> Result<()> {
+    if account_scope().is_none() {
+        return Ok(());
+    }
     let current = context()?;
     let cached = Store::open(cfg)?.cloud_session(&current.profile.id)?;
-    if cached.is_some_and(|cached| cached.expires_at <= now() + 300) {
-        token(cfg)?;
+    if local_only
+        || cached.is_none()
+        || cached.is_some_and(|cached| cached.expires_at <= now() + 300)
+    {
+        token_with_refresh(cfg, true)?;
     }
     Ok(())
 }
@@ -371,4 +383,48 @@ pub fn release_mailbox(cfg: &Runtime, address: &str) -> Result<Value> {
     )?;
     store.remove_lease(&current.profile.id, address)?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_identity_includes_every_configured_realm_boundary() {
+        let mut cfg = crate::telemetry::tests::config(std::path::Path::new("unused"));
+        clear();
+        set_account(&cfg, Some("same-subject"));
+        let original = account_scope();
+        cfg.api_base = "https://mail-staging.moesegfault.dev".into();
+        set_account(&cfg, Some("same-subject"));
+        assert_ne!(account_scope(), original);
+        set_account(&cfg, Some("different-subject"));
+        let second = account_scope();
+        cfg.issuer = "https://other-identity.example".into();
+        set_account(&cfg, Some("different-subject"));
+        assert_ne!(account_scope(), second);
+        clear();
+        assert!(account_scope().is_none());
+    }
+
+    #[test]
+    fn worker_capabilities_do_not_leak_into_other_threads() {
+        clear();
+        install(
+            "terminal",
+            ActiveProfile {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: "agent".into(),
+            },
+        );
+        assert!(local_profile_scope().is_some());
+        std::thread::spawn(|| {
+            assert!(local_profile_scope().is_none());
+            assert!(account_scope().is_none());
+        })
+        .join()
+        .unwrap();
+        clear();
+        assert!(local_profile_scope().is_none());
+    }
 }
