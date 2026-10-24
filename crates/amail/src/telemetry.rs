@@ -4,7 +4,10 @@ use anyhow::Result;
 use rand::RngCore;
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::Serialize;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    sync::{mpsc, OnceLock},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use crate::{config::Runtime, local_store};
 mod capability;
@@ -229,7 +232,7 @@ impl<'a> RequestSpan<'a> {
                     report_loss("capability_update", &error);
                 }
             }
-            maybe_spawn_flush(&conn)
+            maybe_schedule_flush(self.cfg, &conn)
         })();
         if let Err(error) = result {
             report_loss("record_or_schedule", &error);
@@ -286,7 +289,51 @@ pub fn report_loss(stage: &str, error: &anyhow::Error) {
     }
 }
 
-fn maybe_spawn_flush(conn: &Connection) -> Result<()> {
+struct Upload {
+    cfg: Runtime,
+    attempt_id: uuid::Uuid,
+}
+
+fn uploader() -> &'static std::result::Result<mpsc::SyncSender<Upload>, Option<i32>> {
+    static UPLOADER: OnceLock<std::result::Result<mpsc::SyncSender<Upload>, Option<i32>>> =
+        OnceLock::new();
+    UPLOADER.get_or_init(|| {
+        let (sender, receiver) = mpsc::sync_channel::<Upload>(1);
+        std::thread::Builder::new()
+            .name("amail-telemetry".into())
+            .spawn(move || {
+                for upload in receiver {
+                    crate::session::clear();
+                    crate::machine::enable(false);
+                    let _ = flush_pending(&upload.cfg, Some(&upload.attempt_id));
+                    crate::session::clear();
+                }
+            })
+            .map(|_| sender)
+            .map_err(|error| error.raw_os_error())
+    })
+}
+
+fn enqueue_flush(
+    conn: &Connection,
+    cfg: &Runtime,
+    attempt_id: uuid::Uuid,
+    sender: &mpsc::SyncSender<Upload>,
+) -> Result<()> {
+    let upload = Upload {
+        cfg: cfg.clone(),
+        attempt_id,
+    };
+    if sender.try_send(upload).is_err() {
+        // Reuse the compatible pre-network admission-failure receipt. Pending
+        // events remain untouched and can be selected by a later scheduled run.
+        delivery::spawn_failed(conn, &attempt_id.to_string(), "spawn_io", None)?;
+        anyhow::bail!("bounded telemetry uploader unavailable");
+    }
+    Ok(())
+}
+
+fn maybe_schedule_flush(cfg: &Runtime, conn: &Connection) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs() as i64;
@@ -300,47 +347,19 @@ fn maybe_spawn_flush(conn: &Connection) -> Result<()> {
         tx.commit()?;
         return Ok(());
     }
-    let attempt_id = uuid::Uuid::new_v4().to_string();
-    delivery::scheduled(&tx, &attempt_id)?;
+    let attempt_id = uuid::Uuid::new_v4();
+    delivery::scheduled(&tx, &attempt_id.to_string())?;
     tx.commit()?;
-    let exe = match std::env::current_exe() {
-        Ok(exe) => exe,
-        Err(error) => {
-            delivery::spawn_failed(conn, &attempt_id, "spawn_executable", error.raw_os_error())?;
-            return Err(error.into());
+    match uploader() {
+        Ok(sender) => enqueue_flush(conn, cfg, attempt_id, sender),
+        Err(os_code) => {
+            delivery::spawn_failed(conn, &attempt_id.to_string(), "spawn_io", *os_code)?;
+            anyhow::bail!("cannot start telemetry uploader");
         }
-    };
-    let mut command = std::process::Command::new(exe);
-    command
-        .arg("_telemetry-flush")
-        .arg("--attempt-id")
-        .arg(&attempt_id)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW / 不创建窗口
     }
-    spawn_detached(conn, &attempt_id, &mut command)
 }
 
-/// Preserve an actual spawn failure despite null child stderr; never retain executable paths.
-fn spawn_detached(
-    conn: &Connection,
-    attempt_id: &str,
-    command: &mut std::process::Command,
-) -> Result<()> {
-    if let Err(error) = command.spawn() {
-        delivery::spawn_failed(conn, attempt_id, "spawn_io", error.raw_os_error())?;
-        return Err(error.into());
-    }
-    Ok(())
-}
-
-/// Upload a bounded pending batch in a separate short-lived process.
-/// 在独立短生命周期进程中上传有界的待处理批次。
+/// Upload a bounded pending batch without entering the profile/session API.
 pub fn flush_pending(cfg: &Runtime, attempt_id: Option<&uuid::Uuid>) -> Result<()> {
     if std::env::var("AMAIL_TELEMETRY").ok().as_deref() == Some("off") {
         return Ok(());
@@ -396,29 +415,55 @@ pub(crate) mod tests {
         });
     }
 
-    /// The real spawn error path stores a safe OS code and does not fabricate child duration.
+    /// Saturation/disconnection is definite before I/O and never consumes pending events.
     #[test]
-    fn failed_detached_spawn_has_durable_status_without_executable_path() {
+    fn bounded_uploader_admission_failure_is_durable_and_preserves_pending_events() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
         std::fs::create_dir_all(&root).unwrap();
         let home = tempfile::tempdir_in(root).unwrap();
         let cfg = config(home.path());
         let conn = db(&cfg).unwrap();
-        let id = uuid::Uuid::new_v4().to_string();
-        delivery::scheduled(&conn, &id).unwrap();
-        let mut command =
-            std::process::Command::new(home.path().join("SYNTHETIC_PRIVATE_EXECUTABLE"));
-        assert!(spawn_detached(&conn, &id, &mut command).is_err());
-        let row: (String, String, Option<i32>, Option<i64>, Option<i64>) = conn.query_row(
+        conn.execute(
+            "INSERT INTO events(operation,status,duration_ms,bytes_bucket,trace_id)
+            VALUES('messages.list',200,7,0,'0123456789abcdef0123456789abcdef')",
+            [],
+        )
+        .unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut receiver = Some(receiver);
+        let first = uuid::Uuid::new_v4();
+        delivery::scheduled(&conn, &first.to_string()).unwrap();
+        enqueue_flush(&conn, &cfg, first, &sender).unwrap();
+        for disconnect in [false, true] {
+            if disconnect {
+                drop(receiver.take());
+            }
+            let id = uuid::Uuid::new_v4();
+            delivery::scheduled(&conn, &id.to_string()).unwrap();
+            assert!(enqueue_flush(&conn, &cfg, id, &sender).is_err());
+            let row: (String, String, Option<i32>, Option<i64>, Option<i64>) = conn.query_row(
             "SELECT outcome,error_kind,os_error_code,started_at_ms,elapsed_ms FROM journal_upload", [],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
-        assert_eq!((row.0.as_str(), row.1.as_str()), ("failed", "spawn_io"));
-        assert!(row.2.is_some());
-        assert_eq!((row.3, row.4), (None, None));
-        let image = std::fs::read(cfg.home.join("telemetry.sqlite3")).unwrap();
-        assert!(!image
-            .windows(b"SYNTHETIC_PRIVATE_EXECUTABLE".len())
-            .any(|bytes| bytes == b"SYNTHETIC_PRIVATE_EXECUTABLE"));
+            assert_eq!((row.0.as_str(), row.1.as_str()), ("failed", "spawn_io"));
+            assert_eq!((row.2, row.3, row.4), (None, None, None));
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM events WHERE uploaded=0", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+        assert_eq!(
+            conn.query_row("SELECT upload_failed FROM journal_health", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 
     /// Synthetic configuration never opens the real user credential store.

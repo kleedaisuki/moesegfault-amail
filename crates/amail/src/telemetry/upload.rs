@@ -1,4 +1,4 @@
-//! One bounded detached upload; delivery receipts never recursively become events.
+//! One bounded daemon upload; delivery receipts never recursively become events.
 
 use super::{capability, delivery, Event};
 use crate::{api, auth, config::Runtime};
@@ -96,20 +96,42 @@ impl StoredEvent {
 /// Execute the legacy-compatible batch without holding a database transaction over I/O.
 pub(super) fn run(cfg: &Runtime, scheduled_id: Option<&uuid::Uuid>) -> Result<()> {
     let conn = super::db(cfg)?;
-    let http = Client::builder()
-        .timeout(Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .build();
-    run_with(cfg, &conn, scheduled_id, || auth::access_token(cfg), http)
+    run_client(
+        cfg,
+        &conn,
+        scheduled_id,
+        || auth::access_token(cfg),
+        api::shared_http(),
+        Some(Duration::from_secs(5)),
+    )
 }
 
 /// Credential/client injection is a test seam, not a production retry/provider abstraction.
+#[cfg(test)]
 fn run_with(
     cfg: &Runtime,
     conn: &Connection,
     scheduled_id: Option<&uuid::Uuid>,
     token: impl FnOnce() -> Result<String>,
     http: reqwest::Result<Client>,
+) -> Result<()> {
+    run_client(
+        cfg,
+        conn,
+        scheduled_id,
+        token,
+        http.map_err(Into::into),
+        None,
+    )
+}
+
+fn run_client(
+    cfg: &Runtime,
+    conn: &Connection,
+    scheduled_id: Option<&uuid::Uuid>,
+    token: impl FnOnce() -> Result<String>,
+    http: Result<Client>,
+    timeout: Option<Duration>,
 ) -> Result<()> {
     let Some(attempt) = delivery::begin(conn, scheduled_id, 0)? else {
         return Ok(());
@@ -173,7 +195,9 @@ fn run_with(
         .into_iter()
         .map(|(_, event)| event.wire(support))
         .collect();
-    send(cfg, conn, attempt, &ids, &token, &http, &events, support)
+    send(
+        cfg, conn, attempt, &ids, &token, &http, &events, support, timeout,
+    )
 }
 
 /// Select twenty pending source records; capability controls enrichment after selection.
@@ -222,14 +246,18 @@ fn send(
     http: &Client,
     events: &[WireEvent],
     support: capability::Capability,
+    timeout: Option<Duration>,
 ) -> Result<()> {
     attempt.phase(conn, "transport", None, None)?;
-    let response = http
+    let mut request = http
         .post(format!("{}{}", cfg.api_base, support.path()))
         .header("x-amail-api-version", "2")
         .bearer_auth(token)
-        .json(&serde_json::json!({"events":events}))
-        .send();
+        .json(&serde_json::json!({"events":events}));
+    if let Some(timeout) = timeout {
+        request = request.timeout(timeout);
+    }
+    let response = request.send();
     let response = match response {
         Ok(response) => response,
         Err(error) => {
