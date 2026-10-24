@@ -1937,25 +1937,33 @@ async fn add_address(
             diagnostic.fail(AddressDiagKind::State, None, None);
             return Err(AppError::conflict("capacity_exhausted"));
         }
-        // One conditional SQLite statement allocates a free slot; a partial unique index resolves races.
-        let query = "WITH slots(slot) AS (VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,cf_rule_id,state,created_at,kind,generation,expires_at) SELECT ?1,?2,?3,?4,slots.slot,NULL,'pending',?5,?6,?7,?8 FROM slots WHERE NOT EXISTS (SELECT 1 FROM addresses a WHERE a.owner_iss=?3 AND a.owner_sub=?4 AND a.slot=slots.slot AND a.kind=?6 AND a.state!='retired') ORDER BY slots.slot LIMIT 1";
-        let result = database
-            .prepare(query)
-            .bind(&[
-                bind_str(&address),
-                bind_str(&part),
-                bind_str(&user.iss),
-                bind_str(&user.sub),
-                bind_num(now()),
-                bind_str(registration.kind),
-                bind_str(&registration.generation),
-                registration
-                    .expires_at
-                    .map(bind_num)
-                    .unwrap_or(JsValue::NULL),
-            ])?
-            .run()
-            .await;
+        let created_at = now();
+        let query = format!("WITH slots(slot) AS (VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,cf_rule_id,state,created_at,kind,generation,expires_at) SELECT ?1,?2,?3,?4,slots.slot,NULL,'pending',?5,?6,?7,?8 FROM slots WHERE {} AND NOT EXISTS (SELECT 1 FROM addresses a WHERE a.owner_iss=?3 AND a.owner_sub=?4 AND a.slot=slots.slot AND a.kind=?6 AND a.state!='retired') ORDER BY slots.slot LIMIT 1",profiles::session_filter(user));
+        let allocation = database.prepare(query).bind(&[
+            bind_str(&address),
+            bind_str(&part),
+            bind_str(&user.iss),
+            bind_str(&user.sub),
+            bind_num(created_at),
+            bind_str(registration.kind),
+            bind_str(&registration.generation),
+            registration
+                .expires_at
+                .map(bind_num)
+                .unwrap_or(JsValue::NULL),
+        ])?;
+        let mut statements = vec![allocation];
+        if let Some(session) = &user.profile {
+            statements.push(profiles::reserve_created_statement(
+                &database,
+                user,
+                session,
+                &address,
+                &registration.generation,
+                created_at,
+            )?);
+        }
+        let result = database.batch(statements).await;
         if let Err(error) = result {
             diagnostic.fail(AddressDiagKind::D1, None, None);
             let message = error.to_string();

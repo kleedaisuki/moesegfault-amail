@@ -6,7 +6,12 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use worker::{Env, Method, Request, Response};
 
-use crate::{auth::Principal, bind_num, bind_str, database::Database, now, AppError, AppResult};
+use crate::{
+    auth::Principal,
+    bind_num, bind_str,
+    database::{Database, Statement},
+    now, AppError, AppResult,
+};
 
 const IDLE_MS: i64 = 30 * 60_000;
 
@@ -235,6 +240,30 @@ async fn create(
 
 const ACQUIRE_SQL: &str = "INSERT INTO mailbox_leases(address,address_generation,profile_id,session_token,mode,lease_token,acquired_at) SELECT a.address,a.generation,?3,?4,?5,?6,?7 FROM addresses a WHERE a.address=?1 AND a.owner_iss=?8 AND a.owner_sub=?9 AND a.state='active' AND (a.expires_at IS NULL OR a.expires_at>?7) AND EXISTS(SELECT 1 FROM mail_profiles p WHERE p.id=?3 AND p.session_token=?4 AND p.session_expires_at>?7) AND NOT EXISTS(SELECT 1 FROM mailbox_leases l JOIN mail_profiles p ON p.id=l.profile_id AND p.session_token=l.session_token WHERE l.address=a.address AND l.address_generation=a.generation AND p.session_expires_at>?7 AND l.profile_id!=?3 AND (l.mode='write' OR ?5='write')) ON CONFLICT(address,profile_id) DO UPDATE SET address_generation=excluded.address_generation,session_token=excluded.session_token,mode=CASE WHEN mailbox_leases.session_token=excluded.session_token AND mailbox_leases.address_generation=excluded.address_generation AND mailbox_leases.mode='write' THEN 'write' ELSE excluded.mode END,lease_token=CASE WHEN mailbox_leases.session_token=excluded.session_token AND (mailbox_leases.mode=excluded.mode OR mailbox_leases.mode='write') AND mailbox_leases.address_generation=excluded.address_generation THEN mailbox_leases.lease_token ELSE excluded.lease_token END,acquired_at=excluded.acquired_at RETURNING address,address_generation AS generation,mode,lease_token";
 
+const RESERVE_CREATED_SQL: &str = "INSERT INTO mailbox_leases(address,address_generation,profile_id,session_token,mode,lease_token,acquired_at) SELECT a.address,a.generation,?3,?4,'write',?5,?6 FROM addresses a WHERE changes()=1 AND a.address=?1 AND a.generation=?2 AND a.owner_iss=?7 AND a.owner_sub=?8 AND a.state='pending' AND a.created_at=?6 AND (a.expires_at IS NULL OR a.expires_at>?6) AND EXISTS(SELECT 1 FROM mail_profiles p WHERE p.id=?3 AND p.owner_iss=?7 AND p.owner_sub=?8 AND p.session_token=?4 AND p.session_expires_at>?6) ON CONFLICT(address,profile_id) DO UPDATE SET address_generation=excluded.address_generation,session_token=excluded.session_token,mode='write',lease_token=excluded.lease_token,acquired_at=excluded.acquired_at";
+
+/// Must immediately follow the address INSERT in one atomic D1 batch. SQLite
+/// changes() counts that direct INSERT, not trigger-expanded provider metadata.
+pub(crate) fn reserve_created_statement(
+    db: &Database,
+    user: &Principal,
+    session: &Session,
+    address: &str,
+    generation: &str,
+    created_at: i64,
+) -> worker::Result<Statement> {
+    db.prepare(RESERVE_CREATED_SQL).bind(&[
+        bind_str(address),
+        bind_str(generation),
+        bind_str(&session.profile_id),
+        bind_str(&session.session_token),
+        bind_str(&uuid::Uuid::new_v4().to_string()),
+        bind_num(created_at),
+        bind_str(&user.iss),
+        bind_str(&user.sub),
+    ])
+}
+
 #[derive(Deserialize, Serialize)]
 struct Lease {
     address: String,
@@ -360,6 +389,13 @@ pub(crate) fn send_scope(user: &Principal) -> String {
         .as_ref()
         .map(|p| format!("{:x}", Sha256::digest(p.profile_id.as_bytes())))
         .unwrap_or_default()
+}
+
+pub(crate) fn session_filter(user: &Principal) -> String {
+    let Some(session) = &user.profile else {
+        return legacy_filter(user);
+    };
+    format!("EXISTS(SELECT 1 FROM mail_profiles p WHERE p.id={} AND p.session_token={} AND p.owner_iss={} AND p.owner_sub={} AND p.session_expires_at>CAST(unixepoch('subsec')*1000 AS INTEGER))",literal(&session.profile_id),literal(&session.session_token),literal(&user.iss),literal(&user.sub))
 }
 
 pub(crate) fn address_filter(user: &Principal, alias: &str, write: bool) -> String {
@@ -545,6 +581,80 @@ mod tests {
             Some("reader")
         );
         assert!(acquire_for(&db, "two", "read", "shared-reader", 30).is_some());
+    }
+
+    #[test]
+    fn pending_creator_reservation_survives_activation_without_reacquisition() {
+        let db = database();
+        db.execute_batch(
+            "ALTER TABLE addresses ADD COLUMN created_at INTEGER DEFAULT 0;
+            DELETE FROM addresses;
+            CREATE TABLE allocation_audit(value INTEGER);
+            CREATE TRIGGER allocation_trigger AFTER INSERT ON addresses BEGIN
+                INSERT INTO allocation_audit VALUES(1);
+                INSERT INTO allocation_audit VALUES(2);
+            END;
+            BEGIN IMMEDIATE;",
+        )
+        .unwrap();
+        db.execute("INSERT INTO addresses(address,owner_iss,owner_sub,generation,state,created_at) VALUES('test@tmpaddr.moesegfault.dev','iss','sub','pending-generation','pending',10)",[]).unwrap();
+        assert_eq!(
+            db.execute(
+                RESERVE_CREATED_SQL,
+                params![
+                    "test@tmpaddr.moesegfault.dev",
+                    "pending-generation",
+                    "one",
+                    "one",
+                    "creator-token",
+                    10,
+                    "iss",
+                    "sub"
+                ]
+            )
+            .unwrap(),
+            1
+        );
+        db.execute_batch("COMMIT;").unwrap();
+        assert!(acquire_for(&db, "one", "read", "premature", 10).is_none());
+        db.execute(
+            "INSERT INTO addresses(address) SELECT 'unallocated' WHERE 0",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            db.execute(
+                RESERVE_CREATED_SQL,
+                params![
+                    "test@tmpaddr.moesegfault.dev",
+                    "pending-generation",
+                    "two",
+                    "two",
+                    "foreign-token",
+                    10,
+                    "iss",
+                    "sub"
+                ]
+            )
+            .unwrap(),
+            0
+        );
+        db.execute("UPDATE addresses SET state='provisioning'", [])
+            .unwrap();
+        db.execute("UPDATE addresses SET state='active'", [])
+            .unwrap();
+        assert!(acquire_for(&db, "two", "read", "foreign-reader", 10).is_none());
+        assert!(acquire_for(&db, "two", "write", "foreign-writer", 10).is_none());
+        assert_eq!(
+            acquire_for(&db, "one", "read", "creator-recovery", 10).as_deref(),
+            Some("creator-token")
+        );
+        db.execute(
+            "UPDATE mail_profiles SET session_expires_at=15 WHERE id='one'",
+            [],
+        )
+        .unwrap();
+        assert!(acquire_for(&db, "two", "write", "successor", 20).is_some());
     }
 
     #[test]

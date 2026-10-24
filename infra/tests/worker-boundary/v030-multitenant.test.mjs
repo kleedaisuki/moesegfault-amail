@@ -27,16 +27,16 @@ function accessToken() {
 }
 
 /** No fixture egress is forwarded to a real network or mail provider. */
-async function fixture(run) {
+async function fixture(run, { ambiguousCreates = 0, maintenance = false } = {}) {
   const jwk = publicKey.export({ format: "jwk" });
   const rules = new Map();
   let unexpected = 0;
   let creates = 0;
   const name = "v030-multitenant";
-  const mf = new Miniflare({ cf: false, workers: [{
+  const options = { cf: false, workers: [{
     name, modules: true, scriptPath: path.join(worker, "entry/api.mjs"), modulesRoot: root,
     modulesRules: workerModuleRules, compatibilityDate: "2026-08-06",
-    d1Databases: ["MAIL_DB"], r2Buckets: ["MAIL_BODIES"],
+    d1Databases: { MAIL_DB: "v030-shared-db" }, r2Buckets: { MAIL_BODIES: "v030-shared-r2" },
     bindings: { IDENTITY_ISSUER: issuer, OIDC_CLIENT_ID: "amail-cli-staging",
       MAIL_DOMAIN: mailDomain, MAIL_TMP_DOMAIN: temporaryDomain, CF_ZONE_ID: "synthetic-zone",
       CF_EMAIL_ROUTING_TOKEN: "synthetic-token", EMAIL_INGRESS_WORKER_NAME: "synthetic-ingress" },
@@ -59,6 +59,7 @@ async function fixture(run) {
           assert.deepEqual(input.actions, [{ type: "worker", value: ["synthetic-ingress"] }]);
           const rule = { ...input, id: `synthetic-rule-${++creates}` };
           rules.set(rule.id, rule);
+          if (creates <= ambiguousCreates) return Response.json({ success: true });
           return Response.json({ success: true, result: rule });
         }
       }
@@ -70,7 +71,10 @@ async function fixture(run) {
       unexpected++;
       throw new Error("unmatched multi-tenant fixture egress");
     },
-  }] });
+  }] };
+  if (maintenance) options.workers.push({ ...options.workers[0], name: `${name}-maintenance`,
+    scriptPath: path.join(worker, "entry/maintenance.mjs") });
+  const mf = new Miniflare(options);
   try {
     const db = await mf.getD1Database("MAIL_DB", name);
     const bucket = await mf.getR2Bucket("MAIL_BODIES", name);
@@ -108,7 +112,8 @@ async function fixture(run) {
       await bucket.put(`messages/${id}.zip`, new Uint8Array([80, 75, 3, 4]));
       return id;
     };
-    await run({ db, bucket, archiveStatus, json, activate, acquire, releaseLease, message, rules });
+    const scheduled = async () => (await mf.getWorker(`${name}-maintenance`)).scheduled();
+    await run({ db, bucket, archiveStatus, json, activate, acquire, releaseLease, message, rules, scheduled });
     assert.equal(unexpected, 0);
   } finally { await mf.dispose(); }
 }
@@ -226,4 +231,43 @@ test("tmpaddr registration auto-owns a six-hour generation; deadline and reuse n
     assert.equal((await json("GET", "/v1/addresses", agent)).body.addresses.some((row) => row.address === expiringAddress), false);
     assert.deepEqual((await json("POST", "/v1/messages/search", agent, { mailbox: expiringAddress })).body.messages, []);
   });
+});
+
+test("an uncertain provision preserves the creator's writer reservation through actual Cron activation", async () => {
+  await fixture(async ({ db, json, activate, acquire, message, rules, scheduled }) => {
+    const user = await activate("user");
+    for (const name of ["creator", "rival"]) {
+      assert.equal((await json("POST", "/v1/profiles", user, { name })).status, 200);
+    }
+    const creator = await activate("creator");
+    const rival = await activate("rival");
+    const address = `uncertain-provision@${temporaryDomain}`;
+    const add = () => json("POST", "/v1/addresses", creator,
+      { local_part: "uncertain-provision", kind: "tmpaddr" });
+    assert.equal((await add()).status, 503, "a lost create acknowledgment must not claim activation");
+    const pending = await db.prepare("SELECT state,generation,cf_rule_id FROM addresses WHERE address=?1").bind(address).first();
+    assert.equal(pending.state, "provisioning");
+    assert.equal(pending.cf_rule_id, null, "the uncertain provider result supplied no adopted route identity");
+    const reservation = await db.prepare("SELECT profile_id,session_token,mode,address_generation FROM mailbox_leases WHERE address=?1")
+      .bind(address).first();
+    assert.deepEqual(reservation, { profile_id: creator.profile_id, session_token: creator.session_token,
+      mode: "write", address_generation: pending.generation });
+    assert.equal((await acquire(rival, address, "write")).status, 409);
+    assert.equal((await add()).status, 202, "recovery consumes pending state, not a second provider create");
+    assert.equal(rules.size, 1);
+    await scheduled();
+    const activated = await db.prepare("SELECT state,cf_rule_id FROM addresses WHERE address=?1").bind(address).first();
+    assert.equal(activated.state, "active");
+    assert.equal(activated.cf_rule_id, [...rules.keys()][0]);
+    const id = await message(address, pending.generation);
+    assert.equal((await json("GET", `/v1/messages/${id}`, creator)).status, 200,
+      "Cron activation must not require the creator to retry acquire");
+    for (const mode of ["read", "write"]) assert.equal((await acquire(rival, address, mode)).status, 409);
+    assert.equal(rules.size, 1, "neither reconciliation nor pending recovery creates another route");
+    await db.prepare("UPDATE mail_profiles SET session_expires_at=1 WHERE id=?1").bind(creator.profile_id).run();
+    assert.equal((await acquire(rival, address, "write")).status, 200,
+      "an expired creator session cannot retain an active mailbox reservation");
+    assert.equal((await json("GET", `/v1/messages/${id}`, creator)).body.code, "profile_session_expired");
+    assert.equal((await json("GET", `/v1/messages/${id}`, rival)).status, 200);
+  }, { ambiguousCreates: 1, maintenance: true });
 });
