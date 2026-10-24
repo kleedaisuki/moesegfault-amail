@@ -63,6 +63,29 @@ struct Cli {
     machine: bool,
     #[command(subcommand)]
     command: Command,
+    #[arg(skip)]
+    prepared_send: Option<PreparedSend>,
+}
+
+struct PreparedSend {
+    draft: archive::OutboundDraft,
+    hash: String,
+}
+
+impl PreparedSend {
+    fn read(path: &std::path::Path) -> Result<Self> {
+        let draft = archive::outbound_draft(path).map_err(|error| machine::Failure {
+            code: "invalid_draft",
+            next_action: "fix_input",
+            data: json!({}),
+            message: error.to_string(),
+        })?;
+        let hash = Sha256::digest(&draft.bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Ok(Self { draft, hash })
+    }
 }
 
 /// All mail mutations are explicit; fetching never marks mail read.
@@ -782,8 +805,8 @@ fn absolute_paths(cli: &mut Cli, cwd: &std::path::Path) {
     }
 }
 
-fn approval_summary(command: &Command) -> String {
-    match command {
+fn approval_summary(cli: &Cli) -> String {
+    match &cli.command {
         Command::Profile { command } => match command {
             ProfileCommand::Create { name } => format!("Create profile: {name}"),
             ProfileCommand::Activate { name } => format!("Activate profile: {name}"),
@@ -796,7 +819,17 @@ fn approval_summary(command: &Command) -> String {
             ProfileCommand::List => "List profiles".into(),
             ProfileCommand::Status => "Show this terminal's profile".into(),
         },
-        Command::Send { archive, .. } => format!("Send mail from archive: {}", archive.display()),
+        Command::Send { archive, .. } => match cli.prepared_send.as_ref() {
+            Some(prepared) => format!(
+                "Send snapshot SHA256: {}\nFrom: {}\nRecipients ({}): {}\nArchive: {}",
+                prepared.hash,
+                prepared.draft.sender,
+                prepared.draft.recipients.len(),
+                prepared.draft.recipients.join(", "),
+                archive.display()
+            ),
+            None => format!("Send mail from archive: {}", archive.display()),
+        },
         Command::Delete { id } => format!("Delete message: {id}"),
         Command::Read { id, out, .. } => format!("Download message {id} to {}", out.display()),
         Command::Get { id } => format!("Get message metadata: {id}"),
@@ -882,6 +915,9 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
     let mut cli = Cli::try_parse_from(request.args)
         .map_err(|error| machine::invalid_input(&error.to_string()))?;
     absolute_paths(&mut cli, &request.cwd);
+    if let Command::Send { archive, .. } = &cli.command {
+        cli.prepared_send = Some(PreparedSend::read(archive)?);
+    }
     let cfg = request.cfg;
     let terminal = request.terminal;
     if cfg.home.join("auth.sqlite3").exists() {
@@ -907,7 +943,7 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
                 "profile.activate",
                 &format!(
                     "Activate the initial user profile; {}",
-                    approval_summary(&cli.command)
+                    approval_summary(&cli)
                 ),
             )?;
         }
@@ -920,7 +956,7 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
             .is_some_and(|profile| profile.name == "user")
             || requested_user
         {
-            approval::authorize_request("operation", &approval_summary(&cli.command))?;
+            approval::authorize_request("operation", &approval_summary(&cli))?;
         }
     }
     if let Some(profile) = active.as_ref() {
@@ -1152,7 +1188,8 @@ fn command_kind(command: &Command) -> Option<command_journal::CommandKind> {
 }
 
 /// Execute the unchanged public behavior inside a best-effort completion boundary.
-fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> Result<()> {
+fn execute(mut cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> Result<()> {
+    let prepared_send = cli.prepared_send.take();
     match cli.command {
         Command::Discover { topic } => emit(&discovery::topic(topic.as_deref())?, cli.human)?,
         Command::SendReceipts { limit } => {
@@ -1216,14 +1253,12 @@ fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> R
             archive: path,
             idempotency_key,
         } => {
-            let bytes = archive::outbound_bytes(&path).map_err(|error| machine::Failure {
-                code: "invalid_draft",
-                next_action: "fix_input",
-                data: json!({}),
-                message: error.to_string(),
-            })?;
-            let digest = Sha256::digest(&bytes);
-            let hash: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+            let prepared = match prepared_send {
+                Some(prepared) => prepared,
+                None => PreparedSend::read(&path)?,
+            };
+            let bytes = prepared.draft.bytes;
+            let hash = prepared.hash;
             let key = if let Some(key) = idempotency_key {
                 if uuid::Uuid::parse_str(&key).is_err() {
                     return Err(machine::invalid_input("idempotency key must be a UUID"));
@@ -1333,6 +1368,44 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_consent_and_submission_share_the_same_owned_snapshot() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let temporary = tempfile::tempdir_in(root).unwrap();
+        let directory = temporary.path().join("draft");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(
+            directory.join("manifest.toml"),
+            "version=1\nfrom='a@mail.moesegfault.dev'\nto=['b@example.test']\nsubject='Snapshot'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("body.txt"),
+            "Private body, not an approval summary",
+        )
+        .unwrap();
+        let path = temporary.path().join("draft.zip");
+        archive::pack(&directory, &path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let mut cli = Cli::try_parse_from([
+            std::ffi::OsString::from("amail"),
+            std::ffi::OsString::from("send"),
+            path.clone().into_os_string(),
+        ])
+        .unwrap();
+        cli.prepared_send = Some(PreparedSend::read(&path).unwrap());
+        let summary = approval_summary(&cli);
+        assert!(summary.contains("a@mail.moesegfault.dev"));
+        assert!(summary.contains("b@example.test"));
+        assert!(summary.contains(&cli.prepared_send.as_ref().unwrap().hash));
+        assert!(!summary.contains("Private body"));
+        std::fs::write(&path, b"concurrent replacement").unwrap();
+        let prepared = cli.prepared_send.take().unwrap();
+        assert_eq!(prepared.draft.bytes, original);
+        assert!(PreparedSend::read(&path).is_err());
+    }
 
     #[test]
     fn offline_work_renews_activity_without_duplicate_mail_round_trips() {
