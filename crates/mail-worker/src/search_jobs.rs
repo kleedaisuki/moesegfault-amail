@@ -37,6 +37,8 @@ async fn reserve_search_work(database: &Database) -> AppResult<()> {
         }
     };
     let global = Principal {
+        profile: None,
+        enrollment_fence: false,
         iss: "_global".into(),
         sub: "_global".into(),
     };
@@ -63,6 +65,9 @@ fn query_hash(input: &SearchRequest, user: &Principal) -> AppResult<String> {
     value["limit"] = serde_json::json!(input.limit.unwrap_or(20));
     value["regex"] = serde_json::json!(input.regex.unwrap_or(false));
     value["case_sensitive"] = serde_json::json!(input.case_sensitive.unwrap_or(false));
+    if user.profile.is_some() {
+        value["profile_scope"] = serde_json::json!(profiles::scope(user));
+    }
     Ok(format!(
         "{:x}",
         Sha256::digest(format!("{}:{}:{value}", user.iss, user.sub).as_bytes())
@@ -472,11 +477,12 @@ pub(super) async fn search(
     });
     let preparing = semantic && origin.is_none();
     let inserted = database
-        .prepare("INSERT INTO search_jobs(id,owner_iss,owner_sub,request_json,state_json,state,created_at,expires_at) SELECT ?1,?2,?3,?4,?5,?6,?7,?8 WHERE (SELECT COUNT(*) FROM search_jobs WHERE owner_iss=?2 AND owner_sub=?3 AND state IN ('preparing','running','advancing') AND expires_at>?7)<?9 AND (SELECT COUNT(*) FROM search_jobs WHERE owner_iss=?2 AND owner_sub=?3 AND state IN ('preparing','running','advancing','done','stale') AND expires_at>?7)<?10 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?2 AND owner_sub=?3),0)=?11")
+        .prepare("INSERT INTO search_jobs(id,owner_iss,owner_sub,request_json,state_json,state,created_at,expires_at,profile_scope) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?12 WHERE (SELECT COUNT(*) FROM search_jobs WHERE owner_iss=?2 AND owner_sub=?3 AND state IN ('preparing','running','advancing') AND expires_at>?7)<?9 AND (SELECT COUNT(*) FROM search_jobs WHERE owner_iss=?2 AND owner_sub=?3 AND state IN ('preparing','running','advancing','done','stale') AND expires_at>?7)<?10 AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?2 AND owner_sub=?3),0)=?11")
         .bind(&[
             bind_str(&id), bind_str(&user.iss), bind_str(&user.sub), bind_str(&request_json),
             bind_str(&serde_json::to_string(&state).map_err(|_| AppError::bad("invalid_search"))?),
             bind_str(if preparing {"preparing"} else {"running"}), bind_num(created), bind_num(expires), bind_num(JOB_LIMIT), bind_num(JOB_TOTAL_LIMIT),bind_num(epoch),
+            bind_str(&profiles::scope(user)),
         ])?
         .run()
         .await?;
@@ -509,7 +515,7 @@ pub(super) async fn search(
             // Protect shared provider capacity before calling the embedding
             // service. No per-user count allowance or search charge applies.
             reserve_search_work(&database).await?;
-            let global = Principal { iss:"_global".into(), sub:"_global".into() };
+            let global = Principal { profile: None, enrollment_fence: false, iss:"_global".into(), sub:"_global".into() };
             reserve_quota(&database, "semantic_queries_global", &global, 1, 50_000)
                 .await
                 .map_err(|error| if error.status == 429 { AppError { status:503, code:"search_capacity_exhausted" } } else { error })?;
@@ -585,8 +591,8 @@ pub(super) async fn poll(
 
 async fn load_job(database: &Database, user: &Principal, id: &str) -> AppResult<SearchJobRow> {
     database
-        .prepare("SELECT id,request_json,state_json,state,version,lease_started_at,expires_at,COALESCE((SELECT generation FROM search_generations WHERE owner_iss=search_jobs.owner_iss AND owner_sub=search_jobs.owner_sub),0) AS current_generation FROM search_jobs WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3")
-        .bind(&[bind_str(id), bind_str(&user.iss), bind_str(&user.sub)])?
+        .prepare("SELECT id,request_json,state_json,state,version,lease_started_at,expires_at,COALESCE((SELECT generation FROM search_generations WHERE owner_iss=search_jobs.owner_iss AND owner_sub=search_jobs.owner_sub),0) AS current_generation FROM search_jobs WHERE id=?1 AND owner_iss=?2 AND owner_sub=?3 AND profile_scope=?4")
+        .bind(&[bind_str(id), bind_str(&user.iss), bind_str(&user.sub), bind_str(&profiles::scope(user))])?
         .first::<SearchJobRow>(None)
         .await?
         .ok_or_else(AppError::not_found)
@@ -1032,6 +1038,10 @@ async fn result_page(
     let mut rows = HashMap::new();
     for chunk in hits.chunks(40) {
         let mut query = search_summary_projection().to_owned();
+        query.push_str(&format!(
+            " AND {}",
+            profiles::message_filter(user, "messages")
+        ));
         query.push_str(" AND id IN (");
         query.push_str(
             &(0..chunk.len())
@@ -1091,6 +1101,31 @@ mod tests {
 
     const SYNTHETIC_NOW: i64 = 1_000_000;
 
+    #[test]
+    fn search_cursor_scope_changes_with_profile_session() {
+        let input = SearchRequest::default();
+        let mut user = Principal {
+            iss: "issuer".into(),
+            sub: "owner".into(),
+            profile: None,
+            enrollment_fence: false,
+        };
+        let legacy = query_hash(&input, &user).unwrap();
+        user.profile = Some(profiles::Session {
+            profile_id: "00000000-0000-4000-8000-000000000001".into(),
+            name: "agent".into(),
+            session_token: "00000000-0000-4000-8000-000000000002".into(),
+            is_user: false,
+            expires_at: 0,
+            lease_tokens: Default::default(),
+        });
+        let first = query_hash(&input, &user).unwrap();
+        assert_ne!(legacy, first);
+        user.profile.as_mut().unwrap().session_token =
+            "00000000-0000-4000-8000-000000000003".into();
+        assert_ne!(first, query_hash(&input, &user).unwrap());
+    }
+
     /// Synthetic commitments are stable across job completion and reject model/vector drift.
     #[test]
     fn semantic_vector_commitment_is_stable_and_fail_closed() {
@@ -1100,6 +1135,8 @@ mod tests {
             ..Default::default()
         };
         let user = Principal {
+            profile: None,
+            enrollment_fence: false,
             iss: "test-issuer".into(),
             sub: "test-owner".into(),
         };
@@ -1186,6 +1223,8 @@ mod tests {
     #[test]
     fn lexical_v3_works_and_semantic_v3_requires_restart() {
         let user = Principal {
+            profile: None,
+            enrollment_fence: false,
             iss: "test-issuer".into(),
             sub: "test-owner".into(),
         };
@@ -1225,6 +1264,8 @@ mod tests {
     #[test]
     fn malformed_semantic_cursor_is_rejected() {
         let user = Principal {
+            profile: None,
+            enrollment_fence: false,
             iss: "test-issuer".into(),
             sub: "test-owner".into(),
         };
@@ -1277,6 +1318,8 @@ mod tests {
     #[test]
     fn semantic_v5_cursor_authenticates_rank_boundary() {
         let user = Principal {
+            profile: None,
+            enrollment_fence: false,
             iss: "issuer".into(),
             sub: "owner".into(),
         };
@@ -1348,6 +1391,8 @@ mod tests {
     #[test]
     fn malformed_semantic_v5_cursor_is_rejected() {
         let user = Principal {
+            profile: None,
+            enrollment_fence: false,
             iss: "issuer".into(),
             sub: "owner".into(),
         };

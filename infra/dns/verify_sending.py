@@ -23,9 +23,10 @@ import dns.query
 import dns.rcode
 import dns.resolver
 import dns.rdatatype
+from txt_record import txt_content
 
 ZONE = "moesegfault.dev"
-DOMAINS = {"mail.moesegfault.dev", "mail-staging.moesegfault.dev"}
+DOMAINS = {"mail.moesegfault.dev", "mail-staging.moesegfault.dev", "tmpaddr-staging.moesegfault.dev", "tmpaddr.moesegfault.dev"}
 DOMAIN = os.environ.get("MAIL_SENDING_DOMAIN", "mail.moesegfault.dev").lower().rstrip(".")
 API = "https://api.cloudflare.com/client/v4"
 
@@ -77,11 +78,11 @@ def normalize(record: dict[str, Any]) -> Record:
     kind = record["type"].upper()
     if kind not in {"MX", "TXT"}:
         raise ValueError(f"Unexpected Email Sending record type: {kind}")
-    content = record["content"].strip()
+    content = record["content"]
     if kind == "MX":
-        content = content.lower().rstrip(".")
-    elif content.startswith('"') and content.endswith('"'):
-        content = content[1:-1]
+        content = content.strip().lower().rstrip(".")
+    else:
+        content = txt_content(content)
     priority = int(record["priority"]) if kind == "MX" else None
     return Record(fqdn(record["name"]), kind, content, priority)
 

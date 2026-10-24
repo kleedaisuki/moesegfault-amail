@@ -52,10 +52,11 @@ dependencies = [
 
 [[package]]
 name = "amail"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "amail-trace-schema",
  "anyhow",
+ "axum",
  "base64 0.22.1",
  "chacha20poly1305",
  "chrono",
@@ -65,6 +66,7 @@ dependencies = [
  "html2text 0.13.6",
  "jsonwebtoken 9.3.1",
  "keyring",
+ "libc",
  "rand 0.8.8",
  "reqwest",
  "rusqlite",
@@ -72,16 +74,18 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "tokio",
  "toml",
  "url",
  "uuid",
  "webbrowser",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
 [[package]]
 name = "amail-events"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "js-sys",
@@ -93,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "amail-identity-test-inbox"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "uuid",
@@ -102,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "amail-ingress"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "js-sys",
@@ -112,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "amail-role-monitor"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "amail-trace-schema",
  "js-sys",
@@ -125,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "amail-trace-schema"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -134,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "amail-trace-sink"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "amail-trace-schema",
  "serde-wasm-bindgen",
@@ -144,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "amail-worker"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "amail-trace-schema",
  "ammonia",
@@ -414,6 +418,52 @@ name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
+name = "axum"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
+dependencies = [
+ "axum-core",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "itoa",
+ "matchit 0.8.4",
+ "memchr",
+ "mime",
+ "percent-encoding",
+ "pin-project-lite",
+ "serde_core",
+ "sync_wrapper",
+ "tokio",
+ "tower",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
+name = "axum-core"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "sync_wrapper",
+ "tower-layer",
+ "tower-service",
+]
 
 [[package]]
 name = "base16ct"
@@ -1506,6 +1556,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hyper"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1518,6 +1574,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -2016,6 +2073,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
+name = "matchit"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2029,6 +2092,12 @@ checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
 ]
+
+[[package]]
+name = "mime"
+version = "0.3.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "minimal-lexical"
@@ -3593,7 +3662,19 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2",
+ "tokio-macros",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -4307,7 +4388,7 @@ dependencies = [
  "http",
  "http-body",
  "js-sys",
- "matchit",
+ "matchit 0.7.3",
  "pin-project",
  "serde",
  "serde-wasm-bindgen",

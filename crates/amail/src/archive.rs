@@ -156,7 +156,21 @@ fn validate_manifest(manifest: &Manifest, names: &HashSet<String>) -> Result<()>
 /// Validate outbound ZIP and return bytes suitable for an idempotent send.
 /// 校验出站 ZIP，返回可用于幂等发送的字节。
 pub fn outbound_bytes(path: &Path) -> Result<Vec<u8>> {
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(outbound_draft(path)?.bytes)
+}
+
+pub struct OutboundDraft {
+    pub bytes: Vec<u8>,
+    pub sender: String,
+    pub recipients: Vec<String>,
+}
+
+/// Keep validated bytes and their envelope together across browser approval.
+pub fn outbound_draft(path: &Path) -> Result<OutboundDraft> {
+    let file = File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take((MAX_OUTBOUND_ARCHIVE + 1) as u64)
+        .read_to_end(&mut bytes)?;
     ensure!(
         bytes.len() <= MAX_OUTBOUND_ARCHIVE,
         "archive exceeds 5 MiB transport limit"
@@ -205,7 +219,15 @@ pub fn outbound_bytes(path: &Path) -> Result<Vec<u8>> {
             ensure!(text.len() <= 2 * 1024 * 1024, "{name} too large");
         }
     }
-    Ok(bytes)
+    drop(zip);
+    let mut recipients = manifest.to;
+    recipients.extend(manifest.cc);
+    recipients.extend(manifest.bcc);
+    Ok(OutboundDraft {
+        bytes,
+        sender: manifest.from,
+        recipients,
+    })
 }
 
 fn gather(dir: &Path, rel: &Path, files: &mut Vec<PathBuf>) -> Result<()> {

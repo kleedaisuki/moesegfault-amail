@@ -5,7 +5,7 @@ name: CI and deploy
 on:
   pull_request:
   push:
-    branches: [main, codex/amail-v0.1.0, codex/v0.2.0-billing]
+    branches: [main, codex/amail-v0.1.0, codex/v0.2.0-billing, codex/v0.3.0-multitenant]
     # Skip only non-build documentation; PR/manual/release checks remain independent.
     # A skipped push supplies no exact-SHA CI result or acceptance/release artifact.
     paths-ignore:
@@ -289,23 +289,34 @@ jobs:
           shared-key: cli-dependencies-v1
           cache-bin: false
           cache-workspace-crates: false
-          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.2.0-billing') }}
+          cache-on-failure: true
+          save-if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)) }}
       - name: Check formatting
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
       - name: Test CLI
         run: cargo test -p amail --locked --all-targets
+      - name: Preserve Windows debug executable for local failure reproduction only
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-debug-cli-${{ github.run_id }}
+          path: target/debug/amail.exe
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Check CLI help
         run: cargo run -p amail --locked -- --help
-      - name: Build native release candidate for staging acceptance
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
-        run: cargo build -p amail --locked --release
       - uses: actions/setup-python@v5
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
         with:
           python-version: '3.12'
+      - name: Exercise native daemon and terminal profile journey
+        shell: bash
+        run: python scripts/v030_profile_journey.py --binary "target/debug/amail${{ runner.os == 'Windows' && '.exe' || '' }}"
+      - name: Build native release candidate for staging acceptance
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)
+        run: cargo build -p amail --locked --release
       - name: Restore verified published v0.1.0 CLI baseline on the same hosted runner
-        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -320,14 +331,14 @@ jobs:
           tar -xzf amail-v0.1.0-x86_64-unknown-linux-gnu.tar.gz amail
           ./amail --version
       - name: Measure bounded CLI startup and long-tail synthetic ZIP cases
-        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)
         shell: bash
         run: |
           mkdir -p .temp/performance
           python scripts/performance.py --binary target/release/amail --baseline .temp/perf-baseline/amail --output .temp/performance/cli.json
           cargo test -p amail --locked --release performance_microbench -- --ignored --nocapture | tee .temp/performance/cli-microbench.log
       - name: Preserve bounded CLI performance measurements
-        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)
         uses: actions/upload-artifact@v4
         with:
           name: performance-cli-${{ github.run_id }}
@@ -335,10 +346,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Package version-checked native CLI candidate
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)
         run: python infra/ci/cli_candidate.py binary
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)
         with:
           name: cli-candidate-native-${{ runner.os }}
           path: .temp/ci/cli-candidate/*
@@ -346,8 +357,8 @@ jobs:
           retention-days: 14
 
   cli-candidate:
-    name: Assemble unpublished v0.2.0 staging acceptance bundle
-    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
+    name: Assemble unpublished staging acceptance bundle
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)
     needs: cli
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -366,14 +377,14 @@ jobs:
       - name: Upload acceptance downloads without creating a Release or tag
         uses: actions/upload-artifact@v4
         with:
-          name: cli-candidate-v0.2.0-${{ github.run_id }}
+          name: cli-candidate-${{ github.ref == 'refs/heads/codex/v0.3.0-multitenant' && 'v0.3.0' || 'v0.2.0' }}-${{ github.run_id }}
           path: .temp/ci/cli-candidate/*
           if-no-files-found: error
           retention-days: 14
 
   staging-inspect:
     name: Read isolated staging rollout predecessor
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging-inspect' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'INSPECT_STAGING_V020'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging-inspect' && ((github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'INSPECT_STAGING_V020') || (github.ref == 'refs/heads/codex/v0.3.0-multitenant' && inputs.confirm == 'INSPECT_STAGING_V030'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: staging
@@ -397,8 +408,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install pinned DNS parser for read-only temporary domain comparisons
+        if: always() && github.ref == 'refs/heads/codex/v0.3.0-multitenant' && inputs.confirm == 'INSPECT_STAGING_V030'
+        run: |
+          python -m pip install --only-binary=:all: -r infra/dns/requirements.txt
       - name: Read reviewed staging capabilities without writes or payloads
         run: python infra/deploy/inspect_staging.py
+      - name: Inspect fixed temporary domain readiness and scoped permissions without writes
+        if: always() && github.ref == 'refs/heads/codex/v0.3.0-multitenant' && inputs.confirm == 'INSPECT_STAGING_V030'
+        run: python infra/provider/ensure_tmpaddr_staging.py --inspect --output .temp/tmpaddr-staging-inspection.json
+      - name: Preserve only content-free temporary domain inspection predicates
+        if: always() && github.ref == 'refs/heads/codex/v0.3.0-multitenant' && inputs.confirm == 'INSPECT_STAGING_V030'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmpaddr-staging-inspection-${{ github.run_id }}
+          path: .temp/tmpaddr-staging-inspection.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Preserve bounded predecessor pins for rollout review
         uses: actions/upload-artifact@v4
         with:
@@ -416,7 +442,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.target == 'staging-e2e' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.2.0-billing')
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref))
     permissions:
       contents: read
       actions: read
@@ -522,6 +548,15 @@ jobs:
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_hosted_e2e.py
 
+      - name: Preserve only content-free profile and temporary mailbox evidence
+        if: always() && github.ref == 'refs/heads/codex/v0.3.0-multitenant'
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-v030-profile-evidence-${{ github.run_id }}
+          path: .temp/staging-v030-evidence.json
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Preserve only content-free Billing acceptance evidence
         if: always() && inputs.billing_confirm == 'RUN_STAGING_BILLING_V020'
         uses: actions/upload-artifact@v4
@@ -546,13 +581,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - uses: pnpm/action-setup@v4
         with:
           version: 12.6.0
           run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: infra/tests/worker-boundary/pnpm-lock.yaml
       - name: Install workerd boundary-test dependencies
         working-directory: infra/tests/worker-boundary
         run: pnpm install --frozen-lockfile
@@ -567,7 +604,8 @@ jobs:
           shared-key: worker-dependencies-v1
           cache-bin: false
           cache-workspace-crates: false
-          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.2.0-billing') }}
+          cache-on-failure: true
+          save-if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)) }}
       - name: Fingerprint the pinned public bundler compiler
         id: compiler
         shell: bash
@@ -631,7 +669,7 @@ jobs:
         working-directory: workers/role-monitor
         run: worker-build --release
       - name: Save trusted pinned check bundler
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || github.ref == 'refs/heads/codex/v0.2.0-billing') && steps.worker-bundler-cache.outputs.cache-hit != 'true'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)) && steps.worker-bundler-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .cache/worker-build-check
@@ -642,13 +680,13 @@ jobs:
         timeout-minutes: 15
         run: pnpm test
       - name: Measure bounded Worker search and ZIP microbenchmarks
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)
         shell: bash
         run: |
           mkdir -p .temp/performance
           cargo test -p amail-worker --locked --release performance_microbench -- --ignored --nocapture | tee .temp/performance/worker-microbench.log
       - name: Preserve bounded Worker performance measurements
-        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && github.ref == 'refs/heads/codex/v0.2.0-billing'
+        if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)
         uses: actions/upload-artifact@v4
         with:
           name: performance-worker-${{ github.run_id }}
@@ -701,12 +739,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - uses: pnpm/action-setup@v4
         with:
           version: 12.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
       - name: Check Astro and TypeScript
@@ -789,7 +829,7 @@ jobs:
 
   deploy-worker:
     name: Deploy mail API
-    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030'
     needs: [cli, worker, site, dns, provider-live, deploy-trace-sink, worker-build]
     outputs:
       api_version: ${{ steps.upgrade.outputs.api_version || steps.api.outputs.version }}
@@ -926,7 +966,7 @@ jobs:
 
   deploy-ingress:
     name: Verify retained production SMTP ingress
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030'
     needs: [deploy-worker, worker-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -956,7 +996,7 @@ jobs:
 
   deploy-events:
     name: Verify retained production lifecycle consumer
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030'
     needs: [deploy-worker, worker-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -986,7 +1026,7 @@ jobs:
 
   release-ready:
     name: Gate public site on verified published release
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -1028,7 +1068,7 @@ jobs:
 
   deploy-site:
     name: Deploy release site
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && needs.release-ready.outputs.ready == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030' && needs.release-ready.outputs.ready == 'true'
     needs: [deploy-ingress, deploy-events, site, release-ready]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1100,7 +1140,7 @@ jobs:
   staging-site:
     name: Deploy isolated staging release site
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && ((github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020') || (github.ref == 'refs/heads/codex/v0.3.0-multitenant' && inputs.confirm == 'RUN_STAGING_V030'))
     needs: [site, staging-events]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1184,7 +1224,7 @@ jobs:
 
   staging-worker:
     name: Deploy isolated staging mail API
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && ((github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020') || (github.ref == 'refs/heads/codex/v0.3.0-multitenant' && inputs.confirm == 'RUN_STAGING_V030'))
     needs: [cli, worker, site, dns, provider-live, staging-trace-sink, worker-build]
     permissions:
       contents: read
@@ -1219,6 +1259,8 @@ jobs:
       AMAIL_TRACE_TOPOLOGY: api-scheduled
       AMAIL_STAGING_MAIL_DEPLOY_CONFIRM: ${{ inputs.confirm }}
       AMAIL_STAGING_DEPLOY_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_STAGING_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_STAGING_ENVIRONMENT: staging
     steps:
       - name: Verify staging secrets before installing tools
         working-directory: .
@@ -1251,13 +1293,25 @@ jobs:
       - name: Install deploy tools
         run: |
           npm install --global wrangler@4.142.0
-          python -m pip install -r ../../infra/dns/requirements.txt
+      - name: Install pinned DNS parser before temporary domain onboarding
+        run: |
+          python -m pip install --only-binary=:all: -r ../../infra/dns/requirements.txt
       - name: Verify staging authoritative Email Sending DNS
         working-directory: .
         run: python infra/dns/verify_sending.py
       - name: Require established staging global hold before provider or schema changes
         working-directory: .
         run: python infra/operator/check_send_hold.py --target staging
+      - name: Onboard only the isolated temporary mailbox subdomain
+        if: github.ref == 'refs/heads/codex/v0.3.0-multitenant'
+        working-directory: .
+        run: python infra/provider/ensure_tmpaddr_staging.py --apply
+      - name: Verify temporary mailbox authoritative sending DNS
+        if: github.ref == 'refs/heads/codex/v0.3.0-multitenant'
+        working-directory: .
+        env:
+          MAIL_SENDING_DOMAIN: tmpaddr-staging.moesegfault.dev
+        run: python infra/dns/verify_sending.py
       - name: Disable and verify staging user-domain preview and partial suppression drops
         if: needs.staging-trace-sink.outputs.reuse_api != 'true'
         working-directory: .
@@ -1335,7 +1389,7 @@ jobs:
   staging-ingress:
     name: Deploy isolated Rust staging SMTP ingress
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && ((github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020') || (github.ref == 'refs/heads/codex/v0.3.0-multitenant' && inputs.confirm == 'RUN_STAGING_V030'))
     needs: [staging-worker, staging-trace-sink, worker, worker-build]
     outputs:
       version: ${{ needs.staging-trace-sink.outputs.reuse_adapters == 'true' && needs.staging-trace-sink.outputs.ingress_version || steps.ingress.outputs.version }}
@@ -1379,7 +1433,7 @@ jobs:
   staging-events:
     name: Deploy isolated Rust staging lifecycle consumer
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && ((github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020') || (github.ref == 'refs/heads/codex/v0.3.0-multitenant' && inputs.confirm == 'RUN_STAGING_V030'))
     # Serialize same-run resource writers; GitHub otherwise replaces pending siblings.
     needs: [staging-ingress, staging-trace-sink, worker, worker-build]
     outputs:
@@ -1441,7 +1495,7 @@ jobs:
   staging-identity-test-inbox:
     name: Deploy private staging Identity verification inbox
     # Staging is an explicit promotion, never a side effect of a source push.
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref != 'refs/heads/codex/v0.2.0-billing'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && !contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant"]'), github.ref)
     needs: [worker, dns, staging-events, worker-build]
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -1508,9 +1562,72 @@ jobs:
       - name: Read back deployed recipient allowlist and private bucket
         run: python workers/identity-test-inbox/check_config.py --live --deployed
 
+  production-v030:
+    name: Upgrade accepted production graph to v0.3.0
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && inputs.confirm == 'RUN_PRODUCTION_V030' && github.ref == 'refs/heads/main'
+    needs: [cli, worker, worker-build, site, dns, provider-live]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      AMAIL_PRODUCTION_ENVIRONMENT: production
+      AMAIL_PRODUCTION_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Restore exact same-run tested modules before any production mutation
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.worker-build.outputs.artifact_id }}
+          path: .temp/ci/worker-built
+          merge-multiple: true
+      - name: Verify source compiler and every generated byte
+        run: python infra/ci/worker_artifact.py restore
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned deployment and DNS tools
+        run: |
+          npm install --global wrangler@4.142.0
+          python -m pip install --only-binary=:all: -r infra/dns/requirements.txt
+      - name: Migrate preserve user state update events and maintenance then replace API
+        run: python infra/deploy/production_v030.py upgrade
+      - name: Retain non-content production write coordinates without automatic replay
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-v030-partial-${{ github.run_id }}
+          path: |
+            .temp/production-upgrade-partial.jsonl
+            .temp/production-upgrade-capture.jsonl
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Retain completed exact graph and preservation fingerprints
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-v030-${{ github.run_id }}
+          path: .temp/production-v030.json
+          if-no-files-found: error
+          retention-days: 30
+
   production-inspect:
     name: Inspect owned active production upgrade predecessor
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production-inspect' && github.ref == 'refs/heads/main' && inputs.confirm == 'INSPECT_PRODUCTION_V012'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production-inspect' && github.ref == 'refs/heads/main' && (inputs.confirm == 'INSPECT_PRODUCTION_V012' || inputs.confirm == 'INSPECT_PRODUCTION_V030')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
@@ -1522,6 +1639,7 @@ jobs:
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       AMAIL_PRODUCTION_ENVIRONMENT: production
       AMAIL_PRODUCTION_GRAPH_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_PRODUCTION_CONFIRM: ${{ inputs.confirm }}
       AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
     steps:
       - uses: actions/checkout@v4
@@ -1531,18 +1649,37 @@ jobs:
         with:
           python-version: '3.12'
       - name: Read exact serving capabilities and current policy without provider writes
+        if: inputs.confirm == 'INSPECT_PRODUCTION_V012'
         run: python infra/deploy/production_v020.py inspect
+      - name: Install pinned parser for temporary production domain read-only inspection
+        if: inputs.confirm == 'INSPECT_PRODUCTION_V030'
+        run: |
+          python -m pip install --only-binary=:all: -r infra/dns/requirements.txt
+      - name: Read completed USD predecessor policy and preserved production paths
+        if: inputs.confirm == 'INSPECT_PRODUCTION_V030'
+        run: python infra/deploy/production_v030.py inspect
+      - name: Read fixed temporary production domain without writes
+        if: always() && inputs.confirm == 'INSPECT_PRODUCTION_V030'
+        run: python infra/provider/ensure_tmpaddr_staging.py --target production --inspect --output .temp/tmpaddr-production-inspection.json
+      - name: Preserve non-content temporary production domain predicates
+        if: always() && inputs.confirm == 'INSPECT_PRODUCTION_V030'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmpaddr-production-inspection-${{ github.run_id }}
+          path: .temp/tmpaddr-production-inspection.json
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Preserve non-content owned predecessor readback
         uses: actions/upload-artifact@v4
         with:
           name: production-upgrade-inspect-${{ github.run_id }}
-          path: .temp/production-upgrade.json
+          path: ${{ inputs.confirm == 'INSPECT_PRODUCTION_V030' && '.temp/production-v030.json' || '.temp/production-upgrade.json' }}
           if-no-files-found: error
           retention-days: 30
 
   deploy-trace-sink:
     name: Deploy private production privacy trace sink
-    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030'
     needs: [worker, dns, worker-build]
     outputs:
       queue_id: ${{ steps.upgrade.outputs.queue_id || steps.queues.outputs.queue_id }}
@@ -1640,7 +1777,7 @@ jobs:
 
   staging-trace-sink:
     name: Deploy private staging privacy trace sink
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'staging' && ((github.ref == 'refs/heads/codex/v0.2.0-billing' && inputs.confirm == 'RUN_STAGING_V020') || (github.ref == 'refs/heads/codex/v0.3.0-multitenant' && inputs.confirm == 'RUN_STAGING_V030'))
     needs: [cli, worker, site, dns, provider-live, worker-build]
     outputs:
       queue_id: ${{ steps.predecessor.outputs.reuse_sink == 'true' && steps.predecessor.outputs.queue_id || steps.queues.outputs.queue_id }}

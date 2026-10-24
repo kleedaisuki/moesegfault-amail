@@ -29,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, build_opener
@@ -674,6 +675,10 @@ def native_login(run_dir: Path, binary: Path, expected_address: str | None = Non
     attempt = secrets.token_hex(8)
     home = run_dir / f"amail-home-{attempt}"
     home.mkdir(parents=True, exist_ok=False)
+    if realm is STAGING:
+        # Explicit synthetic staging acceptance is unattended after native PKCE;
+        # production users retain the default per-operation browser approval.
+        (home / "config.toml").write_text("yolo = true\n", encoding="utf-8")
     environment = browser_environment()
     environment.update({
         "AMAIL_HOME": str(home),
@@ -682,6 +687,7 @@ def native_login(run_dir: Path, binary: Path, expected_address: str | None = Non
         "AMAIL_API_BASE": realm.mail_api,
         "AMAIL_REDIRECT_URI": "http://127.0.0.1/callback",
         "AMAIL_TELEMETRY": "off",
+        "AMAIL_TERMINAL_ID": str(uuid.uuid5(uuid.NAMESPACE_URL, str(home.resolve()))),
     })
     config = cli_json(binary, environment, "config")
     if any(config.get(key) != value for key, value in {

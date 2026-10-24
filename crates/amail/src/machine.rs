@@ -1,11 +1,13 @@
 //! Opt-in structured stderr boundaries; private error prose never enters machine records.
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
-static ENABLED: AtomicBool = AtomicBool::new(false);
+use std::cell::Cell;
+thread_local! {
+    static ENABLED: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Configure once before parsing/runtime work so failures have the requested format.
 pub fn enable(value: bool) {
-    ENABLED.store(value, Ordering::Relaxed);
+    ENABLED.with(|enabled| enabled.set(value));
 }
 /// Recognize an explicitly requested flag, never a positional value after `--`.
 pub fn requested(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
@@ -15,7 +17,7 @@ pub fn requested(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
 }
 /// Whether structured stderr was explicitly requested.
 pub fn enabled() -> bool {
-    ENABLED.load(Ordering::Relaxed)
+    ENABLED.with(Cell::get)
 }
 /// Emit one versioned record on stderr, preserving stdout's established contract.
 pub fn event(kind: &str, data: Value) {

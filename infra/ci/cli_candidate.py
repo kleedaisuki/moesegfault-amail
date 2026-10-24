@@ -97,6 +97,13 @@ Staging Identity is a separate realm: a production account/session does not prov
 staging authorization. Use only an authorized staging identity and owned fixtures.
 No token or password belongs in these commands, task notes or public logs.
 
+The executable starts a local daemon automatically. Normal installation keeps the
+executable under `~/.amail/bin` (`%USERPROFILE%\\.amail\\bin` on Windows) and runtime
+state plus `config.toml` under `~/.amail`; the isolated `AMAIL_HOME` above overrides
+that home for this acceptance task. Keep that directory private and never upload
+its SQLite database, daemon endpoint or credentials as test artifacts. Use
+`amail daemon stop` before removing an isolated acceptance home.
+
 Automatic semantic indexing sends mail subject/body text to OpenRouter and upstream
 model providers even when `--semantic` is never used. There is no per-account off
 switch. Read the [staging privacy boundary](https://amail-staging.moesegfault.dev/manual/#隐私与边界)

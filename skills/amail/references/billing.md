@@ -1,7 +1,7 @@
 # Billing, resource plans and human authorization
 
 Read for subscriptions, usage, spending limits or authorization recovery. These
-v0.2.0 commands describe installed behavior, not a claim of staging/production
+v0.3.0 commands describe installed behavior, not a claim of staging/production
 availability. `amail discover billing` is the offline command index.
 
 ## Resource model
@@ -11,9 +11,13 @@ availability. `amail discover billing` is the offline command index.
 | Community price, USD | 0 | 1.50 | 4.50 |
 | Outbound recipient deliveries | 100 | 1,000 | 5,000 |
 | Stored mail and attachments | 200 MB | 2 GB | 10 GB |
-| Addresses | 1 | 3 | 5 |
+| Permanent addresses | 1 | 3 | 5 |
+| Temporary addresses | 3 | 6 | 10 |
 
 Allowances are shared by the account, not multiplied by addresses or agents.
+Temporary address slots are independent from permanent slots, but their storage
+and send usage draw from this same account pool. Their absolute six-hour lifetime
+is not extended by subscription. See [temporary mail](profiles.md).
 Storage uses decimal units: 1 GB = 1,000,000,000 bytes. Received messages are
 unmetered; they occupy storage. No retained-message-count limit or per-plan
 semantic-search fee/count quota applies. Service protection, sending policy and
@@ -95,7 +99,7 @@ session, not permission for an unattended financial retry. Polling waits accept
 | `inspect_billing_status` | Read current resources/budget; the human decides whether to change spending. Do not bypass the cap or upgrade automatically. |
 | `idempotency_conflict` / `stop` | Do not change payload under that key or rotate it to evade the conflict. Resolve the original intended action. |
 | `fix_input` | Correct the closed plan/action or canonical UUID grammar; do not automate human consent. |
-| `upgrade_client` / HTTP 426 | Install the matching v0.2.0 CLI and Skill; do not impersonate a new client with an old binary. |
+| `upgrade_client` / HTTP 426 | Install the matching current CLI and Skill; do not impersonate a new client with an old binary. |
 
 `--machine` emits safe typed stderr records; capture separately from JSONL stdout.
 Preserve send intent recovery too: billing failure never authorizes replacement

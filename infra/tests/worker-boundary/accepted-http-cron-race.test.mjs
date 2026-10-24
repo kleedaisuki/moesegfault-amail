@@ -4,7 +4,7 @@
  */
 import { apiVersionHeaders } from "./api-version.mjs";
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -241,3 +241,153 @@ test("public owner DELETE returns 204 without embedding work and preserves repea
 
 /** Known legacy IDs can be deleted without exposing an incomplete projection. */
 test("public owner DELETE tombstones a hidden accepted legacy projection", { timeout: 90_000 }, async () => race(true, false, { hiddenAccepted: true }));
+
+/** Exercise an actual v0.2 schema/journal across the additive profile migration. */
+async function upgradedLegacyJournal({ enrolled = false, seedAfterUpgrade = false, state = "preparing", retainedArchive = false } = {}) {
+  let sends = 0, unexpected = 0;
+  const originalId = randomUUID(), originalKey = randomUUID();
+  const originalCreated = Date.now() - 60_000;
+  const bytes = draftZip("original v0.2 preparing content", sender);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const jwk = publicKey.export({ format: "jwk" });
+  const mf = new Miniflare({ cf: false, workers: [{
+    name: "legacy-journal-upgrade", modules: true, scriptPath: path.join(here, "accepted-race-entry.mjs"),
+    modulesRoot: path.resolve(here, "../../.."), modulesRules: workerModuleRules,
+    compatibilityDate: "2026-08-06", d1Databases: ["MAIL_DB"], r2Buckets: ["MAIL_BODIES"],
+    bindings: { IDENTITY_ISSUER: issuer, OIDC_CLIENT_ID: "amail-cli-staging", MAIL_DOMAIN: "mail-staging.moesegfault.dev" },
+    serviceBindings: { TEST_CONTROL: async request => {
+      if (request.method === "POST" && request.url === "https://test.invalid/send") {
+        sends++;
+        return Response.json({ messageId: "synthetic-upgraded-provider" });
+      }
+      if (request.method === "POST" && request.url === "https://test.invalid/after-accepted") {
+        return new Response(null, { status: 204 });
+      }
+      unexpected++;
+      throw new Error("unexpected legacy upgrade control request");
+    } },
+    outboundService(request) {
+      if (request.method === "GET" && request.url === `${issuer}/.well-known/openid-configuration`) {
+        return Response.json({ issuer, jwks_uri: `${issuer}/jwks` });
+      }
+      if (request.method === "GET" && request.url === `${issuer}/jwks`) {
+        return Response.json({ keys: [{ ...jwk, kid: "race", alg: "RS256", use: "sig" }] });
+      }
+      unexpected++;
+      throw new Error("unexpected legacy upgrade egress");
+    },
+  }] });
+  try {
+    const { MAIL_DB: db, MAIL_BODIES: bucket } = await mf.getBindings();
+    await applyMigrations(db, path.join(worker, "migrations"), { through: 15 });
+    assert.equal((await db.prepare("PRAGMA table_info(send_requests)").all()).results
+      .some((column) => column.name === "mailbox_address"), false, "fixture begins at the actual v0.2 schema");
+    await seedResourceAccount(db, issuer, owner);
+    await db.prepare("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES(?1,'recovery-synthetic',?2,?3,0,'active',?4)")
+      .bind(sender, issuer, owner, originalCreated).run();
+    await db.prepare("UPDATE embedding_dependency SET blocked_until=?1 WHERE id=1").bind(Date.now() + 86_400_000).run();
+    await db.prepare("UPDATE send_release_gates SET canary_owner_iss=?1,canary_owner_sub=?2,canary_recipient_sha256=?3,canary_expires_at=unixepoch()+600,canary_used_by=NULL,actor='synthetic-fixture',case_ref='synthetic-upgrade' WHERE id=1")
+      .bind(issuer, owner, createHash("sha256").update("synthetic@example.invalid").digest("hex")).run();
+    if (seedAfterUpgrade) await applyMigrations(db, path.join(worker, "migrations"), { from: 16 });
+    // Old-shape INSERT also models an old API still serving after migrations but
+    // before replacement; no backfill may be the only recovery mechanism.
+    await db.prepare("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,quota_reserved,state,created_at,request_id) VALUES(?1,?2,?3,?4,?5,1,'preparing',?6,'synthetic-before-upgrade')")
+      .bind(issuer, owner, originalKey, hash, originalId, originalCreated).run();
+    await db.prepare("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,currency) SELECT ?1,?2,?3,period_start,1,'USD' FROM resource_current WHERE owner_iss=?1 AND owner_sub=?2")
+      .bind(issuer, owner, originalKey).run();
+    await db.prepare("INSERT INTO daily_usage(kind,owner_iss,owner_sub,day,used) VALUES('send_minute',?1,?2,?3,1),('send_global','_global','_global',?4,1)")
+      .bind(issuer, owner, Math.floor(Date.now() / 60_000), Math.floor(Date.now() / 86_400_000)).run();
+    if (state !== "preparing") {
+      await db.prepare("UPDATE send_requests SET state=?1,provider_id=?2,sender=?3,envelope_json=?4 WHERE idem_key=?5")
+        .bind(state, state === "accepted" ? "synthetic-v020-provider" : null,
+          state === "accepted" ? sender : null, state === "accepted" ? '["synthetic@example.invalid"]' : null, originalKey).run();
+    }
+    if (retainedArchive) {
+      await db.prepare("INSERT INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at) VALUES(?1,?2,?3,?4,'reserved',?5)")
+        .bind(originalId, issuer, owner, bytes.length, originalCreated).run();
+      await bucket.put(`messages/${originalId}.zip`, bytes);
+    }
+    if (!seedAfterUpgrade) await applyMigrations(db, path.join(worker, "migrations"), { from: 16 });
+    const authorization = bearer();
+    let session;
+    const control = async (route, input) => mf.dispatchFetch(`https://mail.invalid${route}`, {
+      method: "POST", headers: { ...apiVersionHeaders, authorization, "content-type": "application/json",
+        ...(session ? { "x-amail-profile-session": session.session_token } : {}) }, body: JSON.stringify(input),
+    });
+    if (enrolled) {
+      const activation = await control("/v1/profiles/activate", { name: "user", terminal_id: randomUUID() });
+      assert.equal(activation.status, 200);
+      session = await activation.json();
+      const lease = await control("/v1/leases/acquire", { address: sender, mode: "write" });
+      assert.equal(lease.status, 200);
+      await lease.json();
+    }
+    const send = (payload = bytes) => mf.dispatchFetch("https://mail.invalid/v1/messages/send", {
+      method: "POST", headers: { ...apiVersionHeaders, authorization, "content-type": "application/zip", "idempotency-key": originalKey,
+        ...(session ? { "x-amail-profile-session": session.session_token } : {}) }, body: payload,
+    });
+    const journal = () => db.prepare("SELECT * FROM send_requests WHERE idem_key=?1").bind(originalKey).first();
+    const safety = () => db.prepare("SELECT * FROM daily_usage ORDER BY kind,owner_iss,owner_sub,day").all();
+    const before = await journal();
+    const beforeSafety = (await safety()).results;
+    const beforeHold = await db.prepare("SELECT * FROM resource_send_reservations WHERE idem_key=?1").bind(originalKey).first();
+    assert.equal(before.mailbox_address, null);
+    assert.equal(before.profile_scope, "");
+    if (state === "preparing") {
+      const wrong = await send(draftZip("a different unapproved payload", sender));
+      assert.equal(wrong.status, 409);
+      assert.equal((await wrong.json()).code, "idempotency_payload_mismatch");
+      assert.deepEqual(await journal(), before, "a different payload cannot adopt or mutate the old intent");
+      const resumed = await send();
+      const resumedBody = await resumed.json();
+      assert.equal(resumed.status, 202, JSON.stringify(resumedBody));
+      assert.equal(resumedBody.id, originalId);
+      const after = await journal();
+      assert.equal(after.state, "sent");
+      assert.equal(after.message_id, originalId);
+      assert.equal(after.created_at, originalCreated);
+      assert.equal(after.payload_hash, hash);
+      assert.equal(after.mailbox_address, sender, "only the positively matching preparing intent captures its sender");
+      assert.equal(after.mailbox_generation, "");
+      assert.equal(after.quota_reserved, 1);
+      const afterHold = await db.prepare("SELECT * FROM resource_send_reservations WHERE idem_key=?1").bind(originalKey).first();
+      assert.deepEqual(afterHold, { ...beforeHold, state: "accepted" }, "the same held recipient unit is consumed once");
+      const period = await db.prepare("SELECT outbound_reserved,outbound_accepted FROM resource_periods WHERE owner_iss=?1 AND owner_sub=?2")
+        .bind(issuer, owner).first();
+      assert.deepEqual(period, { outbound_reserved: 0, outbound_accepted: 1 });
+      const message = await db.prepare("SELECT id,received_at FROM messages WHERE id=?1").bind(originalId).first();
+      assert.deepEqual(message, { id: originalId, received_at: originalCreated });
+      const storage = await db.prepare("SELECT id,bytes,created_at FROM storage_reservations WHERE id=?1").bind(originalId).first();
+      assert.equal(storage.id, originalId);
+      assert.equal(storage.bytes, bytes.length);
+      if (retainedArchive) assert.equal(storage.created_at, originalCreated);
+      const replay = await send();
+      assert.equal(replay.status, 202);
+      assert.equal((await replay.json()).id, originalId);
+      assert.equal(sends, 1, "upgrade recovery and same-key replay share a single provider submission");
+      assert.deepEqual(await journal(), after);
+      assert.equal((await db.prepare("SELECT used_bytes FROM storage_usage WHERE owner_iss=?1 AND owner_sub=?2")
+        .bind(issuer, owner).first()).used_bytes, bytes.length, "recovery never doubles the original archive hold");
+    } else {
+      const response = await send();
+      const result = await response.json();
+      assert.equal(response.status, state === "accepted" ? 202 : 409);
+      if (state === "accepted") assert.equal(result.id, originalId);
+      else assert.equal(result.code, "send_outcome_unknown");
+      assert.equal(sends, 0, "accepted or potentially submitted v0.2 intents must never be resubmitted");
+      assert.deepEqual(await journal(), before, "immutable evidence and NULL mailbox capture remain untouched");
+      assert.deepEqual(await db.prepare("SELECT * FROM resource_send_reservations WHERE idem_key=?1").bind(originalKey).first(), beforeHold);
+    }
+    assert.deepEqual((await safety()).results, beforeSafety, "existing safety quota is not charged again");
+    assert.equal(unexpected, 0);
+  } finally { await mf.dispose(); }
+}
+
+test("v0.2 preparing intent survives additive migration with its original archive and quota hold", async () =>
+  upgradedLegacyJournal({ retainedArchive: true }));
+test("enrolled user resumes an old-shape preparing intent written during the rolling upgrade", async () =>
+  upgradedLegacyJournal({ enrolled: true, seedAfterUpgrade: true }));
+for (const state of ["accepted", "unknown", "submitting"]) {
+  test(`enrolled user preserves v0.2 ${state} evidence without sender adoption or resubmission`, async () =>
+    upgradedLegacyJournal({ enrolled: true, state, retainedArchive: true }));
+}

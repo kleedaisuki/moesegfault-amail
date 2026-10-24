@@ -4,6 +4,60 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
+## v0.3.0 multi-tenant candidate — deployed to staging
+
+Runtime source `fad3fff` completed the normal staging writer in
+[40106710755](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40106710755).
+Every source gate, three-platform candidate assembly, authoritative temporary-domain
+DNS check, additive migrations 0016/0017, immutable bindings/privacy/held-policy
+readback, dual-domain lifecycle subscription and candidate-site smoke passed.
+Production, public Release/tag publication, spending approval and global sending
+policy were not changed.
+
+| Staging component | Verified serving version |
+| --- | --- |
+| Mail API | `703ef262-7cdb-45f9-813e-cce8136ff361` |
+| Scheduled maintenance | `96edccbe-4821-4ae1-8c8b-4c70482ea3a6` |
+| Email ingress | `2c247d26-5b05-4eea-900c-47b3f531f3e9` |
+| Lifecycle consumer | `ab4c16db-b2ef-4fd9-9df8-95187f36d7b8` |
+| Private trace sink, verified unchanged and reused | `84205687-8582-4fd0-a974-af1d517c16a7` |
+
+The sink originated in successful job `120897847181` of `40102215366`, before
+that run's domain-onboarding interruption. Later read-only inspections established
+its exact live graph. Reuse compares the complete accepted `5a6da36` sink build
+input closure; API and maintenance were not reused. Domain onboarding uses the
+deployment credential, not an expanded runtime Rules token. All six generated
+DNS requirements matched after standards-based TXT decoding; existing DKIM bytes
+were equal, no key was replaced and no SPF policy was merged.
+
+Client source `a737cd7` then passed the complete non-deploying producer
+[40109050389](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40109050389),
+including Windows/Linux/macOS native tests and real daemon/profile subprocess
+journeys, and **132/132 workerd cases**. The physical-retention case invokes the
+compiled maintenance worker and verifies R2 archive/raw deletion, projection
+cleanup, zero-byte cooldown tombstones, repeated-Cron accounting idempotence and
+preservation of unrelated storage. Candidate bundle `12565861856` contains the
+matching CLI/Skill. This client-only protocol-code correction did not require a
+Worker redeployment; its Worker runtime tree remains the deployed `fad3fff` tree.
+
+Real browser/native/SMTP acceptance completed **SUCCESS** in
+[40109776870](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40109776870)
+against that exact successful producer. Safe evidence
+[12566367497](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40109776870/artifacts/12566367497)
+confirms two ephemeral profiles across separate terminals, rejection of agent
+permanent-address registration, real shared-reader/exclusive-writer ownership,
+temporary lifetime bounded by six hours, one additional temporary SMTP fixture,
+verified body and nested ZIP history export, and post-release address/search/get/
+archive invisibility. The original two SMTP/body/ZIP/reply-search fixtures also
+passed: three distinct known fixtures in total, not retries of unknown sends.
+Ephemeral profiles were released, `user` was restored, and final teardown then
+explicitly released this terminal's owned user session, stopped the daemon and
+removed its private credential home. No optional Billing/spending or outbound
+canary permission was enabled. The runtime remains `fad3fff`; the accepted CLI/
+Skill producer remains `a737cd7`, with no unnecessary backend redeployment.
+See [architecture](v0.3.0/architecture.md),
+[acceptance scenarios](v0.3.0/acceptance-scenarios.md) and
+[measurements](performance.md#v030-daemon-workload-measurement).
 ## Delivered v0.1.2 — current release
 
 ### Delivered v0.2.0 staging — fixed USD accepted

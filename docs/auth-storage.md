@@ -1,5 +1,23 @@
 # Native CLI OAuth credential storage
 
+## v0.3.0 daemon ownership
+
+The client now dispatches operations to the authenticated local daemon. The daemon
+uses the existing encrypted token store and refresh journal; IPC never returns
+OAuth credentials to a profile or serializes them into configuration. The default
+state location is `~/.amail` (`%USERPROFILE%\\.amail` on Windows), with the existing
+`AMAIL_HOME` override retained. The legacy default-home migration uses a consistent
+SQLite snapshot and refuses conflicting destination state rather than replacing
+credentials or unresolved send history. Close older CLI processes before migrating.
+
+Profiles are passwordless workflow isolation within a trusted OS account, not an
+OS security sandbox. The daemon requires one explicit browser decision per `user`
+operation unless `config.toml` explicitly sets `yolo = true`; this does not replace
+Identity login or authorize Billing spending. Cloud profile sessions and mailbox
+lease tokens are separate capabilities, stored in the private profile database,
+not in telemetry. See [the multi-tenant contract](v0.3.0/architecture.md) for
+terminal exclusivity, expiry, enrollment and compatibility boundaries.
+
 `amail` is a native public OIDC client. A full access/refresh/ID-token set may exceed the Windows Credential Manager 2,560 UTF-16-character password attribute limit. The OS keyring therefore stores only `amail:v2:<base64url 32-byte random key>` (52 ASCII characters). It never stores a serialized token set in new sessions.
 
 The complete token set is encrypted with ChaCha20-Poly1305 and stored in `AMAIL_HOME/auth.sqlite3`. A fresh 96-bit nonce is generated for every write. AEAD associated data binds the ciphertext to the exact configured issuer and OAuth client ID. The SQLite table stores nonce, ciphertext, and a session key; it stores no plaintext token or mail content. The operating system protects the small random key. On Unix, the database mode is set to `0600`, and the application directory is `0700`. The database is deliberately separate from `telemetry.sqlite3` so diagnostics cannot accidentally include credentials.

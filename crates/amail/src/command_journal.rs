@@ -181,18 +181,14 @@ pub fn run_with_context<T>(
     let pending = PENDING.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
     if !pending.records.is_empty() && persist_batch(cfg, &pending).is_err() {
         // Never format arbitrary SQL, filesystem, HTTP or exception text.
-        use std::io::Write;
-        let _ = writeln!(
-            std::io::stderr().lock(),
-            "amail: local diagnostic records lost"
-        );
+        crate::output::err(format_args!("amail: local diagnostic records lost"));
     }
     result
 }
 
 /// True only for enabled local diagnostics; opt-out must not open the store.
 fn enabled() -> bool {
-    std::env::var("AMAIL_TELEMETRY").ok().as_deref() != Some("off")
+    crate::telemetry::enabled()
 }
 
 /// An in-memory boundary; construction does no filesystem or credential work.
@@ -352,6 +348,8 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let home = tempfile::tempdir_in(root).unwrap();
         let cfg = Runtime {
+            yolo: false,
+            daemon: Default::default(),
             home: home.path().to_owned(),
             api_base: "https://mail.example.test".into(),
             issuer: "https://identity.example.test".into(),

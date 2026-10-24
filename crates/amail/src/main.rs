@@ -1,17 +1,30 @@
 //! amail agent-facing CLI / amail 面向 Agent 的命令行。
 
+macro_rules! println {
+    ($($arg:tt)*) => { crate::output::out(format_args!($($arg)*)) };
+}
+macro_rules! eprintln {
+    ($($arg:tt)*) => { crate::output::err(format_args!($($arg)*)) };
+}
+
 mod api;
+mod approval;
 mod archive;
 mod auth;
 mod billing;
 mod command_journal;
 mod config;
+mod daemon;
 mod discovery;
+mod export;
 mod local_store;
 mod machine;
+mod output;
 #[cfg(test)]
 mod performance;
+mod profiles;
 mod send_state;
+mod session;
 mod telemetry;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -50,12 +63,52 @@ struct Cli {
     machine: bool,
     #[command(subcommand)]
     command: Command,
+    #[arg(skip)]
+    prepared_send: Option<PreparedSend>,
+}
+
+struct PreparedSend {
+    draft: archive::OutboundDraft,
+    hash: String,
+}
+
+impl PreparedSend {
+    fn read(path: &std::path::Path) -> Result<Self> {
+        let draft = archive::outbound_draft(path).map_err(|error| machine::Failure {
+            code: "invalid_draft",
+            next_action: "fix_input",
+            data: json!({}),
+            message: error.to_string(),
+        })?;
+        let hash = Sha256::digest(&draft.bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Ok(Self { draft, hash })
+    }
 }
 
 /// All mail mutations are explicit; fetching never marks mail read.
 /// 所有邮件状态变更均为显式操作；读取不会自动标记已读。
 #[derive(Subcommand)]
 enum Command {
+    /// Manage terminal-exclusive profiles without passwords.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+    /// Manage the local background service.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+    /// Acquire non-preemptible cloud mailbox ownership or export live history.
+    Mailbox {
+        #[command(subcommand)]
+        command: MailboxCommand,
+    },
+    #[command(name = "_daemon", hide = true)]
+    DaemonServe,
     /// Explore a concise offline capability index or one child topic.
     Discover { topic: Option<String> },
     /// Query an owner-scoped logical send intent, without resubmitting mail.
@@ -195,9 +248,48 @@ enum AddressCommand {
     /// List owned addresses and provisioning state.
     List,
     /// Register an available local part (maximum ten per account).
-    Add { local_part: String },
+    Add {
+        local_part: String,
+        /// Allocate a temporary mailbox with at most six hours of retention.
+        #[arg(long)]
+        tmp: bool,
+    },
     /// Retire one full address.
     Delete { address: String },
+}
+
+#[derive(Subcommand)]
+enum ProfileCommand {
+    List,
+    Status,
+    Create { name: String },
+    Activate { name: String },
+    Deactivate,
+    Release { name: Option<String> },
+}
+
+#[derive(Subcommand)]
+enum DaemonCommand {
+    Status,
+    Stop,
+}
+
+#[derive(Subcommand)]
+enum MailboxCommand {
+    Acquire {
+        address: String,
+        #[arg(long, default_value = "read", value_parser = ["read", "write"])]
+        mode: String,
+    },
+    Release {
+        address: String,
+    },
+    /// Download all currently retained messages before a temporary mailbox expires.
+    Export {
+        address: String,
+        #[arg(long, short = 'o', visible_alias = "output")]
+        out: PathBuf,
+    },
 }
 
 /// Search predicates, all combined by AND on the server.
@@ -656,22 +748,401 @@ fn run() -> Result<()> {
         return emit(&discovery::topic(topic.as_deref())?, cli.human);
     }
     let cfg = config::Runtime::load()?;
-    // Diagnostics are best effort; command state initializes in its owning API.
-    if !matches!(&cli.command, Command::TelemetryFlush { .. }) {
-        if let Err(error) = telemetry::init(&cfg) {
-            telemetry::report_loss("initialize", &error);
+    match cli.command {
+        Command::DaemonServe => daemon::serve(&cfg),
+        Command::Daemon {
+            command: DaemonCommand::Status,
+        } => emit(&daemon::status(&cfg)?, cli.human),
+        Command::Daemon {
+            command: DaemonCommand::Stop,
+        } => {
+            daemon::stop(&cfg)?;
+            emit(&json!({"stopped":true}), cli.human)
         }
+        Command::TelemetryFlush { attempt_id } => {
+            telemetry::flush_pending(&cfg, attempt_id.as_ref())
+        }
+        _ => {
+            let code = daemon::forward(&cfg, std::env::args_os().collect())?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn daemon_tick(cfg: &config::Runtime) -> Result<()> {
+    profiles::Store::open(cfg)?.sweep_all()?;
+    Ok(())
+}
+
+fn absolute_paths(cli: &mut Cli, cwd: &std::path::Path) {
+    let resolve = |path: &mut PathBuf| {
+        if path.is_relative() {
+            *path = cwd.join(&*path);
+        }
+    };
+    match &mut cli.command {
+        Command::Read { out, .. } => resolve(out),
+        Command::Pack { directory, out } => {
+            resolve(directory);
+            resolve(out);
+        }
+        Command::Unpack { archive, out } => {
+            resolve(archive);
+            resolve(out);
+        }
+        Command::Send { archive, .. } => resolve(archive),
+        Command::Sync {
+            out_dir: Some(path),
+            ..
+        } => resolve(path),
+        Command::Mailbox {
+            command: MailboxCommand::Export { out, .. },
+        } => resolve(out),
+        _ => {}
+    }
+}
+
+fn approval_summary(cli: &Cli) -> String {
+    match &cli.command {
+        Command::Profile { command } => match command {
+            ProfileCommand::Create { name } => format!("Create profile: {name}"),
+            ProfileCommand::Activate { name } => format!("Activate profile: {name}"),
+            ProfileCommand::Release { name } => {
+                format!("Release profile: {}", name.as_deref().unwrap_or("current"))
+            }
+            ProfileCommand::Deactivate => {
+                "Deactivate this terminal; retain the profile reservation".into()
+            }
+            ProfileCommand::List => "List profiles".into(),
+            ProfileCommand::Status => "Show this terminal's profile".into(),
+        },
+        Command::Send { archive, .. } => match cli.prepared_send.as_ref() {
+            Some(prepared) => format!(
+                "Send snapshot SHA256: {}\nFrom: {}\nRecipients ({}): {}\nArchive: {}",
+                prepared.hash,
+                prepared.draft.sender,
+                prepared.draft.recipients.len(),
+                prepared.draft.recipients.join(", "),
+                archive.display()
+            ),
+            None => format!("Send mail from archive: {}", archive.display()),
+        },
+        Command::Delete { id } => format!("Delete message: {id}"),
+        Command::Read { id, out, .. } => format!("Download message {id} to {}", out.display()),
+        Command::Get { id } => format!("Get message metadata: {id}"),
+        Command::Mark { id, read, .. } => format!(
+            "Mark message {id} {}",
+            if *read { "read" } else { "unread" }
+        ),
+        Command::Address { command } => match command {
+            AddressCommand::Add { local_part, tmp } => format!(
+                "Register {}@{}",
+                local_part,
+                if *tmp {
+                    "tmpaddr.moesegfault.dev"
+                } else {
+                    "mail.moesegfault.dev"
+                }
+            ),
+            AddressCommand::Delete { address } => format!("Retire address: {address}"),
+            AddressCommand::List => "List owned addresses".into(),
+        },
+        Command::Mailbox { command } => match command {
+            MailboxCommand::Acquire { address, mode } => {
+                format!("Acquire {mode} ownership: {address}")
+            }
+            MailboxCommand::Release { address } => format!("Release mailbox ownership: {address}"),
+            MailboxCommand::Export { address, out } => {
+                format!("Export live history for {address} to {}", out.display())
+            }
+        },
+        Command::Login { .. }
+        | Command::Auth {
+            command: AuthCommand::Login { .. },
+        } => "Authenticate owner account in browser".into(),
+        Command::Logout
+        | Command::Auth {
+            command: AuthCommand::Logout,
+        } => "Remove the owner's local account credentials".into(),
+        Command::Auth {
+            command: AuthCommand::Status,
+        } => "Read owner authentication status".into(),
+        Command::Pack { directory, out } => {
+            format!("Pack {} to {}", directory.display(), out.display())
+        }
+        Command::Unpack { archive, out } => {
+            format!("Extract {} to {}", archive.display(), out.display())
+        }
+        Command::Search(_) => "Search messages within the profile's acquired mailboxes".into(),
+        Command::Sync { .. } => {
+            "Synchronize messages within the profile's acquired mailboxes".into()
+        }
+        Command::Billing { .. } => "Inspect or open human-authorized billing".into(),
+        Command::SendStatus { .. } => "Inspect logical send status".into(),
+        Command::SendReceipts { .. } => "Read local accepted-send receipts".into(),
+        Command::SendingStatus => "Inspect sending policy and resource quotas".into(),
+        Command::Events { .. } | Command::Outcomes { .. } => {
+            "Read owned mail delivery feedback".into()
+        }
+        Command::Config => "Read non-secret configuration".into(),
+        _ => "Run amail operation".into(),
+    }
+}
+
+fn local_profile_operation(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Config
+            | Command::Pack { .. }
+            | Command::Unpack { .. }
+            | Command::SendReceipts { .. }
+            | Command::SendStatus { local: true, .. }
+            | Command::Auth {
+                command: AuthCommand::Status
+            }
+            | Command::Profile {
+                command: ProfileCommand::Status | ProfileCommand::Deactivate
+            }
+    )
+}
+
+pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
+    telemetry::set_enabled(request.telemetry_enabled);
+    machine::enable(machine::requested(request.args.clone()));
+    session::clear();
+    let mut cli = Cli::try_parse_from(request.args)
+        .map_err(|error| machine::invalid_input(&error.to_string()))?;
+    absolute_paths(&mut cli, &request.cwd);
+    if let Command::Send { archive, .. } = &cli.command {
+        cli.prepared_send = Some(PreparedSend::read(archive)?);
+    }
+    let cfg = request.cfg;
+    let terminal = request.terminal;
+    if cfg.home.join("auth.sqlite3").exists() {
+        let credentials = auth::status(&cfg)?;
+        session::set_account(
+            &cfg,
+            credentials.as_ref().map(|tokens| tokens.subject.as_str()),
+        );
+        send_state::bind_account(&cfg)?;
+    }
+    let mut store = profiles::Store::open(&cfg)?;
+    let mut active = store.peek_active(&terminal)?;
+    let profile_control = matches!(&cli.command, Command::Profile { .. });
+    let activation = matches!(
+        &cli.command,
+        Command::Profile {
+            command: ProfileCommand::Activate { .. }
+        }
+    );
+    if active.is_none() && !activation && !store.terminal_initialized(&terminal)? {
+        if !cfg.yolo {
+            approval::authorize_request(
+                "profile.activate",
+                &format!(
+                    "Activate the initial user profile; {}",
+                    approval_summary(&cli)
+                ),
+            )?;
+        }
+        active = Some(store.activate(&terminal, "user")?);
+    } else if !cfg.yolo {
+        let requested_user = matches!(&cli.command, Command::Profile { command: ProfileCommand::Activate { name } } if name == "user")
+            || matches!(&cli.command, Command::Profile { command: ProfileCommand::Release { name:Some(name) } } if name == "user");
+        if active
+            .as_ref()
+            .is_some_and(|profile| profile.name == "user")
+            || requested_user
+        {
+            approval::authorize_request("operation", &approval_summary(&cli))?;
+        }
+    }
+    if let Some(profile) = active.as_ref() {
+        session::install(&terminal, profile.clone());
+        store.active(&terminal)?;
+        if !matches!(
+            &cli.command,
+            Command::Profile {
+                command: ProfileCommand::Release { .. }
+            } | Command::Auth {
+                command: AuthCommand::Login { .. } | AuthCommand::Logout
+            } | Command::Login { .. }
+                | Command::Logout
+        ) {
+            if let Err(error) =
+                session::prepare_activity(&cfg, local_profile_operation(&cli.command))
+            {
+                store.deactivate(&terminal)?;
+                return Err(error);
+            }
+        }
+    } else {
+        ensure!(
+            profile_control,
+            "profile_inactive: activate a profile for this terminal"
+        );
+    }
+    if matches!(
+        &cli.command,
+        Command::Auth { .. } | Command::Login { .. } | Command::Logout
+    ) {
+        ensure!(
+            active.as_ref().is_some_and(|p| p.name == "user"),
+            "user_profile_required: account authentication belongs to user"
+        );
+    }
+    if let Command::Profile { command } = cli.command {
+        return run_profile(command, &cfg, &terminal, &mut store, active, cli.human);
+    }
+    if let Command::Mailbox { command } = cli.command {
+        return match command {
+            MailboxCommand::Acquire { address, mode } => {
+                emit(&session::acquire(&cfg, &address, &mode)?, cli.human)
+            }
+            MailboxCommand::Release { address } => {
+                emit(&session::release_mailbox(&cfg, &address)?, cli.human)
+            }
+            MailboxCommand::Export { address, out } => {
+                session::acquire(&cfg, &address, "read")?;
+                export::run(&api::Api::new(&cfg)?, &address, &out, cli.human)
+            }
+        };
+    }
+    if let Err(error) = telemetry::init(&cfg) {
+        telemetry::report_loss("initialize", &error);
     }
     command_journal::run_with_context(&cfg, command_kind(&cli.command), |command_id| {
         execute(cli, &cfg, command_id)
     })
 }
 
+fn run_profile(
+    command: ProfileCommand,
+    cfg: &config::Runtime,
+    terminal: &str,
+    store: &mut profiles::Store,
+    active: Option<profiles::ActiveProfile>,
+    human: bool,
+) -> Result<()> {
+    match command {
+        ProfileCommand::List => {
+            if active.is_some()
+                && cfg.home.join("auth.sqlite3").exists()
+                && auth::status(cfg)?.is_some()
+            {
+                let cloud = session::list_cloud(cfg)?;
+                for profile in cloud
+                    .get("profiles")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(name) = profile.get("name").and_then(Value::as_str) {
+                        let durable = profile
+                            .get("durable")
+                            .and_then(Value::as_bool)
+                            .or_else(|| {
+                                profile
+                                    .get("durable")
+                                    .and_then(Value::as_i64)
+                                    .map(|number| number != 0)
+                            })
+                            .unwrap_or(false);
+                        store.import_cloud_profile(name, durable)?;
+                    }
+                }
+            }
+            emit(&json!({"profiles":store.list(terminal)?}), human)
+        }
+        ProfileCommand::Status => emit(&json!({"profile":active}), human),
+        ProfileCommand::Activate { name } => {
+            ensure!(
+                active.as_ref().is_none_or(|profile| profile.name == name),
+                "profile_active: deactivate the current profile before activating another"
+            );
+            let authenticated =
+                cfg.home.join("auth.sqlite3").exists() && auth::status(cfg)?.is_some();
+            let local_exists = store
+                .list(terminal)?
+                .iter()
+                .any(|profile| profile.name == name);
+            if !local_exists && authenticated {
+                let registration = session::discover(cfg, &name, terminal)?;
+                store.import_cloud_profile(&name, registration.durable)?;
+                let profile = store.activate(terminal, &name)?;
+                store.set_cloud_session(
+                    &profile.id,
+                    &registration.profile_id,
+                    &registration.token,
+                    registration.expires_at,
+                )?;
+                session::install(terminal, profile.clone());
+                return emit(&json!({"profile":profile}), human);
+            }
+            let profile = store.activate(terminal, &name)?;
+            session::install(terminal, profile.clone());
+            if authenticated {
+                if let Err(error) = session::activate_cloud(cfg) {
+                    store.deactivate(terminal)?;
+                    return Err(error);
+                }
+            }
+            emit(&json!({"profile":profile}), human)
+        }
+        ProfileCommand::Deactivate => emit(
+            &json!({"deactivated":true,"profile":store.deactivate(terminal)?}),
+            human,
+        ),
+        ProfileCommand::Create { name } => {
+            let existing = store
+                .list(terminal)?
+                .into_iter()
+                .find(|profile| profile.name == name);
+            let profile = if let Some(profile) = existing {
+                profile
+            } else {
+                store.create(terminal, &name)?
+            };
+            if cfg.home.join("auth.sqlite3").exists() && auth::status(cfg)?.is_some() {
+                session::create_cloud(cfg, &profile.name, profile.durable)?;
+            }
+            emit(&json!({"profile":profile}), human)
+        }
+        ProfileCommand::Release { name } => {
+            let name = name
+                .or_else(|| active.map(|p| p.name))
+                .context("profile_inactive: specify the reserved profile name")?;
+            let profile = store
+                .list(terminal)?
+                .into_iter()
+                .find(|p| p.name == name)
+                .context("profile_not_found")?;
+            ensure!(
+                profile.owned,
+                "profile_not_owned: this terminal does not own the profile"
+            );
+            let profile = profiles::ActiveProfile {
+                id: profile.id,
+                name: profile.name,
+            };
+            session::release_cloud(cfg, &profile)?;
+            let released = store.release(terminal, &name)?;
+            emit(&json!({"released":true,"profile":released}), human)
+        }
+    }
+}
 /// Canonical diagnostic names never include arguments or alias spellings.
 fn command_kind(command: &Command) -> Option<command_journal::CommandKind> {
     use command_journal::CommandKind as K;
     Some(match command {
         Command::TelemetryFlush { .. }
+        | Command::Profile { .. }
+        | Command::Mailbox { .. }
+        | Command::Daemon { .. }
+        | Command::DaemonServe
         | Command::Discover { .. }
         | Command::SendStatus { .. }
         | Command::SendReceipts { .. }
@@ -718,7 +1189,8 @@ fn command_kind(command: &Command) -> Option<command_journal::CommandKind> {
 }
 
 /// Execute the unchanged public behavior inside a best-effort completion boundary.
-fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> Result<()> {
+fn execute(mut cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> Result<()> {
+    let prepared_send = cli.prepared_send.take();
     match cli.command {
         Command::Discover { topic } => emit(&discovery::topic(topic.as_deref())?, cli.human)?,
         Command::SendReceipts { limit } => {
@@ -729,7 +1201,7 @@ fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> R
         }
         Command::Config => emit(
             &json!({"api_base":cfg.api_base,"issuer":cfg.issuer,"client_id":cfg.client_id,
-            "redirect_uri":cfg.redirect_uri,"home":cfg.home,"telemetry_enabled":std::env::var("AMAIL_TELEMETRY").ok().as_deref()!=Some("off")}),
+            "redirect_uri":cfg.redirect_uri,"home":cfg.home,"yolo":cfg.yolo,"daemon":cfg.daemon,"telemetry_enabled":telemetry::enabled()}),
             cli.human,
         )?,
         Command::TelemetryFlush { attempt_id } => {
@@ -782,14 +1254,12 @@ fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> R
             archive: path,
             idempotency_key,
         } => {
-            let bytes = archive::outbound_bytes(&path).map_err(|error| machine::Failure {
-                code: "invalid_draft",
-                next_action: "fix_input",
-                data: json!({}),
-                message: error.to_string(),
-            })?;
-            let digest = Sha256::digest(&bytes);
-            let hash: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+            let prepared = match prepared_send {
+                Some(prepared) => prepared,
+                None => PreparedSend::read(&path)?,
+            };
+            let bytes = prepared.draft.bytes;
+            let hash = prepared.hash;
             let key = if let Some(key) = idempotency_key {
                 if uuid::Uuid::parse_str(&key).is_err() {
                     return Err(machine::invalid_input("idempotency key must be a UUID"));
@@ -803,7 +1273,7 @@ fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> R
                 "send_intent",
                 json!({"idempotency_key":key,"next_action":"query_send_status"}),
             );
-            let result = api::Api::for_command(&cfg, command_id)?.send(&bytes, &key)?;
+            let result = api::Api::for_command(&cfg, command_id)?.send_owned(bytes, &key)?;
             // Persist acceptance before stdout; release only this matching unresolved intent.
             send_state::record_accepted(&cfg, &hash, &key, &result).map_err(|error| {
                 machine::Failure {
@@ -845,9 +1315,10 @@ fn execute(cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> R
                     AddressCommand::List => {
                         emit_items(&api.addresses()?, cli.human, &["addresses", "items"])?
                     }
-                    AddressCommand::Add { local_part } => {
-                        emit(&api.add_address(&local_part)?, cli.human)?
-                    }
+                    AddressCommand::Add { local_part, tmp } => emit(
+                        &api.add_address_kind(&local_part, if tmp { "tmpaddr" } else { "mail" })?,
+                        cli.human,
+                    )?,
                     AddressCommand::Delete { address } => {
                         emit(&api.delete_address(&address)?, cli.human)?
                     }
@@ -898,6 +1369,67 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_consent_and_submission_share_the_same_owned_snapshot() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let temporary = tempfile::tempdir_in(root).unwrap();
+        let directory = temporary.path().join("draft");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(
+            directory.join("manifest.toml"),
+            "version=1\nfrom='a@mail.moesegfault.dev'\nto=['b@example.test']\nsubject='Snapshot'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("body.txt"),
+            "Private body, not an approval summary",
+        )
+        .unwrap();
+        let path = temporary.path().join("draft.zip");
+        archive::pack(&directory, &path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let mut cli = Cli::try_parse_from([
+            std::ffi::OsString::from("amail"),
+            std::ffi::OsString::from("send"),
+            path.clone().into_os_string(),
+        ])
+        .unwrap();
+        cli.prepared_send = Some(PreparedSend::read(&path).unwrap());
+        let summary = approval_summary(&cli);
+        assert!(summary.contains("a@mail.moesegfault.dev"));
+        assert!(summary.contains("b@example.test"));
+        assert!(summary.contains(&cli.prepared_send.as_ref().unwrap().hash));
+        assert!(!summary.contains("Private body"));
+        std::fs::write(&path, b"concurrent replacement").unwrap();
+        let prepared = cli.prepared_send.take().unwrap();
+        assert_eq!(prepared.draft.bytes, original);
+        assert!(PreparedSend::read(&path).is_err());
+    }
+
+    #[test]
+    fn offline_work_renews_activity_without_duplicate_mail_round_trips() {
+        for args in [
+            vec!["amail", "config"],
+            vec!["amail", "profile", "deactivate"],
+            vec!["amail", "profile", "status"],
+            vec!["amail", "send-status", "intent", "--local"],
+        ] {
+            assert!(local_profile_operation(
+                &Cli::try_parse_from(args).unwrap().command
+            ));
+        }
+        for args in [
+            vec!["amail", "address", "list"],
+            vec!["amail", "search"],
+            vec!["amail", "profile", "list"],
+        ] {
+            assert!(!local_profile_operation(
+                &Cli::try_parse_from(args).unwrap().command
+            ));
+        }
+    }
 
     /// Keep the third-party processing disclosure visible at first-use discovery points.
     #[test]

@@ -38,13 +38,14 @@ class StagingCandidateTests(unittest.TestCase):
         run = {"id": 123, "status": "completed", "conclusion": "success", "head_sha": "a" * 40,
                "head_branch": "codex/v0.2.0-billing", "path": ".github/workflows/ci.yml",
                "event": "workflow_dispatch", "run_attempt": 1}
-        artifacts = {"total_count": 1, "artifacts": [{"id": 456, "name": "cli-candidate-v0.2.0-123",
+        artifacts = {"total_count": 1, "artifacts": [{"id": 456, "name": "cli-candidate-v0.1.2-123",
             "expired": False, "workflow_run": {"head_sha": "a" * 40}}]}
         (ROOT / ".temp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder:
             output = Path(folder) / "output"
             with patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "GITHUB_SHA": "a" * 40,
-                                         "GITHUB_OUTPUT": str(output)}, clear=True), \
+                                         "GITHUB_OUTPUT": str(output),
+                                         "GITHUB_REF": "refs/heads/codex/v0.2.0-billing"}, clear=True), \
                  patch.object(staging, "github", side_effect=(run, artifacts)), \
                  patch.object(candidate, "context", return_value=self.context()), \
                  patch.object(staging, "ADMISSION", Path(folder) / "admission.json"):

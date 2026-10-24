@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import sys
+from typing import Any
 import unittest
 from unittest.mock import patch
 
@@ -20,7 +21,7 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
-def payload(**overrides: int) -> dict:
+def payload(**overrides: int) -> dict[str, Any]:
     """构造最小 D1 查询结果。 / Build the minimal D1 query response."""
 
     row = {
@@ -36,6 +37,20 @@ def payload(**overrides: int) -> dict:
 
 class CheckSendGateTest(unittest.TestCase):
     """任何缺失、重复、未确认或错误都不得发布。 / Deny missing or unready state."""
+
+    def test_versioned_release_waits_for_matching_runtime(self) -> None:
+        env = {"CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "secret",
+               "AMAIL_RELEASE_VERSION": "v0.3.0"}
+        for health in ({"status": "ok"}, {"status": "ok", "version": "0.2.0"},
+                       {"status": "ok", "version": "private-provider-prose"}):
+            with self.subTest(health=health), patch.dict("os.environ", env, clear=True), \
+                 patch.object(MODULE, "_json_request", return_value=health) as fetch:
+                with self.assertRaisesRegex(MODULE.GateError, "runtime does not match"):
+                    MODULE.run()
+                self.assertEqual(fetch.call_count, 1)
+        with patch.dict("os.environ", env, clear=True), patch.object(
+                MODULE, "_json_request", side_effect=[{"status": "ok", "version": "0.3.0"}, payload()]):
+            MODULE.run()
 
     def test_only_exact_singleton_allowed_and_all_gates_ready_passes(self) -> None:
         """成功状态必须完整且唯一。 / Require exact singleton readiness."""

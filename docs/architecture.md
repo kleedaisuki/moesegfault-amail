@@ -5,6 +5,12 @@ Status: implementation contract for CLI, mail Worker, and deployment. This is an
 Current topology and release status are maintained in [operations](operations.md)
 and [validation](validation.md).
 
+The [v0.3.0 multi-tenant contract](v0.3.0/architecture.md) adds the local daemon,
+terminal-bound profiles, distributed address possession and temporary address
+generations. It supersedes this document's permanent-only address lifetime and
+single-client execution assumptions, while retaining its mail and idempotency
+contracts unless explicitly updated there.
+
 ## Representative workflow and boundaries
 
 1. `amail auth login` opens the system browser for moeSegFault Identity Authorization Code + S256 PKCE. The issuer is `https://identity.moesegfault.dev` (staging: `https://identity-staging.moesegfault.dev`), whose discovery JSON supplies authorization endpoints; `login.moesegfault.dev` is a human-facing SPA, **not the OIDC issuer**. The CLI is a pre-registered **native public** client. It stores tokens in OS-protected storage where available. The mail Worker accepts only Identity access tokens whose `aud` is exactly that native client ID, fixed `iss`, `token_use=access`, valid RS256 signature and time bounds. The current Identity issuer advertises `openid`, `profile`, `offline_access`, not invented mail scopes. Mail authorization is local mailbox ownership keyed by `(iss, sub)`. Registration of the client ID and exact loopback redirect is a deployment dependency, not a runtime self-service action.

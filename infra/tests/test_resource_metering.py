@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class ResourceMetering(unittest.TestCase):
     """Assert tariff, consent, concurrency serialization and immutable retry boundaries."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         """Install the actual schema with a controlled UTC billing clock."""
         self.clock = int(datetime(2026, 10, 7, tzinfo=timezone.utc).timestamp())
         self.db = sqlite3.connect(":memory:")
@@ -22,7 +22,7 @@ class ResourceMetering(unittest.TestCase):
         self.db.execute("INSERT INTO resource_accounts(owner_iss,owner_sub) VALUES('issuer','owner')")
         self.db.execute("INSERT INTO resource_periods(owner_iss,owner_sub,period_start,period_end,accounted_at) VALUES('issuer','owner',unixepoch('now','start of month'),unixepoch('now','start of month','+1 month'),unixepoch())")
 
-    def unixepoch(self, *args):
+    def unixepoch(self, *args: str) -> int:
         """Implement only SQLite UTC date forms used by production migrations."""
         date = datetime.fromtimestamp(self.clock, timezone.utc)
         for arg in args:
@@ -34,23 +34,23 @@ class ResourceMetering(unittest.TestCase):
                 raise ValueError(arg)
         return int(date.timestamp())
 
-    def authorize(self, budget=10_000_000):
+    def authorize(self, budget: int = 10_000_000) -> None:
         """Explicit human authorization is a fixture, never synthesized by a paid plan."""
         self.db.execute("UPDATE resource_accounts SET billing_owner_id='opaque-owner',authorization_id='human-consent',overage_budget_micros=?", (budget,))
 
-    def reserve(self, key, units, origin=None):
+    def reserve(self, key: str, units: int, origin: str | None = None) -> None:
         """Mirror the application's atomic INSERT SELECT, including exact replay no-op."""
         self.db.execute("INSERT INTO resource_send_reservations(owner_iss,owner_sub,idem_key,period_start,units,authorization_id,origin_traceparent) SELECT 'issuer','owner',?,period_start,?,authorization_id,? FROM resource_current WHERE NOT EXISTS(SELECT 1 FROM resource_send_reservations WHERE idem_key=?)", (key, units, origin, key))
 
-    def state(self, key, state):
+    def state(self, key: str, state: str) -> None:
         """Exercise the same trigger transition invoked by the provider journal."""
         self.db.execute("UPDATE resource_send_reservations SET state=? WHERE idem_key=?", (state, key))
 
-    def stock(self, size):
+    def stock(self, size: int) -> None:
         """Allocate a real retained-byte reservation through production admission."""
         self.db.execute("INSERT INTO storage_reservations(id,owner_iss,owner_sub,bytes,state,created_at) VALUES('archive','issuer','owner',?,'indexed',unixepoch())", (size,))
 
-    def reconcile(self):
+    def reconcile(self) -> None:
         """Execute exact production Rust SQL so entitlement refresh tests cover shipped statements."""
         source = (ROOT / "crates/mail-worker/src/resource.rs").read_text(encoding="utf-8")
         body = source.split("pub(crate) async fn ensure_account", 1)[1].split("/// Settle elapsed", 1)[0]
@@ -59,7 +59,7 @@ class ResourceMetering(unittest.TestCase):
         for query in statements:
             self.db.execute(query, ("issuer", "owner"))
 
-    def test_identical_refresh_cannot_turn_reserved_overage_into_free_allowance(self):
+    def test_identical_refresh_cannot_turn_reserved_overage_into_free_allowance(self) -> None:
         self.authorize(5_000)
         self.reserve("funded", 101)
         for _ in range(3):
@@ -68,7 +68,7 @@ class ResourceMetering(unittest.TestCase):
         self.state("funded", "accepted")
         self.assertEqual(self.db.execute("SELECT SUM(amount_micros) FROM resource_outbox").fetchone()[0], 5_000)
 
-    def test_upgrade_downgrade_cycle_does_not_farm_monthly_allowance(self):
+    def test_upgrade_downgrade_cycle_does_not_farm_monthly_allowance(self) -> None:
         self.authorize()
         self.db.execute("UPDATE resource_accounts SET plan='plus',included_outbound=5000")
         self.reconcile()
@@ -82,7 +82,7 @@ class ResourceMetering(unittest.TestCase):
         self.state("after-upgrade", "accepted")
         self.assertEqual(self.db.execute("SELECT SUM(amount_micros) FROM resource_outbox").fetchone()[0], 5_000)
 
-    def test_month_rollover_preserves_unknown_old_period_hold(self):
+    def test_month_rollover_preserves_unknown_old_period_hold(self) -> None:
         self.authorize(5_000)
         self.reserve("old-unknown", 101)
         original_period = self.unixepoch("now", "start of month")
@@ -92,7 +92,7 @@ class ResourceMetering(unittest.TestCase):
         self.state("old-unknown", "accepted")
         self.assertEqual(self.db.execute("SELECT period_start,occurred_at,amount_micros FROM resource_outbox").fetchone(), (original_period, self.clock, 5_000))
 
-    def test_paid_expiry_clamps_stock_even_on_direct_cleanup_trigger(self):
+    def test_paid_expiry_clamps_stock_even_on_direct_cleanup_trigger(self) -> None:
         self.authorize()
         start = self.clock
         self.db.execute("UPDATE resource_accounts SET plan='lite',included_storage_bytes=2000000000,valid_until=?", (start + 60,))
@@ -103,7 +103,7 @@ class ResourceMetering(unittest.TestCase):
         self.reconcile()
         self.assertEqual(self.db.execute("SELECT plan,overage_budget_micros FROM resource_current").fetchone(), ("free", 0))
 
-    def test_provider_commit_trigger_expands_metadata_but_not_projection_claim(self):
+    def test_provider_commit_trigger_expands_metadata_but_not_projection_claim(self) -> None:
         # Production D1/Miniflare metadata uses total_changes(), including triggers.
         # The owned journal still changes exactly once; an exact-one fixture metadata
         # predicate must not prevent pausing after that durable acceptance boundary.
@@ -111,9 +111,24 @@ class ResourceMetering(unittest.TestCase):
         self.db.execute("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,quota_reserved,state,created_at) VALUES('issuer','owner','provider-commit','hash','archive',1,'submitting',unixepoch())")
         self.reserve("provider-commit", 1)
         source = (ROOT / "crates/mail-worker/src/lib.rs").read_text(encoding="utf-8")
-        query = re.search(r"""prepare\("(UPDATE send_requests SET state='accepted',provider_id=[^"\n]+)"\)""", source).group(1)
+        self.db.executescript("""
+            ALTER TABLE send_requests ADD COLUMN content_purged_at INTEGER;
+            ALTER TABLE send_requests ADD COLUMN mailbox_generation TEXT NOT NULL DEFAULT '';
+            ALTER TABLE send_requests ADD COLUMN mailbox_address TEXT;
+            ALTER TABLE addresses ADD COLUMN generation TEXT NOT NULL DEFAULT '';
+            ALTER TABLE addresses ADD COLUMN released_at INTEGER;
+            ALTER TABLE addresses ADD COLUMN expires_at INTEGER;
+        """)
+        match = re.search(r"""prepare\(format!\("(UPDATE send_requests SET state='accepted',provider_id=[^"\n]+)"\)\)""", source)
+        self.assertIsNotNone(match)
+        assert match is not None
+        lifetime = re.search(r'let live = "([^"\n]+)";', source)
+        self.assertIsNotNone(lifetime)
+        assert lifetime is not None
+        query = match.group(1).replace("{live}", lifetime.group(1))
         before = self.db.total_changes
-        self.db.execute(query, ("provider-id", "fixture@example.invalid", "[]", "request-id", "issuer", "owner", "provider-commit"))
+        accepted = self.db.execute(query, ("provider-id", "fixture@example.invalid", "[]", "request-id", "issuer", "owner", "provider-commit")).fetchone()
+        self.assertEqual(accepted, (1,))
         self.assertEqual(self.db.total_changes - before, 3)
         self.assertEqual(self.db.execute("SELECT changes()").fetchone()[0], 1)
         self.assertEqual(self.db.execute("SELECT state FROM send_requests").fetchone()[0], "accepted")
@@ -125,8 +140,15 @@ class ResourceMetering(unittest.TestCase):
         before = self.db.total_changes
         self.db.execute("UPDATE send_requests SET state='sent',index_projection_token=NULL,index_projection_lease_until=0 WHERE state='accepted'")
         self.assertEqual(self.db.total_changes - before, 1, "sent projection does not commit the same resource hold twice")
+        self.db.execute("UPDATE send_release_gates SET canary_used_by=NULL WHERE id=1")
+        self.db.execute("INSERT INTO send_requests(owner_iss,owner_sub,idem_key,payload_hash,message_id,quota_reserved,state,created_at,content_purged_at) VALUES('issuer','owner','expired-commit','hash','expired-archive',1,'submitting',unixepoch(),unixepoch())")
+        self.reserve("expired-commit", 1)
+        expired = self.db.execute(query, ("expired-provider", "fixture@example.invalid", "[]", "request-id", "issuer", "owner", "expired-commit")).fetchone()
+        self.assertEqual(expired, (0,))
+        self.assertEqual(self.db.execute("SELECT state,provider_id,sender,envelope_json FROM send_requests WHERE idem_key='expired-commit'").fetchone(), ("accepted", "expired-provider", None, None))
+        self.assertEqual(self.db.execute("SELECT outbound_reserved,outbound_accepted FROM resource_current").fetchone(), (0, 2))
 
-    def test_free_is_monthly_recipients_not_submission_count(self):
+    def test_free_is_monthly_recipients_not_submission_count(self) -> None:
         self.reserve("first", 100)
         with self.assertRaisesRegex(sqlite3.IntegrityError, "outbound_quota_exhausted"):
             self.reserve("excess", 1)
@@ -136,7 +158,7 @@ class ResourceMetering(unittest.TestCase):
         self.reserve("new", 100)
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM resource_outbox").fetchone()[0], 0)
 
-    def test_reversed_acceptance_order_cannot_free_an_unfunded_hold(self):
+    def test_reversed_acceptance_order_cannot_free_an_unfunded_hold(self) -> None:
         self.authorize(5_000)
         self.reserve("original-free", 100)
         self.reserve("original-excess", 1)
@@ -150,7 +172,7 @@ class ResourceMetering(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT SUM(amount_micros),COUNT(*) FROM resource_outbox").fetchone(), (5_000, 1))
         self.assertEqual(self.db.execute("SELECT outbound_accepted,outbound_reserved FROM resource_current").fetchone(), (101, 0))
 
-    def test_unknown_reservation_stays_held_and_old_consent_is_retained(self):
+    def test_unknown_reservation_stays_held_and_old_consent_is_retained(self) -> None:
         self.authorize(5_000)
         self.reserve("unknown", 101)
         original_time = self.clock
@@ -159,7 +181,7 @@ class ResourceMetering(unittest.TestCase):
         self.state("unknown", "accepted")
         self.assertEqual(self.db.execute("SELECT authorization_id,authorized_at,occurred_at,amount_micros FROM resource_outbox").fetchone(), ("human-consent", original_time, self.clock, 5_000))
 
-    def test_async_origin_survives_unknown_rollover_consent_change_and_replay(self):
+    def test_async_origin_survives_unknown_rollover_consent_change_and_replay(self) -> None:
         self.authorize(5_000)
         send_origin = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
         later_origin = "00-fedcba9876543210fedcba9876543210-fedcba9876543210-01"
@@ -177,7 +199,7 @@ class ResourceMetering(unittest.TestCase):
         self.db.execute("UPDATE resource_outbox SET delivered_at=unixepoch() WHERE event_id=?", (event[0],))
         self.assertEqual(self.db.execute("SELECT event_id,period_start,authorization_id,authorized_at,origin_traceparent,amount_micros FROM resource_outbox").fetchall(), [event])
 
-    def test_snapshot_refresh_preserves_first_origin_and_rejects_stale_authority(self):
+    def test_snapshot_refresh_preserves_first_origin_and_rejects_stale_authority(self) -> None:
         source = (ROOT / "crates/mail-worker/src/resource.rs").read_text(encoding="utf-8")
         body = source.split("pub(crate) async fn apply_snapshot", 1)[1].split("/// Read local state", 1)[0]
         query = re.findall(r'prepare\("([^"\n]+)"\)', body)[0]
@@ -193,7 +215,7 @@ class ResourceMetering(unittest.TestCase):
         snapshot(2, "later-consent", later)
         self.assertEqual(self.db.execute("SELECT authorization_id,origin_traceparent FROM resource_accounts").fetchone(), ("later-consent", later))
 
-    def test_stock_origin_is_the_authorization_origin_not_maintenance_trace(self):
+    def test_stock_origin_is_the_authorization_origin_not_maintenance_trace(self) -> None:
         self.authorize()
         origin = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
         self.db.execute("UPDATE resource_accounts SET origin_traceparent=?", (origin,))
@@ -202,7 +224,7 @@ class ResourceMetering(unittest.TestCase):
         self.db.execute("UPDATE resource_accounts SET accounting_tick=unixepoch()")
         self.assertEqual(self.db.execute("SELECT origin_traceparent FROM resource_outbox").fetchone()[0], origin)
 
-    def test_storage_free_limit_is_decimal_and_has_no_mail_count(self):
+    def test_storage_free_limit_is_decimal_and_has_no_mail_count(self) -> None:
         self.stock(200_000_000)
         with self.assertRaisesRegex(sqlite3.IntegrityError, "mailbox_full"):
             self.db.execute("INSERT INTO storage_reservations VALUES('one-byte','issuer','owner',1,'indexed',unixepoch())")
@@ -211,7 +233,7 @@ class ResourceMetering(unittest.TestCase):
             self.db.execute("INSERT INTO storage_reservations VALUES(?,'issuer','owner',1,'indexed',unixepoch())", (str(index),))
         self.assertEqual(self.db.execute("SELECT used_bytes FROM storage_usage").fetchone()[0], 250)
 
-    def test_stock_tariff_integrates_old_bytes_before_delete(self):
+    def test_stock_tariff_integrates_old_bytes_before_delete(self) -> None:
         self.authorize()
         self.stock(1_200_000_000)
         start = self.clock
@@ -223,7 +245,7 @@ class ResourceMetering(unittest.TestCase):
         self.db.execute("UPDATE resource_accounts SET accounting_tick=unixepoch()")
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM resource_outbox").fetchone()[0], 1)
 
-    def test_tiny_stock_observations_do_not_round_each_event_to_cents(self):
+    def test_tiny_stock_observations_do_not_round_each_event_to_cents(self) -> None:
         self.authorize()
         self.stock(1_200_000_000)
         for _ in range(100):
@@ -231,7 +253,7 @@ class ResourceMetering(unittest.TestCase):
             self.db.execute("UPDATE resource_accounts SET accounting_tick=unixepoch()")
         self.assertEqual(self.db.execute("SELECT SUM(amount_micros) FROM resource_outbox").fetchone()[0], int(100 * 1_000_000 / (31 * 86_400)))
 
-    def test_human_lowered_budget_does_not_accrue_unapproved_debt(self):
+    def test_human_lowered_budget_does_not_accrue_unapproved_debt(self) -> None:
         self.authorize()
         self.stock(1_200_000_000)
         self.db.execute("UPDATE resource_accounts SET overage_budget_micros=1")
@@ -240,7 +262,7 @@ class ResourceMetering(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT accrued_micros FROM resource_current").fetchone()[0], 1)
         self.assertEqual(self.db.execute("SELECT used_bytes FROM storage_usage").fetchone()[0], 1_200_000_000)
 
-    def test_address_growth_uses_full_remaining_period_budget(self):
+    def test_address_growth_uses_full_remaining_period_budget(self) -> None:
         query = "INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES(?,'fixture','issuer','owner',?,'active',unixepoch())"
         self.db.execute(query, ("first@example.invalid", 0))
         with self.assertRaisesRegex(sqlite3.IntegrityError, "address_limit"):
@@ -254,7 +276,7 @@ class ResourceMetering(unittest.TestCase):
         self.db.execute("UPDATE addresses SET state='retired' WHERE slot=1")
         self.assertEqual(self.db.execute("SELECT meter,quantity,amount_micros FROM resource_outbox").fetchone(), ("address_seconds", 86_400, 3_000_000 // 31))
 
-    def test_paid_plan_is_not_variable_spending_consent(self):
+    def test_paid_plan_is_not_variable_spending_consent(self) -> None:
         self.db.execute("UPDATE resource_accounts SET plan='plus',included_storage_bytes=10000000000,included_addresses=5,included_outbound=5000")
         self.stock(10_000_000_000)
         with self.assertRaisesRegex(sqlite3.IntegrityError, "mailbox_full"):

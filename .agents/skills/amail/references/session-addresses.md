@@ -1,7 +1,9 @@
 # Session, bootstrap and address lifecycle
 
 Read only for first use, authentication or an address operation. Installed
-v0.2.0 commands do not establish release publication or remote policy.
+v0.3.0 commands do not establish release publication or remote policy. For terminal
+activation, daemon configuration, occupancy and test addresses, first read
+[profiles and temporary mail](profiles.md).
 
 ## First authorized task
 
@@ -35,7 +37,11 @@ amail address add alice
 amail address delete alice@mail.moesegfault.dev
 ```
 
-Choose a user-authorized available local part. User addresses belong under
+Permanent registration requires the active `user` profile and its browser approval
+unless the human has explicitly configured YOLO. Other profiles use
+`amail address add LOCAL --tmp`; see [temporary lifecycle](profiles.md).
+
+Choose a user-authorized available local part. Permanent user addresses belong under
 `mail.moesegfault.dev`, not the apex `moesegfault.dev`; `mail@moesegfault.dev` is a
 site sender, not a user mailbox. Service names are reserved. An account has at
 most ten pending/active/non-retired address slots, subject to its plan, approved
@@ -57,3 +63,7 @@ The ordinary agent should not operate provider control planes directly.
 against retirement or assume CLI absence proves provider-route removal. A retired
 name remains reserved to prevent old mail reaching a future owner.
 `capacity_exhausted` means stop, not try another alias to evade the cap.
+
+The permanent retirement rule does not describe temporary mail: expired or released
+temporary addresses disappear from queries and can be reassigned after cleanup,
+route retirement and cooldown, without exposing the predecessor's data.

@@ -29,13 +29,17 @@ export function migrationStatements(sql) {
   return statements;
 }
 
-/** Seed each runtime fixture from the same contiguous production migration history. */
-export async function applyMigrations(db, migrationsDir) {
+/** Apply all history, or a contiguous slice for actual old-schema upgrade fixtures. */
+export async function applyMigrations(db, migrationsDir, { from = 1, through } = {}) {
   const names = (await readdir(migrationsDir)).filter((name) => /^\d{4}_.*\.sql$/.test(name)).sort();
   assert.ok(names.length >= 8, "address scheduling migration is required");
+  const last = through ?? names.length;
+  assert.ok(Number.isInteger(from) && Number.isInteger(last) && from >= 1 && from <= last && last <= names.length,
+    "migration range must select contiguous production history");
   for (let n = 0; n < names.length; n++) {
     const name = names[n];
     assert.equal(name.slice(0, 4), String(n + 1).padStart(4, "0"), "migrations must be contiguous");
+    if (n + 1 < from || n + 1 > last) continue;
     const sql = await readFile(path.join(migrationsDir, name), "utf8");
     // D1.exec splits on newlines, not SQL statement boundaries.
     for (const statement of migrationStatements(stripSqlLineComments(sql))) {

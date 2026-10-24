@@ -153,6 +153,7 @@ def cli_env(home: Path, realm: AcceptanceRealm = STAGING) -> dict[str, str]:
         AMAIL_CLIENT_ID=realm.client_id,
         AMAIL_REDIRECT_URI="http://127.0.0.1/callback",
         AMAIL_TELEMETRY="off",
+        AMAIL_TERMINAL_ID=str(uuid.uuid5(uuid.NAMESPACE_URL, str(home.resolve()))),
     )
     return env
 

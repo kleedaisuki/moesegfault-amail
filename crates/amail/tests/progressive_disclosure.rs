@@ -1,9 +1,9 @@
 //! Hosted binary-contract checks with no network or real mailbox credentials.
+#[allow(dead_code)]
+mod common;
+
 use serde_json::Value;
-use std::{
-    path::Path,
-    process::{Command, Output},
-};
+use std::{path::Path, process::Output};
 
 /// Isolate fixtures under the repository scratch directory.
 fn home() -> tempfile::TempDir {
@@ -13,13 +13,13 @@ fn home() -> tempfile::TempDir {
 }
 /// Intentionally invalid runtime configuration proves discovery is truly offline.
 fn invoke(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_amail"))
-        .args(args)
-        .env("AMAIL_HOME", home)
-        .env("AMAIL_TELEMETRY", "off")
-        .env("AMAIL_API_BASE", "not-a-url")
-        .output()
-        .unwrap()
+    common::output(
+        common::command(home)
+            .args(args)
+            .env("AMAIL_HOME", home)
+            .env("AMAIL_TELEMETRY", "off")
+            .env("AMAIL_API_BASE", "not-a-url"),
+    )
 }
 
 #[test]

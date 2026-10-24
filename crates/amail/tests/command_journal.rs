@@ -1,30 +1,27 @@
 //! Hosted subprocess coverage for local-only diagnostics without real accounts.
 
+mod common;
+
 use rusqlite::Connection;
-use std::{
-    path::Path,
-    process::{Command, Output},
-};
+use std::{path::Path, process::Output};
 
 /// Isolate every CLI invocation from real state, credentials and provider endpoints.
 fn invoke(home: &Path, args: &[&str], enabled: bool) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_amail"))
-        .args(args)
-        .env("AMAIL_HOME", home)
-        .env("AMAIL_TELEMETRY", if enabled { "on" } else { "off" })
-        .env("AMAIL_API_BASE", "https://mail.example.test")
-        .env("AMAIL_ISSUER", "https://identity.example.test")
-        .env("AMAIL_CLIENT_ID", "")
-        .env("AMAIL_REDIRECT_URI", "")
-        .output()
-        .unwrap()
+    common::output(
+        common::command(home)
+            .args(args)
+            .env("AMAIL_HOME", home)
+            .env("AMAIL_TELEMETRY", if enabled { "on" } else { "off" })
+            .env("AMAIL_API_BASE", "https://mail.example.test")
+            .env("AMAIL_ISSUER", "https://identity.example.test")
+            .env("AMAIL_CLIENT_ID", "")
+            .env("AMAIL_REDIRECT_URI", ""),
+    )
 }
 
 /// Keep experimental/test files under the repository root.
-fn home() -> tempfile::TempDir {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
-    std::fs::create_dir_all(&root).unwrap();
-    tempfile::tempdir_in(root).unwrap()
+fn home() -> common::Fixture {
+    common::Fixture::new()
 }
 
 /// Read only local diagnostic operational labels and numeric measurements.
@@ -80,7 +77,7 @@ fn config_and_off_preserve_stdout_exit_and_exclude_private_state() {
 }
 
 /// Avoid shadowing the fixture factory in tests with a named home value.
-fn super_home() -> tempfile::TempDir {
+fn super_home() -> common::Fixture {
     home()
 }
 

@@ -16,6 +16,7 @@ from pin_staging_mail import expected_bindings
 from control_plane_trace import span
 from tested_worker_artifact import require_artifact
 from worker_deploy_result import DeploymentFailure, submit
+from staging_candidate import LANES, reviewed
 
 
 def require_context(target: str) -> None:
@@ -25,11 +26,11 @@ def require_context(target: str) -> None:
     also verifies reviewed isolated config and its strict Queue binding so a
     branch selection cannot silently deploy default production capabilities.
     """
-    branch = {"production": "refs/heads/main", "staging": "refs/heads/codex/v0.2.0-billing"}.get(target)
-    if branch is None or os.getenv("GITHUB_REF") != branch or not os.getenv("GITHUB_OUTPUT"):
+    branches = {"production": ("refs/heads/main",), "staging": tuple(LANES)}.get(target, ())
+    if os.getenv("GITHUB_REF") not in branches or not os.getenv("GITHUB_OUTPUT"):
         raise ValueError("context_unverified")
     if target == "staging":
-        if (os.getenv("AMAIL_STAGING_MAIL_DEPLOY_CONFIRM") != "RUN_STAGING_V020"
+        if (not reviewed(os.getenv("GITHUB_REF", ""), os.getenv("AMAIL_STAGING_MAIL_DEPLOY_CONFIRM", ""))
                 or os.getenv("AMAIL_TRACE_TOPOLOGY") != "api-scheduled"):
             raise ValueError("staging_context_unverified")
         from check_staging import check

@@ -15,13 +15,13 @@ import tempfile
 from check_staging_adapters import ROOT, source_configs
 from worker_deploy_result import DeploymentFailure, submit
 from tested_worker_artifact import require_artifact
+from staging_candidate import reviewed
 
 
 def deploy(component: str) -> str:
     """Use only the candidate's two source-owned adapters and a private secret file."""
     if (component not in ("ingress", "events") or os.getenv("GITHUB_ACTIONS") != "true"
-            or os.getenv("GITHUB_REF") != "refs/heads/codex/v0.2.0-billing"
-            or os.getenv("AMAIL_STAGING_DEPLOY_CONFIRM") != "RUN_STAGING_V020"
+            or not reviewed(os.getenv("GITHUB_REF", ""), os.getenv("AMAIL_STAGING_DEPLOY_CONFIRM", ""))
             or not os.getenv("CLOUDFLARE_ACCOUNT_ID") or not os.getenv("CLOUDFLARE_API_TOKEN")):
         raise ValueError("adapter_deploy_coordinates_unverified")
     source_configs()

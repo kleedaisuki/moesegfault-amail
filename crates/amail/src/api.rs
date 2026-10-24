@@ -8,7 +8,25 @@ use reqwest::{
     Method, StatusCode,
 };
 use serde_json::Value;
-use std::{fmt, time::Duration};
+use std::{fmt, sync::OnceLock, time::Duration};
+
+/// Clones retain one daemon-owned pool; profile credentials belong to requests,
+/// never default headers. Redirects must not forward custom session capabilities.
+pub(crate) fn shared_http() -> Result<Client> {
+    static HTTP: OnceLock<Client> = OnceLock::new();
+    if let Some(client) = HTTP.get() {
+        return Ok(client.clone());
+    }
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(8)
+        .build()?;
+    let _ = HTTP.set(client);
+    Ok(HTTP.get().expect("HTTP pool initialized").clone())
+}
 
 /// Preserve the public CLI error text while retaining a typed retry discriminator.
 #[derive(Debug)]
@@ -245,6 +263,23 @@ fn address_problem_code(problem: &Value) -> &'static str {
         Some("address_unavailable") => "address_unavailable",
         Some("capacity_exhausted") => "capacity_exhausted",
         Some("reserved_or_invalid_name") => "reserved_or_invalid_name",
+        Some("user_profile_required") => "user_profile_required",
+        Some("profile_session_required") => "profile_session_required",
+        Some("profile_session_expired") => "profile_session_expired",
+        Some("profile_in_use") => "profile_in_use",
+        Some("profile_not_registered") => "profile_not_registered",
+        Some("profile_exists_or_limit") => "profile_exists_or_limit",
+        Some("invalid_profile") => "invalid_profile",
+        Some("invalid_lease") => "invalid_lease",
+        Some("invalid_lease_mode") => "invalid_lease_mode",
+        Some("mailbox_in_use") => "mailbox_in_use",
+        Some("mailbox_lease_required") => "mailbox_lease_required",
+        Some("mailbox_lease_expired") => "mailbox_lease_expired",
+        Some("mailbox_generation_expired") => "mailbox_generation_expired",
+        Some("invalid_address_kind") => "invalid_address_kind",
+        Some("tmpaddr_limit") => "tmpaddr_limit",
+        Some("tmpaddr_unconfigured") => "tmpaddr_unconfigured",
+        Some("address_expired") => "address_expired",
         _ => "http_error",
     }
 }
@@ -277,7 +312,7 @@ impl<'a> Api<'a> {
         Ok(Self {
             cfg,
             command_id,
-            http: Client::builder().timeout(Duration::from_secs(30)).build()?,
+            http: shared_http()?,
         })
     }
 
@@ -289,7 +324,7 @@ impl<'a> Api<'a> {
         path: &str,
         operation: &str,
         json: Option<&Value>,
-        zip: Option<&[u8]>,
+        zip: Option<Vec<u8>>,
         idempotency: Option<&str>,
     ) -> Result<(StatusCode, Vec<u8>)> {
         let journal = telemetry::RequestSpan::with_command(self.cfg, operation, self.command_id);
@@ -303,6 +338,12 @@ impl<'a> Api<'a> {
                     telemetry::Phase::Auth,
                     Some("credential_unavailable"),
                 );
+                if err
+                    .downcast_ref::<crate::machine::Failure>()
+                    .is_some_and(|failure| failure.code == "account_changed")
+                {
+                    return Err(err);
+                }
                 return Err(crate::machine::Failure {
                     code: "credential_unavailable",
                     next_action: "login",
@@ -312,19 +353,22 @@ impl<'a> Api<'a> {
                 .into());
             }
         };
+        let profile_session =
+            crate::session::request_session(self.cfg, &method, path, json, zip.as_deref())?;
         let mut request: RequestBuilder = self
             .http
             .request(method, format!("{}{}", self.cfg.api_base, path))
             .header("x-amail-api-version", "2")
             .bearer_auth(&token)
             .header("traceparent", journal.traceparent());
+        if let Some(session) = profile_session {
+            request = request.header("x-amail-profile-session", session);
+        }
         if let Some(value) = json {
             request = request.json(value);
         }
         if let Some(bytes) = zip {
-            request = request
-                .header(CONTENT_TYPE, "application/zip")
-                .body(bytes.to_vec());
+            request = request.header(CONTENT_TYPE, "application/zip").body(bytes);
         }
         if let Some(key) = idempotency {
             request = request.header("Idempotency-Key", key);
@@ -340,7 +384,7 @@ impl<'a> Api<'a> {
         mut journal: telemetry::RequestSpan<'_>,
     ) -> Result<(StatusCode, Vec<u8>)> {
         let response = request.send();
-        let response = match response {
+        let mut response = match response {
             Ok(value) => value,
             Err(err) => {
                 journal.finish(
@@ -377,7 +421,12 @@ impl<'a> Api<'a> {
             .map(str::to_owned);
         let cf_error = (operation == "addresses.add" && status.is_server_error())
             .then(|| cf_error_type(response.headers()));
-        let body = response.bytes();
+        // Fill the final Vec directly rather than materializing Bytes and then
+        // cloning an entire received archive. An advertised length is only a
+        // reservation hint and cannot force an unbounded upfront allocation.
+        let capacity = response.content_length().unwrap_or(0).min(25 * 1024 * 1024) as usize;
+        let mut bytes = Vec::with_capacity(capacity);
+        let body = response.copy_to(&mut bytes).map(|_| bytes);
         let (phase, error_kind) = match &body {
             Ok(_) => (telemetry::Phase::Complete, None),
             Err(err) => (telemetry::Phase::ResponseBody, Some(transport_kind(err))),
@@ -389,25 +438,23 @@ impl<'a> Api<'a> {
             phase,
             error_kind,
         );
-        let body = body
-            .map_err(|err| {
-                anyhow::Error::from(crate::machine::Failure {
-                    code: "response_incomplete",
-                    next_action: if operation == "messages.send" {
-                        "query_send_status"
-                    } else if operation == "billing.session.create" {
-                        "reuse_billing_session_key"
-                    } else {
-                        "retry_later"
-                    },
-                    data: serde_json::json!({"operation":operation}),
-                    message: format!(
-                        "mail API {operation} body read failed: kind={}",
-                        transport_kind(&err)
-                    ),
-                })
-            })?
-            .to_vec();
+        let body = body.map_err(|err| {
+            anyhow::Error::from(crate::machine::Failure {
+                code: "response_incomplete",
+                next_action: if operation == "messages.send" {
+                    "query_send_status"
+                } else if operation == "billing.session.create" {
+                    "reuse_billing_session_key"
+                } else {
+                    "retry_later"
+                },
+                data: serde_json::json!({"operation":operation}),
+                message: format!(
+                    "mail API {operation} body read failed: kind={}",
+                    transport_kind(&err)
+                ),
+            })
+        })?;
         if !status.is_success() {
             let problem: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
             let raw_code = problem
@@ -450,7 +497,7 @@ impl<'a> Api<'a> {
         path: &str,
         operation: &str,
         json: Option<&Value>,
-        zip: Option<&[u8]>,
+        zip: Option<Vec<u8>>,
         idempotency: Option<&str>,
     ) -> Result<Vec<u8>> {
         self.execute_with_status(method, path, operation, json, zip, idempotency)
@@ -512,12 +559,19 @@ impl<'a> Api<'a> {
 
     /// Reserve an address / 预留地址。
     pub fn add_address(&self, local_part: &str) -> Result<Value> {
-        self.json(
-            Method::POST,
-            "/v1/addresses",
-            "addresses.add",
-            Some(&serde_json::json!({"local_part":local_part})),
-        )
+        self.add_address_kind(local_part, "mail")
+    }
+
+    /// Temporary addresses have a separate allowance and a bounded lifetime.
+    pub fn add_address_kind(&self, local_part: &str, kind: &str) -> Result<Value> {
+        if !matches!(kind, "mail" | "tmpaddr") {
+            return Err(crate::machine::invalid_input("unknown address kind"));
+        }
+        let mut body = serde_json::json!({"local_part":local_part});
+        if kind == "tmpaddr" {
+            body["kind"] = Value::String(kind.to_owned());
+        }
+        self.json(Method::POST, "/v1/addresses", "addresses.add", Some(&body))
     }
 
     /// Retire an address / 退役地址。
@@ -684,6 +738,11 @@ impl<'a> Api<'a> {
     /// Submit a validated ZIP with stable idempotency for unresolved attempts.
     /// 使用未决尝试的稳定幂等键提交校验后的 ZIP。
     pub fn send(&self, bytes: &[u8], key: &str) -> Result<Value> {
+        self.send_owned(bytes.to_vec(), key)
+    }
+
+    /// Transfer the validated payload into HTTP without another archive-sized copy.
+    pub fn send_owned(&self, bytes: Vec<u8>, key: &str) -> Result<Value> {
         let response = self.execute(
             Method::POST,
             "/v1/messages/send",
@@ -715,6 +774,76 @@ impl<'a> Api<'a> {
 mod tests {
     use super::*;
     use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn shared_clients_reuse_one_keepalive_connection() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            for _ in 0..2 {
+                let mut request = Vec::new();
+                let mut byte = [0; 1];
+                while !request.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                    assert!(request.len() <= 8192);
+                }
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                    .unwrap();
+            }
+        });
+        for _ in 0..2 {
+            let client = shared_http().unwrap();
+            let response = client.get(format!("http://{address}/")).send().unwrap();
+            assert_eq!(response.bytes().unwrap().as_ref(), b"{}");
+        }
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn profile_capabilities_never_follow_redirects() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        let destination_address = destination.local_addr().unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() <= 8192);
+            }
+            write!(stream, "HTTP/1.1 302 Found\r\nLocation: http://{destination_address}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let response = shared_http()
+            .unwrap()
+            .get(format!("http://{address}/"))
+            .header("x-amail-profile-session", "synthetic-profile-capability")
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        server.join().unwrap();
+        assert!(
+            matches!(destination.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
 
     /// Exercise real HTTP reads, not a mock of the boundary that lost diagnostics.
     #[test]
@@ -992,6 +1121,101 @@ mod tests {
             address_problem_code(&serde_json::json!({"message":"secret"})),
             "http_error"
         );
+        assert_eq!(
+            address_problem_code(&serde_json::json!({
+                "code":"private-address@example.org","error_code":"user_profile_required"
+            })),
+            "http_error"
+        );
+    }
+
+    #[test]
+    fn shipped_tenant_address_codes_preserve_their_closed_wire_identity() {
+        for code in [
+            "user_profile_required",
+            "profile_session_required",
+            "profile_session_expired",
+            "profile_in_use",
+            "profile_not_registered",
+            "profile_exists_or_limit",
+            "invalid_profile",
+            "invalid_lease",
+            "invalid_lease_mode",
+            "mailbox_in_use",
+            "mailbox_lease_required",
+            "mailbox_lease_expired",
+            "mailbox_generation_expired",
+            "invalid_address_kind",
+            "tmpaddr_limit",
+            "tmpaddr_unconfigured",
+            "address_expired",
+        ] {
+            assert_eq!(
+                address_problem_code(&serde_json::json!({"code":code})),
+                code
+            );
+            assert_eq!(
+                address_problem_code(&serde_json::json!({"error_code":code})),
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn real_address_problem_responses_keep_tenant_codes_without_reflecting_provider_prose() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+        };
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let home = tempfile::tempdir_in(root).unwrap();
+        let cfg = telemetry::tests::config(home.path());
+        let preference = telemetry::enabled();
+        telemetry::set_enabled(false);
+        let api = Api::new(&cfg).unwrap();
+        for (status, code, expected) in [
+            (403, "user_profile_required", "user_profile_required"),
+            (403, "profile_session_expired", "profile_session_expired"),
+            (409, "mailbox_in_use", "mailbox_in_use"),
+            (409, "address_expired", "address_expired"),
+            (409, "tmpaddr_limit", "tmpaddr_limit"),
+            (503, "tmpaddr_unconfigured", "tmpaddr_unconfigured"),
+            (502, "private-address@example.org", "http_error"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0; 1];
+                while !request.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                    assert!(request.len() <= 8192);
+                }
+                let body = serde_json::json!({
+                    "type":"about:blank","title":code,"status":status,"code":code,
+                    "detail":"private provider prose","request_id":"123e4567-e89b-42d3-a456-426614174000"
+                }).to_string();
+                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            });
+            let error = api
+                .execute_request(
+                    api.http.post(format!("http://{address}/v1/addresses")),
+                    "addresses.add",
+                    telemetry::RequestSpan::new(&cfg, "addresses.add"),
+                )
+                .unwrap_err();
+            server.join().unwrap();
+            assert_eq!(error.downcast_ref::<ApiFailure>().unwrap().code, expected);
+            assert_eq!(crate::machine::error_record(&error)["code"], expected);
+            assert!(!error.to_string().contains("private"));
+        }
+        telemetry::set_enabled(preference);
     }
 
     #[test]

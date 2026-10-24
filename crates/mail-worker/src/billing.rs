@@ -522,12 +522,14 @@ pub(crate) async fn status(
 ) -> AppResult<Response> {
     refresh(env, user, request_id, trace).await?;
     let database = db(env)?;
-    let mut account = serde_json::to_value(resource::status(&database, user).await?)
-        .map_err(|_| unavailable())?;
+    let current = resource::status(&database, user).await?;
+    let temporary_limit = current.tmpaddr_limit();
+    let mut account = serde_json::to_value(current).map_err(|_| unavailable())?;
     if let Some(object) = account.as_object_mut() {
         object.remove("billing_owner_id");
         object.remove("authorization_id");
         object.remove("origin_traceparent");
+        object.insert("included_tmpaddr_addresses".into(), json!(temporary_limit));
     }
     Ok(Response::from_json(
         &json!({"api_version":"2","version":"0.2.0","account":account,
@@ -584,6 +586,8 @@ pub(crate) async fn maintain(
             &Principal {
                 iss: owner.owner_iss,
                 sub: owner.owner_sub,
+                profile: None,
+                enrollment_fence: false,
             },
         )
         .await
@@ -671,10 +675,14 @@ mod tests {
         let one = Principal {
             iss: "ab".into(),
             sub: "c".into(),
+            profile: None,
+            enrollment_fence: false,
         };
         let two = Principal {
             iss: "a".into(),
             sub: "bc".into(),
+            profile: None,
+            enrollment_fence: false,
         };
         assert_ne!(owner_id(&one), owner_id(&two));
         assert_eq!(owner_id(&one).len(), 64);

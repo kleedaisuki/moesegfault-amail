@@ -35,6 +35,7 @@ def check() -> None:
     require(vars_["OIDC_CLIENT_ID"], "amail-cli-staging", "OIDC client")
     require(vars_["CF_ZONE_ID"], "6edff81c6ed02f412e70868076411a5e", "Cloudflare zone")
     require(vars_["MAIL_DOMAIN"], "mail-staging.moesegfault.dev", "mail domain")
+    require(vars_["MAIL_TMP_DOMAIN"], "tmpaddr-staging.moesegfault.dev", "temporary mail domain")
     require(vars_["ADDRESS_DIAGNOSTICS"], "v1", "address diagnostic gate")
     require(vars_["EMAIL_INGRESS_WORKER_NAME"], "amail-inbound-staging", "ingress Worker")
     require(
