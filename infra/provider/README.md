@@ -35,8 +35,12 @@ places Routing SPF at the domain and Sending SPF separately at `cf-bounce`;
 those names must not be conflated into a synthetic merged record.
 
 TXT comparison uses the existing pinned `dnspython==2.8.0` dependency, shared
-through `infra/dns/txt_record.py`. Quoted DNS presentation is parsed into RDATA
-and its character strings concatenated without inserted spaces. Unquoted logical
+through `infra/dns/txt_record.py`. Its public tokenizer decodes quoted presentation
+tokens into bytes, concatenated without inserted spaces. This deliberately does
+not construct wire RDATA: provider APIs can present an already-joined logical
+DKIM value as one quoted string longer than the 255-byte wire-component limit.
+Malformed escapes, non-string trailing tokens and non-UTF-8 values fail closed.
+Unquoted logical
 API content is preserved exactly: parsing it as zone text would incorrectly turn
 semicolons into comments and split meaningful spaces. The read-only sending DNS
 verifier uses the same parser for provider requirements and already concatenates
@@ -45,6 +49,10 @@ and [RFC 6376 section 3.6.2.2](https://www.rfc-editor.org/rfc/rfc6376#section-3.
 not a DKIM key rotation. Diagnostics expose only logical-content/hash equality
 booleans and a presentation-changed count; neither key material nor hashes are
 retained. A genuinely different selector key remains a conflict.
+The pinned upstream [tokenizer](https://github.com/rthalley/dnspython/blob/v2.8.0/dns/tokenizer.py)
+provides `Token.unescape_to_bytes()`; [TXT RDATA construction](https://github.com/rthalley/dnspython/blob/v2.8.0/dns/rdtypes/txtbase.py)
+adds the wire-specific component limit and is therefore the wrong comparison
+layer for joined API values.
 
 Restore and verify the same-run tested artifact before the first command, and
 retain the existing workflow staging writer lock. Apply requires GitHub Actions,

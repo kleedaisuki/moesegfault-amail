@@ -79,6 +79,28 @@ class TemporaryDomainTests(unittest.TestCase):
         self.assertEqual("v=spf1 include:example.invalid ~all", provision.normalize_txt('"v=spf1 include:example.invalid ~all"'))
         self.assertEqual('quoted="value"; backslash=\\', provision.normalize_txt(r'"quoted=\"value\"; backslash=\\"'))
 
+    def test_single_quoted_logical_txt_is_not_limited_to_one_wire_chunk(self) -> None:
+        logical = "v=DKIM1; p=" + "A" * 350
+        self.assertEqual(logical, provision.normalize_txt(f'"{logical}"'))
+        self.assertEqual(logical, provision.normalize_txt(f'"{logical[:200]}" "{logical[200:]}"'))
+        provider = FakeProvider()
+        name = "selector._domainkey." + provision.DOMAIN
+        provider.required = [{"name": name, "type": "TXT", "content": f'"{logical}"'}]
+        provider.records = [{"name": name, "type": "TXT", "content": f'"{logical[:200]}" "{logical[200:]}"'}]
+        provider.domain = {"name": provision.DOMAIN, "enabled": True, "tag": "a" * 32, "preview_enabled": False, "drop_suppressed_recipients": False}
+        provision.ensure_sending(provider, True)
+        report = provision.inspect(provider, provider)
+        self.assertTrue(report["sending_dns"]["requirements"][0]["txt_sha256_equal"])
+        self.assertTrue(all(method == "GET" for method, _, _ in provider.calls))
+
+    def test_dns_tokenizer_handles_octet_escapes_without_double_encoding(self) -> None:
+        self.assertEqual("abc def", provision.normalize_txt(r'"abc\032def"'))
+        self.assertEqual("é", provision.normalize_txt(r'"\195\169"'))
+        self.assertEqual("a\x00b", provision.normalize_txt(r'"a\000b"'))
+        for presentation in (r'"\999"', r'"\1"', r'"\12x"', r'"\255"', '"closed" trailing', '"closed" ; private-comment'):
+            with self.subTest(presentation_length=len(presentation)), self.assertRaisesRegex(provision.ProvisionError, "^dns_txt_presentation_invalid$"):
+                provision.normalize_txt(presentation)
+
     def test_txt_raw_content_and_spaces_are_preserved(self) -> None:
         for content in (" v=spf1  include:example.invalid ~all ", 'v=DKIM1; n="quoted note"; p=abc', "v=DKIM1; p=" + "A" * 350):
             with self.subTest(length=len(content)):

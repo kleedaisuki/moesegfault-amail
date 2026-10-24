@@ -86,6 +86,7 @@ class Client:
                 status = response.status
                 raw = response.read(MAX_REPLY + 1)
         except urllib.error.HTTPError as error:
+            error.close()
             if error.code in (401, 403):
                 raise ProviderError("permission_or_provider_rejection", method, path, self.role, error.code) from None
             code = "provider_rejected" if method == "GET" or error.code in (400, 404, 409, 422) else "mutation_unknown_inspect_before_retry"
