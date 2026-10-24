@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -75,6 +76,40 @@ MARGIN_SECONDS = 60
 WINDOW_SECONDS = PROPAGATION_SECONDS + INVOCATION_SECONDS + MARGIN_SECONDS
 API = "amail-mail-staging"
 MAINTENANCE = "amail-mail-maintenance-staging"
+V030_SINK = "84205687-8582-4fd0-a974-af1d517c16a7"
+V030_SINK_SOURCE = "5a6da36aab7640e8590530823351e634c8d5b2b3"
+SINK_INPUTS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo",
+               "workers/trace-sink", "crates/trace-schema", "infra/ci/worker_artifact.py",
+               "infra/deploy/deploy_trace_sink.py", "infra/deploy/tested_worker_artifact.py",
+               "infra/deploy/worker_deploy_result.py")
+
+
+def unchanged_v030_sink(value: dict) -> bool:
+    """Reuse only the fully verified sink submitted by successful job120897847181.
+
+    Run40102215366 accepted this component before its later domain-onboarding
+    permission failure. API/maintenance still receive this run's tested bytes.
+    """
+    if (os.getenv("GITHUB_REF") != "refs/heads/codex/v0.3.0-multitenant"
+            or value["scripts"]["amail-trace-sink-staging"]["version"] != V030_SINK):
+        return False
+    try:
+        changed = subprocess.run(["git", "diff", "--quiet", V030_SINK_SOURCE, "--", *SINK_INPUTS],
+                                 cwd=ROOT, capture_output=True, timeout=15, check=False)
+        original = subprocess.run(["git", "show", f"{V030_SINK_SOURCE}:.github/workflows/ci.yml"],
+                                  cwd=ROOT, capture_output=True, text=True, timeout=15, check=False)
+        if changed.returncode or original.returncode:
+            return False
+        current = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for job in ("worker-build", "staging-trace-sink"):
+            pattern = rf"(?ms)^  {job}:\n.*?(?=^  [a-z][a-z0-9-]*:|\Z)"
+            previous = re.search(pattern, original.stdout)
+            selected = re.search(pattern, current)
+            if previous is None or selected is None or previous.group() != selected.group():
+                return False
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def context(*, read_only: bool = False) -> None:
@@ -210,6 +245,11 @@ def preflight(*, read_only: bool = False) -> None:
                            "AMAIL_EXPECTED_TRACE_SINK_VERSION": value["scripts"]["amail-trace-sink-staging"]["version"],
                            "AMAIL_TRACE_TOPOLOGY": "api-scheduled"})
         graph.verify("staging", "active", allow_v012_predecessor=True)
+        if not resume and unchanged_v030_sink(value):
+            output("reuse_sink", "true")
+            output("sink_version", V030_SINK)
+            output("queue_id", os.environ["AMAIL_TRACE_QUEUE_ID"])
+            output("dlq_id", os.environ["AMAIL_TRACE_DLQ_ID"])
         if resume:
             if phase == "adapters":
                 from check_staging_adapters import forwarding, verify

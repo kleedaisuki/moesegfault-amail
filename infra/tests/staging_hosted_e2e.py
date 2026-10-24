@@ -174,6 +174,55 @@ def retained_billing_trace(evidence: dict) -> dict:
     raise HostedProbeError(f"billing_retained_trace_unverified_{last_stage}")
 
 
+def cleanup_run(run_dir: Path, binary: Path, *, release_user: bool) -> HostedProbeError | None:
+    """Release this terminal's user reservation before discarding its private home.
+
+    The CLI rechecks local ownership and sends only its stored cloud capability;
+    cleanup never activates, preempts or releases another terminal's profile.
+    """
+    import staging_mail_e2e
+
+    if (run_dir.is_symlink() or run_dir.resolve() != run_dir or TEMP not in run_dir.parents
+            or not run_dir.name.startswith("staging-hosted-e2e-")):
+        return HostedProbeError("run_cleanup_path_invalid")
+    failure: HostedProbeError | None = None
+    for home in run_dir.glob("amail-home-*"):
+        if not home.is_dir() or home.is_symlink() or not binary.is_file():
+            continue
+        environment = staging_mail_e2e.cli_env(home)
+        if release_user and (home / "auth.sqlite3").is_file() and (home / "profiles.sqlite3").is_file():
+            try:
+                released = subprocess.run([str(binary), "profile", "release", "user"],
+                                          env=environment, capture_output=True,
+                                          timeout=90, check=False)
+                if released.returncode:
+                    failure = HostedProbeError("user_profile_cleanup_failed")
+            except (OSError, subprocess.TimeoutExpired):
+                failure = HostedProbeError("user_profile_cleanup_failed")
+        try:
+            stopped = subprocess.run([str(binary), "daemon", "stop"], env=environment,
+                                     capture_output=True, timeout=20, check=False)
+            if stopped.returncode and failure is None:
+                failure = HostedProbeError("daemon_cleanup_failed")
+        except (OSError, subprocess.TimeoutExpired):
+            if failure is None:
+                failure = HostedProbeError("daemon_cleanup_failed")
+    try:
+        shutil.rmtree(run_dir)
+    except OSError:
+        if failure is None:
+            failure = HostedProbeError("run_cleanup_failed")
+    return failure
+
+
+def acceptance_failure(primary: Exception | None, cleanup: HostedProbeError | None) -> Exception | None:
+    """Keep the primary failure visible even when private teardown also fails."""
+    if primary is not None and cleanup is not None:
+        label = safe_stage_code(primary) if isinstance(primary, HostedProbeError) else "unexpected_failure"
+        return HostedProbeError(f"{label}_cleanup_{safe_stage_code(cleanup)}")
+    return primary if primary is not None else cleanup
+
+
 def execute() -> None:
     """Exercise native staging login and the two-message mail journey."""
 
@@ -185,11 +234,13 @@ def execute() -> None:
     run_dir = Path(tempfile.mkdtemp(prefix="staging-hosted-e2e-", dir=TEMP)).resolve()
     if TEMP not in run_dir.parents:
         raise HostedProbeError("run_path_outside_repo_temp")
+    binary = run_dir / "amail.exe"
+    primary: Exception | None = None
+    cleanup: HostedProbeError | None = None
     try:
         from staging_identity_cdp import ProbeError, native_login, store_credential
         import staging_mail_e2e
 
-        binary = run_dir / "amail.exe"
         shutil.copy2(selected_binary(), binary)
         try:
             store_credential(run_dir, username, password)
@@ -257,24 +308,17 @@ def execute() -> None:
             sys.argv = argv
             os.environ.pop("AMAIL_TEST_SMTP_TOKEN", None)
             os.environ.pop("AMAIL_TEST_RUN_NONCE", None)
+    except Exception as error:
+        primary = error
     finally:
-        # Only the freshly created, validated run directory is eligible.
-        # This also removes the DPAPI blob, encrypted CLI session, Chrome
-        # profile, ZIPs, and MIME extracted by the real-mail harness.
-        if TEMP not in run_dir.parents or not run_dir.name.startswith("staging-hosted-e2e-"):
-            raise HostedProbeError("run_cleanup_path_invalid")
-        for home in run_dir.glob("amail-home-*"):
-            if not home.is_dir() or not binary.is_file():
-                continue
-            stopped = subprocess.run([str(binary), "daemon", "stop"],
-                                     env=staging_mail_e2e.cli_env(home),
-                                     capture_output=True, timeout=20, check=False)
-            if stopped.returncode:
-                raise HostedProbeError("daemon_cleanup_failed")
         try:
-            shutil.rmtree(run_dir)
-        except OSError:
-            raise HostedProbeError("run_cleanup_failed") from None
+            cleanup = cleanup_run(run_dir, binary, release_user=(
+                os.environ.get("GITHUB_REF") == "refs/heads/codex/v0.3.0-multitenant"))
+        except Exception:
+            cleanup = HostedProbeError("run_cleanup_failed")
+    failure = acceptance_failure(primary, cleanup)
+    if failure is not None:
+        raise failure
 
 
 def main() -> int:
