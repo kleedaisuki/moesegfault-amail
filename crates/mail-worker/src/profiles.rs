@@ -217,7 +217,7 @@ async fn create(
     Response::from_json(&serde_json::json!({"profile_id":row.id,"name":row.name,"durable":row.durable==1,"is_user":false})).map_err(Into::into)
 }
 
-const ACQUIRE_SQL: &str = "INSERT INTO mailbox_leases(address,address_generation,profile_id,session_token,mode,lease_token,acquired_at) SELECT a.address,a.generation,?3,?4,?5,?6,?7 FROM addresses a WHERE a.address=?1 AND a.owner_iss=?8 AND a.owner_sub=?9 AND a.state='active' AND (a.expires_at IS NULL OR a.expires_at>?7) AND EXISTS(SELECT 1 FROM mail_profiles p WHERE p.id=?3 AND p.session_token=?4 AND p.session_expires_at>?7) AND NOT EXISTS(SELECT 1 FROM mailbox_leases l JOIN mail_profiles p ON p.id=l.profile_id AND p.session_token=l.session_token WHERE l.address=a.address AND l.address_generation=a.generation AND p.session_expires_at>?7 AND l.profile_id!=?3 AND (l.mode='write' OR ?5='write')) ON CONFLICT(address,profile_id) DO UPDATE SET address_generation=excluded.address_generation,session_token=excluded.session_token,mode=excluded.mode,lease_token=CASE WHEN mailbox_leases.session_token=excluded.session_token AND mailbox_leases.mode=excluded.mode AND mailbox_leases.address_generation=excluded.address_generation THEN mailbox_leases.lease_token ELSE excluded.lease_token END,acquired_at=excluded.acquired_at RETURNING address,address_generation AS generation,mode,lease_token";
+const ACQUIRE_SQL: &str = "INSERT INTO mailbox_leases(address,address_generation,profile_id,session_token,mode,lease_token,acquired_at) SELECT a.address,a.generation,?3,?4,?5,?6,?7 FROM addresses a WHERE a.address=?1 AND a.owner_iss=?8 AND a.owner_sub=?9 AND a.state='active' AND (a.expires_at IS NULL OR a.expires_at>?7) AND EXISTS(SELECT 1 FROM mail_profiles p WHERE p.id=?3 AND p.session_token=?4 AND p.session_expires_at>?7) AND NOT EXISTS(SELECT 1 FROM mailbox_leases l JOIN mail_profiles p ON p.id=l.profile_id AND p.session_token=l.session_token WHERE l.address=a.address AND l.address_generation=a.generation AND p.session_expires_at>?7 AND l.profile_id!=?3 AND (l.mode='write' OR ?5='write')) ON CONFLICT(address,profile_id) DO UPDATE SET address_generation=excluded.address_generation,session_token=excluded.session_token,mode=CASE WHEN mailbox_leases.session_token=excluded.session_token AND mailbox_leases.address_generation=excluded.address_generation AND mailbox_leases.mode='write' THEN 'write' ELSE excluded.mode END,lease_token=CASE WHEN mailbox_leases.session_token=excluded.session_token AND (mailbox_leases.mode=excluded.mode OR mailbox_leases.mode='write') AND mailbox_leases.address_generation=excluded.address_generation THEN mailbox_leases.lease_token ELSE excluded.lease_token END,acquired_at=excluded.acquired_at RETURNING address,address_generation AS generation,mode,lease_token";
 
 #[derive(Deserialize, Serialize)]
 struct Lease {
@@ -503,6 +503,35 @@ mod tests {
     }
 
     #[test]
+    fn read_acquisition_recovers_stronger_writer_without_downgrade_or_rotation() {
+        let db = database();
+        assert_eq!(
+            acquire_for(&db, "one", "write", "writer", 10).as_deref(),
+            Some("writer")
+        );
+        assert_eq!(
+            acquire_for(&db, "one", "read", "read-retry", 20).as_deref(),
+            Some("writer")
+        );
+        let mode: String = db
+            .query_row(
+                "SELECT mode FROM mailbox_leases WHERE profile_id='one'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mode, "write");
+        assert!(acquire_for(&db, "two", "read", "foreign-reader", 20).is_none());
+        db.execute("DELETE FROM mailbox_leases WHERE profile_id='one'", [])
+            .unwrap();
+        assert_eq!(
+            acquire_for(&db, "one", "read", "reader", 30).as_deref(),
+            Some("reader")
+        );
+        assert!(acquire_for(&db, "two", "read", "shared-reader", 30).is_some());
+    }
+
+    #[test]
     fn profile_release_fences_session_and_name_reuse() {
         let db = database();
         acquire_for(&db, "one", "write", "old", 10).unwrap();
@@ -571,7 +600,7 @@ mod tests {
                             granted, permitted,
                             "seed={initial} step={at} profile={id} mode={mode}"
                         );
-                        if granted {
+                        if granted && modes[id] != Some("write") {
                             modes[id] = Some(mode);
                         }
                     }

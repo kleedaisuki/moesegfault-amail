@@ -884,6 +884,7 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
             command: ProfileCommand::Activate { .. }
         }
     );
+    let mut implicit_activation = false;
     if active.is_none() && !activation && !store.terminal_initialized(&terminal)? {
         if !cfg.yolo {
             approval::authorize_request(
@@ -895,6 +896,7 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
             )?;
         }
         active = Some(store.activate(&terminal, "user")?);
+        implicit_activation = true;
     } else if !cfg.yolo {
         let requested_user = matches!(&cli.command, Command::Profile { command: ProfileCommand::Activate { name } } if name == "user")
             || matches!(&cli.command, Command::Profile { command: ProfileCommand::Release { name:Some(name) } } if name == "user");
@@ -909,6 +911,21 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
     if let Some(profile) = active.as_ref() {
         session::install(&terminal, profile.clone());
         store.active(&terminal)?;
+        if implicit_activation
+            && session::account_scope().is_some()
+            && !matches!(
+                &cli.command,
+                Command::Auth {
+                    command: AuthCommand::Login { .. } | AuthCommand::Logout
+                } | Command::Login { .. }
+                    | Command::Logout
+            )
+        {
+            if let Err(error) = session::activate_cloud(&cfg) {
+                store.deactivate(&terminal)?;
+                return Err(error);
+            }
+        }
         if !matches!(
             &cli.command,
             Command::Profile {

@@ -327,7 +327,17 @@ pub fn acquire(cfg: &Runtime, address: &str, mode: &str) -> Result<Value> {
         .get("generation")
         .and_then(Value::as_str)
         .context("cloud lease missing generation")?;
-    Store::open(cfg)?.set_lease(&current.profile.id, address, lease_token, generation, mode)?;
+    let held_mode = result
+        .get("mode")
+        .and_then(Value::as_str)
+        .context("cloud lease missing mode")?;
+    Store::open(cfg)?.set_lease(
+        &current.profile.id,
+        address,
+        lease_token,
+        generation,
+        held_mode,
+    )?;
     let mut public = result;
     public
         .as_object_mut()
@@ -339,9 +349,15 @@ pub fn acquire(cfg: &Runtime, address: &str, mode: &str) -> Result<Value> {
 pub fn release_mailbox(cfg: &Runtime, address: &str) -> Result<Value> {
     let current = context()?;
     let mut store = Store::open(cfg)?;
-    let lease = store
-        .lease(&current.profile.id, address)?
-        .context("mailbox_not_acquired: no local lease capability; acquire the mailbox first")?;
+    let lease = match store.lease(&current.profile.id, address)? {
+        Some(lease) => lease,
+        None => {
+            acquire(cfg, address, "read")?;
+            store
+                .lease(&current.profile.id, address)?
+                .context("cloud mailbox capability was not persisted")?
+        }
+    };
     let lease_token = lease
         .get("lease_token")
         .and_then(Value::as_str)
