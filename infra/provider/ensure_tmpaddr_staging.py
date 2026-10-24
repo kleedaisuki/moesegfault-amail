@@ -260,14 +260,15 @@ def inspect(dns: Provider, routing: Provider) -> dict[str, Any]:
         report["dns"] = {"state": "observed", "record_count": len(records), "routing_ready": routing_ready(records)}
     except ProvisionError as error:
         report["dns"] = inspection_failure(error)
-    try:
-        settings = routing.request("GET", PREFIX + "/email/routing").get("result")
-        if not isinstance(settings, dict):
-            raise ProvisionError("routing_settings_invalid")
-        # Zone-level read access proves neither subdomain readiness nor Write permission.
-        report["routing_token_read"] = {"state": "observed", "write_permission": "unverified"}
-    except ProvisionError as error:
-        report["routing_token_read"] = inspection_failure(error)
+    for key, client in (("deployment_routing_read", dns), ("routing_token_read", routing)):
+        try:
+            settings = client.request("GET", PREFIX + "/email/routing").get("result")
+            if not isinstance(settings, dict):
+                raise ProvisionError("routing_settings_invalid")
+            # Read access proves neither subdomain readiness nor Write permission.
+            report[key] = {"state": "observed", "write_permission": "unverified"}
+        except ProvisionError as error:
+            report[key] = inspection_failure(error)
     try:
         domains = inventory(dns, PREFIX + "/email/sending/subdomains")
         matches = [domain for domain in domains if domain.get("name") == DOMAIN]
@@ -314,7 +315,7 @@ def main() -> int:
             authorize_apply(dict(os.environ))
         token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
         routing_token = os.environ.get("CF_EMAIL_ROUTING_TOKEN", "")
-        if not token or not routing_token:
+        if not token or (args.inspect and not routing_token):
             raise ProvisionError("credentials_required")
         client = Client(token)
         routing = Client(routing_token, "routing")
@@ -323,7 +324,8 @@ def main() -> int:
             write_inspection(args.output, report)
             print(json.dumps(report, sort_keys=True))
             return 0
-        ensure_routing(client, routing, args.apply)
+        # Domain onboarding is deployment configuration, not runtime rule management.
+        ensure_routing(client, client, args.apply)
         ensure_sending(client, args.apply)
     except ProvisionError as error:
         print(f"tmpaddr_staging={error}", file=sys.stderr)

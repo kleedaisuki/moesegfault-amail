@@ -62,6 +62,15 @@ class FakeProvider:
 
 
 class TemporaryDomainTests(unittest.TestCase):
+    def test_apply_uses_deployment_credential_for_domain_onboarding(self) -> None:
+        deployment = FakeProvider()
+        runtime = FakeProvider()
+        environment = {"GITHUB_ACTIONS": "true", "GITHUB_REF": "refs/heads/codex/v0.3.0-multitenant", "AMAIL_STAGING_CONFIRM": "RUN_STAGING_V030", "AMAIL_STAGING_ENVIRONMENT": "staging", "GITHUB_RUN_ATTEMPT": "1", "CLOUDFLARE_API_TOKEN": "synthetic-deployment"}
+        with patch.dict(provision.os.environ, environment, clear=True), patch.object(sys, "argv", ["helper", "--apply"]), patch.object(provision, "Client", side_effect=[deployment, runtime]), patch.object(provision, "ensure_routing") as routing, patch.object(provision, "ensure_sending") as sending, patch("builtins.print"):
+            self.assertEqual(0, provision.main())
+        routing.assert_called_once_with(deployment, deployment, True)
+        sending.assert_called_once_with(deployment, True)
+
     def test_inspection_of_missing_domain_is_get_only(self) -> None:
         provider = FakeProvider()
         report = provision.inspect(provider, provider)
@@ -97,6 +106,23 @@ class TemporaryDomainTests(unittest.TestCase):
         self.assertNotIn("p=synthetic", str(report))
         self.assertNotIn("a" * 32, str(report))
         self.assertEqual("unverified", report["routing_token_read"]["write_permission"])
+        self.assertEqual("unverified", report["deployment_routing_read"]["write_permission"])
+
+    def test_deployment_and_runtime_routing_reads_are_independent(self) -> None:
+        class DeniedRuntime(FakeProvider):
+            def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+                self.calls.append((method, path, body))
+                raise provision.ProviderError("permission_or_provider_rejection", method, path, "routing", 403)
+
+        deployment = FakeProvider()
+        deployment.domain = {"synthetic": True}
+        runtime = DeniedRuntime()
+        report = provision.inspect(deployment, runtime)
+        self.assertEqual("observed", report["deployment_routing_read"]["state"])
+        self.assertEqual("unknown", report["routing_token_read"]["state"])
+        self.assertEqual("routing", report["routing_token_read"]["credential"])
+        self.assertEqual(403, report["routing_token_read"]["http"])
+        self.assertTrue(all(method == "GET" for method, _, _ in deployment.calls + runtime.calls))
 
     def test_http_diagnostics_have_closed_phase_method_status_and_role(self) -> None:
         client = provision.Client("synthetic-secret", "routing")
