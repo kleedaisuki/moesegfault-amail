@@ -4,6 +4,7 @@ use std::{
     io::{self, Read},
     path::Path,
     process::{Command, Output, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -68,13 +69,17 @@ fn bounded_output(command: &mut Command) -> io::Result<Output> {
         .spawn()?;
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
-    let out = thread::spawn(move || {
+    let (out_send, out) = mpsc::channel();
+    let (err_send, err) = mpsc::channel();
+    thread::spawn(move || {
         let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
+        let result = stdout.read_to_end(&mut bytes).map(|_| bytes);
+        let _ = out_send.send(result);
     });
-    let err = thread::spawn(move || {
+    thread::spawn(move || {
         let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).map(|_| bytes)
+        let result = stderr.read_to_end(&mut bytes).map(|_| bytes);
+        let _ = err_send.send(result);
     });
     let deadline = Instant::now() + Duration::from_secs(15);
     let status = loop {
@@ -93,7 +98,26 @@ fn bounded_output(command: &mut Command) -> io::Result<Output> {
     };
     Ok(Output {
         status,
-        stdout: out.join().unwrap()?,
-        stderr: err.join().unwrap()?,
+        stdout: drain(out, deadline, "stdout")?,
+        stderr: drain(err, deadline, "stderr")?,
     })
+}
+
+fn drain(
+    receiver: mpsc::Receiver<io::Result<Vec<u8>>>,
+    deadline: Instant,
+    stream: &str,
+) -> io::Result<Vec<u8>> {
+    receiver
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .map_err(|error| {
+            io::Error::new(
+                if matches!(error, mpsc::RecvTimeoutError::Timeout) {
+                    io::ErrorKind::TimedOut
+                } else {
+                    io::ErrorKind::BrokenPipe
+                },
+                format!("offline CLI {stream} pipe did not close within its shared deadline"),
+            )
+        })?
 }
