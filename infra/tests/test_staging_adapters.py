@@ -38,6 +38,9 @@ def lifecycle():
         "source": {"type": "email.sending", "zone_id": check.ZONE, "domain": check.DOMAIN},
         "destination": {"type": "queues.queue", "queue_id": QUEUE_ID},
         "events": events.EVENTS.split(",")}]
+    subscriptions.append({**deepcopy(subscriptions[0]), "id": "temporary-subscription",
+                          "name": "amail-tmpaddr-lifecycle-staging",
+                          "source": {"type": "email.sending", "zone_id": check.ZONE, "domain": check.TMP_DOMAIN}})
     return catalog, details, subscriptions
 
 
@@ -100,6 +103,23 @@ class AdapterTests(unittest.TestCase):
 
     def test_exact_lifecycle_graph(self):
         self.assertEqual(len(self.snapshot()["queues"]), 2)
+
+    def test_temporary_lifecycle_requires_exact_second_domain_path(self) -> None:
+        _, _, subscriptions = lifecycle()
+        for change in ("missing", "zone", "production_domain", "destination", "duplicate"):
+            rows = deepcopy(subscriptions)
+            if change == "missing":
+                rows.pop()
+            elif change == "zone":
+                rows[1]["source"]["zone_id"] = "other-zone"
+            elif change == "production_domain":
+                rows[1]["source"]["domain"] = "tmpaddr.moesegfault.dev"
+            elif change == "destination":
+                rows[1]["destination"]["queue_id"] = "d" * 32
+            else:
+                rows.append({**deepcopy(rows[1]), "id": "extra"})
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.snapshot(subscriptions=rows)
 
     def test_returned_source_label_preserves_exact_selector_contract(self):
         """Display metadata is allowed; missing/wrong selectors or new fields are not."""
@@ -226,7 +246,7 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(facts["main_queue"]["mainconsumer"]["settings"]["retry_delay"], "invalid")
         self.assertEqual(facts["main_queue"]["mainconsumer"]["settings"]["batch_size"], "invalid")
         self.assertFalse(facts["main_queue"]["mainconsumer"]["script_match"])
-        self.assertEqual(facts["subscription"]["related_count"], 1)
+        self.assertEqual(facts["subscription"]["related_count"], 2)
         self.assertFalse(facts["subscription"]["name_match"])
 
     def test_failed_inventory_is_not_absence(self):

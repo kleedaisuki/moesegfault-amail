@@ -92,7 +92,7 @@ class MailDeployTests(unittest.TestCase):
             current = make("staging", False)
             old = make("staging", True)
             names = {"BILLING_SERVICE_KEY", "BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN", "BILLING_RETURN_URL"}
-            expected_names = names | ({"IDENTITY_ISSUER"} if make == makers[1] else set())
+            expected_names = names | {"MAIL_TMP_DOMAIN"} | ({"IDENTITY_ISSUER"} if make == makers[1] else set())
             self.assertEqual(set(current) - set(old), expected_names)
             self.assertEqual({name: value for name, value in current.items() if name not in expected_names}, old)
             production = make("production", False)

@@ -35,6 +35,7 @@ class MaintenanceIssuerTests(unittest.TestCase):
                 maintenance.verify_missing_issuer_predecessor("a" * 32, "synthetic-token", "b" * 32)
         expected = maintenance.expected_bindings("staging", "b" * 32)
         del expected["IDENTITY_ISSUER"]
+        del expected["MAIL_TMP_DOMAIN"]
         self.assertEqual(compare.call_args.args[2], expected)
         self.assertEqual(expected["BILLING_SERVICE_KEY"], ("secret_text", None))
         for name in ("BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN", "BILLING_RETURN_URL"):

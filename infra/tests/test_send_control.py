@@ -51,7 +51,7 @@ class EmailEventsProvisionContract(unittest.TestCase):
 
     def test_matching_subscription_is_not_duplicated(self):
         """A repeated deploy only lists the existing scoped subscription. / 重复部署只检查已有域名订阅。"""
-        body = json.dumps({"result": [{"name": "lifecycle", "enabled": True, "events": events.EVENTS.split(","), "source": {"type": "email.sending", "domain": "mail.example.test"}}]})
+        body = json.dumps({"result": [{"name": "lifecycle", "enabled": True, "events": events.EVENTS.split(","), "source": {"type": "email.sending", "zone_id": events.ZONE, "domain": "mail.example.test"}}]})
         with patch.object(events, "run", return_value=subprocess.CompletedProcess([], 0, body, "")) as run:
             events.ensure_subscription("queue", "lifecycle", "mail.example.test")
         run.assert_called_once()

@@ -18,13 +18,14 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
+from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRATCH = ROOT / ".temp" / "performance"
 MANIFEST = "version=1\nfrom='a@mail.example.test'\nto=['b@example.test']\nsubject='Synthetic benchmark'\n"
 
 
-def summary(samples: list[float]) -> dict:
+def summary(samples: list[float]) -> dict[str, Any]:
     """Retain raw milliseconds and robust summaries for later fair comparisons."""
     median = statistics.median(samples)
     return {
@@ -47,8 +48,20 @@ def fixture(directory: Path, size: int) -> Path:
     return archive
 
 
+def stop_daemon(binary: Path, home: Path, env: dict[str, str]) -> None:
+    """Never remove a fixture home while its daemon can still write to it."""
+    if not (home / "daemon.json").exists():
+        return
+    result: subprocess.CompletedProcess[bytes] = subprocess.run(
+        [str(binary), "daemon", "stop"], env=env, cwd=ROOT,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=35, check=False)
+    if result.returncode != 0:
+        raise RuntimeError("benchmark daemon did not stop; fixture retained")
+
+
 def run_case(binary: Path, args: list[str], home: Path, telemetry: bool,
-             count: int, fresh: bool = False, prepare=None) -> dict:
+             count: int, fresh: bool = False,
+             prepare: Callable[[], object] | None = None) -> dict[str, Any]:
     """Time actual processes, excluding fixture setup and directory cleanup.
 
     Fresh means first-use application state, not a forced cold OS page cache.
@@ -56,18 +69,26 @@ def run_case(binary: Path, args: list[str], home: Path, telemetry: bool,
     Pipes make timeout waiting event-driven instead of quantizing tiny process
     timings through POSIX wait(timeout)'s exponential polling sleeps.
     """
-    env = os.environ.copy()
+    env: dict[str, str] = os.environ.copy()
     env.update(AMAIL_HOME=str(home), AMAIL_API_BASE="https://mail.example.test",
-               AMAIL_ISSUER="https://identity.example.test", AMAIL_CLIENT_ID="synthetic")
+               AMAIL_ISSUER="https://identity.example.test", AMAIL_CLIENT_ID="synthetic",
+               AMAIL_TERMINAL_ID="amail-synthetic-benchmark")
     if telemetry:
         env.pop("AMAIL_TELEMETRY", None)
     else:
         env["AMAIL_TELEMETRY"] = "off"
-    samples = []
-    codes = []
+    samples: list[float] = []
+    codes: list[int] = []
     for iteration in range(count + 3):
         if fresh and home.exists():
+            stop_daemon(binary, home, env)
+            if not home.resolve().is_relative_to(SCRATCH.resolve()):
+                raise ValueError("benchmark home must stay under repository scratch")
             shutil.rmtree(home)
+        home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Explicit synthetic opt-in: benchmarking must not open hundreds of
+        # consent pages or change the real user's authorization configuration.
+        (home / "config.toml").write_text("yolo = true\n", encoding="utf-8")
         if prepare:
             prepare()
         started = time.perf_counter_ns()
@@ -85,7 +106,7 @@ def run_case(binary: Path, args: list[str], home: Path, telemetry: bool,
             "telemetry": telemetry, "state": "fresh" if fresh else "warm"}
 
 
-def measure(binary: Path, directory: Path) -> dict:
+def measure(binary: Path, directory: Path) -> dict[str, Any]:
     """Use representative startup, journal, credential-status and ZIP workloads."""
     directory.mkdir()
     home = directory / "home"
@@ -93,23 +114,29 @@ def measure(binary: Path, directory: Path) -> dict:
     large = directory / "long-tail"
     small_zip = fixture(small, 4096)
     large_zip = fixture(large, 2 * 1024 * 1024)
-    cases = {}
-    for name, args in [("help", ["--help"]), ("version", ["--version"]),
-                       ("config", ["config"]), ("auth_status", ["auth", "status"]),
-                       ("discover", ["discover"])]:
-        cases[name] = run_case(binary, args, home, False, 25)
-    cases["config_telemetry_warm"] = run_case(binary, ["config"], home, True, 25)
-    cases["config_telemetry_first_use"] = run_case(binary, ["config"], home, True, 9, fresh=True)
-    for label, draft, archive in [("small", small, small_zip), ("long_tail", large, large_zip)]:
-        packed = directory / "packed.zip"
-        cases[f"pack_{label}"] = run_case(
-            binary, ["pack", str(draft), "-o", str(packed)], home, False, 15,
-            prepare=lambda: packed.unlink(missing_ok=True))
-        unpacked = directory / "unpacked"
-        cases[f"unpack_{label}"] = run_case(
-            binary, ["unpack", str(archive), "-o", str(unpacked)], home, False, 15,
-            prepare=lambda: shutil.rmtree(unpacked) if unpacked.exists() else None)
-    return {"binary_bytes": binary.stat().st_size, "cases": cases}
+    env: dict[str, str] = os.environ.copy()
+    env.update(AMAIL_HOME=str(home), AMAIL_TERMINAL_ID="amail-synthetic-benchmark")
+    cases: dict[str, Any] = {}
+    try:
+        for name, args in [("help", ["--help"]), ("version", ["--version"]),
+                           ("config", ["config"]), ("auth_status", ["auth", "status"]),
+                           ("discover", ["discover"])]:
+            cases[name] = run_case(binary, args, home, False, 25)
+        cases["config_telemetry_warm"] = run_case(binary, ["config"], home, True, 25)
+        cases["config_telemetry_first_use"] = run_case(binary, ["config"], home, True, 9, fresh=True)
+        for label, draft, archive in [("small", small, small_zip), ("long_tail", large, large_zip)]:
+            packed = directory / "packed.zip"
+            cases[f"pack_{label}"] = run_case(
+                binary, ["pack", str(draft), "-o", str(packed)], home, False, 15,
+                prepare=lambda: packed.unlink(missing_ok=True))
+            unpacked = directory / "unpacked"
+            cases[f"unpack_{label}"] = run_case(
+                binary, ["unpack", str(archive), "-o", str(unpacked)], home, False, 15,
+                prepare=lambda: shutil.rmtree(unpacked) if unpacked.exists() else None)
+        return {"binary_bytes": binary.stat().st_size, "cases": cases,
+                "approval": "explicit_synthetic_yolo"}
+    finally:
+        stop_daemon(binary, home, env)
 
 
 def main() -> None:

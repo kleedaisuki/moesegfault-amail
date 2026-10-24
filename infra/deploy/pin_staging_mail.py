@@ -127,7 +127,7 @@ def expected_bindings(phase: str = "pre-queue", queue_id: str = "", *, realm: st
     }
     if realm in ("staging", "production"):
         if predecessor:
-            for name in ("BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN", "BILLING_RETURN_URL"):
+            for name in ("BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN", "BILLING_RETURN_URL", "MAIL_TMP_DOMAIN"):
                 expected.pop(name, None)
         else:
             expected["BILLING_SERVICE_KEY"] = ("secret_text", None)
@@ -180,11 +180,14 @@ def containment_bindings_match(version: dict, expected_version: str) -> bool:
 
 def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-queue",
                    queue_id: str = "", realm: str = "staging", predecessor: bool = False) -> bool:
-    """Check the current direct-only contract, without historical fallback."""
+    """Check exact capabilities; only the published USD staging pin predates tmpaddr."""
     if predecessor and realm == "production" and expected_version != "50bd330d-2f9b-4102-8c8e-9bbaada927fe":
         return False
     expected = (expected_bindings() if phase == "pre-queue" and realm == "staging"
                 else expected_bindings(phase, queue_id, realm=realm, predecessor=predecessor))
+    if realm == "staging" and expected_version == "c33b65b1-d2a4-4902-9fa3-15e74baf1819":
+        # Source27c5818/run37642433233 establishes this exact immutable predecessor.
+        expected.pop("MAIL_TMP_DOMAIN", None)
     return _bindings_match(version, expected_version, expected)
 
 

@@ -16,30 +16,30 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGING_HEADERS = "https://amail-staging.moesegfault.dev/*\n  X-Robots-Tag: noindex, nofollow\n"
-SERVICE_NOTICE = "这是 v0.2.0 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。"
+SERVICE_NOTICE = "这是 v0.3.0 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。"
 PAGES = {
-    "home": ("index.html", "v0.2.0 尚未发布", "v0.1.0 已发布", None),
-    "manual": ("manual/index.html", "v0.2.0 尚未开放下载", "v0.1.0 已发布", "用户手册目录"),
-    "changelog": ("changelog/index.html", "v0.2.0 仍在验收", "v0.1.0 已正式发布", "更新日志目录"),
+    "home": ("index.html", "v0.3.0 尚未发布", "v0.1.0 已发布", None),
+    "manual": ("manual/index.html", "v0.3.0 尚未开放下载", "v0.1.0 已发布", "用户手册目录"),
+    "changelog": ("changelog/index.html", "v0.3.0 仍在验收", "v0.1.0 已正式发布", "更新日志目录"),
 }
 
 
 class Page(HTMLParser):
     """Collect real links, IDs, text and the designated navigation's fragments."""
 
-    def __init__(self, toc_label):
+    def __init__(self, toc_label: str | None) -> None:
         """Select the route-local TOC rather than any unrelated navigation."""
         super().__init__(convert_charrefs=True)
         self.toc_label = toc_label
-        self.hrefs = set()
-        self.ids = set()
-        self.text = []
-        self.toc_links = []
+        self.hrefs: set[str] = set()
+        self.ids: set[str] = set()
+        self.text: list[str] = []
+        self.toc_links: list[str] = []
         self.nav_depth = 0
-        self.toc_depth = None
+        self.toc_depth: int | None = None
         self.toc_count = 0
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         """Read exact attributes; data-href never counts as a navigable link."""
         values = dict(attrs)
         if values.get("id"):
@@ -56,19 +56,19 @@ class Page(HTMLParser):
         if self.toc_depth is not None:
             self.toc_links.append(href)
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag: str) -> None:
         """Stop collecting fragments at the matching navigation boundary."""
         if tag == "nav":
             if self.nav_depth == self.toc_depth:
                 self.toc_depth = None
             self.nav_depth -= 1
 
-    def handle_data(self, data):
+    def handle_data(self, data: str) -> None:
         """Collect decoded text so attributes and comments cannot assert status."""
         self.text.append(data)
 
 
-def revision_headers(revision, realm="production"):
+def revision_headers(revision: str, realm: str = "production") -> str:
     """Pin public responses to an opaque source revision and prohibit indexing."""
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("candidate revision must be a full lowercase source SHA")
@@ -85,7 +85,7 @@ def revision_headers(revision, realm="production"):
     )
 
 
-def check_page(route, html):
+def check_page(route: str, html: str) -> None:
     """Require route-local candidate status, real navigation and valid TOC links."""
     _, candidate, published, label = PAGES[route]
     page = Page(label)
@@ -111,7 +111,7 @@ def check_page(route, html):
         raise ValueError(f"{route}: TOC fragment has no local target")
     if route == "changelog" and "候选记录日期" not in text:
         raise ValueError("changelog: candidate date must not imply publication")
-    if route == "changelog" and ("v0.2.0" not in page.ids or "#v0.2.0" not in page.toc_links):
+    if route == "changelog" and ("v0.3.0" not in page.ids or "#v0.3.0" not in page.toc_links):
         raise ValueError("changelog: current candidate entry or TOC target missing")
     if route == "manual" and (not all(command in text for command in
             ("amail discover", "amail send-status", "amail events"))
@@ -119,13 +119,13 @@ def check_page(route, html):
         raise ValueError("manual: exploration commands or current section anchor missing")
 
 
-def check_response_headers(route, headers, revision):
+def check_response_headers(route: str, headers: str, revision: str) -> None:
     """Verify actual HTTP 200, HTML MIME, noindex/nofollow and exact source pin."""
     blocks = re.split(r"\r?\n\r?\n", headers.strip())
     response = blocks[-1].splitlines()
     if not response or not re.fullmatch(r"HTTP/\S+ 200(?: .*|)", response[0]):
         raise ValueError(f"{route}: exact-route response must be HTTP 200")
-    fields = {}
+    fields: dict[str, list[str]] = {}
     for line in response[1:]:
         name, separator, value = line.partition(":")
         if separator:
@@ -139,7 +139,7 @@ def check_response_headers(route, headers, revision):
         raise ValueError(f"{route}: response must be HTML")
 
 
-def prepare(revision, realm="production"):
+def prepare(revision: str, realm: str = "production") -> None:
     """Add fixed-realm candidate headers after checking a clean generated bundle."""
     expected = revision_headers(revision, realm)
     dist = ROOT / "site" / "dist"
@@ -154,7 +154,7 @@ def prepare(revision, realm="production"):
     (dist / "_headers").write_text(expected, encoding="utf-8")
 
 
-def smoke(directory, revision, realm="production"):
+def smoke(directory: Path, revision: str, realm: str = "production") -> None:
     """Inspect curl's three fixed-route responses without printing public bodies."""
     revision_headers(revision, realm)
     for route in PAGES:
@@ -162,7 +162,7 @@ def smoke(directory, revision, realm="production"):
         check_response_headers(route, (directory / f"{route}.headers").read_text(encoding="utf-8"), revision)
 
 
-def main():
+def main() -> None:
     """Expose fixed preparation and verification modes with sanitized failures."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("prepare", "smoke"))

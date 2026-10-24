@@ -8,9 +8,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 from typing import Any
+from collections.abc import Iterator
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from staging_candidate import reviewed
 
 import ensure_trace_queues as queues
 
@@ -30,7 +35,7 @@ def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def objects(value: Any):
+def objects(value: Any) -> Iterator[dict[str, Any]]:
     """Traverse a CLI JSON envelope without assuming one Wrangler display shape. / 遍历 CLI JSON 外壳，不假定 Wrangler 只有一种显示格式。"""
     if isinstance(value, dict):
         yield value
@@ -64,6 +69,7 @@ def ensure_subscription(queue: str, name: str, domain: str) -> None:
         source = subscription.get("source")
         if (
             not isinstance(source, dict) or source.get("type") != "email.sending"
+            or source.get("zone_id") != ZONE
             or source.get("domain") != domain or subscription.get("enabled") is not True
             or set(subscription.get("events", [])) != set(EVENTS.split(","))
         ):
@@ -90,11 +96,17 @@ def main() -> int:
     dlq = f"amail-sending-events-dlq{suffix}"
     domain = f"mail{suffix}.moesegfault.dev"
     try:
+        temporary = args.target == "staging" and os.getenv("GITHUB_REF") == "refs/heads/codex/v0.3.0-multitenant"
+        if temporary and (os.getenv("GITHUB_ACTIONS") != "true"
+                          or not reviewed(os.getenv("GITHUB_REF", ""), os.getenv("AMAIL_STAGING_DEPLOY_CONFIRM", ""))):
+            raise ValueError("temporary_lifecycle_context_unverified")
         if args.phase == "queues":
             ensure_queue(dlq)
             ensure_queue(queue)
         else:
             ensure_subscription(queue, f"amail-sending-lifecycle{suffix}", domain)
+            if temporary:
+                ensure_subscription(queue, "amail-tmpaddr-lifecycle-staging", "tmpaddr-staging.moesegfault.dev")
     except (RuntimeError, ValueError, KeyError, OSError, subprocess.TimeoutExpired):
         print("email events provisioning failed: read_or_write_unverified", file=sys.stderr)
         return 1

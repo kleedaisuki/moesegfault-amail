@@ -24,7 +24,7 @@ BILLING_VARS = ("IDENTITY_ISSUER", "BILLING_BASE_URL", "BILLING_SUBSCRIBE_ORIGIN
 
 def realm_vars(realm: str) -> tuple[str, ...]:
     """Both isolated realms require the same Billing capability names."""
-    return VARS + BILLING_VARS
+    return VARS + BILLING_VARS + ("MAIL_TMP_DOMAIN",)
 
 
 MISSING_ISSUER_PREDECESSOR = "5281d8ef-f3c0-42d4-8331-bafa01923b40"
@@ -168,6 +168,10 @@ def verify(realm: str, state: str, account: str, token: str, version: str, queue
         raise ValueError("maintenance_pin_unreviewed")
     cadence = expected_schedules(state)
     expected = expected_bindings(realm, queue_id, active=state == "active", predecessor=predecessor)
+    if realm == "staging" and version == "acbf4790-6e80-4bd3-aab2-095c9937759d":
+        # Successful USD producer37642433233 predates temporary-domain support.
+        # Admit that immutable version's exact old capability set during rollout.
+        expected.pop("MAIL_TMP_DOMAIN", None)
     if missing_issuer_predecessor:
         # This is one immutable failed v0.2 cohort, not a generally optional issuer.
         # The old v0.1 cohort remains separately defined by predecessor=True.
@@ -175,6 +179,7 @@ def verify(realm: str, state: str, account: str, token: str, version: str, queue
                 or version != MISSING_ISSUER_PREDECESSOR):
             raise ValueError("maintenance_issuer_predecessor_unreviewed")
         del expected["IDENTITY_ISSUER"]
+        expected.pop("MAIL_TMP_DOMAIN", None)
     if ACCOUNT.fullmatch(account) is None or not token or UUID.fullmatch(version) is None:
         raise ValueError("maintenance_pin_unreviewed")
     script = script_name(realm)

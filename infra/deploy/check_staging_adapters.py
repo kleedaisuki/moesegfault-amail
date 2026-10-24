@@ -30,6 +30,7 @@ EVENTS_WORKER = "amail-events-staging"
 QUEUE = "amail-sending-events-staging"
 DLQ = "amail-sending-events-dlq-staging"
 DOMAIN = "mail-staging.moesegfault.dev"
+TMP_DOMAIN = "tmpaddr-staging.moesegfault.dev"
 FAILURE_REASONS = frozenset({
     "adapter_source_unreviewed", "adapter_staging_resources_unreviewed", "adapter_script_unreviewed",
     "adapter_serving_unverified", "adapter_public_surface_unverified", "adapter_zones_unverified",
@@ -46,7 +47,7 @@ def failure_reason(error: Exception) -> str:
     return reason if isinstance(reason, str) and reason in FAILURE_REASONS else "adapter_readback_unverified"
 
 
-def source_match(value: object) -> bool:
+def source_match(value: object, domain: str = DOMAIN) -> bool:
     """Match exact sending selectors while admitting only the returned display label.
 
     Pinned Wrangler 4.142.0 EmailSendingEventSource requests type/zone_id/domain.
@@ -56,7 +57,7 @@ def source_match(value: object) -> bool:
     """
     if (not isinstance(value, dict) or set(value) - {"type", "zone_id", "domain", "name"}
             or any(value.get(key) != expected for key, expected in
-                   {"type": "email.sending", "zone_id": ZONE, "domain": DOMAIN}.items())):
+                   {"type": "email.sending", "zone_id": ZONE, "domain": domain}.items())):
         return False
     return "name" not in value or isinstance(value["name"], str) and len(value["name"]) <= 256
 
@@ -131,14 +132,15 @@ def diagnostic_facts(account: str, token: str) -> dict:
         identity_valid = all(isinstance(value, str) and 1 <= len(value) <= 256 for value in identities)
         ids = {row["queue_id"] for row in found.values() if row is not None}
         related = [row for row in rows if isinstance(row.get("source"), dict) and isinstance(row.get("destination"), dict)
-                   and (row["source"].get("type") == "email.sending" and row["source"].get("domain") == DOMAIN
+                   and (row["source"].get("type") == "email.sending" and row["source"].get("domain") in (DOMAIN, TMP_DOMAIN)
                         or row["destination"].get("queue_id") in ids)]
         subscription = {"inventory_complete": True, "identity_valid": identity_valid,
                         "identity_unique": identity_valid and len(set(identities)) == len(identities),
                         "related_count": len(related)}
         facts["subscription"] = subscription
-        if len(related) == 1:
-            row, source, destination = related[0], related[0]["source"], related[0]["destination"]
+        primary = [row for row in related if row["source"].get("domain") == DOMAIN]
+        if len(primary) == 1:
+            row, source, destination = primary[0], primary[0]["source"], primary[0]["destination"]
             events = row.get("events")
             subscription.update(name_match=row.get("name") == "amail-sending-lifecycle-staging", enabled=row.get("enabled") is True,
                 source_type_match=source.get("type") == "email.sending", zone_match=source.get("zone_id") == ZONE,
@@ -188,7 +190,7 @@ def source_configs() -> dict[str, dict]:
                                                for key in ("binding", "database_name", "database_id")}]
             or ingress.get("d1_databases") or ingress.get("queues") or events.get("services")
             or events.get("vars") != {"CF_ACCOUNT_ID": "07109e406d4e1ab7a0997dd399db6fd5",
-                                       "CF_ZONE_ID": ZONE, "MAIL_DOMAIN": DOMAIN}
+                                       "CF_ZONE_ID": ZONE, "MAIL_DOMAIN": DOMAIN, "MAIL_TMP_DOMAIN": TMP_DOMAIN}
             or events.get("queues") != {"consumers": [{"queue": QUEUE, "max_batch_size": 10,
                 "max_batch_timeout": 5, "max_retries": 5, "retry_delay": 120, "dead_letter_queue": DLQ}]}):
         raise ValueError("adapter_staging_resources_unreviewed")
@@ -254,7 +256,7 @@ def private_surfaces(account: str, token: str) -> None:
 
 
 def lifecycle_snapshot(account: str, token: str) -> dict:
-    """Require sole exact lifecycle consumer and one domain-scoped subscription.
+    """Require one exact consumer and one subscription per reviewed mail domain.
 
     Queue consumer API milliseconds correspond to TOML batch timeout seconds.
     Subscription inventory is account-wide and page-complete: an extra delivery
@@ -302,19 +304,25 @@ def lifecycle_snapshot(account: str, token: str) -> dict:
                 or not isinstance(source, dict) or not isinstance(destination, dict)):
             raise ValueError("adapter_subscription_unverified")
         seen.add(identity)
-        if (source.get("type") == "email.sending" and source.get("domain") == DOMAIN
+        if (source.get("type") == "email.sending" and source.get("domain") in (DOMAIN, TMP_DOMAIN)
                 or destination.get("queue_id") in {row["queue_id"] for row in found.values()}):
             related.append(row)
-    if len(related) != 1:
+    if len(related) != 2:
         raise ValueError("adapter_subscription_unverified")
-    subscription = related[0]
-    if (subscription.get("name") != "amail-sending-lifecycle-staging" or subscription.get("enabled") is not True
-            or not source_match(subscription["source"])
-            or subscription["destination"] != {"type": "queues.queue", "queue_id": found[QUEUE]["queue_id"]}
-            or not isinstance(subscription.get("events"), list)
-            or sorted(subscription["events"]) != sorted(EVENTS.split(","))):
-        raise ValueError("adapter_subscription_unverified")
-    return {"queues": details, "subscription": subscription}
+    selected = {}
+    for domain, name in ((DOMAIN, "amail-sending-lifecycle-staging"),
+                         (TMP_DOMAIN, "amail-tmpaddr-lifecycle-staging")):
+        matches = [row for row in related if row.get("name") == name]
+        if len(matches) != 1:
+            raise ValueError("adapter_subscription_unverified")
+        subscription = matches[0]
+        if (subscription.get("enabled") is not True or not source_match(subscription["source"], domain)
+                or subscription["destination"] != {"type": "queues.queue", "queue_id": found[QUEUE]["queue_id"]}
+                or not isinstance(subscription.get("events"), list)
+                or sorted(subscription["events"]) != sorted(EVENTS.split(","))):
+            raise ValueError("adapter_subscription_unverified")
+        selected[domain] = subscription
+    return {"queues": details, "subscription": selected[DOMAIN], "temporary_subscription": selected[TMP_DOMAIN]}
 
 
 def verify(ingress_version: str, events_version: str) -> dict:

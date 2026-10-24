@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -247,6 +248,14 @@ def execute() -> None:
         # profile, ZIPs, and MIME extracted by the real-mail harness.
         if TEMP not in run_dir.parents or not run_dir.name.startswith("staging-hosted-e2e-"):
             raise HostedProbeError("run_cleanup_path_invalid")
+        for home in run_dir.glob("amail-home-*"):
+            if not home.is_dir() or not binary.is_file():
+                continue
+            stopped = subprocess.run([str(binary), "daemon", "stop"],
+                                     env=staging_mail_e2e.cli_env(home),
+                                     capture_output=True, timeout=20, check=False)
+            if stopped.returncode:
+                raise HostedProbeError("daemon_cleanup_failed")
         try:
             shutil.rmtree(run_dir)
         except OSError:

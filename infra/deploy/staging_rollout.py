@@ -28,6 +28,7 @@ from inspect_staging import inspect
 from pin_staging_mail import containment_bindings_match, serving_deployment, run as pin_api
 from tested_worker_artifact import require_artifact
 from worker_deploy_result import DeploymentFailure, submit
+from staging_candidate import reviewed
 
 BRANCH = "refs/heads/codex/v0.2.0-billing"
 CONFIRM = "RUN_STAGING_V020"
@@ -78,9 +79,10 @@ MAINTENANCE = "amail-mail-maintenance-staging"
 
 def context(*, read_only: bool = False) -> None:
     """Require the fixed hosted branch, confirmation and realm before any mutation."""
-    confirmed = (os.getenv("AMAIL_STAGING_INSPECT_CONFIRM") == INSPECT_CONFIRM if read_only
-                 else os.getenv("AMAIL_STAGING_DEPLOY_CONFIRM") == CONFIRM)
-    if (os.getenv("GITHUB_REF") != BRANCH or os.getenv("GITHUB_ACTIONS") != "true"
+    confirmation = os.getenv("AMAIL_STAGING_INSPECT_CONFIRM" if read_only
+                             else "AMAIL_STAGING_DEPLOY_CONFIRM", "")
+    confirmed = reviewed(os.getenv("GITHUB_REF", ""), confirmation, read_only=read_only)
+    if (os.getenv("GITHUB_ACTIONS") != "true"
             or not confirmed or not os.getenv("GITHUB_OUTPUT")):
         raise ValueError("staging_context_unverified")
     if read_only and os.getenv("AMAIL_STAGING_RESUME_RUN", "") not in ("", "37053907751", "37058617870", "37065145834"):
