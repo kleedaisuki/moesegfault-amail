@@ -1835,14 +1835,6 @@ async fn list_addresses(env: &Env, user: &Principal, request_id: &str) -> AppRes
     })?;
     fields.insert("addresses".into(), serde_json::json!(addresses));
     fields.insert("plan".into(), serde_json::json!(account.plan));
-    fields.insert(
-        "tmpaddr_included_limit".into(),
-        serde_json::json!(match account.plan.as_str() {
-            "plus" => 10,
-            "lite" => 6,
-            _ => 3,
-        }),
-    );
     fields.insert("capacity".into(),serde_json::json!({"limit":USER_ADDRESS_CAPACITY,"registered":used,"remaining_estimate":(USER_ADDRESS_CAPACITY-used).max(0)}));
     fields.insert("tmpaddr_capacity".into(),serde_json::json!({"limit":USER_ADDRESS_CAPACITY,"registered":temporary_used,"remaining_estimate":(USER_ADDRESS_CAPACITY-temporary_used).max(0)}));
     fields.insert("request_id".into(), serde_json::json!(request_id));

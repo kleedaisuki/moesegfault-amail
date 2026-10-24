@@ -59,6 +59,14 @@ pub(crate) struct Account {
 }
 
 impl Account {
+    pub(crate) fn tmpaddr_limit(&self) -> i64 {
+        match self.plan.as_str() {
+            "plus" => 10,
+            "lite" => 6,
+            _ => 3,
+        }
+    }
+
     /// Human consent, not a paid plan alone, permits variable-resource growth.
     pub(crate) fn overage_enabled(&self) -> bool {
         self.overage_budget_micros > 0
@@ -72,6 +80,7 @@ impl Account {
         serde_json::json!({
             "limit":effective,"limit_kind":"effective_included_addresses",
             "included_limit":self.included_addresses,
+            "tmpaddr_included_limit":self.tmpaddr_limit(),
             "grandfathered_limit":self.grandfathered_addresses,
             "effective_included_limit":effective,
             "platform_limit":OWNER_ADDRESS_PLATFORM_LIMIT,
@@ -269,6 +278,7 @@ mod projection_tests {
         let free = owner.address_limits();
         assert_eq!(free["limit"], 1);
         assert_eq!(free["included_limit"], 1);
+        assert_eq!(free["tmpaddr_included_limit"], 3);
         assert_eq!(free["platform_limit"], 10);
         assert_eq!(free["overage_enabled"], false);
         owner.grandfathered_addresses = 7;
@@ -284,6 +294,20 @@ mod projection_tests {
         owner.billing_owner_id = Some("private-payer".into());
         owner.authorization_id = Some("private-authority".into());
         assert_eq!(owner.address_limits()["overage_enabled"], true);
+    }
+
+    #[test]
+    fn temporary_inclusion_is_higher_without_multiplying_shared_resources() {
+        let mut owner = account();
+        for (plan, permanent, temporary) in [("free", 1, 3), ("lite", 3, 6), ("plus", 5, 10)] {
+            owner.plan = plan.into();
+            owner.included_addresses = permanent;
+            assert_eq!(owner.address_limits()["tmpaddr_included_limit"], temporary);
+            assert!(owner.tmpaddr_limit() > owner.included_addresses);
+            assert_eq!(owner.included_outbound, 100);
+            assert_eq!(owner.included_storage_bytes, 200_000_000);
+            assert!(!owner.overage_enabled());
+        }
     }
 
     #[test]
