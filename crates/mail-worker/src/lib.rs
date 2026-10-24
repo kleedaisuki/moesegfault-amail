@@ -2875,6 +2875,41 @@ async fn reserve_outbound_budget(
     Ok(())
 }
 
+/// v0.2 journals predate mailbox lifetime fields. Only a validated, never-submitted
+/// permanent-mail intent can capture them; acceptance and uncertainty stay immutable.
+async fn adopt_legacy_preparing_mailbox(
+    database: &Database,
+    user: &Principal,
+    idem: &str,
+    payload_hash: &str,
+    id: &str,
+    address: &str,
+    generation: &str,
+) -> AppResult<()> {
+    let sql = legacy_preparing_mailbox_sql(user);
+    let captured = database
+        .prepare(sql)
+        .bind(&[
+            bind_str(address),
+            bind_str(generation),
+            bind_str(&user.iss),
+            bind_str(&user.sub),
+            bind_str(idem),
+            bind_str(payload_hash),
+            bind_str(id),
+        ])?
+        .first::<serde_json::Value>(None)
+        .await?;
+    if captured.is_none() {
+        return Err(AppError::conflict("send_outcome_unknown"));
+    }
+    Ok(())
+}
+
+fn legacy_preparing_mailbox_sql(user: &Principal) -> String {
+    format!("UPDATE send_requests SET mailbox_address=?1,mailbox_generation=?2 WHERE owner_iss=?3 AND owner_sub=?4 AND idem_key=?5 AND payload_hash=?6 AND message_id=?7 AND state='preparing' AND mailbox_address IS NULL AND mailbox_generation='' AND profile_scope='' AND provider_id IS NULL AND content_purged_at IS NULL AND ?2='' AND EXISTS(SELECT 1 FROM addresses WHERE address=?1 AND generation=?2 AND kind='mail' AND state='active' AND owner_iss=?3 AND owner_sub=?4 AND {}) RETURNING message_id",profiles::address_filter(user,"addresses",true))
+}
+
 async fn send_message(
     req: &mut Request,
     env: &Env,
@@ -2929,10 +2964,11 @@ async fn send_message(
         quota_reserved: i64,
         rejection_code: Option<String>,
         created_at: i64,
+        mailbox_address: Option<String>,
     }
     let send_scope = profiles::send_scope(user);
     let legacy_recovery = user.profile.as_ref().is_some_and(|session| session.is_user);
-    let existing = database.prepare("SELECT payload_hash,message_id,state,quota_reserved,rejection_code,created_at FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND (profile_scope=?4 OR (profile_scope='' AND ?5=1)) AND content_purged_at IS NULL")
+    let existing = database.prepare("SELECT payload_hash,message_id,state,quota_reserved,rejection_code,created_at,mailbox_address FROM send_requests WHERE owner_iss=?1 AND owner_sub=?2 AND idem_key=?3 AND (profile_scope=?4 OR (profile_scope='' AND ?5=1)) AND content_purged_at IS NULL")
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(&idem),bind_str(&send_scope),bind_num(i64::from(legacy_recovery))])?.first::<SendRow>(None).await?;
     let (id, quota_reserved, inserted_new, created_at) = if let Some(row) = existing {
         if row.payload_hash != payload_hash {
@@ -2952,13 +2988,22 @@ async fn send_message(
             return Err(AppError::conflict("send_outcome_unknown"));
         }
         check_send_policy(env, &database, user, &draft, &idem).await?;
-        (
-            row.message_id
-                .ok_or_else(|| AppError::conflict("send_outcome_unknown"))?,
-            row.quota_reserved != 0,
-            false,
-            row.created_at,
-        )
+        let id = row
+            .message_id
+            .ok_or_else(|| AppError::conflict("send_outcome_unknown"))?;
+        if row.mailbox_address.is_none() {
+            adopt_legacy_preparing_mailbox(
+                &database,
+                user,
+                &idem,
+                &payload_hash,
+                &id,
+                &draft.manifest.from,
+                &lifetime.generation,
+            )
+            .await?;
+        }
+        (id, row.quota_reserved != 0, false, row.created_at)
     } else {
         // A held account must not manufacture unbounded idempotency rows.
         // 被停用账户不得通过生成幂等键无限填充 D1。
@@ -3428,6 +3473,120 @@ fn cosine_exact(left: &[f32], right: &[f32]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_preparing_capture_preserves_intent_and_refuses_unsafe_adoption() {
+        use rusqlite::OptionalExtension;
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE addresses(address TEXT PRIMARY KEY,generation TEXT,kind TEXT,state TEXT,owner_iss TEXT,owner_sub TEXT,expires_at INTEGER);
+            CREATE TABLE mail_profiles(id TEXT,session_token TEXT,session_expires_at INTEGER);
+            CREATE TABLE mailbox_leases(address TEXT,address_generation TEXT,profile_id TEXT,session_token TEXT,mode TEXT,lease_token TEXT);
+            CREATE TABLE send_requests(owner_iss TEXT,owner_sub TEXT,idem_key TEXT,payload_hash TEXT,message_id TEXT,state TEXT,mailbox_address TEXT,mailbox_generation TEXT,profile_scope TEXT,provider_id TEXT,content_purged_at INTEGER,quota_reserved INTEGER,created_at INTEGER);
+            INSERT INTO addresses VALUES('legacy@mail.moesegfault.dev','','mail','active','iss','sub',NULL);
+            INSERT INTO mail_profiles VALUES('profile','session',9999999999999);
+            INSERT INTO mailbox_leases VALUES('legacy@mail.moesegfault.dev','','profile','session','write','writer');
+            INSERT INTO send_requests VALUES('iss','sub','key','hash','original-id','preparing',NULL,'','',NULL,NULL,1,123);").unwrap();
+        let user = Principal {
+            iss: "iss".into(),
+            sub: "sub".into(),
+            enrollment_fence: true,
+            profile: Some(profiles::Session {
+                profile_id: "profile".into(),
+                name: "user".into(),
+                session_token: "session".into(),
+                is_user: true,
+                expires_at: 9999999999,
+                lease_tokens: std::collections::BTreeMap::from([(
+                    "legacy@mail.moesegfault.dev".into(),
+                    "writer".into(),
+                )]),
+            }),
+        };
+        let sql = legacy_preparing_mailbox_sql(&user);
+        let bindings = [
+            "legacy@mail.moesegfault.dev",
+            "",
+            "iss",
+            "sub",
+            "key",
+            "hash",
+            "original-id",
+        ];
+        let adopt = || {
+            db.query_row(&sql, bindings, |row| row.get::<_, String>(0))
+                .optional()
+                .unwrap()
+        };
+        assert_eq!(adopt().as_deref(), Some("original-id"));
+        let preserved:(String,String,i64,i64,Option<String>,String)=db.query_row("SELECT idem_key,message_id,quota_reserved,created_at,provider_id,mailbox_address FROM send_requests",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).unwrap();
+        assert_eq!(
+            preserved,
+            (
+                "key".into(),
+                "original-id".into(),
+                1,
+                123,
+                None,
+                "legacy@mail.moesegfault.dev".into()
+            )
+        );
+        assert!(
+            adopt().is_none(),
+            "an already captured journal is not rewritten"
+        );
+        for state in [
+            "accepted",
+            "unknown",
+            "submitting",
+            "sent",
+            "rejected",
+            "reserving",
+        ] {
+            db.execute(
+                "UPDATE send_requests SET state=?1,mailbox_address=NULL",
+                [state],
+            )
+            .unwrap();
+            assert!(adopt().is_none(), "{state} is never reset or adopted");
+        }
+        db.execute(
+            "UPDATE send_requests SET state='preparing',provider_id='known-provider'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            adopt().is_none(),
+            "provider evidence forbids treating an intent as never submitted"
+        );
+        db.execute(
+            "UPDATE send_requests SET provider_id=NULL,payload_hash='different'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            adopt().is_none(),
+            "the exact original ZIP commitment is required"
+        );
+        db.execute("UPDATE send_requests SET payload_hash='hash'", [])
+            .unwrap();
+        db.execute("UPDATE mailbox_leases SET lease_token='replacement'", [])
+            .unwrap();
+        assert!(
+            adopt().is_none(),
+            "a stale request cannot capture fields after releasing its writer"
+        );
+        db.execute("UPDATE mailbox_leases SET lease_token='writer'", [])
+            .unwrap();
+        db.execute(
+            "UPDATE addresses SET kind='tmpaddr',generation='new-lifetime'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            adopt().is_none(),
+            "legacy permanent intent cannot attach to a reusable address lifetime"
+        );
+    }
 
     /// Closed Cron timing classes do not expand or misclassify foreground headers.
     #[test]
