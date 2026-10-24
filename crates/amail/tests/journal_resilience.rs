@@ -43,7 +43,32 @@ fn telemetry_opt_out_does_not_open_a_diagnostic_store() {
             .env("AMAIL_HOME", temp.path())
             .env("AMAIL_TELEMETRY", "off"),
     );
-    assert!(output.status.success());
+    let failure = String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(4096)]);
+    let failure = failure
+        .split_whitespace()
+        .map(|word| {
+            let lower = word.to_ascii_lowercase();
+            if lower.contains("://")
+                || lower.contains("nonce")
+                || lower.contains("token")
+                || (word.len() >= 32
+                    && word
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() || byte == b'-'))
+            {
+                "[redacted]"
+            } else {
+                word
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        output.status.success(),
+        "synthetic config exited {}: {}",
+        output.status,
+        failure
+    );
     assert!(output.stderr.is_empty());
     assert!(!temp.path().join("telemetry.sqlite3").exists());
     let config: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();

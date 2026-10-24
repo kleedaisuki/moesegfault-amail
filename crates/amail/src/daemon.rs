@@ -397,6 +397,9 @@ pub(crate) fn serve(cfg: &Runtime) -> Result<()> {
     singleton
         .try_lock_exclusive()
         .context("amail daemon is already running")?;
+    // Establish schema/WAL before the sweeper and first request can contend on
+    // a fresh database's journal-mode transition.
+    drop(crate::profiles::Store::open(cfg)?);
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let endpoint = Endpoint {
         protocol: PROTOCOL,
