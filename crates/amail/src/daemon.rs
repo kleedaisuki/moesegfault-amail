@@ -11,7 +11,6 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::{mpsc, Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -140,23 +139,68 @@ fn probe(cfg: &Runtime) -> Result<Endpoint> {
     Ok(endpoint)
 }
 
+#[cfg(not(windows))]
 fn spawn(cfg: &Runtime) -> Result<()> {
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = std::process::Command::new(std::env::current_exe()?);
     command
         .arg("_daemon")
         .env("AMAIL_HOME", &cfg.home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     command.spawn().context("starting amail daemon")?;
     Ok(())
 }
 
+#[cfg(windows)]
+fn spawn(_cfg: &Runtime) -> Result<()> {
+    use std::{
+        os::windows::{
+            ffi::OsStrExt,
+            io::{FromRawHandle, OwnedHandle},
+        },
+        ptr,
+    };
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, CREATE_NO_WINDOW, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    let executable: Vec<u16> = std::env::current_exe()?
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let mut arguments: Vec<u16> = "amail _daemon\0".encode_utf16().collect();
+    let startup = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut process = PROCESS_INFORMATION::default();
+    // Stable Rust's launcher inherits every marked handle, including ancestor
+    // capture pipes that are not current stdio. Inherit no handles at all.
+    // https://github.com/rust-lang/rust/blob/1.98.1/library/std/src/sys/process/windows.rs#L310-L343
+    let created = unsafe {
+        CreateProcessW(
+            executable.as_ptr(),
+            arguments.as_mut_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            CREATE_NO_WINDOW,
+            ptr::null(),
+            ptr::null(),
+            &startup,
+            &mut process,
+        )
+    };
+    if created == 0 {
+        return Err(std::io::Error::last_os_error()).context("starting amail daemon");
+    }
+    // Environment and cwd are inherited; Runtime::load already resolved this
+    // process's AMAIL_HOME. Closing our handles does not terminate the daemon.
+    let _process = unsafe { OwnedHandle::from_raw_handle(process.hProcess) };
+    let _thread = unsafe { OwnedHandle::from_raw_handle(process.hThread) };
+    Ok(())
+}
 fn ensure_running(cfg: &Runtime) -> Result<Endpoint> {
     if let Ok(endpoint) = probe(cfg) {
         return Ok(endpoint);

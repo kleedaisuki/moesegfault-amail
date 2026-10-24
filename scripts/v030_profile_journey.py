@@ -7,11 +7,12 @@ Only fixed case labels are printed; endpoint capabilities are never artifacts.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from typing import Any
 import uuid
@@ -25,14 +26,17 @@ class Journey:
         self.home: Path = home
         self.terminals: dict[str, str] = {name: str(uuid.uuid4()) for name in ("a", "b")}
 
-    def command(self, terminal: str, *args: str, success: bool = True) -> dict[str, Any]:
+    def environment(self, terminal: str) -> dict[str, str]:
         env: dict[str, str] = os.environ.copy()
         env.update(AMAIL_HOME=str(self.home), AMAIL_TELEMETRY="off",
                    AMAIL_TERMINAL_ID=self.terminals[terminal],
                    AMAIL_API_BASE="https://mail.example.test",
                    AMAIL_ISSUER="https://identity.example.test", AMAIL_CLIENT_ID="synthetic")
+        return env
+
+    def command(self, terminal: str, *args: str, success: bool = True) -> dict[str, Any]:
         completed: subprocess.CompletedProcess[str] = subprocess.run(
-            [str(self.binary), *args], cwd=ROOT, env=env, capture_output=True,
+            [str(self.binary), *args], cwd=ROOT, env=self.environment(terminal), capture_output=True,
             text=True, timeout=35, check=False)
         if (completed.returncode == 0) != success:
             raise AssertionError(f"{' '.join(args[:2])}: unexpected exit {completed.returncode}")
@@ -127,6 +131,49 @@ class Journey:
         print("PASS daemon-archive-roundtrip")
 
 
+def nested_capture_eof(binary: Path, scratch: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="capture-", dir=scratch) as directory:
+        home: Path = Path(directory)
+        (home / "config.toml").write_text("yolo = true\n", encoding="utf-8")
+        journey: Journey = Journey(binary, home)
+        intermediate: str = (
+            "import subprocess, sys\n"
+            "command: list[str] = [sys.argv[1], 'profile', 'list']\n"
+            "result: subprocess.CompletedProcess[bytes] = subprocess.run(\n"
+            "    command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+            "    close_fds=False, timeout=10, check=False)\n"
+            "sys.exit(result.returncode)\n"
+        )
+        # On Windows an inherited ancestor pipe is not necessarily a standard
+        # handle. close_fds=False deliberately carries that extra handle to the
+        # CLI, whose detached daemon must inherit no handles at all.
+        pool: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=1)
+        try:
+            outer: Future[subprocess.CompletedProcess[str]] = pool.submit(
+                subprocess.run,
+                [sys.executable, "-c", intermediate, str(binary)],
+                cwd=ROOT, env=journey.environment("a"), capture_output=True,
+                text=True, timeout=12, check=False)
+            result: subprocess.CompletedProcess[str] = outer.result(timeout=15)
+            assert result.returncode == 0, "nested startup must exit successfully"
+            assert result.stdout == "", "nested startup must not leak daemon output"
+            assert journey.command("a", "daemon", "status")["running"] is True
+            print("PASS nested-capture-eof-with-live-daemon")
+        finally:
+            # subprocess.run's timeout recovery can itself wait for EOF on
+            # Windows. Stopping only this owned daemon unblocks that path
+            # before the executor joins, including against a broken binary.
+            try:
+                stopped: subprocess.CompletedProcess[bytes] = subprocess.run(
+                    [str(binary), "daemon", "stop"], cwd=ROOT,
+                    env=journey.environment("a"), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=10, check=False)
+                assert stopped.returncode == 0, "owned capture daemon must stop"
+            finally:
+                pool.shutdown(wait=True)
+
+
 def main() -> None:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -134,6 +181,7 @@ def main() -> None:
     binary: Path = args.binary.resolve(strict=True)
     scratch: Path = ROOT / ".temp" / "v030-profile-journey"
     scratch.mkdir(parents=True, exist_ok=True)
+    nested_capture_eof(binary, scratch)
     with tempfile.TemporaryDirectory(prefix="native-", dir=scratch) as directory:
         home: Path = Path(directory)
         (home / "config.toml").write_text(
