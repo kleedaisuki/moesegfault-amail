@@ -4,6 +4,34 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
+## v0.3.0 production backend — delivered
+
+The owner authorized production promotion on 2026-10-25. After the legacy
+`preparing`-intent compatibility repair, source `1e9dd13` passed complete staging
+[40114617183](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40114617183),
+including **137/137 workerd cases**, real pre-v0.3 schema migration/rolling journal
+recovery, three-platform native journeys and immutable runtime/site readback.
+PR #112 was merged normally without an admin override; an unrelated cancelled
+GitHub PR check was not represented as green or used as deployment admission.
+
+Trusted main source `d3d913d4bf59f48790a2753bc066033b4d8cf7a6` then passed fresh
+production inspection [40116394849](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40116394849)
+and the complete normal writer
+[40116604490](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40116604490).
+Receipt [12570076705](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40116604490/artifacts/12570076705)
+confirms preserved ownership for 11 original addresses, unchanged allowed policy
+and retained infrastructure fingerprints, and verified temporary-domain lifecycle.
+API, maintenance and lifecycle consumer advanced; ingress and trace sink stayed
+at their exact accepted versions. Independent production health is
+`ok / 0.3.0 / protocol 2`. See [the production record](v0.3.0/production-delivery.md)
+for serving UUIDs, sequencing and rollback boundaries.
+
+Formal CLI/Skill assets and public site are independently release-gated after
+backend readiness. Consult the actual GitHub Release and its checksum/attestation
+results rather than inferring asset publication from backend health. No optional
+spending authority, delivery-canary grant, user mailbox read or production test
+send was added by this rollout.
+
 ## v0.3.0 multi-tenant candidate — deployed to staging
 
 Runtime source `fad3fff` completed the normal staging writer in

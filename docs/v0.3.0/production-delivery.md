@@ -88,6 +88,31 @@ asset bytes, not a candidate build or a tag alone.
 
 ## Completion
 
-Production inspection, deployment and public-release results are pending. Replace
-this paragraph with actual run/receipt/source/version coordinates after success;
-do not reinterpret staging acceptance as production delivery.
+Production inspection [40116394849](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40116394849)
+and normal upgrade [40116604490](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40116604490)
+completed successfully at source `d3d913d4bf59f48790a2753bc066033b4d8cf7a6`.
+Receipt artifact `12570076705` (`production-v030/v1`) preserves all 11 original
+address-ownership records. The original allowed policy and its complete
+fingerprint remain unchanged; retained contacts, stores, queues, ingress and sink
+anchors also match their inspected fingerprint. The temporary-domain DNS and
+dual-domain lifecycle subscription passed actual readback.
+
+| Role | Production version |
+| --- | --- |
+| API | `0592192f-5937-445c-8c26-73ab18799bba` |
+| Maintenance | `ec73a333-0fba-497f-8f38-1fceffebc122` |
+| Lifecycle consumer | `c17d92ad-cbc4-4ff3-a250-724f17d5bc60` |
+| Retained ingress | `5c296407-5048-43b3-aad6-ac106676e7f2` |
+| Retained trace sink | `f401659a-d076-4c6a-bfe5-28d0e71698b1` |
+
+Independent production health readback returned `status=ok`, `version=0.3.0`,
+`api_version=2`. Existing sending policy was not enabled, disabled or reset by
+this release. The successful receipt is the next upgrade's reviewed epoch;
+advance source-owned preconditions before another writer, rather than replaying
+this historical predecessor controller.
+
+Formal CLI/Skill publication has its own backend-version, five-platform build,
+checksum, attestation and public-asset/site gates. The actual public state is
+available at [GitHub Releases](https://github.com/kleedaisuki/moesegfault-amail/releases)
+and the latest [validation ledger](../validation.md); it is not inferred merely
+from a successful backend deployment.
