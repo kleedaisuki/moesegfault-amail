@@ -11,6 +11,17 @@ python infra/provider/ensure_tmpaddr_staging.py --apply
 MAIL_SENDING_DOMAIN=tmpaddr-staging.moesegfault.dev python infra/dns/verify_sending.py
 ```
 
+For a failed onboarding step, the existing protected `staging-inspect` lane uses
+`--inspect --output .temp/tmpaddr-staging-inspection.json`. This mode executes only
+independent fixed-domain GETs: deployment-token DNS inventory, routing-token
+zone-settings access, and Sending inventory/generated DNS. A failed read records
+`state=unknown`, never absence. Output includes only closed phase/method/HTTP/
+credential-role diagnostics and boolean/count predicates, never DNS contents,
+domain identifiers, token values or provider prose. Inspection completion does not
+mean configuration is ready, and successful read access does not prove Write
+permission. In particular, Routing DNS onboarding requires Zone Settings Write;
+a successful rules-only query cannot establish that permission.
+
 Restore and verify the same-run tested artifact before the first command, and
 retain the existing workflow staging writer lock. Apply requires GitHub Actions,
 the exact candidate branch, first run attempt, `AMAIL_STAGING_ENVIRONMENT=staging`

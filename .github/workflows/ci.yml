@@ -410,6 +410,17 @@ jobs:
           python-version: '3.12'
       - name: Read reviewed staging capabilities without writes or payloads
         run: python infra/deploy/inspect_staging.py
+      - name: Inspect fixed temporary domain readiness and scoped permissions without writes
+        if: always() && github.ref == 'refs/heads/codex/v0.3.0-multitenant' && inputs.confirm == 'INSPECT_STAGING_V030'
+        run: python infra/provider/ensure_tmpaddr_staging.py --inspect --output .temp/tmpaddr-staging-inspection.json
+      - name: Preserve only content-free temporary domain inspection predicates
+        if: always() && github.ref == 'refs/heads/codex/v0.3.0-multitenant' && inputs.confirm == 'INSPECT_STAGING_V030'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmpaddr-staging-inspection-${{ github.run_id }}
+          path: .temp/tmpaddr-staging-inspection.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Preserve bounded predecessor pins for rollout review
         uses: actions/upload-artifact@v4
         with:

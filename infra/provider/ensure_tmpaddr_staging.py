@@ -8,12 +8,13 @@ mutation is never retried. No production domain is accepted as an argument.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
+from pathlib import Path
 import re
 import sys
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,10 +24,42 @@ ZONE = "6edff81c6ed02f412e70868076411a5e"
 DOMAIN = "tmpaddr-staging.moesegfault.dev"
 PREFIX = f"/zones/{ZONE}"
 MAX_REPLY = 512_000
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class ProvisionError(Exception):
     """A closed diagnostic code safe for public Actions logs."""
+
+
+def endpoint_alias(path: str) -> str:
+    """Project provider coordinates onto a closed, non-content diagnostic set."""
+    endpoint = urllib.parse.urlsplit(path).path
+    if endpoint == PREFIX + "/dns_records":
+        return "dns_records"
+    if endpoint == PREFIX + "/email/routing/dns":
+        return "routing_dns"
+    if endpoint == PREFIX + "/email/routing":
+        return "routing_settings"
+    sending = PREFIX + "/email/sending/subdomains"
+    if endpoint == sending:
+        return "sending_domains"
+    if re.fullmatch(re.escape(sending) + r"/[0-9a-f]{32}/dns", endpoint):
+        return "sending_dns"
+    if re.fullmatch(re.escape(sending) + r"/[0-9a-f]{32}", endpoint):
+        return "sending_domain"
+    return "other"
+
+
+class ProviderError(ProvisionError):
+    def __init__(self, code: str, method: str, path: str, role: str, status: int = 0) -> None:
+        self.details: dict[str, str | int] = {
+            "code": code,
+            "phase": endpoint_alias(path),
+            "method": method if method in ("GET", "POST", "PATCH") else "other",
+            "http": status if 100 <= status <= 599 else 0,
+            "credential": role if role in ("deployment", "routing") else "other",
+        }
+        super().__init__(" ".join(f"{key}={value}" for key, value in self.details.items()))
 
 
 class Provider(Protocol):
@@ -35,7 +68,8 @@ class Provider(Protocol):
 
 @dataclass(frozen=True)
 class Client:
-    token: str
+    token: str = field(repr=False)
+    role: Literal["deployment", "routing"] = "deployment"
 
     def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         request = urllib.request.Request(
@@ -46,22 +80,23 @@ class Client:
         )
         try:
             with urllib.request.urlopen(request, timeout=25) as response:
+                status = response.status
                 raw = response.read(MAX_REPLY + 1)
         except urllib.error.HTTPError as error:
             if error.code in (401, 403):
-                raise ProvisionError("permission_or_provider_rejection") from None
+                raise ProviderError("permission_or_provider_rejection", method, path, self.role, error.code) from None
             code = "provider_rejected" if method == "GET" or error.code in (400, 404, 409, 422) else "mutation_unknown_inspect_before_retry"
-            raise ProvisionError(code) from None
+            raise ProviderError(code, method, path, self.role, error.code) from None
         except (urllib.error.URLError, TimeoutError, OSError):
-            raise ProvisionError("read_unavailable" if method == "GET" else "mutation_unknown_inspect_before_retry") from None
+            raise ProviderError("read_unavailable" if method == "GET" else "mutation_unknown_inspect_before_retry", method, path, self.role) from None
         if len(raw) > MAX_REPLY:
-            raise ProvisionError("response_too_large")
+            raise ProviderError("response_too_large", method, path, self.role, status)
         try:
             payload: Any = json.loads(raw)
         except (ValueError, UnicodeDecodeError):
-            raise ProvisionError("response_invalid") from None
+            raise ProviderError("response_invalid", method, path, self.role, status) from None
         if not isinstance(payload, dict) or payload.get("success") is not True:
-            raise ProvisionError("provider_rejected")
+            raise ProviderError("provider_rejected", method, path, self.role, status)
         return payload
 
 
@@ -207,9 +242,72 @@ def authorize_apply(environment: dict[str, str]) -> None:
         raise ProvisionError("staging_writer_required")
 
 
+def inspection_failure(error: ProvisionError) -> dict[str, Any]:
+    """A failed read is unknown, never an empty inventory or absent domain."""
+    result: dict[str, Any] = {"state": "unknown"}
+    if isinstance(error, ProviderError):
+        result.update(error.details)
+    else:
+        result["code"] = str(error)
+    return result
+
+
+def inspect(dns: Provider, routing: Provider) -> dict[str, Any]:
+    """Independent fixed-domain GET probes; no ensure/apply function is called."""
+    report: dict[str, Any] = {"schema": "amail.tmpaddr-staging-inspection.v1", "domain": DOMAIN}
+    try:
+        records = dns_records(dns, DOMAIN)
+        report["dns"] = {"state": "observed", "record_count": len(records), "routing_ready": routing_ready(records)}
+    except ProvisionError as error:
+        report["dns"] = inspection_failure(error)
+    try:
+        settings = routing.request("GET", PREFIX + "/email/routing").get("result")
+        if not isinstance(settings, dict):
+            raise ProvisionError("routing_settings_invalid")
+        # Zone-level read access proves neither subdomain readiness nor Write permission.
+        report["routing_token_read"] = {"state": "observed", "write_permission": "unverified"}
+    except ProvisionError as error:
+        report["routing_token_read"] = inspection_failure(error)
+    try:
+        domains = inventory(dns, PREFIX + "/email/sending/subdomains")
+        matches = [domain for domain in domains if domain.get("name") == DOMAIN]
+        if len(matches) > 1:
+            raise ProvisionError("sending_domain_ambiguous")
+        report["sending"] = {"state": "observed", "present": bool(matches)}
+        if matches:
+            domain = sending_domain(dns, False)
+            report["sending"].update({
+                "enabled": True,
+                "preview_disabled": domain.get("preview_enabled") is False,
+                "partial_drop_disabled": domain.get("drop_suppressed_recipients") is False,
+            })
+            wanted = [normalized_record(row) for row in rows(dns.request("GET", f"{PREFIX}/email/sending/subdomains/{domain['tag']}/dns"))]
+            if not wanted:
+                raise ProvisionError("sending_dns_requirements_missing")
+            present = 0
+            for record in wanted:
+                existing = [normalized_record(row) for row in dns_records(dns, record["name"]) if row.get("type") in ("MX", "TXT", "CNAME")]
+                present += int(record in existing)
+            report["sending_dns"] = {"state": "observed", "required_count": len(wanted), "present_count": present, "ready": present == len(wanted)}
+    except ProvisionError as error:
+        report["sending_probe"] = inspection_failure(error)
+    return report
+
+
+def write_inspection(path: str, report: dict[str, Any]) -> None:
+    output = Path(path).resolve()
+    if not output.is_relative_to(ROOT / ".temp"):
+        raise ProvisionError("inspection_output_outside_workspace_temp")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--apply", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true")
+    mode.add_argument("--inspect", action="store_true")
+    parser.add_argument("--output", default=".temp/tmpaddr-staging-inspection.json")
     args = parser.parse_args()
     try:
         if args.apply:
@@ -219,7 +317,13 @@ def main() -> int:
         if not token or not routing_token:
             raise ProvisionError("credentials_required")
         client = Client(token)
-        ensure_routing(client, Client(routing_token), args.apply)
+        routing = Client(routing_token, "routing")
+        if args.inspect:
+            report = inspect(client, routing)
+            write_inspection(args.output, report)
+            print(json.dumps(report, sort_keys=True))
+            return 0
+        ensure_routing(client, routing, args.apply)
         ensure_sending(client, args.apply)
     except ProvisionError as error:
         print(f"tmpaddr_staging={error}", file=sys.stderr)

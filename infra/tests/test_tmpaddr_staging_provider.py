@@ -7,6 +7,8 @@ from pathlib import Path
 import sys
 from typing import Any
 import unittest
+from unittest.mock import patch
+import urllib.error
 import urllib.parse
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,6 +62,51 @@ class FakeProvider:
 
 
 class TemporaryDomainTests(unittest.TestCase):
+    def test_inspection_of_missing_domain_is_get_only(self) -> None:
+        provider = FakeProvider()
+        report = provision.inspect(provider, provider)
+        self.assertEqual({"state": "observed", "record_count": 0, "routing_ready": False}, report["dns"])
+        self.assertEqual({"state": "observed", "present": False}, report["sending"])
+        self.assertTrue(all(method == "GET" for method, _, _ in provider.calls))
+
+    def test_inspection_failure_is_unknown_and_other_reads_continue(self) -> None:
+        class DeniedDns(FakeProvider):
+            def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+                if "/dns_records?" in path:
+                    self.calls.append((method, path, body))
+                    raise provision.ProviderError("permission_or_provider_rejection", method, path, "deployment", 403)
+                return super().request(method, path, body)
+
+        provider = DeniedDns()
+        report = provision.inspect(provider, provider)
+        self.assertEqual("unknown", report["dns"]["state"])
+        self.assertNotIn("record_count", report["dns"])
+        self.assertEqual("dns_records", report["dns"]["phase"])
+        self.assertEqual(403, report["dns"]["http"])
+        self.assertFalse(report["sending"]["present"])
+        self.assertTrue(all(method == "GET" for method, _, _ in provider.calls))
+
+    def test_inspection_of_ready_domain_omits_dns_content_and_tags(self) -> None:
+        provider = FakeProvider()
+        provision.ensure_routing(provider, provider, True)
+        provision.ensure_sending(provider, True)
+        provider.calls.clear()
+        report = provision.inspect(provider, provider)
+        self.assertTrue(report["sending_dns"]["ready"])
+        self.assertTrue(all(method == "GET" for method, _, _ in provider.calls))
+        self.assertNotIn("p=synthetic", str(report))
+        self.assertNotIn("a" * 32, str(report))
+        self.assertEqual("unverified", report["routing_token_read"]["write_permission"])
+
+    def test_http_diagnostics_have_closed_phase_method_status_and_role(self) -> None:
+        client = provision.Client("synthetic-secret", "routing")
+        error = urllib.error.HTTPError("https://private.invalid/secret", 403, "private provider prose", {}, None)
+        with patch.object(provision.urllib.request, "urlopen", side_effect=error), self.assertRaises(provision.ProviderError) as raised:
+            client.request("POST", provision.PREFIX + "/email/routing/dns", {"name": provision.DOMAIN})
+        self.assertEqual({"code": "permission_or_provider_rejection", "phase": "routing_dns", "method": "POST", "http": 403, "credential": "routing"}, raised.exception.details)
+        self.assertNotIn("synthetic-secret", repr(client))
+        self.assertNotIn("private", str(raised.exception))
+
     def test_fresh_domain_and_repeat_are_scoped_and_idempotent(self) -> None:
         provider = FakeProvider()
         provision.ensure_routing(provider, provider, True)

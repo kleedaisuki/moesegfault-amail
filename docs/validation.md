@@ -4,6 +4,29 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
+## v0.3.0 multi-tenant candidate — staging in progress
+
+Branch `codex/v0.3.0-multitenant`, product source `5a6da36`, passed every source
+gate in [40102215366](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40102215366):
+Windows/Linux/macOS native tests and real daemon/profile subprocess journeys,
+candidate assembly, Rust/Wasm and all Worker bundles, workerd HTTP/Cron races,
+infrastructure, site and the live embedding contract. The native journeys cover
+nested captured processes reaching EOF while a Windows daemon remains live and
+initializing profile WAL/schema before concurrent work. See
+[architecture](v0.3.0/architecture.md) and [acceptance](v0.3.0/acceptance-scenarios.md).
+
+That run is **not complete staging acceptance**. The staging trace-sink job
+`120897847181` successfully submitted version
+`84205687-8582-4fd0-a974-af1d517c16a7` and passed private graph, privacy and global
+held-policy readback. Mail job `120898119498` then stopped at temporary-domain
+onboarding with HTTP 401/403 (`permission_or_provider_rejection`). Its D1
+migration, API and maintenance submissions never began; later adapter/site jobs
+executed zero steps. Do not replay the successful sink submit as recovery from an
+unknown outcome. The original helper did not distinguish the failed provider
+phase; read-only fixed-domain diagnostics must establish permissions and current
+state before further writes. No public Release/tag or production deployment has
+been authorized or performed for this candidate.
+
 ## Delivered v0.1.2 — current release
 
 ### Delivered v0.2.0 staging — fixed USD accepted
