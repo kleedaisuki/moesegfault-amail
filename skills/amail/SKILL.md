@@ -13,6 +13,11 @@ enters activation codes, approves payment or raises a spending limit. Sending is
 for agent-workflow transactional notifications and related replies, not campaigns
 or unrestricted correspondence.
 
+If a headless launcher has no identifiable OS terminal, supply one stable
+`AMAIL_TERMINAL_ID` per workflow and reuse it across invocations. Prefer the
+launcher's session identifier; never generate one per command or impersonate a
+different terminal. See [profiles](references/profiles.md) for lifecycle details.
+
 ## Essential boundaries
 
 **Before first login or mailbox use, disclose if not already understood:** eligible

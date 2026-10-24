@@ -38,6 +38,35 @@ measurements above do not themselves demonstrate a daemon latency improvement.
 
 ## Small hosted measurement suite
 
+### v0.3.0 daemon workload measurement
+
+The Linux native job in [run 40099302163](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40099302163)
+measured source `3fe49ea` against the verified published v0.1.0 binary on the same
+runner. Raw samples and environment are in `performance-cli-40099302163/cli.json`.
+Both binaries use private synthetic configuration; the candidate explicitly opts
+into YOLO and a stable terminal identity. Daemons stop outside measured intervals
+before first-use resets and final fixture cleanup.
+
+| Whole-process case | v0.3.0 median | v0.1.0 median |
+| --- | ---: | ---: |
+| Offline help | 1.83 ms | 1.69 ms |
+| Warm configuration, diagnostics off | 4.22 ms | 1.70 ms |
+| Warm configuration, diagnostics on | 5.57 ms | 3.59 ms |
+| First-use configured home, diagnostics on | 67.41 ms | 14.01 ms |
+| Pack 2 MiB expanded synthetic text | 13.12 ms | 12.36 ms |
+
+This is **not a CLI startup speedup**. Profile/IPC state adds about 2–3 ms to warm
+local operations, and the one-time daemon bootstrap adds a larger cold cost. The
+new architecture serves the explicitly required multi-agent isolation and shared
+network/concurrency workload; a single offline configuration read cannot measure
+its connection-pool benefit. The baseline also predates v0.2.0, so these numbers
+do not isolate the causal cost of profiles alone. Auth-status samples failed on
+this runner and are deliberately non-comparable, not faster successful work.
+Keep these bounded costs visible rather than claiming zero overhead or using a
+CPU microbenchmark as end-to-end mail latency. The predominant repeated-command
+workload amortizes daemon startup; optimize cold bootstrap further only if it
+becomes consequential for actual daemon churn.
+
 Run on GitHub Actions with pinned repository lockfiles, existing native/Worker/
 site jobs and release binaries. Do not install or build heavy tooling locally.
 All fixtures are synthetic and scratch/report files stay under `.temp`.

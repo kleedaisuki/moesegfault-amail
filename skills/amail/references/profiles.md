@@ -63,6 +63,14 @@ authorize marking, deletion or sending; fetching still does not mark mail read.
 Cloud sessions and leases enforce this across daemons and machines, not merely
 across CLI processes on one terminal.
 
+Headless launchers without a console must provide `AMAIL_TERMINAL_ID` as one
+stable logical-terminal identifier. Keep it in the launcher's process environment
+or pass the same value on every invocation; a newly generated value per command
+would represent a different terminal. Existing terminal/session context is
+preferable to another configuration file. Do not change it to evade an occupied
+profile. These identifiers are mapped to private local capabilities and are not
+passwords or cloud session tokens.
+
 ```sh
 amail mailbox acquire test@tmpaddr.moesegfault.dev --mode read
 amail mailbox release test@tmpaddr.moesegfault.dev
