@@ -61,6 +61,15 @@ not malicious arbitrary code running as that OS account from reading its files o
 invoking its credentials. This release does not claim an OS sandbox. Passwordless
 profiles do not create new OIDC accounts or independent subscriptions.
 
+Local profile caches and send journals are partitioned by the configured realm and
+authenticated immutable account subject. Agent journals additionally use the
+immutable profile generation, not its reusable name. Before an authentication
+transition, the known predecessor account binds any legacy user send journal;
+logging into another account cannot adopt its unresolved intents or receipts.
+Without OAuth credentials, profile commands exercise only local workflow state;
+cloud exclusivity and registration require authentication. Sign in before creating
+profiles intended for cloud mailbox use.
+
 Cloud authorization uses the registered profile/session, never a caller-supplied
 name such as `user`. Existing authenticated no-profile clients remain a legacy
 account-owner path only until that owner enrolls in v0.3.0 profiles. Enrollment
