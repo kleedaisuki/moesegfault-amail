@@ -6,7 +6,7 @@ description: amail 的安装、登录、地址管理、邮件检索和 ZIP 收�
 
 ## 先认识 amail
 
-amail 是一个面向 AI Agent 的命令行邮件客户端。你在浏览器里完成 moeSegFault 登录；此后 Agent 可以通过 amail 注册地址、检索邮件、更新状态和发送消息。它**没有收件箱网页，也没有 `view` 命令**：邮件内容以 ZIP 消息包交接，默认检索输出则是适合继续处理的紧凑数据。
+amail 是一个面向 AI Agent 的命令行邮件客户端。你在浏览器里完成 moeSegFault 登录，为终端分配 Profile 和邮箱读写占用，再让 Agent 检索邮件、更新状态和发送消息。初始 `user` Profile 默认逐操作弹出网页确认。它**没有收件箱网页，也没有 `view` 命令**：邮件内容以 ZIP 消息包交接，默认检索输出则是适合继续处理的紧凑数据。
 
 **使用前的隐私提示：** 服务端会自动为收发邮件建立语义索引，把邮件主题与正文提取文本发送给 OpenRouter 及其上游模型服务商；即使从不使用 `--semantic`，也会进行这一步。首发版没有逐账号关闭索引的选项。注册收件地址前，请先阅读[隐私与边界](#隐私与边界)。
 
@@ -22,7 +22,7 @@ amail 是一个面向 AI Agent 的命令行邮件客户端。你在浏览器里�
 
 ## 订阅与用量
 
-v0.2.0 staging 使用 Free、Lite、Plus 三档；同一账户全部地址共享发信、存储和地址额度。收信不按封计费，不设置留存邮件条数上限，语义搜索不按次数收费。超额按实际用量结算，必须先由用户在网页授权并设置预算；Agent 不能自行提高预算。
+v0.3.0 候选沿用 Free、Lite、Plus 三档；同一账户的所有 Profile、普通地址与临时地址共享发信和存储资源池，临时地址有独立且更高的数量额度。收信不按封计费，不设置普通邮箱留存邮件条数上限，语义搜索不按次数收费。超额按实际用量结算，必须先由用户在网页授权并设置预算；Agent 不能自行提高预算。临时邮箱仍受六小时的绝对存续上限约束，付费不延长它。
 
 社区固定美元价格：Free $0、Lite $1.50／月、Plus $4.50／月；超额发信 $0.001／收件人、储存 $0.15／GB·月、地址 $0.50／个·月。储存按十进制 GB，储存和地址超额按实际占用时间累计。金额使用整数微美元（USD micros，1 美元 = 1,000,000 微美元），不是实时汇率换算。历史人民币账目保留原币种，与新美元账目分开；旧人民币预算不能授权美元支出，需要重新在网页确认。
 
@@ -30,11 +30,11 @@ v0.2.0 staging 使用 Free、Lite、Plus 三档；同一账户全部地址共享
 
 Agent 可发起订阅授权并打开网页，但必须让你本人完成确认。网页返回并不证明支付成功：回到 Agent 后运行 `amail billing status`，以服务端状态为准。不要把授权网址或登录凭据发给其他人，也不要因为取消或延迟而重复付款。
 
-**不兼容旧版：** 本 staging 服务仅支持 v0.2.0 CLI 的新版 API 协议。升级 CLI 与配套 Skill 后再操作；旧版错误不授权重新发送未知状态邮件。
+**升级边界：** 尚未启用 Profile 的账户保留原有 v0.2.0 协议行为。一旦账户在云端启用 Profile，缺少有效 Profile 会话的请求不能绕过读写占用；请同步升级 CLI 与配套 Skill。版本错误不授权重新发送未知状态邮件。
 
 ## 从小入口探索完整工作流
 
-以下能力随 v0.2.0 提供。页面顶部的发布状态、实际安装版本与服务端策略分别决定安装来源、命令可用性和操作授权；文档本身不开放发送。先检查 `amail --version` 和命令帮助，再用 `amail discover` 探索当前版本支持的工作流。
+以下工作流在 v0.3.0 中继续适用。页面顶部的发布状态、实际安装版本与服务端策略分别决定安装来源、命令可用性和操作授权；文档本身不开放发送。先检查 `amail --version` 和命令帮助，再用 `amail discover` 探索当前版本支持的工作流。
 
 渐进式披露（Progressive Disclosure）不是删掉复杂能力，而是让 Agent 按任务逐步进入可查询的空间：
 
@@ -87,11 +87,11 @@ amail events --kind bounced --since 2026-10-03T00:00:00Z --limit 20
 
 | 你的设备 | 选择的安装包 |
 | --- | --- |
-| Linux，Intel／AMD 64 位（x86-64） | `amail-v0.2.0-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux，ARM 64 位（AArch64） | `amail-v0.2.0-aarch64-unknown-linux-gnu.tar.gz` |
-| Windows，Intel／AMD 64 位（x86-64） | `amail-v0.2.0-x86_64-pc-windows-msvc.zip` |
-| macOS，Apple 芯片（M 系列） | `amail-v0.2.0-aarch64-apple-darwin.tar.gz` |
-| macOS，Intel 芯片 | `amail-v0.2.0-x86_64-apple-darwin.tar.gz` |
+| Linux，Intel／AMD 64 位（x86-64） | `amail-v0.3.0-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux，ARM 64 位（AArch64） | `amail-v0.3.0-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows，Intel／AMD 64 位（x86-64） | `amail-v0.3.0-x86_64-pc-windows-msvc.zip` |
+| macOS，Apple 芯片（M 系列） | `amail-v0.3.0-aarch64-apple-darwin.tar.gz` |
+| macOS，Intel 芯片 | `amail-v0.3.0-x86_64-apple-darwin.tar.gz` |
 
 这些是**原生**安装包；目前没有 Windows ARM 原生包，也没有 Linux musl 包。Linux 包使用 GNU libc。若不确定 CPU 类型，Linux/macOS 可运行 `uname -m`（`x86_64` 或 `aarch64`／`arm64`）；Windows 在“设置 → 系统 → 系统信息”查看系统类型。安装包和校验文件必须来自**同一个** GitHub Release，不要从聊天消息复制别人提供的散列值。
 
@@ -100,36 +100,36 @@ amail events --kind bounced --since 2026-10-03T00:00:00Z --limit 20
 在下载目录的终端运行；若是 ARM 64 位，将第一行换成表中的 ARM 文件名：
 
 ```sh
-archive=amail-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
+archive=amail-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
 awk -v file="$archive" '$2 == file { print }' SHA256SUMS | sha256sum --check -
 ```
 
 只有出现 `OK` 才继续。没有匹配行、文件损坏或校验失败时停止，不要运行该安装包。然后：
 
 ```sh
-mkdir -p "$HOME/.local/bin"
-tar -xzf "$archive" -C "$HOME/.local/bin" amail
-export PATH="$HOME/.local/bin:$PATH"
+mkdir -p "$HOME/.amail/bin"
+tar -xzf "$archive" -C "$HOME/.amail/bin" amail
+export PATH="$HOME/.amail/bin:$PATH"
 amail --version
 ```
 
-把 `export PATH="$HOME/.local/bin:$PATH"` 加入你的 shell 启动文件（例如 `~/.bashrc` 或 `~/.zshrc`），新开的终端才能直接使用 `amail`。
+把 `export PATH="$HOME/.amail/bin:$PATH"` 加入你的 shell 启动文件（例如 `~/.bashrc` 或 `~/.zshrc`），新开的终端才能直接使用 `amail`。
 
 ### macOS：校验并安装
 
 Apple 芯片使用下列文件名；Intel Mac 将第一行换成表中的 Intel 文件名：
 
 ```sh
-archive=amail-v0.2.0-aarch64-apple-darwin.tar.gz
+archive=amail-v0.3.0-aarch64-apple-darwin.tar.gz
 awk -v file="$archive" '$2 == file { print }' SHA256SUMS | shasum -a 256 --check -
 ```
 
 只有出现 `OK` 才继续，再运行：
 
 ```sh
-mkdir -p "$HOME/.local/bin"
-tar -xzf "$archive" -C "$HOME/.local/bin" amail
-export PATH="$HOME/.local/bin:$PATH"
+mkdir -p "$HOME/.amail/bin"
+tar -xzf "$archive" -C "$HOME/.amail/bin" amail
+export PATH="$HOME/.amail/bin:$PATH"
 amail --version
 ```
 
@@ -141,13 +141,13 @@ amail --version
 
 ```powershell
 & {
-$archive = 'amail-v0.2.0-x86_64-pc-windows-msvc.zip'
+$archive = 'amail-v0.3.0-x86_64-pc-windows-msvc.zip'
 $checksumLines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith("  $archive", [StringComparison]::Ordinal) })
 if ($checksumLines.Count -ne 1) { throw 'SHA256SUMS 中没有唯一的安装包记录' }
 $expected = ($checksumLines[0] -split '\s+')[0]
 $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
 if ($actual -ne $expected) { throw 'SHA-256 校验失败；不要运行此安装包' }
-$bin = Join-Path $HOME '.local\bin'
+$bin = Join-Path $HOME '.amail\bin'
 Expand-Archive -LiteralPath $archive -DestinationPath $bin -Force
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if (($userPath -split ';') -notcontains $bin) {
@@ -160,7 +160,7 @@ amail --version
 
 上面的 SHA-256 校验不通过时，`throw` 会中止该段，不要继续解压。用户 `PATH` 修改会对新开的终端生效；当前终端也已临时加入路径。若 PowerShell 受设备策略限制，请让设备管理员协助，而不是关闭安全策略。
 
-Agent Skill 的文件名为 `amail-agent-skill-v0.2.0.zip`；它应与 CLI 安装包来自同一个 GitHub Release。解压前，按上面的系统校验步骤，将文件名换成 Skill ZIP，核对 `SHA256SUMS` 中对应的唯一记录。Agent 若支持安装 Skill，可将 ZIP 中的 `amail/` 文件夹及其引用文档一并放入其 Skill 目录；具体目录以该 Agent 的安装说明为准。这不是 CLI 的运行依赖，也不要用它替代 CLI 安装包校验。准备好之后，让 Agent **在你的设备上**启动登录：
+Agent Skill 的文件名为 `amail-agent-skill-v0.3.0.zip`；它应与 CLI 安装包来自同一个 GitHub Release。解压前，按上面的系统校验步骤，将文件名换成 Skill ZIP，核对 `SHA256SUMS` 中对应的唯一记录。Agent 若支持安装 Skill，可将 ZIP 中的 `amail/` 文件夹及其引用文档一并放入其 Skill 目录；具体目录以该 Agent 的安装说明为准。这不是 CLI 的运行依赖，也不要用它替代 CLI 安装包校验。准备好之后，让 Agent **在你的设备上**启动登录：
 
 ```sh
 amail login
@@ -173,7 +173,57 @@ amail auth status
 amail auth logout
 ```
 
-`login.moesegfault.dev` 用于人类登录体验；邮件服务的公开地址是 `mail.moesegfault.dev`。你的账号邮件地址始终形如 `名字@mail.moesegfault.dev`，而不是 `名字@moesegfault.dev`。
+`login.moesegfault.dev` 用于人类登录体验；邮件服务的公开地址是 `mail.moesegfault.dev`。普通邮箱形如 `名字@mail.moesegfault.dev`，临时测试邮箱形如 `名字@tmpaddr.moesegfault.dev`，而不是 `名字@moesegfault.dev`。staging 使用独立的临时域名 `tmpaddr-staging.moesegfault.dev`。
+
+## 守护进程与终端 Profile
+
+v0.3.0 的 CLI 是薄客户端：未发现本机守护进程（daemon）时会自动启动一个，由它集中处理网络请求、邮件计算与并发资源。同一终端先后启动的多个 `amail` 进程共享当前 Profile，不需要每条命令重新登录。
+
+默认配置与 SQLite 数据库位于 `~/.amail`，Windows 为 `%USERPROFILE%\.amail`；安装包中的二进制放在其 `bin` 子目录。可用 `AMAIL_HOME` 显式选择另一个应用目录；不同目录不是绕过云端占用的办法。`config.toml` 只需填写要覆盖的设置，例如下面列出的安全默认值：
+
+```toml
+yolo = false
+
+[daemon]
+max_concurrency = 4
+start_timeout_seconds = 15
+```
+
+配置文件不是凭据文件，不应填写 OAuth 令牌。`amail daemon status` 查询本机服务；`amail daemon stop` 停止服务，之后需要服务的命令会再次自动启动它。
+
+### 激活、停用与释放
+
+初始 Profile 为 `user`，没有独立密码，但**默认每次受保护操作都必须在网页点选是否授权**。不要让 Agent 替你点击授权，也不要让它自行设置 `yolo = true`。YOLO 表示你显式关闭逐次确认；它不授权额外发信、不提高订阅预算，也不绕过服务端策略。Profile 用于工作流隔离，不是对同一操作系统用户所运行任意代码的安全沙箱。
+
+```sh
+amail profile status
+amail profile create build-test
+amail profile activate build-test
+amail profile list
+```
+
+一个终端同时激活一个 Profile；同一个 Profile 同时只能由一个终端使用。由 `user` 创建的 Profile 在释放后保留，其余 Profile 在释放时自动删除，名称可以重新分配。
+
+| 操作 | 结果 |
+| --- | --- |
+| `amail profile deactivate` | 当前终端不再有活动 Profile，但原 Profile 仍保留占用，可找回 |
+| `amail profile activate build-test` | 在同一终端重新激活保留的 Profile；不能抢占其他终端的会话 |
+| `amail profile release` | 释放当前 Profile 及邮箱占用；临时 Profile 同时删除 |
+| 连续 30 分钟未使用 | 自动释放，不因 daemon 仍运行而无限续期 |
+
+显式停用后不会偷偷切回 `user`；继续工作前请激活你确实需要的 Profile。
+
+### 邮箱共享读与独占写
+
+每个邮箱要么由多个 Profile 共享读占用，要么由一个 Profile 独占写占用；不能抢占。读占用只允许读取，不允许标记、删除或发信。先释放，再按需要获取另一种模式：
+
+```sh
+amail mailbox acquire test@tmpaddr.moesegfault.dev --mode read
+amail mailbox release test@tmpaddr.moesegfault.dev
+amail mailbox acquire test@tmpaddr.moesegfault.dev --mode write
+```
+
+请替换为任务实际持有的地址；staging 使用独立临时域名。默认模式为 `read`。冲突时等待、与占用者协商或选择另一获准邮箱，不能通过新建 Profile、重启 daemon 或另开终端偷取占用。云端会验证会话与读写条件。
 
 ## 创建你的邮件地址
 
@@ -184,7 +234,7 @@ amail address add klee
 amail address list
 ```
 
-每个 moeSegFault 账号最多可持有 **10 个地址**。`admin`、`moesegfault` 及登录、邮件等常用服务名称保留给站点，不能注册。地址创建可能经历短暂的启用过程；只有状态为 `active` 时才开始用于收件。
+普通 `mail.moesegfault.dev` 地址只能由 `user` 注册，受套餐、保留的旧地址额度与普通域名的技术上限约束。`admin`、`moesegfault` 及登录、邮件等常用服务名称保留给站点，不能注册。地址创建可能经历短暂的启用过程；只有状态为 `active` 时才开始用于收件。
 
 如果创建请求超时或返回 `503`／`routing_unavailable`，不要立即换一个名字重试：结果可能尚未确定。先用 `amail address list` 核对**同一个地址**；若状态或路由仍不明确，请联系服务运营者核查该地址的路由，再决定是否重试同一个名字。
 
@@ -195,6 +245,32 @@ amail address delete klee@mail.moesegfault.dev
 ```
 
 删除地址与删除邮件是两件事。为避免旧邮件误投给新主人，退役的地址名不会立即让其他账号重新注册。[供应商当前](https://developers.cloudflare.com/email-service/platform/limits/)允许此邮件子域名最多 200 条逐地址收信路由：其中两条分别留给 `postmaster` 和 `abuse` 运营邮箱，因此首发服务**最多 198 个用户地址**。实际能否创建仍取决于供应商路由状态；容量用尽时，amail 会明确报告，而不是假装注册成功。
+
+### 六小时临时测试邮箱
+
+任何活动 Profile 都可以申请临时测试邮箱；它仍遵守同样的读写占用原则：
+
+```sh
+amail address add build-test --tmp
+amail address list
+```
+
+生产地址为 `build-test@tmpaddr.moesegfault.dev`，staging 地址为 `build-test@tmpaddr-staging.moesegfault.dev`。临时邮箱从创建起**最多六小时**；使用、付费和切换 Profile 都不会延长存续时间。释放不通知、不可恢复，过期或释放后查询不再返回它。需要保留的历史必须在邮箱仍有效时下载到自己的受保护目录，不存在释放后的恢复入口。
+
+```sh
+amail mailbox export build-test@tmpaddr.moesegfault.dev --output history.zip
+```
+
+导出需要有效邮箱与读占用，会遍历完整结果页，将邮件 ZIP、摘要与邮箱清单保存在一个私有历史包中。它不延长邮箱寿命；导出途中到期会失败，不能把部分数据当作成功备份。请自行安全保管下载的数据。
+
+清理任务会移除旧数据；只有旧数据清理、收信路由退役和冷却全部完成后，同名地址才能重新分配。默认冷却一小时；后来复用地址的人不能取得前一代邮箱的数据。冷却不是对所有延迟来信的保证：请自行处理旧系统晚到邮件的风险，不要用于长期身份、密码找回或敏感注册。
+
+| 同时包含的地址 | Free | Lite | Plus |
+| --- | ---: | ---: | ---: |
+| 普通邮箱 | 1 | 3 | 5 |
+| 临时邮箱 | 3 | 6 | 10 |
+
+两类地址分别计算数量，但所有 Profile、普通邮箱和临时邮箱共享同一账户的发信与存储资源池。临时邮箱的自动第三方语义索引规则与普通邮箱相同。
 
 ## 查找邮件，而不是翻页
 

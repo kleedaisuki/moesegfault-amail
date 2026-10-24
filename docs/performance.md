@@ -31,6 +31,11 @@ credential cache, disabled diagnostics, relaxed fsync, ANN index, or service
 daemon is justified by these findings. See [exact search](perf-search.md) for
 the all-candidate, stable-order and mutation-bound cursor contracts.
 
+The later [v0.3.0 multi-tenant workload](v0.3.0/architecture.md) independently
+requires a daemon for terminal/profile ownership and global concurrency control.
+That product requirement supersedes the earlier no-daemon conclusion; the
+measurements above do not themselves demonstrate a daemon latency improvement.
+
 ## Small hosted measurement suite
 
 Run on GitHub Actions with pinned repository lockfiles, existing native/Worker/

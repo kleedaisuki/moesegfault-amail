@@ -39,6 +39,35 @@ and clients are distinct. HTTP health does not establish message delivery.
 
 ## Supported hosted lanes
 
+### v0.3.0 multi-tenant candidate
+
+The candidate branch is `codex/v0.3.0-multitenant`. Use `target=checks` for
+credential-free native/Wasm and real daemon/profile checks, `staging-inspect`
+with `INSPECT_STAGING_V030` for the fixed staging graph, and `staging` with
+`RUN_STAGING_V030` for the serialized staging writer. Production promotion and
+public Release publication are not implied by this lane.
+
+The staging writer onboards only `tmpaddr-staging.moesegfault.dev` through the
+scoped provider helper after same-run artifact admission. Production temporary
+mail uses the distinct `tmpaddr.moesegfault.dev` configuration; never point a
+staging worker at it. DNS/onboarding prerequisites and closed failure codes are
+described in [the provider helper guide](../infra/provider/README.md). A failed
+permission check is not successful onboarding or permission to reuse another
+realm's domain.
+
+Profiles and leases are authoritative in D1. Once an account enrolls in profiles,
+older profile-less requests cannot bypass its mailbox ownership; use the matching
+v0.3 CLI. Do not manually clear live sessions, leases or generation fences to
+resolve a conflict. Temporary-address expiry denies access immediately, while
+bounded maintenance completes physical cleanup. Name reuse requires retirement,
+completed cleanup and cooldown. Export live history before release; there is no
+restore API. See [architecture](v0.3.0/architecture.md) and
+[acceptance scenarios](v0.3.0/acceptance-scenarios.md).
+
+Hosted/staging results, including any incomplete prerequisites, are recorded in
+[validation](validation.md). Candidate source and a passed native SQL test alone
+do not establish deployed SMTP, browser-approval or object-cleanup acceptance.
+
 ci.yml pushes/PRs validate source without deployment. Manual targets:
 checks, staging-inspect, staging, staging-e2e, production-inspect, production,
 production-api-only-maintenance,
