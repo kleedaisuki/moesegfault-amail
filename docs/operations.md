@@ -47,6 +47,15 @@ with `INSPECT_STAGING_V030` for the fixed staging graph, and `staging` with
 `RUN_STAGING_V030` for the serialized staging writer. Production promotion and
 public Release publication are not implied by this lane.
 
+Production promotion was separately authorized on 2026-10-25. Use trusted `main`
+with `production-inspect` / `INSPECT_PRODUCTION_V030`, then `production` /
+`RUN_PRODUCTION_V030`, both with `production_graph_freeze` set to
+`FREEZE_PRODUCTION_GRAPH_WRITERS`. The independent v0.3 controller pins the
+completed v0.2 epoch, preserves live customer/policy state, updates compatible
+consumers and maintenance before the API, and publishes matching CLI assets only
+after backend readiness. See [production delivery](v0.3.0/production-delivery.md).
+Do not invoke the historical v0.2 recovery controller for this upgrade.
+
 The staging writer onboards only `tmpaddr-staging.moesegfault.dev` through the
 scoped provider helper after same-run artifact admission. Production temporary
 mail uses the distinct `tmpaddr.moesegfault.dev` configuration; never point a

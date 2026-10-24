@@ -233,9 +233,9 @@ def serving(account: str, token: str, pins: dict[str, str]) -> dict:
     return result
 
 
-def private_surfaces(account: str, token: str) -> None:
+def private_surfaces(account: str, token: str, names: set[str] | None = None) -> None:
     """Exclude adapter workers.dev, previews, custom domains and all zone routes."""
-    names = {INGRESS, EVENTS_WORKER}
+    names = {INGRESS, EVENTS_WORKER} if names is None else names
     if any(row["service"] in names for row in isolation.worker_domains(account, token)):
         raise ValueError("adapter_public_surface_unverified")
     zones = isolation.inventory(token, f"/zones?account.id={account}&type=full,partial,secondary,internal")
@@ -255,7 +255,7 @@ def private_surfaces(account: str, token: str) -> None:
             raise ValueError("adapter_public_surface_unverified")
 
 
-def lifecycle_snapshot(account: str, token: str) -> dict:
+def lifecycle_snapshot(account: str, token: str, *, realm: str = "staging", temporary: bool = True) -> dict:
     """Require one exact consumer and one subscription per reviewed mail domain.
 
     Queue consumer API milliseconds correspond to TOML batch timeout seconds.
@@ -264,8 +264,14 @@ def lifecycle_snapshot(account: str, token: str) -> dict:
     https://developers.cloudflare.com/api/resources/queues/subresources/consumers/
     https://developers.cloudflare.com/api/resources/queues/subresources/subscriptions/methods/list/
     """
+    if realm not in ("staging", "production"):
+        raise ValueError("adapter_coordinates_unverified")
+    suffix = "-staging" if realm == "staging" else ""
+    queue_name, dlq_name = f"amail-sending-events{suffix}", f"amail-sending-events-dlq{suffix}"
+    worker_name = f"amail-events{suffix}"
+    domain, tmp_domain = f"mail{suffix}.moesegfault.dev", f"tmpaddr{suffix}.moesegfault.dev"
     catalog = queues.inventory(account, token)
-    found = {name: queues.exact_queue(catalog, name) for name in (QUEUE, DLQ)}
+    found = {name: queues.exact_queue(catalog, name) for name in (queue_name, dlq_name)}
     if any(row is None for row in found.values()):
         raise ValueError("adapter_queue_missing")
     details = {}
@@ -279,16 +285,16 @@ def lifecycle_snapshot(account: str, token: str) -> dict:
             if (not isinstance(items, list) or type(detail.get(f"{field}_total_count")) is not int
                     or detail[f"{field}_total_count"] != len(items)):
                 raise ValueError("adapter_queue_ownership_unverified")
-        if detail["producers"] or (name == DLQ and detail["consumers"]):
+        if detail["producers"] or (name == dlq_name and detail["consumers"]):
             raise ValueError("adapter_queue_ownership_unverified")
-        if name == QUEUE:
+        if name == queue_name:
             consumers = detail["consumers"]
             if len(consumers) != 1 or not isinstance(consumers[0], dict):
                 raise ValueError("adapter_consumer_unverified")
             consumer = consumers[0]
             settings = consumer.get("settings")
-            if (consumer.get("type") != "worker" or consumer.get("script_name") != EVENTS_WORKER
-                    or consumer.get("dead_letter_queue") != DLQ or not isinstance(settings, dict)
+            if (consumer.get("type") != "worker" or consumer.get("script_name") != worker_name
+                    or consumer.get("dead_letter_queue") != dlq_name or not isinstance(settings, dict)
                     or any(type(settings.get(key)) is not int or settings[key] != value for key, value in
                            {"batch_size": 10, "max_wait_time_ms": 5000, "max_retries": 5, "retry_delay": 120}.items())
                     or settings.get("max_concurrency") is not None):
@@ -304,25 +310,30 @@ def lifecycle_snapshot(account: str, token: str) -> dict:
                 or not isinstance(source, dict) or not isinstance(destination, dict)):
             raise ValueError("adapter_subscription_unverified")
         seen.add(identity)
-        if (source.get("type") == "email.sending" and source.get("domain") in (DOMAIN, TMP_DOMAIN)
+        if (source.get("type") == "email.sending" and source.get("domain") in (domain, tmp_domain)
                 or destination.get("queue_id") in {row["queue_id"] for row in found.values()}):
             related.append(row)
-    if len(related) != 2:
+    contracts = [(domain, f"amail-sending-lifecycle{suffix}")]
+    if temporary:
+        contracts.append((tmp_domain, f"amail-tmpaddr-lifecycle{suffix}"))
+    if len(related) != len(contracts):
         raise ValueError("adapter_subscription_unverified")
     selected = {}
-    for domain, name in ((DOMAIN, "amail-sending-lifecycle-staging"),
-                         (TMP_DOMAIN, "amail-tmpaddr-lifecycle-staging")):
+    for selected_domain, name in contracts:
         matches = [row for row in related if row.get("name") == name]
         if len(matches) != 1:
             raise ValueError("adapter_subscription_unverified")
         subscription = matches[0]
-        if (subscription.get("enabled") is not True or not source_match(subscription["source"], domain)
-                or subscription["destination"] != {"type": "queues.queue", "queue_id": found[QUEUE]["queue_id"]}
+        if (subscription.get("enabled") is not True or not source_match(subscription["source"], selected_domain)
+                or subscription["destination"] != {"type": "queues.queue", "queue_id": found[queue_name]["queue_id"]}
                 or not isinstance(subscription.get("events"), list)
                 or sorted(subscription["events"]) != sorted(EVENTS.split(","))):
             raise ValueError("adapter_subscription_unverified")
-        selected[domain] = subscription
-    return {"queues": details, "subscription": selected[DOMAIN], "temporary_subscription": selected[TMP_DOMAIN]}
+        selected[selected_domain] = subscription
+    snapshot = {"queues": details, "subscription": selected[domain]}
+    if temporary:
+        snapshot["temporary_subscription"] = selected[tmp_domain]
+    return snapshot
 
 
 def verify(ingress_version: str, events_version: str) -> dict:

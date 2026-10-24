@@ -188,6 +188,9 @@ def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-qu
     if realm == "staging" and expected_version == "c33b65b1-d2a4-4902-9fa3-15e74baf1819":
         # Source27c5818/run37642433233 establishes this exact immutable predecessor.
         expected.pop("MAIL_TMP_DOMAIN", None)
+    if realm == "production" and expected_version == "8dc1268f-6947-404b-bb89-95c4f1e5cde9":
+        # Successful production receipt11501340995 predates temporary-domain support.
+        expected.pop("MAIL_TMP_DOMAIN", None)
     return _bindings_match(version, expected_version, expected)
 
 

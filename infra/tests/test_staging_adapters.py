@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from typing import Any
 import unittest
 from unittest.mock import patch
 
@@ -103,6 +104,26 @@ class AdapterTests(unittest.TestCase):
 
     def test_exact_lifecycle_graph(self):
         self.assertEqual(len(self.snapshot()["queues"]), 2)
+
+    def test_production_lifecycle_requires_exact_one_then_two_domain_paths(self) -> None:
+        catalog, details, subscriptions = json.loads(json.dumps(lifecycle()).replace("-staging", ""))
+        def queue_read(account: str, token: str, path: str) -> dict[str, Any]:
+            return {"result": details[path.split("/")[-1]]}
+
+        with patch.object(check.queues, "inventory", return_value=catalog), \
+             patch.object(check.queues, "request", side_effect=queue_read), \
+             patch.object(check.forwarding, "pages", return_value=subscriptions[:1]):
+            snapshot = check.lifecycle_snapshot(ACCOUNT, "synthetic", realm="production", temporary=False)
+            self.assertNotIn("temporary_subscription", snapshot)
+            with self.assertRaises(ValueError):
+                check.lifecycle_snapshot(ACCOUNT, "synthetic", realm="production", temporary=True)
+        with patch.object(check.queues, "inventory", return_value=catalog), \
+             patch.object(check.queues, "request", side_effect=queue_read), \
+             patch.object(check.forwarding, "pages", return_value=subscriptions):
+            snapshot = check.lifecycle_snapshot(ACCOUNT, "synthetic", realm="production", temporary=True)
+            self.assertEqual(snapshot["temporary_subscription"]["source"]["domain"], "tmpaddr.moesegfault.dev")
+            with self.assertRaises(ValueError):
+                check.lifecycle_snapshot(ACCOUNT, "synthetic", realm="staging", temporary=True)
 
     def test_temporary_lifecycle_requires_exact_second_domain_path(self) -> None:
         _, _, subscriptions = lifecycle()

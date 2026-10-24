@@ -172,6 +172,9 @@ def verify(realm: str, state: str, account: str, token: str, version: str, queue
         # Successful USD producer37642433233 predates temporary-domain support.
         # Admit that immutable version's exact old capability set during rollout.
         expected.pop("MAIL_TMP_DOMAIN", None)
+    if realm == "production" and version == "271e6d3f-9355-4804-b0c4-0d2426ad6c5a":
+        # Successful production receipt11501340995 supplies this immutable old cohort.
+        expected.pop("MAIL_TMP_DOMAIN", None)
     if missing_issuer_predecessor:
         # This is one immutable failed v0.2 cohort, not a generally optional issuer.
         # The old v0.1 cohort remains separately defined by predecessor=True.
