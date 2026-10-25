@@ -300,8 +300,8 @@ try {
       });
       if (route !== '/') await check(result, 'TOC activation and heading visibility', () => toc(page, stem, result));
       if (route === '/manual/') await check(result, 'privacy introduction renders semantic emphasis', async () => {
-        // The pre-use warning must render as emphasis, not raw Markdown syntax.
-        const label = '使用前的隐私提示：';
+        // The current opt-in warning must render as emphasis, not raw Markdown.
+        const label = '语义检索默认关闭：';
         const count = await page.locator('.manual-prose strong').evaluateAll((elements, text) =>
           elements.filter((el) => el.textContent.trim() === text).length, label);
         assert.equal(count, 1, 'privacy introduction must have exactly one strong label');
