@@ -49,6 +49,41 @@ mail is a test fixture and no production account is enabled by the migration.
 
 ## Rollout and readiness
 
+### Actual staging readiness
+
+Producer run `40188956353` at
+`f262e8e433ffeabb7d67d0fc26c363be7e4133f8` passed the native/Worker/provider
+source gates, including 144 Worker boundary cases, but its overall writer failed
+before maintenance activation. Named recovery
+[40193614404](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40193614404)
+then completed successfully at orchestration source
+`802bc116dde3e2f6390a90b66346920c18dee72e`, artifact `12599375984`.
+All 163 schema objects and full column/index metadata matched, with no unknown or
+drifted objects. Only maintenance advanced to
+`c00d2f51-096d-4b83-8d49-e42e196b85ec`; API
+`d592cd2a-95a3-4c89-859a-18a191bd641a` and sink
+`5e556087-9a75-40db-9eb5-869a4b56372e` were retained. Applied 0018 and the
+completed scheduled witness were reused, not replayed.
+
+Narrow semantic-only acceptance run
+[40195321997](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40195321997)
+completed **SUCCESS** on 2026-10-25 at 21:05:15 Asia/Singapore (13:05:15 UTC),
+checkout `205eb3dd3f7e723ff1be9ac08c9838e4635e17a5`, artifact `12600320617`.
+Its single owned SMTP fixture passed default-off, enable/full-index readiness,
+one semantic query, disable/literal search, re-enable/full-index readiness and
+final disable, followed by complete owned cleanup before receipt publication.
+The receipt keeps original producer `40188956353` / `f262e8e...` separate from
+the acceptance checkout/run and binds API `d592cd2a-95a3-4c89-859a-18a191bd641a`,
+maintenance `c00d2f51-096d-4b83-8d49-e42e196b85ec` and sink
+`5e556087-9a75-40db-9eb5-869a4b56372e`. No full regression or deployment replay
+was used to obtain this acceptance. The earlier 420-second wait failure remains
+failed; it occurred inside schedule activation propagation, and warm acceptance
+does not prove a particular Cron invocation ran. Production promotion, formal
+release and local installation remain pending. The
+[validation ledger](../validation.md) owns current acceptance status.
+
+### Production admission and order
+
 The independent controller is `infra/deploy/production_v031.py`; the historical
 v0.3.0 writer must not be replayed. Use trusted `main`, protected `production`,
 first attempt and the existing shared production-graph writer lock:
@@ -115,7 +150,7 @@ Formal five-platform CLI/Skill publication requires matching production health,
 the existing outbound attestations, native profile journeys, checksums,
 attestations and published-byte verification. Reviewed release promotion reuses
 the original three already-tested native executables with embedded provenance,
-and builds/tests only the two missing targets; it neither reruns green native
+and compiles/version-smokes only the two missing targets; it neither reruns green native
 suites nor calls reused binaries a new build. Public-site replacement follows the
 verified public assets. Local replacement follows matching archive/Skill source
 verification, daemon stop and private backups; credentials and YOLO preferences

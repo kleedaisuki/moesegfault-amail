@@ -68,6 +68,16 @@ must still verify the exact accepted runtime closure, while changed site/browser
 inputs receive their relevant checks. This avoids repeating green runtime suites
 without silently assuming unrelated orchestration changes are safe.
 
+`infra/ci/changes.py` classifies the event delta, using push `before` or the prior
+PR head on synchronization rather than rechecking every earlier PR commit. CLI,
+Worker and site jobs run only for affected inputs; tooling deltas select changed
+or directly inferred Python test modules instead of rediscovering the entire
+historical suite. Unaffected jobs retain their established names but are actually
+skipped, never represented as fresh passes. A recorded accepted candidate is used
+on merge only after live producer-job verification and exact runtime-closure
+admission. Named promotion/recovery/semantic journeys do not trigger broad source
+regressions merely because they are new workflow runs.
+
 Wrangler can bundle JavaScript after restoration; generated hashes do not alone
 prove uploaded-byte identity. Preserve checked entry adapters/module resolution/
 pinned packaging. Do not casually add --no-bundle or a packaging experiment.
@@ -82,14 +92,19 @@ a dependent deploy. Lost logs/watch handles never authorize provider-write repla
 
 Release gates cover all five native platforms and use rust-toolchain.toml. The
 default path builds/tests all five; reviewed candidate promotion can reuse the
-three already-tested native executables and build/test only the two missing
-targets. `infra/release/promote_candidate.py` requires the checked-in
+three already-tested native executables and compile/version-smoke only the two
+missing targets, without repeating the green regression
+suite. `infra/release/promote_candidate.py` requires the checked-in
 `infra/release/accepted-candidate.json` producer/acceptance chain and unchanged
 runtime closure. It verifies the original complete candidate manifest, file set
 and checksums before extracting executables. Newly packaged release archives keep
 the executable bytes unchanged and include `BUILD-PROVENANCE.json`, separating
 original native source/run/artifact identity from current packaging source/run.
-They are not represented as newly compiled binaries. The release workflow attests
+They are not represented as newly compiled binaries. This separation follows
+[GitHub's immutable artifact/digest model](https://docs.github.com/en/actions/tutorials/store-and-share-data)
+and [SLSA provenance's source/build identity](https://slsa.dev/spec/v1.2/provenance):
+the original builder and later packager remain distinct. This is not a claim of
+SLSA-level certification. The release workflow attests
 the actual new archive bytes, publishes the matching Skill and `SHA256SUMS`, then
 checks every public asset against that trusted manifest. Never replace tag/assets
 to hide recovery or smoke failure.

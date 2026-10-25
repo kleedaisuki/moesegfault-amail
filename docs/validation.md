@@ -4,7 +4,7 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
-## v0.3.1 semantic consent — source accepted, staging continuation pending
+## v0.3.1 semantic consent — staging recovered and narrow acceptance delivered
 
 Source `f262e8e433ffeabb7d67d0fc26c363be7e4133f8` in
 [40188956353](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40188956353)
@@ -26,16 +26,41 @@ completing the 31-minute scheduled-cohort witness. Its retained partial graph is
 Original witness artifact `12597862883` belongs to that producer and partial
 transition; it is not a newly executed wait or proof of active maintenance.
 
-Read-only diagnosis and a named exact-owned continuation are being prepared; no
-full-schema recovery or real semantic user-journey success is claimed here.
-The continuation must not replay API/sink submissions, reapply 0018 or repeat the
-completed wait. Its subsequent named semantic-only journey must bind the successful
-recovery run and use one new owned SMTP fixture, not repeat unrelated accepted
-regressions. Production promotion requires a separate successful narrow
-semantic acceptance receipt tied to this original producer and the same complete
-runtime closure, not reinterpretation of the failed writer. This distinction also
-allows incremental tooling checks instead of repeating green native/Wasm/provider
-suites. See [artifact promotion](deployment-artifact-foundation.md) and
+The named exact-owned recovery
+[40193614404](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40193614404)
+completed **SUCCESS** at orchestration source
+`802bc116dde3e2f6390a90b66346920c18dee72e`. Receipt artifact
+[12599375984](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40193614404/artifacts/12599375984)
+verifies all 163 source-derived schema objects plus complete column/index
+metadata, with zero unknown or drifted objects. Only maintenance was activated,
+at `c00d2f51-096d-4b83-8d49-e42e196b85ec`; the API and sink above stayed unchanged.
+Migration 0018 and the original scheduled witness were admitted and reused,
+not reapplied or waited again. This successful continuation does not change the
+original producer run's failed overall conclusion.
+
+The semantic-only real journey
+[40195321997](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40195321997)
+completed **SUCCESS** on 2026-10-25 at 21:05:15 Asia/Singapore (13:05:15 UTC),
+checkout `205eb3dd3f7e723ff1be9ac08c9838e4635e17a5`. Acceptance artifact
+[12600320617](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40195321997/artifacts/12600320617)
+binds original producer `40188956353` / `f262e8e433ffeabb7d67d0fc26c363be7e4133f8`
+to that checkout and the exact retained API/sink plus recovered maintenance above.
+One owned SMTP fixture exercised default-off, enable/full-index readiness, one
+semantic query, disable with literal search, re-enable/full-index readiness and
+final disable. Owned mail/profile/credential cleanup completed before the success
+receipt was published. Unrelated green native/Wasm/provider regressions were not
+repeated.
+
+Earlier narrow run `40193772432` exhausted its 420-second index wait entirely
+inside the documented 15-minute schedule-activation window. Read-only diagnosis
+found no durable provider-failure evidence; later warm-Cron acceptance on unchanged
+runtime supports schedule propagation as the explanation, not direct proof of
+which invocation ran. The earlier failed run remains failed.
+
+Production admission now has distinct successful source-gate and real-journey
+coordinates; it does not reinterpret the original failed writer as successful.
+This distinction enables incremental tooling checks instead of repeating green
+native/Wasm/provider suites. See [artifact promotion](deployment-artifact-foundation.md) and
 [the v0.3.1 cutover](v0.3.1/production-delivery.md). Production remains on its
 separately accepted v0.3.0 epoch until actual promotion is recorded.
 

@@ -37,7 +37,8 @@ setup. Static syntax/link/diff checks are fine; scratch files stay under root
 Do not repeat green runtime suites for a tooling-only delta: verify exact accepted
 input closure and run affected tool/site contracts. Reviewed release promotion may
 reuse three checked native executables, with original provenance, and build only
-the two missing platforms; all five still require release admission. A named
+the two missing platforms with version smoke; all five still require release
+admission. A named
 partial recovery resumes only remaining owned work, not API replay or a second
 completed drain wait.
 

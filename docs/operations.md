@@ -97,8 +97,14 @@ activated after exact schema admission, with no site/adapters replay. Next use
 `staging-semantic-e2e` / `RUN_STAGING_SEMANTIC_V031`, the same `source_run`, and
 `staging_resume_run` equal to the successful recovery run. This narrow journey
 uses one new owned SMTP fixture for semantic consent/indexing rather than repeating
-the already green full native/SMTP/profile regression. Actual narrow acceptance
-must still succeed before production promotion.
+the already green full native/SMTP/profile regression. Recovery completed in
+`40193614404`, and narrow semantic acceptance completed in `40195321997`, artifact
+`12600320617`. Use producer `source_run=40188956353` with
+`staging_acceptance_run=40195321997` for the reviewed promotion; these are separate
+evidence coordinates, not a successful conclusion for the old failed writer.
+See [validation](validation.md) for exact pins, cleanup and the earlier bounded
+wait failure during schedule propagation. Do not repeat the journey after this
+successful acceptance unless the corresponding runtime contract changes.
 
 The owner authorized production publication after successful staging acceptance,
 followed by all local CLI entrypoints and the global amail Skill. Production must
