@@ -25,7 +25,7 @@ semantic matching. The default CLI output is compact, pipe-friendly text;
 
 ## Install
 
-Download the matching `v0.3.0` archive for your platform from
+Download the matching `v0.3.1` archive for your platform from
 [GitHub Releases](https://github.com/kleedaisuki/moesegfault-amail/releases).
 Check its digest against `SHA256SUMS` in the same release. Each CLI archive
 contains the `amail` binary and license. Source builds use `cargo build -p amail
@@ -67,7 +67,7 @@ an OS terminal, reuse one stable `AMAIL_TERMINAL_ID` for the logical workflow.
 See the [multi-tenant architecture](docs/v0.3.0/architecture.md) and
 [profile upgrade notes](docs/releases/v0.3.0.md).
 
-## Semantic indexing (v0.3.1 candidate)
+## Semantic indexing (v0.3.1)
 
 Semantic indexing is account-wide and **off by default**, including after upgrade.
 `amail semantic status|enable|disable` exposes the setting. Only `user` may change
@@ -76,6 +76,8 @@ indexes all eligible retained and subsequent mail through OpenRouter / Voyage 4;
 disabling preserves old document embeddings but admits no new model requests.
 Re-enabling starts a full fresh index. The dedicated forward migration preserves
 legacy vectors without mixing Qwen and Voyage spaces or silently granting consent.
+The fixed VoyageAI route denies training and disables response caching, but the
+upstream may retain inputs; it is not zero-data-retention.
 See [v0.3.1 notes](docs/releases/v0.3.1.md) and
 [indexing privacy](docs/semantic-indexing-privacy-decision.md). Publication and
 deployed acceptance remain separate from source capabilities.
