@@ -31,6 +31,9 @@ RECEIPT = ROOT / ".temp/staging-semantic-recovery.json"
 INSPECTION = ROOT / ".temp/staging-semantic-inspection.json"
 JOURNEY_ADMISSION = ROOT / ".temp/staging-semantic-journey-admission.json"
 JOURNEY_RUNTIME = ROOT / ".temp/staging-semantic-runtime.json"
+DIAGNOSTIC = ROOT / ".temp/staging-semantic-diagnostic.json"
+EMBEDDING_ERRORS = frozenset({"invalid_input", "invalid_request", "dependency_unavailable",
+                            "provider_rate_limited", "provider_transient", "provider_malformed"})
 SCHEMA_ERRORS = frozenset({
     "schema_objects_unverified", "schema_object_drift", "schema_columns_unverified",
     "schema_indexes_unverified", "schema_index_columns_unverified",
@@ -42,7 +45,8 @@ SCHEMA_ERRORS = frozenset({
 def context(mode: str) -> None:
     confirmation = {"inspect": "INSPECT_STAGING_SEMANTIC_V031",
                     "recover": "RUN_STAGING_SEMANTIC_RECOVERY_V031",
-                    "journey": "RUN_STAGING_SEMANTIC_V031"}
+                    "journey": "RUN_STAGING_SEMANTIC_V031",
+                    "diagnose": "INSPECT_STAGING_SEMANTIC_RUNTIME_V031"}
     expected = {
         "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "kleedaisuki/moesegfault-amail",
         "GITHUB_REF": "refs/heads/codex/v0.3.1-semantic-consent",
@@ -159,9 +163,9 @@ def run(mode: str) -> None:
     RECEIPT.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def admit_journey(recovery_run: str) -> None:
+def admit_journey(recovery_run: str, *, mode: str = "journey") -> None:
     """Select only a successful named maintenance continuation's safe receipt."""
-    context("journey")
+    context(mode)
     metadata = accepted.run_metadata(recovery_run)
     if metadata.get("conclusion") != "success":
         raise ValueError("staging_semantic_recovery_not_completed")
@@ -175,9 +179,9 @@ def admit_journey(recovery_run: str) -> None:
         output.write(f"recovery_artifact_id={artifact_id}\n")
 
 
-def journey_ready() -> None:
+def journey_ready(*, mode: str = "journey") -> None:
     """Check actual active pins before the single new semantic user journey."""
-    context("journey")
+    context(mode)
     admission = json.loads(JOURNEY_ADMISSION.read_text(encoding="utf-8"))
     value = json.loads(RECEIPT.read_text(encoding="utf-8"))
     if (admission.get("checkout_sha") != os.environ["GITHUB_SHA"]
@@ -193,23 +197,91 @@ def journey_ready() -> None:
     accepted.runtime_closure(value["checkout_sha"], os.environ["GITHUB_SHA"])
     select(value["maintenance_version"])
     rollout.graph.verify("staging", "active")
+    if mode != "journey":
+        return
     JOURNEY_RUNTIME.write_text(json.dumps({"schema": "staging-semantic-acceptance/v1",
         "source_run_id": ORIGIN_RUN, "source_sha": ORIGIN_SHA,
         "run_id": os.environ["GITHUB_RUN_ID"], "checkout_sha": os.environ["GITHUB_SHA"],
         "api_version": API, "maintenance_version": value["maintenance_version"], "sink_version": SINK}), encoding="utf-8")
 
 
+def indexer_facts(database: DatabaseClient) -> dict[str, Any]:
+    """Read aggregate scheduling state and closed errors, never owner or mail values."""
+    dependency = database.query("SELECT blocked_until,last_error_code,CAST(unixepoch()*1000 AS INTEGER) AS observed_at FROM embedding_dependency WHERE id=1").get("results")
+    if not isinstance(dependency, list) or len(dependency) != 1:
+        raise ValueError("staging_semantic_dependency_unverified")
+    row = dependency[0]
+    if any(type(row.get(key)) is not int or row[key] < 0 for key in ("blocked_until", "observed_at")):
+        raise ValueError("staging_semantic_dependency_unverified")
+    code = row.get("last_error_code")
+    summary = {"blocked_until": row["blocked_until"], "observed_at": row["observed_at"],
+               "remaining_ms": max(0, row["blocked_until"] - row["observed_at"]),
+               "last_error_code": code if code is None or code in EMBEDDING_ERRORS else "unrecognized"}
+    errors = ",".join("'" + code + "'" for code in sorted(EMBEDDING_ERRORS))
+    buckets = database.query(f"""SELECT COALESCE(p.enabled,0) AS enabled,w.state,
+      CASE WHEN w.last_error_code IS NULL THEN 'none'
+           WHEN w.last_error_code IN ({errors}) THEN w.last_error_code ELSE 'unrecognized' END AS error_code,
+      CASE WHEN w.lease_until>unixepoch()*1000 THEN 'leased'
+           WHEN w.next_attempt_at>unixepoch()*1000 THEN 'backoff' ELSE 'due' END AS bucket,
+      CASE WHEN w.attempts>0 THEN 1 ELSE 0 END AS attempted,COUNT(*) AS work_count
+      FROM embedding_work w LEFT JOIN semantic_preferences p
+        ON p.owner_iss=w.owner_iss AND p.owner_sub=w.owner_sub
+      GROUP BY enabled,w.state,error_code,bucket,attempted""").get("results")
+    preferences = database.query("SELECT enabled,COUNT(*) AS accounts FROM semantic_preferences GROUP BY enabled").get("results")
+    profiles = database.query("""SELECT COUNT(*) AS live_profile_sessions,
+      COALESCE(SUM(COALESCE(p.enabled,0)),0) AS sessions_with_semantics_enabled
+      FROM mail_profiles f LEFT JOIN semantic_preferences p
+        ON p.owner_iss=f.owner_iss AND p.owner_sub=f.owner_sub
+      WHERE f.session_token IS NOT NULL AND f.session_expires_at>unixepoch()*1000""").get("results")
+    if not isinstance(buckets, list) or not isinstance(preferences, list) or not isinstance(profiles, list):
+        raise ValueError("staging_semantic_aggregate_unverified")
+    for item in buckets:
+        if (not isinstance(item, dict)
+                or set(item) != {"enabled", "state", "error_code", "bucket", "attempted", "work_count"}
+                or item["enabled"] not in (0, 1) or item["attempted"] not in (0, 1)
+                or item["state"] not in ("pending", "quarantined")
+                or item["error_code"] not in EMBEDDING_ERRORS | {"none", "unrecognized"}
+                or item["bucket"] not in ("leased", "backoff", "due")
+                or type(item["work_count"]) is not int or item["work_count"] < 0):
+            raise ValueError("staging_semantic_aggregate_unverified")
+    for item in preferences:
+        if (not isinstance(item, dict) or set(item) != {"enabled", "accounts"}
+                or item["enabled"] not in (0, 1)
+                or type(item["accounts"]) is not int or item["accounts"] < 0):
+            raise ValueError("staging_semantic_aggregate_unverified")
+    if (len(profiles) != 1 or set(profiles[0]) != {"live_profile_sessions", "sessions_with_semantics_enabled"}
+            or any(type(value) is not int or value < 0 for value in profiles[0].values())):
+        raise ValueError("staging_semantic_aggregate_unverified")
+    return {"dependency": summary, "work_buckets": buckets,
+            "preference_counts": preferences, "profile_counts": profiles}
+
+
+def diagnose() -> None:
+    journey_ready(mode="diagnose")
+    database = DatabaseClient(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"], "staging")
+    value = {"schema": "staging-semantic-diagnostic/v1", "source_run_id": ORIGIN_RUN,
+             "run_id": os.environ["GITHUB_RUN_ID"], "checkout_sha": os.environ["GITHUB_SHA"],
+             "runtime_cadence_verified": True, "runtime_credential_binding_verified": True,
+             "indexer": indexer_facts(database)}
+    DIAGNOSTIC.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(value, sort_keys=True))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("inspect", "recover", "admit-journey", "journey"))
+    parser.add_argument("mode", choices=("inspect", "recover", "admit-journey", "journey", "admit-diagnostic", "diagnose"))
     parser.add_argument("--recovery-run", default="")
     args = parser.parse_args()
     mode = args.mode
     try:
         if mode == "admit-journey":
             admit_journey(args.recovery_run)
+        elif mode == "admit-diagnostic":
+            admit_journey(args.recovery_run, mode="diagnose")
         elif mode == "journey":
             journey_ready()
+        elif mode == "diagnose":
+            diagnose()
         else:
             run(mode)
     except Exception as error:

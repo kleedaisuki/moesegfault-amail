@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
         description: Documented RUN_* or INSPECT_* confirmation; normal split upgrade preserves live policy
         required: false
@@ -94,7 +94,7 @@ permissions:
 # Checks can supersede obsolete checks; shared-state manual operations never cancel each other.
 # Keep the existing manual group so in-flight acceptance remains mutually exclusive.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose' || inputs.target == 'staging-maintenance-repair' || inputs.target == 'staging-semantic-inspect' || inputs.target == 'staging-semantic-recovery' || inputs.target == 'staging-semantic-e2e')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose' || inputs.target == 'staging-maintenance-repair' || inputs.target == 'staging-semantic-inspect' || inputs.target == 'staging-semantic-recovery' || inputs.target == 'staging-semantic-e2e' || inputs.target == 'staging-semantic-diagnose')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
@@ -2273,5 +2273,55 @@ jobs:
         with:
           name: staging-semantic-acceptance-${{ github.run_id }}
           path: .temp/staging-semantic-acceptance.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  staging-semantic-diagnose:
+    name: Read active semantic indexer scheduling facts
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.run_attempt == 1 &&
+      github.ref == 'refs/heads/codex/v0.3.1-semantic-consent' &&
+      inputs.target == 'staging-semantic-diagnose' && inputs.confirm == 'INSPECT_STAGING_SEMANTIC_RUNTIME_V031' &&
+      inputs.source_run == '40188956353' && inputs.staging_resume_run == '40193614404'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AMAIL_SOURCE_RUN: ${{ inputs.source_run }}
+      AMAIL_STAGING_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_STAGING_ENVIRONMENT: staging
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify the successful named recovery receipt origin
+        id: recovery
+        run: python infra/deploy/staging_semantic_recovery.py admit-diagnostic --recovery-run 40193614404
+      - name: Download only the completed named recovery receipt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ steps.recovery.outputs.recovery_artifact_id }}
+          run-id: 40193614404
+          github-token: ${{ github.token }}
+          path: .temp
+          merge-multiple: true
+      - name: Check actual Cron and read aggregate cooldown and work errors
+        run: python infra/deploy/staging_semantic_recovery.py diagnose
+      - name: Preserve only fixed indexer operational facts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-semantic-diagnostic-${{ github.run_id }}
+          path: .temp/staging-semantic-diagnostic.json
           if-no-files-found: ignore
           retention-days: 14
