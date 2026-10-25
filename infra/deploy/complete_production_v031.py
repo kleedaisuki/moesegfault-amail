@@ -14,11 +14,11 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 from typing import Any
 
 import production_v031 as deploy
+from staging_resume import job_log
 
 ROOT = deploy.ROOT
 sys.path.insert(0, str(ROOT / "infra/ci"))
@@ -42,7 +42,11 @@ FAILURES = frozenset({"production_v031_completion_context_unverified",
                      "production_v031_completion_inspection_unverified",
                      "production_v031_completion_policy_changed",
                      "production_v031_completion_retained_changed",
-                     "production_v031_completion_preferences_unverified"})
+                     "production_v031_completion_preferences_unverified",
+                     "staging_resume_log_credentials_unverified", "staging_resume_log_permission_denied",
+                     "staging_resume_log_http_unverified", "staging_resume_log_redirect_unverified",
+                     "staging_resume_log_transport_unverified", "staging_resume_log_signed_url_expired",
+                     "staging_resume_log_unverified"})
 
 
 def context() -> None:
@@ -94,11 +98,9 @@ def prepare() -> None:
     run_identity(accepted.github(f"runs/{ORIGIN_RUN}"), ORIGIN_RUN, "failure")
     jobs = accepted.rows(accepted.github(f"runs/{ORIGIN_RUN}/jobs?per_page=100"), "jobs")
     job_id = writer_identity(jobs)
-    log = subprocess.run(["gh", "api", f"repos/{accepted.REPO}/actions/jobs/{job_id}/logs"],
-                         cwd=ROOT, capture_output=True, text=True, timeout=60, check=False)
-    if log.returncode or len(log.stdout.encode()) > 2_097_152:
-        raise ValueError("production_v031_completion_failure_unverified")
-    closed_failure(log.stdout)
+    # The existing reader validates the signed blob redirect and never forwards
+    # the GitHub API bearer to the log-storage host.
+    closed_failure(job_log(job_id).decode("utf-8-sig"))
     run_identity(accepted.github(f"runs/{INSPECTION_RUN}"), INSPECTION_RUN, "success")
     partial_id = accepted.unique_artifact(ORIGIN_RUN, ORIGIN_SOURCE, f"production-v031-partial-{ORIGIN_RUN}")
     inspection_id = accepted.unique_artifact(INSPECTION_RUN, ORIGIN_SOURCE, f"production-v031-inspect-{INSPECTION_RUN}")
