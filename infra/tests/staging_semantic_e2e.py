@@ -177,14 +177,14 @@ def managed_baseline_local(username: str, password: str) -> str:
     """Keep the fixture stable per protected synthetic account, not per run."""
     digest: str = hmac.new(password.encode("utf-8"),
         b"amail-semantic-baseline/v1\0" + username.encode("utf-8"), hashlib.sha256).hexdigest()
-    return "semantic-baseline-" + digest[:16]
+    return "semantic-" + digest[:16]
 
 
 def bootstrap_managed_alias(binary: Path, environment: dict[str, str], local: str | None,
                             inventory: list[dict[str, Any]]) -> str:
     local_name: str = local if isinstance(local, str) else ""
     mail.check(os.environ.get("AMAIL_SEMANTIC_BASELINE_BOOTSTRAP") == BASELINE_BOOTSTRAP
-               and re.fullmatch(r"semantic-baseline-[a-f0-9]{16}", local_name) is not None,
+               and re.fullmatch(r"semantic-[a-f0-9]{16}", local_name) is not None,
                "semantic_baseline_alias_missing")
     address: str = local_name + "@mail-staging.moesegfault.dev"
     existing: list[dict[str, Any]] = [row for row in inventory if row.get("kind") == "mail"]

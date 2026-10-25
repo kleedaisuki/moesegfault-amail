@@ -33,6 +33,9 @@ class BaselineBootstrapTests(unittest.TestCase):
         password: str = "synthetic-password-not-a-real-secret"
         with patch.dict(os.environ, {"GITHUB_RUN_ID": "123"}):
             local: str = semantic.managed_baseline_local(username, password)
+        self.assertGreaterEqual(len(local), 3)
+        self.assertLessEqual(len(local), 32)
+        self.assertRegex(local, r"semantic-[a-f0-9]{16}\Z")
         with patch.dict(os.environ, {"GITHUB_RUN_ID": "456"}):
             self.assertEqual(semantic.managed_baseline_local(username, password), local)
         address: str = local + "@mail-staging.moesegfault.dev"
