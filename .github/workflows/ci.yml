@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [semantic-reuse-staging, semantic-reuse-production, checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [semantic-reuse-staging-resume, semantic-reuse-staging, semantic-reuse-production, checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
         description: Documented RUN_* or INSPECT_* confirmation; normal split upgrade preserves live policy
         required: false
@@ -99,7 +99,7 @@ permissions:
 # Checks can supersede obsolete checks; shared-state manual operations never cancel each other.
 # Keep the existing manual group so in-flight acceptance remains mutually exclusive.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-production' || inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-complete' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging' || inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose' || inputs.target == 'staging-maintenance-repair' || inputs.target == 'staging-semantic-inspect' || inputs.target == 'staging-semantic-recovery' || inputs.target == 'staging-semantic-e2e' || inputs.target == 'staging-semantic-diagnose')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-production' || inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-complete' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging-resume' || inputs.target == 'semantic-reuse-staging' || inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose' || inputs.target == 'staging-maintenance-repair' || inputs.target == 'staging-semantic-inspect' || inputs.target == 'staging-semantic-recovery' || inputs.target == 'staging-semantic-e2e' || inputs.target == 'staging-semantic-diagnose')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
@@ -173,12 +173,16 @@ jobs:
 
   semantic-reuse-staging:
     name: Deploy semantic reuse staging backend
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'semantic-reuse-staging' && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
+    if: always() && (needs.semantic-reuse-build.result == 'success' || inputs.target == 'semantic-reuse-staging-resume') && github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
     needs: semantic-reuse-build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: staging
+    permissions:
+      contents: read
+      actions: read
     env:
+      GH_TOKEN: ${{ github.token }}
       AMAIL_BACKEND_HOTFIX: staging
       AMAIL_BACKEND_CONFIRM: ${{ inputs.confirm }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -192,12 +196,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Admit only the fixed successful build from the named partial
+        if: inputs.target == 'semantic-reuse-staging-resume'
+        id: original
+        run: python infra/ci/mail_backend_artifact.py admit-resume --source-run '${{ inputs.source_run }}'
       - uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.semantic-reuse-build.outputs.artifact_id }}
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.target == 'semantic-reuse-staging-resume' && inputs.source_run || github.run_id }}
+          artifact-ids: ${{ steps.original.outputs.artifact_id || needs.semantic-reuse-build.outputs.artifact_id }}
           path: .temp/ci/mail-backend
           merge-multiple: true
       - name: Restore exact tested Mail bytes without rebuilding other components
@@ -208,7 +219,7 @@ jobs:
       - name: Install the existing pinned deployment tool
         run: npm install --global wrangler@4.142.0
       - name: Apply the forward claim fence then replace API and maintenance with unchanged Cron
-        run: python infra/deploy/semantic_reuse_backend.py staging
+        run: python infra/deploy/semantic_reuse_backend.py staging ${{ inputs.target == 'semantic-reuse-staging-resume' && '--resume' || '' }}
       - name: Retain the completed staging coordinates
         uses: actions/upload-artifact@v4
         with:
@@ -221,6 +232,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: semantic-reuse-staging-partial-${{ github.run_id }}
+          include-hidden-files: true
           path: |
             .temp/production-upgrade-*.jsonl
             .temp/semantic-reuse-predecessor.json
@@ -229,7 +241,7 @@ jobs:
 
   semantic-reuse-journey:
     name: Semantic reuse live journey
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'semantic-reuse-staging' && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
     needs: semantic-reuse-staging
     runs-on: windows-latest
     timeout-minutes: 25
@@ -312,18 +324,18 @@ jobs:
           python-version: '3.12'
       - name: Admit the successful narrow staging run and unchanged original bytes
         id: source
-        run: python infra/ci/mail_backend_artifact.py admit --source-run '${{ inputs.source_run }}'
+        run: python infra/ci/mail_backend_artifact.py admit --source-run '${{ inputs.source_run }}' --acceptance-run '${{ inputs.staging_acceptance_run }}'
       - uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.source_run }}
+          run-id: ${{ steps.source.outputs.run_id }}
           artifact-ids: ${{ steps.source.outputs.artifact_id }}
           path: .temp/ci/mail-backend
           merge-multiple: true
       - uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.source_run }}
+          run-id: ${{ steps.source.outputs.staging_run_id }}
           artifact-ids: ${{ steps.source.outputs.receipt_id }},${{ steps.source.outputs.acceptance_id }}
           path: .temp/ci/mail-backend-staging
           merge-multiple: true
@@ -350,6 +362,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: semantic-reuse-production-partial-${{ github.run_id }}
+          include-hidden-files: true
           path: |
             .temp/production-upgrade-*.jsonl
             .temp/semantic-reuse-predecessor.json

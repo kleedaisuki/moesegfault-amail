@@ -14,7 +14,7 @@ import production_v031 as previous
 import check_staging_adapters as adapters
 from direct_contact_health import DatabaseClient
 from mail_schema_contract import expected_schema, verify_schema
-from pin_staging_mail import expected_bindings
+from pin_staging_mail import expected_bindings, run as pin_api
 from tested_worker_artifact import require_artifact
 from worker_deploy_result import DeploymentFailure, submit
 
@@ -32,7 +32,7 @@ FAILURES = frozenset({"semantic_reuse_policy_changed", "semantic_reuse_adapter_u
     "semantic_reuse_retained_graph_changed", "semantic_reuse_secrets_missing",
     "schema_objects_unverified", "schema_object_drift", "schema_columns_unverified",
     "schema_indexes_unverified", "schema_index_columns_unverified",
-    "schema_migration_provenance_unverified"}) | previous.prior.graph.FAILURES
+    "schema_migration_provenance_unverified", "semantic_reuse_partial_unreviewed"}) | previous.prior.graph.FAILURES
 
 
 def select(realm: str, pins: dict[str, str]) -> None:
@@ -101,6 +101,13 @@ def replace(realm: str, role: str) -> str:
                 previous.prior.journal(role, "ambiguous_version_captured", version=error.version)
             raise
     previous.prior.journal(role, "version_captured", version=version)
+    if realm == "staging":
+        account, token = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
+        if role == "api":
+            pin_api(account, token, version, phase="queue-api", queue_id=QUEUES[realm][0])
+        else:
+            previous.prior.retained.maintenance.verify(realm, "active", account, token, version, QUEUES[realm][0])
+        return version
     data = tomllib.loads(config.read_text(encoding="utf-8"))
     reviewed = data if realm == "production" else data["env"]["staging"]
     bindings = (expected_bindings("queue-api", QUEUES[realm][0], realm=realm) if role == "api"
@@ -113,33 +120,39 @@ def replace(realm: str, role: str) -> str:
     return version
 
 
-def run(realm: str) -> None:
+def run(realm: str, *, resume: bool = False) -> None:
     import sys
     sys.path.insert(0, str(ROOT / "infra/ci"))
     import mail_backend_artifact
     mail_backend_artifact.context(realm)
     require_artifact("mail_api")
     pins = dict(STAGING if realm == "staging" else PRODUCTION)
+    if resume:
+        if realm != "staging" or not mail_backend_artifact.ADMISSION.is_file():
+            raise ValueError("semantic_reuse_partial_unreviewed")
+        pins["amail-mail-staging"] = "75bbcb55-e6f5-42e3-b65b-acb6dbc990c9"
     before, policy = observe(realm, pins)
     database = DatabaseClient(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"], realm)
-    schema(database, realm, 18)
+    schema(database, realm, 19 if resume else 18)
     checkpoint = {"realm": realm, "source_sha": os.environ["GITHUB_SHA"],
                   "run_id": os.environ["GITHUB_RUN_ID"], "pins": pins,
                   "policy_fingerprint": previous.prior.digest(policy),
                   "retained_fingerprint": previous.prior.digest(before["retained"])}
     with (ROOT / ".temp/semantic-reuse-predecessor.json").open("x", encoding="utf-8") as file:
         json.dump(checkpoint, file, sort_keys=True)
-    previous.prior.journal("migration", "intent")
-    command = ["wrangler", "d1", "migrations", "apply", "MAIL_DB", "--remote"]
-    if realm == "staging":
-        command.extend(["--env", "staging"])
-    result = subprocess.run(command, cwd=ROOT / "crates/mail-worker", capture_output=True, text=True, timeout=600, check=False)
-    if result.returncode:
-        raise ValueError("semantic_reuse_migration_unverified")
-    previous.prior.journal("migration", "observed")
-    schema(database, realm, 19)
+    if not resume:
+        previous.prior.journal("migration", "intent")
+        command = ["wrangler", "d1", "migrations", "apply", "MAIL_DB", "--remote"]
+        if realm == "staging":
+            command.extend(["--env", "staging"])
+        result = subprocess.run(command, cwd=ROOT / "crates/mail-worker", capture_output=True, text=True, timeout=600, check=False)
+        if result.returncode:
+            raise ValueError("semantic_reuse_migration_unverified")
+        previous.prior.journal("migration", "observed")
+        schema(database, realm, 19)
     suffix = "-staging" if realm == "staging" else ""
-    for role, name in (("api", "amail-mail"), ("maintenance", "amail-mail-maintenance")):
+    roles = (("maintenance", "amail-mail-maintenance"),) if resume else (("api", "amail-mail"), ("maintenance", "amail-mail-maintenance"))
+    for role, name in roles:
         pins[name + suffix] = replace(realm, role)
         actual, _ = observe(realm, pins, policy)
         if actual["retained"] != before["retained"]:
@@ -158,6 +171,9 @@ def run(realm: str) -> None:
              "retained_fingerprint": previous.prior.digest(actual["retained"]),
              "graph": actual["graph"], "cron_changed": False,
              "vectors": "retained; compatible Voyage vectors reused independently of consent generation"}
+    if resume:
+        value.update(original_partial_run=mail_backend_artifact.PARTIAL_RUN,
+                     original_build_source=mail_backend_artifact.PARTIAL_SOURCE)
     with (ROOT / f".temp/semantic-reuse-{realm}.json").open("x", encoding="utf-8") as file:
         json.dump(value, file, sort_keys=True)
     print(f"semantic_reuse_backend={realm}_verified")
@@ -166,9 +182,10 @@ def run(realm: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("realm", choices=("staging", "production"))
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     try:
-        run(args.realm)
+        run(args.realm, resume=args.resume)
     except Exception as error:
         reason = str(error) if isinstance(error, ValueError) and str(error) in FAILURES else "unknown"
         print(f"semantic_reuse_backend=unverified reason={reason} class={type(error).__name__}")

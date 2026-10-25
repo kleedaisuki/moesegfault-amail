@@ -98,13 +98,13 @@ def backend_base(head: str) -> str | None:
     if not path.is_file():
         return None
     value = json.loads(path.read_text(encoding="utf-8"))
-    if (set(value) != {"schema", "source_run", "source_sha"}
+    if (set(value) != {"schema", "source_run", "source_sha", "acceptance_run"}
             or value.get("schema") != "amail-accepted-backend/v1"):
         raise ValueError("accepted_backend_checkpoint_invalid")
-    if value["source_run"] is None and value["source_sha"] is None:
+    if value["source_run"] is None and value["source_sha"] is None and value["acceptance_run"] is None:
         return None
     import mail_backend_artifact as backend
-    source = backend.producer(value["source_run"])
+    source = backend.producer(value["source_run"], value["acceptance_run"])
     if source["source_sha"] != value["source_sha"]:
         raise ValueError("accepted_backend_checkpoint_invalid")
     try:

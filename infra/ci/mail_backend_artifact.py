@@ -22,6 +22,8 @@ ENTRIES = ("crates/mail-worker/entry/api.mjs", "crates/mail-worker/entry/mainten
 BRANCH = "codex/semantic-index-reuse"
 BUILD_JOB = "Semantic reuse backend build"
 STAGING_JOB = "Deploy semantic reuse staging backend"
+PARTIAL_RUN = "40203420616"
+PARTIAL_SOURCE = "f3f13e4776871b7ab4232e113bc62a592b63d0f3"
 
 
 def identity() -> dict[str, Any]:
@@ -44,6 +46,15 @@ def hashes(base: Path) -> dict[str, str]:
     return artifact.files(base, trees=TREES, entries=ENTRIES)
 
 
+def metadata(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or path.stat().st_size > 16_384:
+        raise ValueError("mail_backend_metadata_invalid")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("mail_backend_metadata_invalid")
+    return value
+
+
 def create() -> None:
     value = {**identity(), "files": hashes(ROOT)}
     FOLDER.mkdir(parents=True, exist_ok=False)
@@ -54,54 +65,83 @@ def create() -> None:
     (FOLDER / "manifest.json").write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
 
 
-def producer(run_id: str) -> dict[str, Any]:
+def build_source(run_id: str, *, partial: bool = False) -> dict[str, Any]:
     if re.fullmatch(r"[1-9][0-9]{0,19}", run_id) is None:
         raise ValueError("mail_backend_run_invalid")
     value = accepted.github(f"runs/{run_id}")
     if (str(value.get("id")) != run_id or value.get("path") != ".github/workflows/ci.yml"
             or value.get("event") != "workflow_dispatch" or value.get("head_branch") != BRANCH
             or value.get("repository", {}).get("full_name") != accepted.REPO
-            or value.get("status") != "completed" or value.get("conclusion") != "success"
+            or value.get("status") != "completed" or value.get("conclusion") != ("failure" if partial else "success")
             or type(value.get("run_attempt")) is not int or value["run_attempt"] != 1
             or re.fullmatch(r"[0-9a-f]{40}", value.get("head_sha", "")) is None):
         raise ValueError("mail_backend_source_unverified")
-    accepted.successful_jobs(run_id, frozenset({BUILD_JOB, STAGING_JOB, "Semantic reuse live journey"}))
+    if partial and (run_id != PARTIAL_RUN or value["head_sha"] != PARTIAL_SOURCE):
+        raise ValueError("mail_backend_partial_unreviewed")
+    accepted.successful_jobs(run_id, frozenset({BUILD_JOB}))
     sha = value["head_sha"]
     return {"source_sha": sha, "run_id": run_id, "run_attempt": 1,
-            "artifact_id": accepted.unique_artifact(run_id, sha, f"mail-backend-{sha}"),
-            "receipt_id": accepted.unique_artifact(run_id, sha, f"semantic-reuse-staging-{run_id}"),
-            "acceptance_id": accepted.unique_artifact(run_id, sha, f"semantic-reuse-acceptance-{run_id}")}
+            "artifact_id": accepted.unique_artifact(run_id, sha, f"mail-backend-{sha}")}
 
 
-def admit(run_id: str) -> None:
-    context("production")
-    original = producer(run_id)
+def producer(run_id: str, acceptance_run: str = "") -> dict[str, Any]:
+    """Actual staging success may finish the one fixed, tested partial build."""
+    original = build_source(run_id, partial=run_id == PARTIAL_RUN)
+    staging_run = acceptance_run or run_id
+    if re.fullmatch(r"[1-9][0-9]{0,19}", staging_run) is None:
+        raise ValueError("mail_backend_run_invalid")
+    value = accepted.github(f"runs/{staging_run}")
+    if (str(value.get("id")) != staging_run or value.get("status") != "completed" or value.get("conclusion") != "success"
+            or value.get("head_branch") != BRANCH or value.get("event") != "workflow_dispatch"
+            or value.get("path") != ".github/workflows/ci.yml"
+            or value.get("repository", {}).get("full_name") != accepted.REPO
+            or value.get("run_attempt") != 1):
+        raise ValueError("mail_backend_source_unverified")
+    accepted.successful_jobs(staging_run, frozenset({STAGING_JOB, "Semantic reuse live journey"}))
+    sha = value["head_sha"]
+    if (accepted.git("merge-base", "--is-ancestor", original["source_sha"], sha).returncode
+            or accepted.git("diff", "--quiet", original["source_sha"], sha, "--", *accepted.CLOSURE).returncode):
+        raise ValueError("mail_backend_runtime_changed")
+    return {**original, "staging_run_id": staging_run, "staging_source_sha": sha,
+            "receipt_id": accepted.unique_artifact(staging_run, sha, f"semantic-reuse-staging-{staging_run}"),
+            "acceptance_id": accepted.unique_artifact(staging_run, sha, f"semantic-reuse-acceptance-{staging_run}")}
+
+
+def admit(run_id: str, acceptance_run: str = "", *, resume: bool = False) -> None:
+    context("staging" if resume else "production")
+    original = build_source(run_id, partial=True) if resume else producer(run_id, acceptance_run)
     accepted.runtime_closure(original["source_sha"], identity()["source_sha"])
     ADMISSION.parent.mkdir(parents=True, exist_ok=True)
     ADMISSION.write_text(json.dumps({"producer": original, "orchestration": identity()}, sort_keys=True), encoding="utf-8")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-        output.write("".join(f"{key}={original[key]}\n" for key in ("artifact_id", "receipt_id", "acceptance_id", "run_id")))
+        output.write("".join(f"{key}={original[key]}\n" for key in
+                             ("artifact_id", "run_id", "receipt_id", "acceptance_id", "staging_run_id") if key in original))
 
 
 def original_identity() -> dict[str, Any]:
     current = identity()
-    if os.getenv("AMAIL_BACKEND_HOTFIX") == "staging":
+    if os.getenv("AMAIL_BACKEND_HOTFIX") == "staging" and not ADMISSION.exists():
         context("staging")
         return current
-    context("production")
+    realm = os.environ.get("AMAIL_BACKEND_HOTFIX", "")
+    context(realm)
     if ADMISSION.is_symlink() or ADMISSION.stat().st_size > 16_384:
         raise ValueError("mail_backend_admission_invalid")
-    value = json.loads(ADMISSION.read_text(encoding="utf-8"))
+    value = metadata(ADMISSION)
     if value.get("orchestration") != current:
         raise ValueError("mail_backend_admission_invalid")
     original = value["producer"]
     accepted.runtime_closure(original["source_sha"], current["source_sha"])
-    receipt = json.loads(STAGING_RECEIPT.read_text(encoding="utf-8"))
+    if realm == "staging":
+        if original.get("run_id") != PARTIAL_RUN or original.get("source_sha") != PARTIAL_SOURCE:
+            raise ValueError("mail_backend_partial_unreviewed")
+        return {**current, **{key: original[key] for key in ("source_sha", "run_id", "run_attempt")}}
+    receipt = metadata(STAGING_RECEIPT)
     if (receipt.get("schema") != "semantic-index-reuse/v1" or receipt.get("realm") != "staging"
-            or receipt.get("source_sha") != original["source_sha"]
-            or receipt.get("run_id") != original["run_id"] or receipt.get("migration") != 19):
+            or receipt.get("source_sha") != original["staging_source_sha"]
+            or receipt.get("run_id") != original["staging_run_id"] or receipt.get("migration") != 19):
         raise ValueError("mail_backend_staging_receipt_invalid")
-    check = json.loads(ACCEPTANCE.read_text(encoding="utf-8"))
+    check = metadata(ACCEPTANCE)
     core = {key: receipt[key] for key in ("realm", "run_id", "source_sha", "api_version", "maintenance_version", "sink_version")}
     if check != {**core, "schema": "semantic-index-reuse-acceptance/v1", "cli_release": "v0.3.1"}:
         raise ValueError("mail_backend_staging_acceptance_invalid")
@@ -152,11 +192,12 @@ def require() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("create", "admit", "restore"))
+    parser.add_argument("mode", choices=("create", "admit", "admit-resume", "restore"))
     parser.add_argument("--source-run", default="")
+    parser.add_argument("--acceptance-run", default="")
     args = parser.parse_args()
-    if args.mode == "admit":
-        admit(args.source_run)
+    if args.mode in ("admit", "admit-resume"):
+        admit(args.source_run, args.acceptance_run, resume=args.mode == "admit-resume")
     else:
         {"create": create, "restore": restore}[args.mode]()
     print(f"mail_backend_artifact={args.mode}_verified")

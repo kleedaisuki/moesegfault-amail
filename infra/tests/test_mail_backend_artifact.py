@@ -60,6 +60,24 @@ class BackendArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "integrity_unverified"):
                 backend.verified()
 
+    def test_partial_build_and_successful_acceptance_keep_separate_identities(self) -> None:
+        source = {"id": int(backend.PARTIAL_RUN), "head_sha": backend.PARTIAL_SOURCE,
+                  "path": ".github/workflows/ci.yml", "event": "workflow_dispatch", "head_branch": backend.BRANCH,
+                  "repository": {"full_name": backend.accepted.REPO}, "status": "completed",
+                  "conclusion": "failure", "run_attempt": 1}
+        acceptance = {**source, "id": 124, "head_sha": "b" * 40, "conclusion": "success"}
+        with patch.object(backend.accepted, "github", side_effect=[source, acceptance]), \
+             patch.object(backend.accepted, "successful_jobs") as gates, \
+             patch.object(backend.accepted, "unique_artifact", side_effect=[11, 12, 13]), \
+             patch.object(backend.accepted, "git", return_value=type("Result", (), {"returncode": 0})()):
+            value = backend.producer(backend.PARTIAL_RUN, "124")
+            self.assertEqual(value["source_sha"], backend.PARTIAL_SOURCE)
+            self.assertEqual(value["run_id"], backend.PARTIAL_RUN)
+            self.assertEqual(value["staging_run_id"], "124")
+            self.assertEqual(value["staging_source_sha"], "b" * 40)
+            gates.assert_any_call(backend.PARTIAL_RUN, frozenset({backend.BUILD_JOB}))
+            gates.assert_any_call("124", frozenset({backend.STAGING_JOB, "Semantic reuse live journey"}))
+
 
 if __name__ == "__main__":
     unittest.main()

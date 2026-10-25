@@ -21,7 +21,7 @@ class BackendCheckpointTests(unittest.TestCase):
             root = Path(folder)
             record = root / "infra/ci/accepted-backend.json"
             record.parent.mkdir(parents=True)
-            record.write_text(json.dumps({"schema": "amail-accepted-backend/v1", "source_run": None, "source_sha": None}), encoding="utf-8")
+            record.write_text(json.dumps({"schema": "amail-accepted-backend/v1", "source_run": None, "source_sha": None, "acceptance_run": None}), encoding="utf-8")
             with patch.object(changes, "ROOT", root), patch.object(backend, "producer") as producer:
                 self.assertIsNone(changes.backend_base("a" * 40))
                 producer.assert_not_called()
@@ -32,7 +32,7 @@ class BackendCheckpointTests(unittest.TestCase):
             root = Path(folder)
             record = root / "infra/ci/accepted-backend.json"
             record.parent.mkdir(parents=True)
-            record.write_text(json.dumps({"schema": "amail-accepted-backend/v1", "source_run": "123", "source_sha": "a" * 40}), encoding="utf-8")
+            record.write_text(json.dumps({"schema": "amail-accepted-backend/v1", "source_run": "123", "source_sha": "a" * 40, "acceptance_run": "124"}), encoding="utf-8")
             with patch.object(changes, "ROOT", root), \
                  patch.object(backend, "producer", return_value={"source_sha": "a" * 40}), \
                  patch.object(backend.accepted, "runtime_closure", side_effect=ValueError("accepted_source_runtime_changed")):
