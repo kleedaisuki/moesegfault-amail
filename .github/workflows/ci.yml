@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
         description: Documented RUN_* or INSPECT_* confirmation; normal split upgrade preserves live policy
         required: false
@@ -87,6 +87,11 @@ on:
         required: false
         type: string
 
+      production_completion_run:
+        description: Named completed v0.3.1 writer requiring final read-only health verification only
+        required: false
+        type: string
+
 
 permissions:
   contents: read
@@ -94,7 +99,7 @@ permissions:
 # Checks can supersede obsolete checks; shared-state manual operations never cancel each other.
 # Keep the existing manual group so in-flight acceptance remains mutually exclusive.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose' || inputs.target == 'staging-maintenance-repair' || inputs.target == 'staging-semantic-inspect' || inputs.target == 'staging-semantic-recovery' || inputs.target == 'staging-semantic-e2e' || inputs.target == 'staging-semantic-diagnose')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-complete' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose' || inputs.target == 'staging-maintenance-repair' || inputs.target == 'staging-semantic-inspect' || inputs.target == 'staging-semantic-recovery' || inputs.target == 'staging-semantic-e2e' || inputs.target == 'staging-semantic-diagnose')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
@@ -1631,6 +1636,66 @@ jobs:
         with:
           name: production-v031-inspect-${{ github.run_id }}
           path: .temp/production-v031.json
+          if-no-files-found: error
+          retention-days: 30
+
+  production-v031-complete:
+    name: Complete named v0.3.1 production rollout by read-only verification
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+      inputs.target == 'production-complete' && inputs.confirm == 'COMPLETE_PRODUCTION_V031' &&
+      inputs.production_completion_run == '40196627612'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      AMAIL_PRODUCTION_ENVIRONMENT: production
+      AMAIL_PRODUCTION_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
+      AMAIL_PRODUCTION_COMPLETION_RUN: ${{ inputs.production_completion_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Admit only the named final-readiness failure and successful original inspection
+        id: origin
+        run: python infra/deploy/complete_production_v031.py prepare
+      - name: Download original single-attempt mutation coordinates
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.origin.outputs.origin_run }}
+          artifact-ids: ${{ steps.origin.outputs.partial_artifact_id }}
+          path: .temp/v031-completion/partial
+          merge-multiple: true
+      - name: Download the successful pre-write policy and retained-graph inspection
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.origin.outputs.inspection_run }}
+          artifact-ids: ${{ steps.origin.outputs.inspection_artifact_id }}
+          path: .temp/v031-completion/inspection
+          merge-multiple: true
+      - name: Verify completed existing schema graph policy and public health without writes
+        run: python infra/deploy/complete_production_v031.py complete
+      - name: Preserve truthful read-only completion and original failed-run identity
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-v031-completion-${{ github.run_id }}
+          path: .temp/production-v031-completion.json
           if-no-files-found: error
           retention-days: 30
 
