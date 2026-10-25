@@ -14,9 +14,47 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Select affected candidate site checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      site: ${{ steps.delta.outputs.site }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select this update without rechecking an unchanged candidate
+        id: delta
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          BEFORE: ${{ github.event.before }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Reusable calls use their caller's github context and must produce
+          # fresh acceptance, including when that caller is a PR workflow.
+          if [[ "$WORKFLOW_REF" != */.github/workflows/site-ci.yml@* ]] ||
+             { [ "$EVENT" != push ] && { [ "$EVENT" != pull_request ] || [ "$ACTION" != synchronize ]; }; } ||
+             ! [[ "$BEFORE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'site=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+          if grep -Eq '^site/|^infra/release/(candidate_site|check_candidate_site_gate)\.py$|^docs/site-[^/]*\.md$' <<< "$changed"; then
+            echo 'site=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'site=false' >> "$GITHUB_OUTPUT"
+          fi
+
   site:
     # The read-only deployment gate requires this exact successful job name.
     name: Astro candidate site source checks
+    needs: changes
+    if: needs.changes.outputs.site == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
