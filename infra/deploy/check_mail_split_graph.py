@@ -154,7 +154,8 @@ def direct_forward_snapshot(realm: str, account: str, token: str) -> object:
 
 def verify(realm: str, state: str, *, old_crons: tuple[str, ...] = (), expected_policy: dict | None = None, allow_v012_predecessor: bool = False, allow_missing_issuer_predecessor: bool = False, allow_production_v012_predecessor: bool = False) -> dict:
     """Require exact selected graph, independent privacy and unchanged serving brackets."""
-    if expected_policy is not None and (realm != "production" or state != "active" or old_crons):
+    # A scheduled-only privacy cutover must not change public sending consent.
+    if expected_policy is not None and (realm != "production" or state not in ("active", "paused") or old_crons):
         raise ValueError("split_policy_unverified")
 
     def check_policy() -> None:

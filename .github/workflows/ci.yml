@@ -830,7 +830,7 @@ jobs:
 
   deploy-worker:
     name: Deploy mail API
-    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030'
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030' && inputs.confirm != 'RUN_PRODUCTION_V031'
     needs: [cli, worker, site, dns, provider-live, deploy-trace-sink, worker-build]
     outputs:
       api_version: ${{ steps.upgrade.outputs.api_version || steps.api.outputs.version }}
@@ -967,7 +967,7 @@ jobs:
 
   deploy-ingress:
     name: Verify retained production SMTP ingress
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030' && inputs.confirm != 'RUN_PRODUCTION_V031'
     needs: [deploy-worker, worker-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -997,7 +997,7 @@ jobs:
 
   deploy-events:
     name: Verify retained production lifecycle consumer
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030' && inputs.confirm != 'RUN_PRODUCTION_V031'
     needs: [deploy-worker, worker-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1027,7 +1027,7 @@ jobs:
 
   release-ready:
     name: Gate public site on verified published release
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030' && inputs.confirm != 'RUN_PRODUCTION_V031'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -1069,7 +1069,7 @@ jobs:
 
   deploy-site:
     name: Deploy release site
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030' && needs.release-ready.outputs.ready == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030' && inputs.confirm != 'RUN_PRODUCTION_V031' && needs.release-ready.outputs.ready == 'true'
     needs: [deploy-ingress, deploy-events, site, release-ready]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1574,6 +1574,99 @@ jobs:
       - name: Read back deployed recipient allowlist and private bucket
         run: python workers/identity-test-inbox/check_config.py --live --deployed
 
+  production-v031-inspect:
+    name: Inspect exact v0.3.0 production predecessor for semantic cutover
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production-inspect' && inputs.confirm == 'INSPECT_PRODUCTION_V031' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      AMAIL_PRODUCTION_ENVIRONMENT: production
+      AMAIL_PRODUCTION_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read exact production graph schema policy and old scheduled runtime
+        run: python infra/deploy/production_v031.py inspect
+      - name: Preserve non-content predecessor inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-v031-inspect-${{ github.run_id }}
+          path: .temp/production-v031.json
+          if-no-files-found: error
+          retention-days: 30
+
+  production-v031:
+    name: Upgrade exact production graph to consent-gated v0.3.1
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && inputs.confirm == 'RUN_PRODUCTION_V031' && github.ref == 'refs/heads/main'
+    needs: [cli, worker, worker-build, site, dns, provider-live]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      CF_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+      AMAIL_PRODUCTION_ENVIRONMENT: production
+      AMAIL_PRODUCTION_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download exact same-run tested modules before any production mutation
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.worker-build.outputs.artifact_id }}
+          path: .temp/ci/worker-built
+          merge-multiple: true
+      - name: Verify source compiler and every generated byte
+        run: python infra/ci/worker_artifact.py restore
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned deployment tools
+        run: npm install --global wrangler@4.142.0
+      - name: Replace sink and fail-closed API pause maintenance migrate and resume
+        run: python infra/deploy/production_v031.py upgrade
+      - name: Retain non-content write coordinates without automatic replay
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-v031-partial-${{ github.run_id }}
+          path: |
+            .temp/production-upgrade-partial.jsonl
+            .temp/production-upgrade-capture.jsonl
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Retain completed graph preservation and semantic cutover evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-v031-${{ github.run_id }}
+          path: .temp/production-v031.json
+          if-no-files-found: error
+          retention-days: 30
+
   production-v030:
     name: Upgrade accepted production graph to v0.3.0
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'production' && inputs.confirm == 'RUN_PRODUCTION_V030' && github.ref == 'refs/heads/main'
@@ -1691,7 +1784,7 @@ jobs:
 
   deploy-trace-sink:
     name: Deploy private production privacy trace sink
-    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030'
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'production' || inputs.target == 'production-api-only-maintenance') && github.ref == 'refs/heads/main' && inputs.confirm != 'RUN_PRODUCTION_V030' && inputs.confirm != 'RUN_PRODUCTION_V031'
     needs: [worker, dns, worker-build]
     outputs:
       queue_id: ${{ steps.upgrade.outputs.queue_id || steps.queues.outputs.queue_id }}
