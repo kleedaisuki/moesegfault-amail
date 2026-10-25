@@ -398,9 +398,9 @@ def semantic_activation_ready() -> None:
     verify_maintenance("staging", "paused", os.environ["CLOUDFLARE_ACCOUNT_ID"],
                        os.environ["CLOUDFLARE_API_TOKEN"], value["paused_maintenance_version"],
                        os.environ["AMAIL_TRACE_QUEUE_ID"])
-    from mail_schema_contract import verify_schema
+    from mail_schema_contract import expected_schema, verify_schema
     database = DatabaseClient(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"], "staging")
-    verify_schema(lambda sql: database.query(sql)["results"])
+    verify_schema(lambda sql: database.query(sql)["results"], expected_schema(staging_auxiliary=True))
 
 
 def lease_fences() -> dict:

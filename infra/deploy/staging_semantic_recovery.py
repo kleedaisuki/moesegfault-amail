@@ -87,7 +87,7 @@ def witness() -> None:
 
 def schema_facts(database: DatabaseClient) -> dict[str, Any]:
     """Return source-owned object/column names, never DDL values or mailbox data."""
-    contract = schema.expected_schema()
+    contract = schema.expected_schema(staging_auxiliary=True)
     cached: dict[str, list[dict[str, Any]]] = {}
 
     def read(sql: str) -> list[dict[str, Any]]:

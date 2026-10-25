@@ -114,6 +114,15 @@ producer and `staging_acceptance_run` for its successful narrow deployed journey
 Tooling-only or merge deltas run affected checks and verify the accepted runtime
 closure rather than repeating already green native/Wasm/provider suites.
 
+The staging database also retains two historical operations-only escrow schemas.
+Their exact reference is `infra/deploy/staging-acceptance-migrations/0001_quota_escrow.sql`
+and the fixed `staging_acceptance_` → `staging_d1_probe_` namespace mirror established
+by commit `f27c727332c7cbc37c34604afe7e18c014075706`. The one-off probe was retired,
+not its retained database records. Staging schema admission validates all 163
+objects, columns and indexes from those references plus the 18 Mail migrations;
+it does not ignore arbitrary prefixed objects or delete auxiliary records.
+Production keeps the strict 133-object Mail-only contract.
+
 ### Historical v0.3.0 multi-tenant lane
 
 The candidate branch is `codex/v0.3.0-multitenant`. Use `target=checks` for

@@ -25,6 +25,9 @@ class RecoveryTests(unittest.TestCase):
         for path in sorted(recovery.schema.MIGRATIONS.glob("*.sql")):
             connection.executescript(path.read_text(encoding="utf-8"))
             names.append(path.name)
+        auxiliary = (ROOT / "infra/deploy/staging-acceptance-migrations/0001_quota_escrow.sql").read_text(encoding="utf-8")
+        connection.executescript(auxiliary)
+        connection.executescript(auxiliary.replace("staging_acceptance_", "staging_d1_probe_"))
         connection.execute("CREATE TABLE d1_migrations(id INTEGER PRIMARY KEY,name TEXT)")
         connection.executemany("INSERT INTO d1_migrations(name) VALUES(?)", [(name,) for name in names])
         database = Mock()
@@ -37,6 +40,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue(facts["verified"])
         self.assertEqual(facts["reason"], "verified")
         self.assertEqual(facts["expected_migration_count"], 18)
+        self.assertEqual(facts["expected_object_count"], 163)
         for call in database.query.call_args_list:
             self.assertNotIn("SELECT * FROM messages", call.args[0])
 
