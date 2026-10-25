@@ -4,7 +4,7 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
-## v0.3.1 production backend — delivered; formal assets pending
+## v0.3.1 production release and local upgrade — delivered
 
 Read-only production inspection
 [40196506986](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40196506986)
@@ -38,8 +38,31 @@ HTTP-drain claim. An earlier read-only completion failed log transport; the fina
 completion used the mature reader without changing deployment state. See
 [production delivery](v0.3.1/production-delivery.md) for exact serving coordinates
 and fingerprints. Historical promotion/completion controllers are not safe to
-rerun against the now-advanced epoch. Formal v0.3.1 CLI/Skill publication, site and
-local upgrade are still pending their own release gates.
+rerun against the now-advanced epoch.
+
+Formal [v0.3.1](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.3.1)
+publication completed **SUCCESS** in
+[40200242942](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40200242942),
+tag source `e8f47a046b6b297c6e0f1f339b8baf595f37441a`, published on 2026-10-25
+at 22:06:29 Asia/Singapore (14:06:29 UTC). Three previously tested native
+executables were reused with original producer provenance; only the two missing
+platforms were compiled/version-smoked. Checksums, attestations, every published
+asset and the [public site](https://amail.moesegfault.dev/) passed their release
+gates. No green full runtime suite or deployment was repeated.
+
+Both local CLI entrypoints, canonical `~/.amail/bin` and the existing compatibility
+PATH location, now report `amail 0.3.1` and match executable SHA-256
+`3d952429f437d53c4cf18bd62843af71d4a01ad5e35a8d58b532e1d90c4b471f`.
+Both selected Windows/Skill ZIPs matched public checksums and passed GitHub
+attestation verification. All eleven global amail Skill files matched both the
+verified ZIP and helper-installed exact-tag source. Previous binaries and Skill
+were backed up privately under `~/.amail/backups`; credentials, configuration and
+explicit YOLO preference were untouched. Local verification used only offline
+version calls at each executable path, not logged-in mail operations. Installation
+metadata separates original binary source `f262e8e...` from release packaging
+source `e8f47a...`; the global Skill becomes available in the next agent session.
+Public archive/manifest hashes and the source chain are in
+[production delivery](v0.3.1/production-delivery.md).
 
 ## v0.3.1 semantic consent — staging recovered and narrow acceptance delivered
 
@@ -99,7 +122,7 @@ coordinates; it does not reinterpret the original failed writer as successful.
 This distinction enables incremental tooling checks instead of repeating green
 native/Wasm/provider suites. See [artifact promotion](deployment-artifact-foundation.md) and
 [the v0.3.1 cutover](v0.3.1/production-delivery.md). Actual production backend
-completion is recorded above; asset/site/local publication remains separate.
+completion and the independently gated asset/site/local delivery are recorded above.
 
 ## v0.3.0 production release — delivered
 

@@ -78,8 +78,8 @@ maintenance `c00d2f51-096d-4b83-8d49-e42e196b85ec` and sink
 `5e556087-9a75-40db-9eb5-869a4b56372e`. No full regression or deployment replay
 was used to obtain this acceptance. The earlier 420-second wait failure remains
 failed; it occurred inside schedule activation propagation, and warm acceptance
-does not prove a particular Cron invocation ran. Production backend completion
-is recorded below; formal release and local installation remain pending. The
+does not prove a particular Cron invocation ran. Production backend completion,
+formal release and local installation are recorded below. The
 [validation ledger](../validation.md) owns current acceptance status.
 
 ### Completed production admission and order (historical writer)
@@ -202,5 +202,39 @@ retrieve logs; the final mature log reader succeeded without replaying mutations
 
 This completed receipt is the next reviewed production epoch. The old v0.3.1
 promotion/completion pins are historical; advance a future controller's explicit
-preconditions instead of rerunning them. Formal release assets, public site and
-local upgrade remain pending and must be recorded after their own gates.
+preconditions instead of rerunning them. Formal assets, public site and local
+upgrade completed through their separate gates recorded below.
+
+
+## Formal publication and local upgrade — complete
+
+[Release workflow 40200242942](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40200242942)
+completed **SUCCESS** for annotated tag `v0.3.1`, source
+`e8f47a046b6b297c6e0f1f339b8baf595f37441a`. The nondraft, non-prerelease
+[v0.3.1 release](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.3.1)
+was published on 2026-10-25 at 22:06:29 Asia/Singapore (14:06:29 UTC).
+Three accepted native executables retain their original
+`f262e8e433ffeabb7d67d0fc26c363be7e4133f8` / `40188956353` provenance; only the
+two missing platforms were compiled/version-smoked. All release checksum,
+attestation, published-byte and [public-site](https://amail.moesegfault.dev/)
+gates passed. Current packaging provenance is distinct from original compilation,
+not a claim that reused executable bytes were rebuilt.
+
+| Verified public artifact | SHA-256 |
+| --- | --- |
+| Windows ZIP | `e9054f61b7ad51a58ad795ed96969c282832fd04111b12b83f4636115dc50ed9` |
+| Agent Skill ZIP | `12f9432ea55223ce4cfe4dcc23b41d452a15b0ede7b8faf0234fa978480e8827` |
+| SHA256SUMS | `3e7b8398cabb122a34765bf9a32337cd50f81274b76d3fd8735f14551b0a16eb` |
+| Installed Windows executable | `3d952429f437d53c4cf18bd62843af71d4a01ad5e35a8d58b532e1d90c4b471f` |
+
+The owner-requested upgrade replaced both canonical `~/.amail/bin` and the existing
+compatibility PATH executable; both now report `amail 0.3.1` and match the trusted
+executable hash. Both selected archives passed public-manifest and GitHub
+attestation verification. Every one of the eleven global amail Skill files also
+matched the verified Skill ZIP and helper-installed exact-tag source. Private
+`~/.amail/backups` retains the previous binaries and global instructions.
+Configuration, explicit YOLO choice and credentials were not changed. Local
+verification consisted only of offline version calls at each executable path;
+no logged-in mail operation or semantic consent change was needed. Installation
+metadata records original native source separately from release packaging source.
+The updated global Skill becomes available in the next agent session.

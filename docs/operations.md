@@ -27,8 +27,11 @@ only at its old string-versus-integer health check; all mutations were admitted
 through its ten-phase journal and freshly verified without replay. Eleven live
 address records remain and the allowed policy/external graph fingerprints match
 the original inspection. Exact versions and proof boundaries are in
-[completed v0.3.1 delivery](v0.3.1/production-delivery.md). Formal assets/site/local
-upgrade remain separately release-gated. These promotion/completion controllers
+[completed v0.3.1 delivery](v0.3.1/production-delivery.md). Formal release
+`40200242942` also completed, followed by verified public assets/site and both local
+CLI entrypoints plus the global Skill. Original binary provenance is preserved
+separately from current release packaging; credentials/configuration/YOLO remain
+untouched. These promotion/completion controllers
 are now historical: future writers must explicitly admit the new epoch rather
 than replay old pins. Names or stale snapshots do not establish ownership.
 Original production D1 `ad06f7f3-8897-4150-b9a9-7a46a8e55b30` and R2
@@ -114,7 +117,8 @@ followed by all local CLI entrypoints and the global amail Skill. The backend is
 now completed via read-only run `40199972693` after the original writer's closed
 health-check type failure. Do not rerun `production` / `RUN_PRODUCTION_V031` or
 its historical completion target: the old v0.3.0 predecessor is no longer live.
-Formal release and local installation still require their own gates. The completed
+Formal release `40200242942`, public site and verified local installation have
+also completed their separate gates. The completed
 ordered cutover, exact current pins and journal-based proof boundaries are in
 [the v0.3.1 delivery note](v0.3.1/production-delivery.md).
 Promotion uses two explicit coordinates: `source_run` for the immutable checked
