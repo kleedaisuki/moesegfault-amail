@@ -173,7 +173,7 @@ jobs:
 
   semantic-reuse-staging:
     name: Semantic reuse staging admission
-    if: always() && !cancelled() && (needs.semantic-reuse-build.result == 'success' || inputs.target == 'semantic-reuse-staging-resume' || inputs.target == 'semantic-reuse-staging-restore-ingress') && github.event_name == 'workflow_dispatch' && ((inputs.target == 'semantic-reuse-staging-restore-ingress' && inputs.confirm == 'RESTORE_SEMANTIC_REUSE_STAGING_INGRESS') || ((inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING')) && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1 && (inputs.staging_resume_run == '' || inputs.staging_resume_run == '40204723478')
+    if: always() && !cancelled() && (needs.semantic-reuse-build.result == 'success' || inputs.target == 'semantic-reuse-staging-resume' || inputs.target == 'semantic-reuse-staging-restore-ingress') && github.event_name == 'workflow_dispatch' && ((inputs.target == 'semantic-reuse-staging-restore-ingress' && inputs.confirm == 'RESTORE_SEMANTIC_REUSE_STAGING_INGRESS') || ((inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING')) && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1 && (inputs.staging_resume_run == '' || inputs.staging_resume_run == '40204723478' || inputs.staging_resume_run == '40210732820')
     needs: semantic-reuse-build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -184,6 +184,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       AMAIL_BACKEND_HOTFIX: staging
+      AMAIL_STAGING_COMPLETED_RUN: ${{ inputs.staging_resume_run }}
       AMAIL_STAGING_INGRESS_RESTORE: ${{ inputs.target == 'semantic-reuse-staging-restore-ingress' && 'true' || '' }}
       AMAIL_BACKEND_CONFIRM: ${{ inputs.confirm }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -206,12 +207,12 @@ jobs:
         id: original
         run: python infra/ci/mail_backend_artifact.py admit-resume --source-run '${{ inputs.source_run }}'
       - name: Read only the fixed completed staging deployment receipt
-        if: inputs.staging_resume_run == '40204723478' && inputs.target != 'semantic-reuse-staging-restore-ingress'
+        if: (inputs.staging_resume_run == '40204723478' || inputs.staging_resume_run == '40210732820') && inputs.target != 'semantic-reuse-staging-restore-ingress'
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
-          run-id: 40204723478
-          artifact-ids: 12603825692
+          run-id: ${{ inputs.staging_resume_run }}
+          artifact-ids: ${{ inputs.staging_resume_run == '40210732820' && '12605921248' || '12603825692' }}
           path: .temp/ci/semantic-reuse-completed
           merge-multiple: true
       - uses: actions/download-artifact@v4
@@ -236,7 +237,7 @@ jobs:
         if: inputs.staging_resume_run == '' && inputs.target != 'semantic-reuse-staging-restore-ingress'
         run: python infra/deploy/semantic_reuse_backend.py staging ${{ inputs.target == 'semantic-reuse-staging-resume' && '--resume' || '' }}
       - name: Verify only the completed runtime before the missing live journey
-        if: inputs.staging_resume_run == '40204723478' && inputs.target != 'semantic-reuse-staging-restore-ingress'
+        if: (inputs.staging_resume_run == '40204723478' || inputs.staging_resume_run == '40210732820') && inputs.target != 'semantic-reuse-staging-restore-ingress'
         run: python infra/deploy/semantic_reuse_backend.py staging --verify-completed
       - name: Restore only the authoritative staging ingress credential on tested API bytes
         if: inputs.target == 'semantic-reuse-staging-restore-ingress'
@@ -276,6 +277,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       AMAIL_STAGING_SEMANTIC_CONFIRM: RUN_SEMANTIC_REUSE_STAGING
+      AMAIL_SEMANTIC_BASELINE_BOOTSTRAP: ${{ inputs.send_confirm == 'CREATE_INCLUDED_SEMANTIC_BASELINE' && 'CREATE_INCLUDED_SEMANTIC_BASELINE' || '' }}
       AMAIL_STAGING_E2E_CONFIRM: RUN_STAGING_E2E
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

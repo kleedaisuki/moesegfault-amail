@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Callable
 import argparse
 from email.message import EmailMessage
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -38,6 +40,7 @@ SOURCE_SHA: str = "f262e8e433ffeabb7d67d0fc26c363be7e4133f8"
 API_VERSION: str = "d592cd2a-95a3-4c89-859a-18a191bd641a"
 SINK_VERSION: str = "5e556087-9a75-40db-9eb5-869a4b56372e"
 UUID: re.Pattern[str] = re.compile(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\Z")
+BASELINE_BOOTSTRAP: str = "CREATE_INCLUDED_SEMANTIC_BASELINE"
 
 
 def acceptance_receipt(runtime: object, *, run_id: str, checkout_sha: str) -> dict[str, str]:
@@ -170,10 +173,54 @@ def stable_owned_aliases(values: list[dict[str, Any]]) -> list[str]:
     return sorted(addresses)
 
 
-def acquire_stable_alias(binary: Path, environment: dict[str, str]) -> str:
-    candidates: list[str] = stable_owned_aliases(mail.amail(binary, environment, "address", "list",
-        failure="semantic_baseline_alias_list_failed"))
-    mail.check(bool(candidates), "semantic_baseline_alias_missing")
+def managed_baseline_local(username: str, password: str) -> str:
+    """Keep the fixture stable per protected synthetic account, not per run."""
+    digest: str = hmac.new(password.encode("utf-8"),
+        b"amail-semantic-baseline/v1\0" + username.encode("utf-8"), hashlib.sha256).hexdigest()
+    return "semantic-baseline-" + digest[:16]
+
+
+def bootstrap_managed_alias(binary: Path, environment: dict[str, str], local: str | None,
+                            inventory: list[dict[str, Any]]) -> str:
+    local_name: str = local if isinstance(local, str) else ""
+    mail.check(os.environ.get("AMAIL_SEMANTIC_BASELINE_BOOTSTRAP") == BASELINE_BOOTSTRAP
+               and re.fullmatch(r"semantic-baseline-[a-f0-9]{16}", local_name) is not None,
+               "semantic_baseline_alias_missing")
+    address: str = local_name + "@mail-staging.moesegfault.dev"
+    existing: list[dict[str, Any]] = [row for row in inventory if row.get("kind") == "mail"]
+    if existing:
+        mail.check(all(row.get("address") == address and row.get("state") in ("pending", "provisioning")
+                       for row in existing), "semantic_baseline_existing_alias_unavailable")
+    else:
+        try:
+            added: dict[str, Any] = one(binary, environment, "address", "add", local_name)
+            mail.check(added.get("address") == address, "semantic_baseline_created_alias_mismatch")
+        except mail.ProbeFailure:
+            # Inspect this same logical intent after an uncertain create. Never
+            # retry registration or invent a new alias to escape uncertainty.
+            observed: list[dict[str, Any]] = mail.amail(binary, environment, "address", "list",
+                failure="semantic_baseline_create_inspection_failed")
+            if not any(row.get("address") == address and row.get("kind") == "mail"
+                       and row.get("state") in ("active", "pending", "provisioning") for row in observed):
+                raise
+    await_address(binary, environment, address)
+    zone: str = os.environ["CLOUDFLARE_ZONE_ID"]
+    routing_token: str = os.environ["CF_EMAIL_ROUTING_TOKEN"]
+    mail.assert_route(zone, routing_token, address, True)
+    # This is a conservative setup delay, not proof of a provider propagation
+    # bound. The following single SMTP fixture still verifies actual delivery.
+    time.sleep(120)
+    await_address(binary, environment, address)
+    mail.assert_route(zone, routing_token, address, True)
+    return address
+
+
+def acquire_stable_alias(binary: Path, environment: dict[str, str], baseline_local: str | None = None) -> str:
+    inventory: list[dict[str, Any]] = mail.amail(binary, environment, "address", "list",
+        failure="semantic_baseline_alias_list_failed")
+    candidates: list[str] = stable_owned_aliases(inventory)
+    if not candidates:
+        candidates = [bootstrap_managed_alias(binary, environment, baseline_local, inventory)]
     for address in candidates:
         try:
             result: subprocess.CompletedProcess[bytes] = subprocess.run(
@@ -235,6 +282,7 @@ def execute(*, reuse: bool = False) -> None:
     password: str
     username, password = hosted.validate_environment()
     nonce: str = hosted.recoverable_run_nonce(password)
+    baseline_local: str | None = managed_baseline_local(username, password) if reuse else None
     mail.TEMP.mkdir(exist_ok=True)
     run_dir: Path = Path(tempfile.mkdtemp(prefix="staging-hosted-e2e-semantic-", dir=mail.TEMP)).resolve()
     mail.check(mail.TEMP in run_dir.parents and not run_dir.is_symlink(), "semantic_private_path_invalid")
@@ -257,7 +305,7 @@ def execute(*, reuse: bool = False) -> None:
         mail.check(initial["enabled"] is False, "semantic_default_not_disabled")
 
         if reuse:
-            address = acquire_stable_alias(binary, environment)
+            address = acquire_stable_alias(binary, environment, baseline_local)
         else:
             creation_attempted = True
             added: dict[str, Any] = one(binary, environment, "address", "add", "semantic-" + nonce, "--tmp")
@@ -338,7 +386,7 @@ def execute(*, reuse: bool = False) -> None:
     EVIDENCE.write_text(json.dumps({"schema": "amail-staging-semantic/v1",
         "source_run": os.environ.get("GITHUB_RUN_ID", "") if reuse else SOURCE_RUN,
         "smtp_fixtures": 1,
-        **({"fixture_transport": "smtp", "mail_fixtures": 1, "baseline_alias_reused": True} if reuse else {}),
+        **({"fixture_transport": "smtp", "mail_fixtures": 1, "managed_baseline_retained": True} if reuse else {}),
         "semantic_query_intents": 1,
         "default_off": True, "background_backfill": True, "voyage4_query": True,
         "disable_literal_search": True, "reenable_reuses_vectors": reuse,

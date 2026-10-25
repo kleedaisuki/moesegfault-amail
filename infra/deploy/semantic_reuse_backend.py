@@ -29,6 +29,12 @@ QUEUES = {"production": (previous.prior.QUEUE, previous.prior.DLQ),
           "staging": ("fcee510036af42c189e28c0b6ff9508e", "f023f804b7bd4d8691fbfcb60416a001")}
 COMPLETED_STAGING_RUN = "40204723478"
 COMPLETED_STAGING_SOURCE = "6db9d5f8444b3c2e471e5c5a00e48af95930500e"
+STAGING_EPOCHS = {
+    COMPLETED_STAGING_RUN: {"source": COMPLETED_STAGING_SOURCE, "conclusion": "success",
+        "job": "Deploy semantic reuse staging backend", "api": "75bbcb55-e6f5-42e3-b65b-acb6dbc990c9"},
+    "40210732820": {"source": "2ade1c0ce8d994acd4e8401828a75a41e22f69a1", "conclusion": "failure",
+        "job": "Semantic reuse staging admission", "api": "fb03a457-f771-41fe-a041-86b2491d1a6a"},
+}
 FAILURES = frozenset({"semantic_reuse_policy_changed", "semantic_reuse_adapter_unverified",
     "semantic_reuse_migration_unreviewed", "semantic_reuse_migration_unverified",
     "semantic_reuse_retained_graph_changed", "semantic_reuse_secrets_missing",
@@ -191,23 +197,27 @@ def verify_completed() -> None:
     import mail_backend_artifact as artifact
     artifact.context("staging")
     artifact.original_identity()
-    metadata = artifact.accepted.github(f"runs/{COMPLETED_STAGING_RUN}")
-    if (metadata.get("status") != "completed" or metadata.get("conclusion") != "success"
-            or str(metadata.get("id")) != COMPLETED_STAGING_RUN
-            or metadata.get("head_sha") != COMPLETED_STAGING_SOURCE
+    origin_run = os.environ.get("AMAIL_STAGING_COMPLETED_RUN", COMPLETED_STAGING_RUN)
+    if origin_run not in STAGING_EPOCHS:
+        raise ValueError("semantic_reuse_completed_origin_unverified")
+    epoch = STAGING_EPOCHS[origin_run]
+    metadata = artifact.accepted.github(f"runs/{origin_run}")
+    if (metadata.get("status") != "completed" or metadata.get("conclusion") != epoch["conclusion"]
+            or str(metadata.get("id")) != origin_run
+            or metadata.get("head_sha") != epoch["source"]
             or metadata.get("head_branch") != artifact.BRANCH
             or metadata.get("repository", {}).get("full_name") != artifact.accepted.REPO
             or metadata.get("path") != ".github/workflows/ci.yml"
             or metadata.get("event") != "workflow_dispatch" or metadata.get("run_attempt") != 1):
         raise ValueError("semantic_reuse_completed_origin_unverified")
-    artifact.accepted.successful_jobs(COMPLETED_STAGING_RUN, frozenset({"Deploy semantic reuse staging backend"}))
-    artifact.accepted.runtime_closure(COMPLETED_STAGING_SOURCE, os.environ["GITHUB_SHA"])
+    artifact.accepted.successful_jobs(origin_run, frozenset({epoch["job"]}))
+    artifact.accepted.runtime_closure(epoch["source"], os.environ["GITHUB_SHA"])
     origin = artifact.metadata(ROOT / ".temp/ci/semantic-reuse-completed/semantic-reuse-staging.json")
     pins = dict(STAGING)
-    pins["amail-mail-staging"] = "75bbcb55-e6f5-42e3-b65b-acb6dbc990c9"
+    pins["amail-mail-staging"] = epoch["api"]
     pins["amail-mail-maintenance-staging"] = "0ee61a70-4040-40fe-a117-48d41c92f2de"
     if (origin.get("schema") != "semantic-index-reuse/v1" or origin.get("realm") != "staging"
-            or origin.get("run_id") != COMPLETED_STAGING_RUN or origin.get("source_sha") != COMPLETED_STAGING_SOURCE
+            or origin.get("run_id") != origin_run or origin.get("source_sha") != epoch["source"]
             or origin.get("migration") != 19 or origin.get("cron_changed") is not False
             or any(origin.get(field) != pins[name] for field, name in
                 (("api_version", "amail-mail-staging"), ("maintenance_version", "amail-mail-maintenance-staging"),
@@ -221,8 +231,8 @@ def verify_completed() -> None:
         raise ValueError("semantic_reuse_retained_graph_changed")
     value = {**origin, "source_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
              "graph": current["graph"], "completion_mode": "read_only",
-             "original_deployment_run": COMPLETED_STAGING_RUN,
-             "original_deployment_source": COMPLETED_STAGING_SOURCE}
+             "original_deployment_run": origin_run,
+             "original_deployment_source": epoch["source"]}
     with (ROOT / ".temp/semantic-reuse-staging.json").open("x", encoding="utf-8") as file:
         json.dump(value, file, sort_keys=True)
     print("semantic_reuse_backend=staging_verified read_only=true")
