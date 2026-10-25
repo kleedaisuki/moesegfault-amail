@@ -45,7 +45,24 @@ and clients are distinct. HTTP health does not establish message delivery.
 
 ## Supported hosted lanes
 
-### v0.3.1 semantic-consent cutover
+### Missing-only semantic resumption — backend correction
+
+The 2026-10-25 backend correction keeps version/protocol `0.3.1` and does not
+create a new CLI Release. Forward migration `0019_incremental_embeddings.sql`
+preserves consent choices and stored vectors. Re-enabling reuses unchanged,
+compatible Voyage vectors and processes only missing usable embeddings; retained
+Qwen projections still undergo the already approved one-time Voyage migration.
+Consent generations continue to revoke stale leases and query jobs, but are not
+stored-vector freshness versions. Existing retry backoff/quarantine are not reset
+by toggling. See [indexer state](semantic-indexer-operations.md) and actual
+[deployment evidence](validation.md).
+
+The already published v0.3.1 binaries and website retain their historical
+full-rebuild wording until a normal client/documentation refresh. Those warnings
+are conservative; they do not make the corrected backend retransmit compatible
+mail. This change does not replace installed CLI binaries or republish assets.
+
+### v0.3.1 semantic-consent cutover (historical)
 
 The active candidate branch is `codex/v0.3.1-semantic-consent`. Use the existing
 `checks` target for credential-free native/Wasm/daemon checks, `staging-inspect`

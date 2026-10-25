@@ -11,9 +11,11 @@ The synchronous Worker now returns a typed resource error rather than a false pa
 In v0.3.1 semantic processing is account-wide and off by default, including after
 upgrade. Only the active `user` profile may change it with normal browser approval
 or previously explicit YOLO. Disabled semantic requests never call the provider;
-lexical jobs still work. Enable/re-enable starts a complete background indexing
-generation, while disable retains document vectors but revokes their use. Consent
-generation/model changes invalidate existing semantic jobs and cursors rather than
+lexical jobs still work. Enable/re-enable fills missing compatible embeddings
+while reusing unchanged Voyage document vectors; old Qwen projections undergo only
+the approved one-time model migration. Disable retains vectors but revokes their
+use until enabled again. The stored publication generation is not a freshness
+requirement. Consent generation/model changes still invalidate semantic jobs and cursors rather than
 letting a stored query vector revive disabled processing. See
 [indexing privacy](semantic-indexing-privacy-decision.md).
 

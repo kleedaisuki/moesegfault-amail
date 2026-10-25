@@ -12,10 +12,11 @@ the human explicitly configured YOLO. All account profiles share the setting.
 Do not automate the approval
 or infer it from a mail task. Use `amail semantic status|enable|disable`.
 
-After enablement, background indexing sends every eligible retained received or
-sent mail's subject plus extracted body text, bounded to the combined first
-**12,000 UTF-8 bytes**, through OpenRouter to Voyage 4. It continues for new mail
-while enabled. Raw ZIPs and attachments are not embedding inputs.
+After enablement, background indexing sends eligible retained received/sent
+mail only when a usable Voyage embedding is missing. Its subject plus extracted
+body text, bounded to the combined first **12,000 UTF-8 bytes**, passes through
+OpenRouter to Voyage 4. Newly received mail is filled in while enabled, or after
+reenablement if received while disabled. Raw ZIPs and attachments are not inputs.
 
 The approved policy is `voyage4_no_training_retention_v1`: fixed Voyage provider,
 no fallbacks, no training (`data_collection: deny`) and response cache off. It is
@@ -34,10 +35,12 @@ and [OpenRouter logging](https://openrouter.ai/docs/guides/privacy/data-collecti
 Disabling stops admission of new document/query provider requests and makes
 semantic search unavailable, but does not delete already stored document
 embeddings. Already admitted requests cannot recall transmitted bytes; stale
-results cannot publish into the new consent generation. Re-enabling starts a
-full background re-index, including mail with retained embeddings: it sends mail
-text again to compute new vectors, not old vectors as a substitute for text.
-Enabling an already-enabled setting does not restart indexing.
+results cannot publish into a newer consent generation. Re-enabling reuses
+valid retained Voyage vectors even if published under earlier consent, without
+resending that mail. Only missing usable vectors are processed. Old Qwen vectors
+still require the approved one-time Voyage migration; after successful replacement
+the Voyage vector is reusable. Retry backoff and quarantine are not reset by
+switching, and enabling an already-enabled setting does not restart indexing.
 
 A semantic search also sends its query text. When page 1 has further pages, the
 service retains the query text and exact query vector in owner-scoped state for
