@@ -153,16 +153,24 @@ class ProductionV030Tests(unittest.TestCase):
 
     def test_migration_preserves_owned_rows_and_never_uses_free_initialization(self) -> None:
         provider = Mock(account="a" * 32, token="synthetic")
-        expected = sorted(path.name for path in (ROOT / "crates/mail-worker/migrations").glob("*.sql"))
+        expected = sorted(path.name for path in (ROOT / "crates/mail-worker/migrations").glob("*.sql"))[:17]
         owned = {"private-mailbox": {"owner_sub": "private-owner", "created_at": 1}}
-        with patch.object(deploy.usd, "DatabaseClient") as client, \
-             patch.object(deploy.usd, "ownership", side_effect=[owned, owned]), \
-             patch.object(deploy, "require_artifact"), patch.object(deploy.prior, "journal"), \
-             patch.object(deploy.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as command:
-            client.return_value.query.return_value = {"results": [{"name": name} for name in expected[:15]]}
-            self.assertEqual(deploy.migrate(provider), 1)
-            client.return_value.query.assert_called_once_with("SELECT name FROM d1_migrations ORDER BY id LIMIT 100")
-            self.assertEqual(command.call_args.args[0], ["wrangler", "d1", "migrations", "apply", "MAIL_DB", "--remote"])
+        # The historical writer stays frozen at its original 17-migration epoch.
+        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder:
+            historical = Path(folder)
+            migrations = historical / "crates/mail-worker/migrations"
+            migrations.mkdir(parents=True)
+            for name in expected:
+                (migrations / name).touch()
+            with patch.object(deploy, "ROOT", historical), \
+                 patch.object(deploy.usd, "DatabaseClient") as client, \
+                 patch.object(deploy.usd, "ownership", side_effect=[owned, owned]), \
+                 patch.object(deploy, "require_artifact"), patch.object(deploy.prior, "journal"), \
+                 patch.object(deploy.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as command:
+                client.return_value.query.return_value = {"results": [{"name": name} for name in expected[:15]]}
+                self.assertEqual(deploy.migrate(provider), 1)
+                client.return_value.query.assert_called_once_with("SELECT name FROM d1_migrations ORDER BY id LIMIT 100")
+                self.assertEqual(command.call_args.args[0], ["wrangler", "d1", "migrations", "apply", "MAIL_DB", "--remote"])
 
     def test_unknown_errors_are_closed_and_original_epoch_is_completed_usd(self) -> None:
         self.assertEqual(deploy.ORIGIN_RUN, "37660780530")

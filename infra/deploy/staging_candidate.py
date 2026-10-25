@@ -8,6 +8,7 @@ from __future__ import annotations
 LANES: dict[str, tuple[str, str]] = {
     "refs/heads/codex/v0.2.0-billing": ("RUN_STAGING_V020", "INSPECT_STAGING_V020"),
     "refs/heads/codex/v0.3.0-multitenant": ("RUN_STAGING_V030", "INSPECT_STAGING_V030"),
+    "refs/heads/codex/v0.3.1-semantic-consent": ("RUN_STAGING_V031", "INSPECT_STAGING_V031"),
 }
 
 

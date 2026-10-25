@@ -44,7 +44,7 @@ def admit(run_id: str) -> dict:
     run = github(f"actions/runs/{run_id}")
     if (str(run.get("id")) != run_id or run.get("status") != "completed"
             or run.get("conclusion") != "success" or run.get("head_sha") != os.getenv("GITHUB_SHA")
-            or run.get("head_branch") not in ("codex/v0.2.0-billing", "codex/v0.3.0-multitenant")
+            or run.get("head_branch") not in ("codex/v0.2.0-billing", "codex/v0.3.0-multitenant", "codex/v0.3.1-semantic-consent")
             or f"refs/heads/{run.get('head_branch')}" != os.getenv("GITHUB_REF")
             or run.get("path") != ".github/workflows/ci.yml"
             or run.get("event") != "workflow_dispatch"
