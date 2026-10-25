@@ -199,7 +199,7 @@ class ProductionV031Tests(unittest.TestCase):
 
     def test_public_health_requires_exact_version_without_redirect_or_authentication(self) -> None:
         response = Mock(status=200)
-        response.read.return_value = b'{"status":"ok","version":"0.3.1","api_version":2}'
+        response.read.return_value = b'{"status":"ok","version":"0.3.1","api_version":"2"}'
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
         with patch.object(deploy.urllib.request, "build_opener") as opener:

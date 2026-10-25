@@ -260,7 +260,7 @@ def health_ready() -> None:
                     raise ValueError("production_v031_health_unverified")
                 value = json.loads(body)
                 if (response.status == 200 and value.get("status") == "ok"
-                        and value.get("version") == "0.3.1" and value.get("api_version") == 2):
+                        and value.get("version") == "0.3.1" and value.get("api_version") == "2"):
                     return
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
             pass
