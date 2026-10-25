@@ -74,8 +74,6 @@ CREATE TRIGGER semantic_preferences_insert AFTER INSERT ON semantic_preferences 
         WHERE owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub;
     DELETE FROM embedding_work WHERE NEW.enabled=1
         AND owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub;
-    INSERT OR IGNORE INTO embedding_owner_schedule(owner_iss,owner_sub)
-        SELECT NEW.owner_iss,NEW.owner_sub WHERE NEW.enabled=1;
     INSERT INTO embedding_work(message_id,owner_iss,owner_sub,received_at,consent_generation)
         SELECT id,owner_iss,owner_sub,received_at,NEW.generation FROM messages
         WHERE NEW.enabled=1 AND owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub
@@ -83,6 +81,14 @@ CREATE TRIGGER semantic_preferences_insert AFTER INSERT ON semantic_preferences 
             WHERE a.address=messages.address AND a.kind='tmpaddr'
             AND (a.generation!=messages.mailbox_generation OR a.released_at IS NOT NULL
                 OR a.expires_at<=CAST(unixepoch('subsec')*1000 AS INTEGER) OR a.state!='active'));
+    -- Schedule only real work. An empty owner must not create an orphan that
+    -- collides inside a later preference UPSERT's inherited conflict policy.
+    INSERT INTO embedding_owner_schedule(owner_iss,owner_sub)
+        SELECT NEW.owner_iss,NEW.owner_sub WHERE NEW.enabled=1
+        AND EXISTS(SELECT 1 FROM embedding_work w
+            WHERE w.owner_iss=NEW.owner_iss AND w.owner_sub=NEW.owner_sub)
+        AND NOT EXISTS(SELECT 1 FROM embedding_owner_schedule o
+            WHERE o.owner_iss=NEW.owner_iss AND o.owner_sub=NEW.owner_sub);
     INSERT INTO search_generations(owner_iss,owner_sub,generation)
         SELECT NEW.owner_iss,NEW.owner_sub,1 WHERE NEW.enabled=1
         ON CONFLICT(owner_iss,owner_sub) DO UPDATE SET generation=generation+1;
@@ -94,8 +100,6 @@ WHEN OLD.enabled!=NEW.enabled BEGIN
         WHERE owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub;
     DELETE FROM embedding_work WHERE NEW.enabled=1
         AND owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub;
-    INSERT OR IGNORE INTO embedding_owner_schedule(owner_iss,owner_sub)
-        SELECT NEW.owner_iss,NEW.owner_sub WHERE NEW.enabled=1;
     INSERT INTO embedding_work(message_id,owner_iss,owner_sub,received_at,consent_generation)
         SELECT id,owner_iss,owner_sub,received_at,NEW.generation FROM messages
         WHERE NEW.enabled=1 AND owner_iss=NEW.owner_iss AND owner_sub=NEW.owner_sub
@@ -103,6 +107,14 @@ WHEN OLD.enabled!=NEW.enabled BEGIN
             WHERE a.address=messages.address AND a.kind='tmpaddr'
             AND (a.generation!=messages.mailbox_generation OR a.released_at IS NOT NULL
                 OR a.expires_at<=CAST(unixepoch('subsec')*1000 AS INTEGER) OR a.state!='active'));
+    -- Schedule only real work. An empty owner must not create an orphan that
+    -- collides inside a later preference UPSERT's inherited conflict policy.
+    INSERT INTO embedding_owner_schedule(owner_iss,owner_sub)
+        SELECT NEW.owner_iss,NEW.owner_sub WHERE NEW.enabled=1
+        AND EXISTS(SELECT 1 FROM embedding_work w
+            WHERE w.owner_iss=NEW.owner_iss AND w.owner_sub=NEW.owner_sub)
+        AND NOT EXISTS(SELECT 1 FROM embedding_owner_schedule o
+            WHERE o.owner_iss=NEW.owner_iss AND o.owner_sub=NEW.owner_sub);
     INSERT INTO search_generations(owner_iss,owner_sub,generation)
         VALUES(NEW.owner_iss,NEW.owner_sub,1)
         ON CONFLICT(owner_iss,owner_sub) DO UPDATE SET generation=generation+1;

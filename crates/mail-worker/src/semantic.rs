@@ -316,6 +316,46 @@ mod tests {
     }
 
     #[test]
+    fn empty_account_can_toggle_repeatedly_without_scheduled_work() {
+        let db = Connection::open_in_memory().unwrap();
+        let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+            .collect::<Vec<_>>();
+        migrations.sort();
+        for migration in migrations {
+            db.execute_batch(&std::fs::read_to_string(migration).unwrap())
+                .unwrap();
+        }
+        db.execute("INSERT INTO mail_profiles(id,owner_iss,owner_sub,name,durable,is_user,terminal_id,session_token,session_expires_at,created_at)
+            VALUES('user','iss','sub','user',1,1,'terminal','session',9999999999999,0)",[]).unwrap();
+        for generation in 0..12 {
+            assert!(change(
+                &db,
+                generation % 2 == 0,
+                generation,
+                "user",
+                "session"
+            ));
+            assert_eq!(
+                db.query_row("SELECT COUNT(*) FROM embedding_owner_schedule", [], |r| r
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+                0
+            );
+            assert_eq!(
+                db.query_row("SELECT COUNT(*) FROM embedding_work", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
     fn only_live_user_session_can_change_consent_and_old_claims_never_return() {
         let db = database();
         insert(&db, "one", "sub");

@@ -235,17 +235,40 @@ test("0018 preserves old Qwen vectors without remote migration and rebuilds only
   assert.equal(migrated.embedding_consent_generation, enabled.body.generation);
 }, { legacy: true }));
 
+test("empty-corpus consent cycles never leave an orphan owner schedule or fail on re-enable", async () => fixture(async ({ db, activate, setting, calls }) => {
+  const user = await activate("user");
+  let generation = 0;
+  for (const enabled of [true, false, true, false, true, false]) {
+    const transition = await setting(user, enabled);
+    const code = /^[a-z_]{1,64}$/.test(transition.body.code ?? "") ? transition.body.code : "none";
+    assert.equal(transition.status, 200, `empty consent transition HTTP ${transition.status} code=${code}`);
+    assert.equal(transition.body.enabled, enabled);
+    assert.equal(transition.body.generation, ++generation);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM embedding_work").first()).n, 0);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM embedding_owner_schedule").first()).n, 0,
+      "the scheduler represents actual work, not enabled account state");
+  }
+  assert.equal(calls.length, 0);
+}));
+
 for (const reenable of [false, true]) {
   test(`query provider-await ${reenable ? "off/on" : "disable"} cannot publish a vector or old search result`, async () => fixture(async ({ db, request, activate, setting, calls, hook }) => {
     const user = await activate("user");
     await setting(user, true);
+    const transitions = [];
     hook(async (input) => {
       assert.equal(input.input_type, "query");
-      assert.equal((await setting(user, false)).status, 200);
-      if (reenable) assert.equal((await setting(user, true)).status, 200);
+      transitions.push(await setting(user, false));
+      if (reenable) transitions.push(await setting(user, true));
     });
     const response = await request("POST", "/v1/messages/search", user, { semantic: "synthetic private query" });
-    assert.equal(response.status, 409);
+    for (const transition of transitions) {
+      const code = /^[a-z_]{1,64}$/.test(transition.body.code ?? "") ? transition.body.code : "none";
+      assert.equal(transition.status, 200, `consent transition HTTP ${transition.status} code=${code}`);
+    }
+    assert.equal(transitions.length, reenable ? 2 : 1);
+    const code = /^[a-z_]{1,64}$/.test(response.body.code ?? "") ? response.body.code : "none";
+    assert.equal(response.status, 409, `query boundary HTTP ${response.status} code=${code}`);
     assert.equal(response.body.code, reenable ? "search_job_stale" : "semantic_disabled");
     assert.equal(calls.length, 1);
     assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM search_jobs").first()).n, 0,
