@@ -43,9 +43,33 @@ motivates flexible output sizes, not a claim that this workload has measured
 identity follows the practical requirement to
 [re-index rather than mix model spaces](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/semantic-text-setup-configuration).
 
-Provider zero-data-retention/no-training routing and disabled response cache reduce
-retention, not transfer. Never claim content stays only in Cloudflare or that
-disabling indexing deletes material already transferred to a provider. A disable
+## Approved Voyage retention policy
+
+The owner explicitly approved the non-ZDR Voyage route for v0.3.1. The fixed
+policy is `voyage4_no_training_retention_v1`: only provider `voyageai`, no provider
+fallbacks, `data_collection: deny`, and `X-OpenRouter-Cache: false`. The request
+omits `provider.zdr`; it does not send `zdr: false` to weaken stricter account
+policy. If account-level ZDR or another provider restriction rejects this route,
+fail closed instead of changing that account setting or selecting another model.
+
+No-training and zero retention are different promises. The selected provider is
+restricted to its no-training policy, but **may retain transmitted mail text,
+queries and outputs under its terms for an unspecified period**. amail does not
+promise a provider-side deletion deadline or zero retention. Disabling indexing
+or deleting local/service mail does not request, prove or guarantee erasure at
+OpenRouter or Voyage. The enable browser must disclose this boundary before
+approval; status exposes the policy identity rather than implying a ZDR route.
+
+[OpenRouter's provider policy documentation](https://openrouter.ai/docs/guides/privacy/provider-logging)
+separates training controls from upstream retention. Its own prompt/output
+logging and product-use options are opt-in, while request metadata is retained;
+operators must leave content logging/use disabled rather than assuming the
+per-request provider policy controls OpenRouter account logging. See
+[OpenRouter data collection](https://openrouter.ai/docs/guides/privacy/data-collection).
+Disabling response cache does not change an upstream retention policy.
+
+Never claim content stays only in Cloudflare or that disabling indexing deletes
+material already transferred to a provider. A disable
 or deletion that wins before provider admission prevents a new request; an
 already admitted call may still transmit, but a stale generation cannot publish
 its result. No transaction is held open across provider I/O.
@@ -61,5 +85,7 @@ continuation lifetime and are scrubbed at expiry/staleness as described in
 [search jobs](search-jobs.md). `AMAIL_TELEMETRY=off` changes diagnostic processing,
 not the account's semantic consent or server search-task retention.
 
-References: [OpenRouter ZDR](https://openrouter.ai/blog/insights/zero-data-retention/),
-[response cache](https://openrouter.ai/docs/guides/features/response-caching).
+Related distinction: [OpenRouter ZDR](https://openrouter.ai/docs/guides/privacy/zero-data-retention)
+is a stricter routing constraint, **not provided by this approved Voyage policy**;
+[response cache](https://openrouter.ai/docs/guides/features/response-caching)
+is a separate control.

@@ -17,6 +17,20 @@ sent mail's subject plus extracted body text, bounded to the combined first
 **12,000 UTF-8 bytes**, through OpenRouter to Voyage 4. It continues for new mail
 while enabled. Raw ZIPs and attachments are not embedding inputs.
 
+The approved policy is `voyage4_no_training_retention_v1`: fixed Voyage provider,
+no fallbacks, no training (`data_collection: deny`) and response cache off. It is
+**not zero data retention**: the upstream provider may retain transmitted mail,
+queries and outputs for an unspecified period under its terms. Disabling semantic
+processing, deleting mail or clearing amail data does not guarantee upstream
+erasure. Do not describe no-training as no storage. The enable browser discloses
+this boundary; `amail semantic status` identifies the active policy. A stricter
+OpenRouter account privacy restriction may make the route unavailable; do not
+change it or select a fallback merely to finish a mail task. OpenRouter's own
+content logging/product-use options are independent opt-ins, not controlled by
+amail's cache or provider fields.
+See [provider retention](https://openrouter.ai/docs/guides/privacy/provider-logging)
+and [OpenRouter logging](https://openrouter.ai/docs/guides/privacy/data-collection).
+
 Disabling stops admission of new document/query provider requests and makes
 semantic search unavailable, but does not delete already stored document
 embeddings. Already admitted requests cannot recall transmitted bytes; stale

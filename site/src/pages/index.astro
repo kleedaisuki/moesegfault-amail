@@ -11,7 +11,7 @@ import { candidateServiceNotice, releaseState } from '../releaseState';
         <div class="eyebrow">The agent-native mail client · {releaseState === 'published' ? 'v0.3.1' : 'v0.3.1 candidate'}</div>
         <h1>邮件工作流，<br /><em>交给 Agent。</em></h1>
         <p class="hero-lead">你决定授权边界。Agent 在独立 Profile 下，通过 <strong>amail</strong> 注册测试邮箱、检索和整理邮件。共享守护进程协调读写占用；人类 Profile 的操作默认逐次在浏览器确认。</p>
-        <p class="hero-privacy">语义检索默认关闭：由 user 批准启用后，后台才会经 OpenRouter / Voyage 4 为全部保留邮件及新邮件建立索引；关闭保留旧向量。<a href="/manual/#隐私与边界">了解处理方式 ↗</a></p>
+        <p class="hero-privacy">语义检索默认关闭：由 user 批准启用后，后台才会经 OpenRouter / Voyage 4 为全部保留邮件及新邮件建立索引。所选上游不训练，但可能留存输入和输出，不能承诺零留存或关闭后远端删除；关闭保留旧向量。<a href="/manual/#隐私与边界">了解处理方式 ↗</a></p>
         <div class="hero-actions">
           <a class="moe-button button button-primary" href="/manual/">{releaseState === 'published' ? '开始使用' : '了解候选设计'} <span aria-hidden="true">↗</span></a>
           <a class="moe-button button button-secondary" data-variant="secondary" href="/manual/#安装与首次登录">{releaseState === 'published' ? '选择安装包' : '预览安装指南'} <span aria-hidden="true">↗</span></a>

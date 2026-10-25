@@ -461,7 +461,9 @@ test("full routing allowance plus twenty embeddings still reaches later maintena
   await withProvider({ rules, embeddingReply: async (request, json) => {
     const input = await request.json();
     assert.equal(input.dimensions, 256);
-    assert.equal(input.input_type, "search_document");
+    assert.equal(input.input_type, "document");
+    assert.deepEqual(input.provider, { only: ["voyageai"], allow_fallbacks: false, data_collection: "deny" });
+    assert.equal(request.headers.get("x-openrouter-cache"), "false");
     assert.ok(input.input.startsWith("Synthetic budget document"));
     embeddingCalls++;
     return json({ data: [{ embedding: [1, ...Array(255).fill(0)] }] });

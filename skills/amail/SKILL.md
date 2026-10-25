@@ -22,7 +22,9 @@ different terminal. See [profiles](references/profiles.md) for lifecycle details
 
 **Semantic indexing is off by default.** Before requesting enablement, disclose
 that it sends eligible retained and future received/sent mail subjects and body
-excerpts through OpenRouter to Voyage 4, not just the search query. Both enabling
+excerpts through OpenRouter to Voyage 4, not just the search query. The approved
+route does not train on inputs but is **not zero retention**: upstream may retain
+inputs/outputs for an unspecified period, and disabling cannot guarantee erasure. Both enabling
 and disabling require the `user` profile and human browser approval unless the
 human explicitly configured YOLO. The setting affects every account profile.
 Never approve or change this setting on the human's behalf.

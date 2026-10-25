@@ -72,7 +72,7 @@ pub fn error_record(error: &anyhow::Error) -> Value {
             | "search_cursor_expired"
             | "search_cursor_vector_changed" => "restart_search",
             "events_cursor_expired" => "restart_events",
-            "required_client_version" => "upgrade_client",
+            "required_client_version" | "semantic_policy_changed" => "upgrade_client",
             "semantic_disabled" | "semantic_state_changed" => "inspect_semantic_status",
             "user_profile_required" => "activate_profile",
             "invalid_billing_plan"
@@ -153,6 +153,7 @@ mod tests {
             ("search_cursor_vector_changed", 409, "restart_search"),
             ("semantic_disabled", 409, "inspect_semantic_status"),
             ("semantic_state_changed", 409, "inspect_semantic_status"),
+            ("semantic_policy_changed", 409, "upgrade_client"),
             ("user_profile_required", 403, "activate_profile"),
             ("events_cursor_expired", 410, "restart_events"),
             ("send_held", 503, "stop"),

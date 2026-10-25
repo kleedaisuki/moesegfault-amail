@@ -816,13 +816,16 @@ fn embedding_payload(
         "search_document" => "document",
         _ => return Err(EmbeddingFailure::InvalidInput),
     };
+    // This reviewed opt-in policy permits Voyage retention, not model training.
+    // Pin its provider and never override stricter account-level ZDR settings.
+    // https://openrouter.ai/docs/guides/routing/provider-selection
     Ok(serde_json::json!({
         "model": model,
         "dimensions": EMBEDDING_DIMENSIONS,
         "encoding_format": "float",
         "input": input,
         "input_type": input_type,
-        "provider": {"zdr":true,"data_collection":"deny"}
+        "provider": {"only":["voyageai"],"allow_fallbacks":false,"data_collection":"deny"}
     }))
 }
 
@@ -1208,7 +1211,9 @@ mod tests {
             assert_eq!(payload["encoding_format"], "float");
             assert_eq!(payload["input_type"], expected);
             assert_eq!(payload["input"], "synthetic text");
-            assert_eq!(payload["provider"]["zdr"], true);
+            assert!(payload["provider"].get("zdr").is_none());
+            assert_eq!(payload["provider"]["only"], serde_json::json!(["voyageai"]));
+            assert_eq!(payload["provider"]["allow_fallbacks"], false);
             assert_eq!(payload["provider"]["data_collection"], "deny");
         }
     }

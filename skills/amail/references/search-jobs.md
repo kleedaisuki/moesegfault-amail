@@ -16,7 +16,9 @@ amail search --meta attachment_name=chart.png
 Predicates combine with AND. `--after` is inclusive, `--before` exclusive, in UTC.
 Other filters include mailbox, to, body, read state, regex and case sensitivity;
 use `--semantic` only when meaning-based search helps and its query transfer is
-appropriate. Semantic indexing is off by default; `amail semantic enable` requires
+appropriate, including the approved non-ZDR provider's possible retention of
+mail/query inputs and outputs for an unspecified period. Disabling does not
+guarantee upstream erasure. Semantic indexing is off by default; `amail semantic enable` requires
 the `user` profile and browser approval unless the human explicitly configured YOLO. Enabling schedules the entire eligible
 retained corpus, not only the current query. Ordinary search works with it
 disabled; while enabled it does not stop [background indexing](privacy.md).

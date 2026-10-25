@@ -1217,6 +1217,8 @@ def semantic_journey(binary: Path, env: dict[str, str], address: str,
     check(initial.get("enabled") is False, "semantic_default_not_disabled")
     check(initial.get("model") == "voyageai/voyage-4" and initial.get("dimensions") == 256,
           "semantic_model_contract_invalid")
+    check(initial.get("policy_id") == "voyage4_no_training_retention_v1",
+          "semantic_retention_policy_contract_invalid")
     primary: ProbeFailure | None = None
     cleanup: ProbeFailure | None = None
     try:

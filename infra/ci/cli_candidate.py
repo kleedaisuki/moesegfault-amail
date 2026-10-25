@@ -107,7 +107,8 @@ its SQLite database, daemon endpoint or credentials as test artifacts. Use
 Semantic search is disabled by default. Only the `user` profile can enable or
 disable it, with browser approval unless the human explicitly configured YOLO.
 While enabled, background indexing sends mail subject/body text to OpenRouter and
-Voyage 4; `--semantic` also sends the query. Disabling keeps
+Voyage 4; `--semantic` also sends the query. This fixed no-training provider route
+may retain inputs; it does not promise zero-data-retention. Disabling keeps
 existing embeddings but stops new indexing. Re-enabling reindexes all active mail. Read the [staging privacy boundary](https://amail-staging.moesegfault.dev/manual/#隐私与边界)
 before creating an address; use nonsensitive synthetic content for acceptance.
 Staging testing does not authorize general sending or change a global send hold.

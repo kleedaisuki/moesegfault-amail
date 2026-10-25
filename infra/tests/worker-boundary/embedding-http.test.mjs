@@ -62,7 +62,9 @@ async function exercise(providerResponse) {
       assert.equal(input.input, querySentinel);
       assert.equal(input.dimensions, 256);
       assert.equal(input.model, model);
-      assert.equal(input.input_type, "search_query");
+      assert.equal(input.input_type, "query");
+      assert.deepEqual(input.provider, { only: ["voyageai"], allow_fallbacks: false, data_collection: "deny" });
+      assert.equal(request.headers.get("x-openrouter-cache"), "false");
       return providerResponse();
     },
   }] });

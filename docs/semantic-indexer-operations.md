@@ -56,6 +56,14 @@ limit; revisit it if Cloudflare raises that limit.
 The input is the longest valid UTF-8 prefix of at most 12,000 bytes from
 `subject + "\n" + body_text`. Requests go through OpenRouter to Voyage 4, with
 separate document/query task types. Raw MIME, ZIPs and attachments are not inputs.
+Policy `voyage4_no_training_retention_v1` pins provider `voyageai`, disables fallback,
+sets `data_collection: deny` and disables response caching. It omits the request
+`zdr` field: this user-approved route is **non-ZDR**. Upstream may retain inputs
+and outputs for an unspecified period under its terms; disabling indexing or
+mail deletion does not guarantee upstream erasure. An account-level ZDR rejection
+is a closed failure, not permission to turn off that account protection. Keep
+OpenRouter's own content-logging/product-use opt-ins disabled; provider policy
+fields and response-cache flags do not configure those settings.
 The exact route is `voyageai/voyage-4`, requesting 256 dimensions; see
 [the route](https://openrouter.ai/voyageai/voyage-4) and
 [Voyage's dimension/task contract](https://www.mongodb.com/docs/voyageai/models/text-embeddings/).

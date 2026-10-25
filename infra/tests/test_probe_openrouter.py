@@ -34,7 +34,7 @@ class ProbeTests(unittest.TestCase):
             self.assertEqual(json.loads(request.data), {
                 "model": "voyageai/voyage-4", "input": probe.SYNTHETIC_INPUT,
                 "dimensions": 256, "encoding_format": "float", "input_type": role,
-                "provider": {"zdr": True, "data_collection": "deny"}})
+                "provider": {"only": ["voyageai"], "allow_fallbacks": False, "data_collection": "deny"}})
             self.assertEqual(opener.open.call_args.kwargs["timeout"], 90)
             response.read.assert_called_once_with(64 * 1024 + 1)
 

@@ -39,6 +39,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// A new processing policy requires a client that can disclose its exact terms.
+const SEMANTIC_POLICY_ID: &str = "voyage4_no_training_retention_v1";
+
 /// Privacy disclosure for exploratory help, never compact command output.
 const SEMANTIC_PRIVACY_NOTICE: &str = concat!(
     "Privacy: Semantic search and background semantic indexing are disabled by default. ",
@@ -48,6 +51,10 @@ const SEMANTIC_PRIVACY_NOTICE: &str = concat!(
     "(combined first 12,000 UTF-8 bytes) are sent to OpenRouter and its model provider ",
     "Voyage 4 for background semantic indexing. Disabling preserves existing embeddings ",
     "and stops new provider requests; re-enabling rebuilds the index from active mail. ",
+    "OpenRouter forwards subject/body excerpts and queries to VoyageAI. This fixed route ",
+    "does not permit training and disables response caching, but the upstream provider ",
+    "may retain inputs; it is not zero-data-retention. Disabling cannot recall transfers ",
+    "or require deletion of inputs already held upstream. ",
     "While enabled, --semantic also sends the search query. A multi-page semantic search keeps its query ",
     "text and exact query vector in owner-scoped server state for up to 24 hours; ",
     "later pages reuse that vector without another provider call. ",
@@ -1088,11 +1095,24 @@ fn semantic_consent(
         return Ok(());
     }
     let summary = if enabled {
-        format!("Enable account-wide semantic search (consent generation {generation}). All active received and sent mail subjects and bounded body text will be sent to Voyage 4 through OpenRouter for background indexing, including existing mail. New mail and semantic queries will also be processed remotely while enabled. Re-enabling rebuilds all active mail embeddings.")
+        format!("Enable account-wide semantic search (consent generation {generation}, policy {SEMANTIC_POLICY_ID}). OpenRouter forwards all active received and sent mail subjects, bounded body excerpts and semantic queries to VoyageAI's Voyage 4. This includes historical active mail and new mail while enabled. The fixed route does not permit training and disables response caching, but the upstream provider may retain inputs; this is not zero-data-retention. Re-enabling rebuilds all active mail embeddings.")
     } else {
-        format!("Disable account-wide semantic search (consent generation {generation}). Stop new remote indexing and semantic-query requests; retain existing embeddings. Requests already sent cannot be recalled. Re-enabling later will send active mail again to rebuild the index.")
+        format!("Disable account-wide semantic search (consent generation {generation}, policy {SEMANTIC_POLICY_ID}). Stop new remote indexing and semantic-query requests; retain existing embeddings. Requests already sent cannot be recalled, and disabling cannot require upstream deletion of previously transferred inputs. Re-enabling later will send active mail again to OpenRouter and VoyageAI to rebuild the index.")
     };
     authorize("semantic.change", &summary)
+}
+
+fn semantic_policy(state: &Value) -> Result<&str> {
+    match state.get("policy_id").and_then(Value::as_str) {
+        Some(SEMANTIC_POLICY_ID) => Ok(SEMANTIC_POLICY_ID),
+        _ => Err(machine::Failure {
+            code: "semantic_policy_changed",
+            next_action: "upgrade_client",
+            data: json!({}),
+            message: "the semantic processing policy is not recognized; upgrade the client before changing consent".into(),
+        }
+        .into()),
+    }
 }
 
 fn run_semantic(
@@ -1109,8 +1129,9 @@ fn run_semantic(
         .get("generation")
         .and_then(Value::as_i64)
         .context("semantic status is missing its consent generation")?;
+    let policy_id = semantic_policy(&state)?;
     semantic_consent(enabled, generation, yolo, approval::authorize_request)?;
-    emit(&api.set_semantic(enabled, generation)?, human)
+    emit(&api.set_semantic(enabled, generation, policy_id)?, human)
 }
 
 fn run_profile(
@@ -1553,6 +1574,10 @@ mod tests {
                 "Disabling preserves existing embeddings",
                 "re-enabling rebuilds the index",
                 "Voyage 4",
+                "may retain inputs",
+                "not zero-data-retention",
+                "does not permit training",
+                "disables response caching",
                 "--semantic also sends the search query",
                 "up to 24 hours",
                 "AMAIL_TELEMETRY=off does not disable indexing",
@@ -1586,11 +1611,20 @@ mod tests {
                 calls += 1;
                 assert_eq!(operation, "semantic.change");
                 assert!(summary.contains("generation 17"));
+                assert!(summary.contains(SEMANTIC_POLICY_ID));
                 assert!(summary.contains(if enabled {
-                    "Voyage 4 through OpenRouter"
+                    "VoyageAI's Voyage 4"
                 } else {
                     "retain existing embeddings"
                 }));
+                if enabled {
+                    assert!(summary.contains("may retain inputs"));
+                    assert!(summary.contains("does not permit training"));
+                    assert!(summary.contains("disables response caching"));
+                } else {
+                    assert!(summary.contains("cannot require upstream deletion"));
+                    assert!(summary.contains("cannot be recalled"));
+                }
                 Ok(())
             })
             .unwrap();
@@ -1603,6 +1637,52 @@ mod tests {
                 "authorization_denied"
             ))
             .is_err());
+        }
+    }
+
+    #[test]
+    fn semantic_policy_requires_exact_reviewed_terms_before_any_change() {
+        assert_eq!(
+            semantic_policy(&json!({"policy_id":SEMANTIC_POLICY_ID})).unwrap(),
+            SEMANTIC_POLICY_ID
+        );
+        for state in [
+            json!({}),
+            json!({"policy_id":null}),
+            json!({"policy_id":"unknown_policy"}),
+        ] {
+            let error = semantic_policy(&state).unwrap_err();
+            let failure = error.downcast_ref::<machine::Failure>().unwrap();
+            assert_eq!(failure.code, "semantic_policy_changed");
+            assert_eq!(failure.next_action, "upgrade_client");
+        }
+    }
+
+    #[test]
+    fn semantic_consent_never_reflects_status_content_or_private_addresses() {
+        let state = json!({"policy_id":SEMANTIC_POLICY_ID,"generation":23,
+            "email":"private@example.org","subject":"PRIVATE_SUBJECT_SENTINEL",
+            "provider_detail":"PRIVATE_PROVIDER_SENTINEL"});
+        assert_eq!(semantic_policy(&state).unwrap(), SEMANTIC_POLICY_ID);
+        for enabled in [true, false] {
+            semantic_consent(
+                enabled,
+                state["generation"].as_i64().unwrap(),
+                false,
+                |_, summary| {
+                    for private in [
+                        "private@example.org",
+                        "PRIVATE_SUBJECT_SENTINEL",
+                        "PRIVATE_PROVIDER_SENTINEL",
+                        "@",
+                    ] {
+                        assert!(!summary.contains(private));
+                    }
+                    assert!(summary.len() < 2048);
+                    Ok(())
+                },
+            )
+            .unwrap();
         }
     }
 

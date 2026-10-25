@@ -14,6 +14,7 @@ const worker = path.join(root, "crates/mail-worker");
 const issuer = "https://identity-staging.moesegfault.dev";
 const address = "consent@mail-staging.moesegfault.dev";
 const model = "voyageai/voyage-4";
+const policy = "voyage4_no_training_retention_v1";
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 function token() {
@@ -40,6 +41,9 @@ async function fixture(run, { legacy = false } = {}) {
     const input = await request.json();
     assert.equal(input.model, model);
     assert.equal(input.dimensions, 256);
+    assert.ok(["query", "document"].includes(input.input_type));
+    assert.deepEqual(input.provider, { only: ["voyageai"], allow_fallbacks: false, data_collection: "deny" });
+    assert.equal(request.headers.get("x-openrouter-cache"), "false");
     calls.push(input);
     if (providerHook) await providerHook(input);
     return Response.json({ data: [{ embedding: [1, ...Array(255).fill(0)] }] });
@@ -82,7 +86,10 @@ async function fixture(run, { legacy = false } = {}) {
     const tick = async () => (await mf.getWorker("consent-maintenance")).scheduled();
     const setting = async (session, enabled) => {
       const current = await request("GET", "/v1/semantic", session);
-      return request("POST", "/v1/semantic", session, { enabled, expected_generation: current.body.generation });
+      assert.equal(current.body.policy_id, policy);
+      return request("POST", "/v1/semantic", session, {
+        enabled, expected_generation: current.body.generation, policy_id: policy,
+      });
     };
     const vectors = async () => (await db.prepare("SELECT id,embedding_json,embedding_model,embedding_dimensions,embedding_consent_generation FROM messages ORDER BY id").all()).results;
     await run({ db, request, activate, message, tick, setting, vectors, calls,
@@ -96,6 +103,7 @@ test("semantic default-off is enforced before query or background provider calls
   const initial = await request("GET", "/v1/semantic");
   assert.equal(initial.status, 200);
   assert.equal(initial.body.enabled, false);
+  assert.equal(initial.body.policy_id, policy);
   assert.equal((await setting(null, true)).status, 403, "legacy owner tokens cannot authorize a privacy transition");
   assert.equal((await request("POST", "/v1/messages/search", null, { semantic: "synthetic query" })).body.code, "semantic_disabled");
   await tick();
@@ -107,12 +115,25 @@ test("semantic default-off is enforced before query or background provider calls
   assert.equal((await request("POST", "/v1/profiles", user, { name: "agent" })).status, 200);
   const agent = await activate("agent");
   for (const enabled of [true, false]) {
-    const denied = await request("POST", "/v1/semantic", agent, { enabled, expected_generation: 0, approved: true, profile: "user" },
+    const denied = await request("POST", "/v1/semantic", agent,
+      { enabled, expected_generation: 0, policy_id: policy, approved: true, profile: "user" },
       { "x-amail-user-approved": "true" });
     assert.equal(denied.status, 403);
     assert.equal(denied.body.code, "user_profile_required");
   }
   assert.equal((await request("GET", "/v1/semantic", agent)).body.enabled, false);
+  for (const enabled of [true, false]) {
+    const missing = await request("POST", "/v1/semantic", user, { enabled, expected_generation: 0 });
+    assert.equal(missing.status, 400);
+    assert.equal(missing.body.code, "invalid_semantic_preference");
+    const changed = await request("POST", "/v1/semantic", user,
+      { enabled, expected_generation: 0, policy_id: "obsolete_zdr_policy" });
+    assert.equal(changed.status, 409);
+    assert.equal(changed.body.code, "semantic_policy_changed");
+    const unchanged = await request("GET", "/v1/semantic", user);
+    assert.equal(unchanged.body.enabled, false);
+    assert.equal(unchanged.body.generation, 0);
+  }
   const enabled = await setting(user, true);
   assert.equal(enabled.status, 200, JSON.stringify(enabled.body));
   assert.equal(enabled.body.enabled, true);
@@ -138,7 +159,7 @@ test("disable retains vectors and blocks subsequent egress; re-enable rebuilds e
   assert.equal(disabled.status, 200);
   assert.equal(disabled.body.enabled, false);
   const stale = await request("POST", "/v1/semantic", user,
-    { enabled: true, expected_generation: enabled.body.generation });
+    { enabled: true, expected_generation: enabled.body.generation, policy_id: policy });
   assert.equal(stale.status, 409, "an approval for an old state must not undo a newer disable");
   assert.equal(stale.body.code, "semantic_state_changed");
   assert.deepEqual(await vectors(), before, "turning off does not destroy stored embeddings");
@@ -186,6 +207,13 @@ test("0018 preserves old Qwen vectors without remote migration and rebuilds only
   const beforeMigration = await request("POST", "/v1/messages/search", null, { semantic: "synthetic query" });
   assert.equal(beforeMigration.status, 503, "API-first cutover fails closed on a pre-consent schema");
   assert.equal(calls.length, 0);
+  const literal = await request("POST", "/v1/messages/search", null, { title: "synthetic subject legacy" });
+  assert.equal(literal.status, 200, "API-first cutover retains ordinary search before 0018");
+  assert.deepEqual(literal.body.messages.map((row) => row.id), ["legacy"]);
+  assert.equal((await request("GET", "/v1/messages/legacy")).status, 200);
+  const listed = await request("GET", "/v1/messages");
+  assert.equal(listed.status, 200);
+  assert.ok(listed.body.messages.some((row) => row.id === "legacy"));
   await applyMigrations(db, path.join(worker, "migrations"), { from: 18 });
   const preserved = (await vectors())[0];
   assert.equal(preserved.embedding_json, old);
@@ -212,7 +240,7 @@ for (const reenable of [false, true]) {
     const user = await activate("user");
     await setting(user, true);
     hook(async (input) => {
-      assert.equal(input.input_type, "search_query");
+      assert.equal(input.input_type, "query");
       assert.equal((await setting(user, false)).status, 200);
       if (reenable) assert.equal((await setting(user, true)).status, 200);
     });

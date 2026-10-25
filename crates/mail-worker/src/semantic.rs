@@ -6,6 +6,7 @@ use worker::{Method, Request, Response};
 use crate::{auth::Principal, bind_num, bind_str, database::Database, now, AppError, AppResult};
 
 pub(crate) const MODEL: &str = crate::platform::EMBEDDING_MODEL;
+const POLICY_ID: &str = "voyage4_no_training_retention_v1";
 
 pub(crate) async fn require_enabled(database: &Database, user: &Principal) -> AppResult<i64> {
     #[derive(Deserialize)]
@@ -65,7 +66,7 @@ async fn status(database: &Database, user: &Principal) -> AppResult<Response> {
         .ok_or_else(|| AppError::conflict("semantic_state_changed"))?;
     Response::from_json(&serde_json::json!({
         "enabled":row.enabled==1,"generation":row.generation,
-        "model":MODEL,"dimensions":256,
+        "model":MODEL,"dimensions":256,"policy_id":POLICY_ID,
         "pending_messages":row.pending_messages,"indexed_messages":row.indexed_messages,
     }))
     .map_err(Into::into)
@@ -99,11 +100,13 @@ async fn update(req: &mut Request, database: &Database, user: &Principal) -> App
     struct Input {
         enabled: bool,
         expected_generation: i64,
+        policy_id: String,
     }
     let input: Input = req
         .json()
         .await
         .map_err(|_| AppError::bad("invalid_semantic_preference"))?;
+    verify_policy(&input.policy_id)?;
     if input.expected_generation < 0 {
         return Err(AppError::bad("invalid_semantic_preference"));
     }
@@ -126,10 +129,28 @@ async fn update(req: &mut Request, database: &Database, user: &Principal) -> App
     Ok(())
 }
 
+fn verify_policy(policy_id: &str) -> AppResult<()> {
+    if policy_id != POLICY_ID {
+        return Err(AppError::conflict("semantic_policy_changed"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::{params, Connection, OptionalExtension};
+
+    #[test]
+    fn consent_names_the_reviewed_retention_policy() {
+        assert!(verify_policy("voyage4_no_training_retention_v1").is_ok());
+        for old in ["", "zdr", "qwen", "voyage4_no_training_retention_v2"] {
+            assert_eq!(
+                verify_policy(old).unwrap_err().code,
+                "semantic_policy_changed"
+            );
+        }
+    }
 
     fn database() -> Connection {
         let db = Connection::open_in_memory().unwrap();

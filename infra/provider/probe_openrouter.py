@@ -54,7 +54,7 @@ def probe(token: str, role: str) -> None:
         "dimensions": DIMENSIONS,
         "encoding_format": "float",
         "input_type": role,
-        "provider": {"zdr": True, "data_collection": "deny"},
+        "provider": {"only": ["voyageai"], "allow_fallbacks": False, "data_collection": "deny"},
     }).encode()
     request = urllib.request.Request(
         URL,
