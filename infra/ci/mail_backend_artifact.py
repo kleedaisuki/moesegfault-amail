@@ -31,11 +31,14 @@ def identity() -> dict[str, Any]:
 
 
 def context(realm: str) -> None:
+    confirmation = ("RESTORE_SEMANTIC_REUSE_STAGING_INGRESS" if realm == "staging"
+                    and os.getenv("AMAIL_STAGING_INGRESS_RESTORE") == "true"
+                    else "RUN_SEMANTIC_REUSE_" + realm.upper())
     expected = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": accepted.REPO,
                 "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "1",
                 "GITHUB_REF": "refs/heads/" + (BRANCH if realm == "staging" else "main"),
                 "AMAIL_BACKEND_HOTFIX": realm,
-                "AMAIL_BACKEND_CONFIRM": "RUN_SEMANTIC_REUSE_" + realm.upper()}
+                "AMAIL_BACKEND_CONFIRM": confirmation}
     if (realm not in ("staging", "production")
             or any(os.getenv(key) != value for key, value in expected.items())
             or realm == "production" and os.getenv("AMAIL_PRODUCTION_GRAPH_FREEZE") != "FREEZE_PRODUCTION_GRAPH_WRITERS"):

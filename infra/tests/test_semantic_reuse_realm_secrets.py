@@ -16,10 +16,10 @@ class RealmSecretTests(unittest.TestCase):
         return found.group() if found is not None else ""
 
     def test_staging_receiver_and_fixture_use_only_the_staging_secret(self) -> None:
-        for name in ("semantic-reuse-staging", "semantic-reuse-journey"):
-            block = self.block(name)
-            self.assertIn("INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}", block)
-            self.assertNotIn("INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}", block)
+        block = self.block("semantic-reuse-staging")
+        self.assertIn("INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}", block)
+        self.assertNotIn("INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}", block)
+        self.assertNotIn("INGRESS_SECRET", self.block("semantic-reuse-journey"))
 
     def test_production_receiver_retains_its_original_production_secret(self) -> None:
         block = self.block("semantic-reuse-production")

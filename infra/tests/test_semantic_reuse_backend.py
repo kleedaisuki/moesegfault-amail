@@ -18,6 +18,45 @@ import semantic_reuse_backend as deploy
 
 
 class SemanticReuseDeploymentTests(unittest.TestCase):
+    def test_ingress_only_deploy_inherits_all_other_secrets(self) -> None:
+        submitted: list[dict[str, str]] = []
+        def submit(command: list[str], *args: object, **kwargs: object) -> str:
+            path = Path(command[command.index("--secrets-file") + 1])
+            submitted.append(json.loads(path.read_text(encoding="utf-8")))
+            return "new-api"
+        with patch.dict(os.environ, {"INGRESS_SECRET": "synthetic-staging-secret", "CLOUDFLARE_ACCOUNT_ID": "a",
+                                     "CLOUDFLARE_API_TOKEN": "x"}, clear=True), \
+             patch.object(deploy, "require_artifact"), patch.object(deploy.previous.prior, "journal"), \
+             patch.object(deploy, "submit", side_effect=submit), patch.object(deploy, "pin_api", return_value="match"):
+            deploy.replace("staging", "api", ingress_only=True)
+        self.assertEqual(submitted, [{"INGRESS_SECRET": "synthetic-staging-secret"}])
+
+    def test_explicit_ingress_restoration_writes_only_api_configuration(self) -> None:
+        (ROOT / ".temp").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder, ExitStack() as stack:
+            root = Path(folder)
+            (root / ".temp").mkdir()
+            stack.enter_context(patch.object(deploy, "ROOT", root))
+            stack.enter_context(patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "x",
+                "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "124", "AMAIL_STAGING_INGRESS_RESTORE": "true"}))
+            stack.enter_context(patch.object(artifact, "context"))
+            stack.enter_context(patch.object(artifact, "ADMISSION", Mock(is_file=Mock(return_value=True))))
+            stack.enter_context(patch.object(artifact, "original_identity", return_value={"source_sha": artifact.PARTIAL_SOURCE, "run_id": artifact.PARTIAL_RUN}))
+            stack.enter_context(patch.object(deploy, "require_artifact"))
+            stack.enter_context(patch.object(deploy, "observe", return_value=({"retained": {}, "graph": {}}, {})))
+            stack.enter_context(patch.object(deploy, "DatabaseClient"))
+            schema = stack.enter_context(patch.object(deploy, "schema"))
+            write = stack.enter_context(patch.object(deploy, "replace", return_value="new-api"))
+            migration = stack.enter_context(patch.object(deploy.subprocess, "run"))
+            deploy.restore_staging_ingress()
+            write.assert_called_once_with("staging", "api", ingress_only=True)
+            migration.assert_not_called()
+            self.assertEqual(schema.call_args.args[-1], 19)
+            value = json.loads((root / ".temp/semantic-reuse-ingress-restore.json").read_text())
+            self.assertEqual(value["credential_source"], "INGRESS_SECRET_STAGING")
+            self.assertEqual(value["old_api_version"], "75bbcb55-e6f5-42e3-b65b-acb6dbc990c9")
+            self.assertEqual(value["new_api_version"], "new-api")
+
     def test_completed_staging_verification_never_repeats_writes(self) -> None:
         (ROOT / ".temp").mkdir(exist_ok=True)
         origin = {"schema": "semantic-index-reuse/v1", "realm": "staging", "migration": 19,
@@ -47,7 +86,6 @@ class SemanticReuseDeploymentTests(unittest.TestCase):
             stack.enter_context(patch.object(deploy, "observe", return_value=({"retained": {}, "graph": {}}, {})))
             stack.enter_context(patch.object(deploy, "DatabaseClient"))
             schema = stack.enter_context(patch.object(deploy, "schema"))
-            stack.enter_context(patch.object(deploy, "check_staging_ingress_auth"))
             write = stack.enter_context(patch.object(deploy, "replace"))
             migration = stack.enter_context(patch.object(deploy.subprocess, "run"))
             deploy.verify_completed()

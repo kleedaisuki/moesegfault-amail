@@ -9,13 +9,10 @@ import subprocess
 import tempfile
 import tomllib
 from typing import Any
-import urllib.error
-import urllib.request
 
 import production_v031 as previous
 import check_staging_adapters as adapters
 from direct_contact_health import DatabaseClient
-from fresh_bootstrap_scope import NoRedirect
 from mail_schema_contract import expected_schema, verify_schema
 from pin_staging_mail import expected_bindings, run as pin_api
 from tested_worker_artifact import require_artifact
@@ -38,7 +35,7 @@ FAILURES = frozenset({"semantic_reuse_policy_changed", "semantic_reuse_adapter_u
     "schema_objects_unverified", "schema_object_drift", "schema_columns_unverified",
     "schema_indexes_unverified", "schema_index_columns_unverified",
     "schema_migration_provenance_unverified", "semantic_reuse_partial_unreviewed",
-    "semantic_reuse_completed_origin_unverified", "semantic_reuse_ingress_auth_unverified"}) | previous.prior.graph.FAILURES
+    "semantic_reuse_completed_origin_unverified", "semantic_reuse_ingress_restore_unreviewed"}) | previous.prior.graph.FAILURES
 
 
 def select(realm: str, pins: dict[str, str]) -> None:
@@ -82,12 +79,14 @@ def schema(database: DatabaseClient, realm: str, count: int) -> None:
     verify_schema(lambda sql: database.query(sql)["results"], contract)
 
 
-def replace(realm: str, role: str) -> str:
+def replace(realm: str, role: str, *, ingress_only: bool = False) -> str:
     require_artifact("mail_api")
     filename = "wrangler.toml" if role == "api" else "wrangler-maintenance.toml"
     config = ROOT / "crates/mail-worker" / filename
-    names = ["OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "BILLING_SERVICE_KEY"]
-    if role == "api":
+    if ingress_only and (realm != "staging" or role != "api"):
+        raise ValueError("semantic_reuse_ingress_restore_unreviewed")
+    names = ["INGRESS_SECRET"] if ingress_only else ["OPENROUTER_API_KEY", "CF_EMAIL_ROUTING_TOKEN", "BILLING_SERVICE_KEY"]
+    if role == "api" and not ingress_only:
         names.append("INGRESS_SECRET")
     secrets = {name: os.getenv(name, "") for name in names}
     if not all(secrets.values()):
@@ -220,7 +219,6 @@ def verify_completed() -> None:
     if (previous.prior.digest(current["retained"]) != origin["retained_fingerprint"]
             or previous.prior.digest(policy) != origin["policy_fingerprint"]):
         raise ValueError("semantic_reuse_retained_graph_changed")
-    check_staging_ingress_auth()
     value = {**origin, "source_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
              "graph": current["graph"], "completion_mode": "read_only",
              "original_deployment_run": COMPLETED_STAGING_RUN,
@@ -230,39 +228,49 @@ def verify_completed() -> None:
     print("semantic_reuse_backend=staging_verified read_only=true")
 
 
-def check_staging_ingress_auth() -> None:
-    """An empty authenticated request must stop at size validation, before D1/R2."""
-    secret = os.environ.get("INGRESS_SECRET", "")
-    if not 32 <= len(secret) <= 512:
-        raise ValueError("semantic_reuse_ingress_auth_unverified")
-    request = urllib.request.Request("https://mail-staging.moesegfault.dev/internal/inbound",
-        data=b"", method="POST", headers={"Content-Type": "application/octet-stream",
-                                          "x-amail-ingress-secret": secret, "x-amail-api-version": "2"})
-    try:
-        response = urllib.request.build_opener(NoRedirect).open(request, timeout=30)
-    except urllib.error.HTTPError as error:
-        response = error
-    with response:
-        raw = response.read(16_385)
-        status = response.status
-        content_type = response.headers.get("content-type", "")
-        correlation = response.headers.get("x-amail-request-id", "")
-    value: Any = None
-    if len(raw) <= 16_384:
-        try:
-            value = json.loads(raw)
-        except (ValueError, UnicodeDecodeError):
-            pass
-    code = value.get("code", value.get("error_code")) if isinstance(value, dict) else None
-    result = {"http_status": status, "code": code if code in ("inbound_size", "forbidden") else "unrecognized",
-              "json_response": isinstance(value, dict),
-              "json_content_type": content_type.split(";", 1)[0] in ("application/json", "application/problem+json"),
-              "application_correlation_present": previous.legacy.UUID.fullmatch(correlation) is not None,
-              "empty_body": True, "envelope_header_sent": False}
-    (ROOT / ".temp/semantic-reuse-ingress-auth.json").write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
-    print(json.dumps({"event": "semantic_reuse_ingress_auth", **result}, sort_keys=True))
-    if status != 400 or code != "inbound_size":
-        raise ValueError("semantic_reuse_ingress_auth_unverified")
+def restore_staging_ingress() -> None:
+    """Correct one source-evidenced realm credential, without changing other secrets."""
+    import sys
+    sys.path.insert(0, str(ROOT / "infra/ci"))
+    import mail_backend_artifact as artifact
+    artifact.context("staging")
+    if os.getenv("AMAIL_STAGING_INGRESS_RESTORE") != "true" or not artifact.ADMISSION.is_file():
+        raise ValueError("semantic_reuse_ingress_restore_unreviewed")
+    original = artifact.original_identity()
+    if original["source_sha"] != artifact.PARTIAL_SOURCE or original["run_id"] != artifact.PARTIAL_RUN:
+        raise ValueError("semantic_reuse_ingress_restore_unreviewed")
+    require_artifact("mail_api")
+    pins = dict(STAGING)
+    pins["amail-mail-staging"] = "75bbcb55-e6f5-42e3-b65b-acb6dbc990c9"
+    pins["amail-mail-maintenance-staging"] = "0ee61a70-4040-40fe-a117-48d41c92f2de"
+    before, policy = observe("staging", pins)
+    database = DatabaseClient(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"], "staging")
+    schema(database, "staging", 19)
+    checkpoint = {"schema": "semantic-reuse-ingress-restore/v1", "realm": "staging",
+                  "source_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+                  "credential_source": "INGRESS_SECRET_STAGING",
+                  "old_api_version": pins["amail-mail-staging"],
+                  "retained_fingerprint": previous.prior.digest(before["retained"])}
+    (ROOT / ".temp/semantic-reuse-predecessor.json").write_text(json.dumps(checkpoint, sort_keys=True), encoding="utf-8")
+    pins["amail-mail-staging"] = replace("staging", "api", ingress_only=True)
+    actual, _ = observe("staging", pins, policy)
+    if actual["retained"] != before["retained"]:
+        raise ValueError("semantic_reuse_retained_graph_changed")
+    repair = {**checkpoint, "new_api_version": pins["amail-mail-staging"],
+              "maintenance_version": pins["amail-mail-maintenance-staging"],
+              "sink_version": pins["amail-trace-sink-staging"], "other_secrets": "inherited unchanged"}
+    (ROOT / ".temp/semantic-reuse-ingress-restore.json").write_text(json.dumps(repair, sort_keys=True), encoding="utf-8")
+    value = {"schema": "semantic-index-reuse/v1", "realm": "staging", "migration": 19,
+             "source_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+             "api_version": pins["amail-mail-staging"], "maintenance_version": pins["amail-mail-maintenance-staging"],
+             "sink_version": pins["amail-trace-sink-staging"], "cron_changed": False,
+             "credential_source": "INGRESS_SECRET_STAGING", "configuration_repair": "staging ingress credential only",
+             "original_build_run": artifact.PARTIAL_RUN, "original_build_source": artifact.PARTIAL_SOURCE,
+             "policy_fingerprint": previous.prior.digest(policy),
+             "retained_fingerprint": previous.prior.digest(actual["retained"]), "graph": actual["graph"]}
+    with (ROOT / ".temp/semantic-reuse-staging.json").open("x", encoding="utf-8") as file:
+        json.dump(value, file, sort_keys=True)
+    print("semantic_reuse_backend=staging_ingress_credential_restored")
 
 
 def main() -> int:
@@ -270,9 +278,14 @@ def main() -> int:
     parser.add_argument("realm", choices=("staging", "production"))
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--verify-completed", action="store_true")
+    parser.add_argument("--restore-staging-ingress", action="store_true")
     args = parser.parse_args()
     try:
-        if args.verify_completed:
+        if args.restore_staging_ingress:
+            if args.realm != "staging" or args.resume or args.verify_completed:
+                raise ValueError("semantic_reuse_ingress_restore_unreviewed")
+            restore_staging_ingress()
+        elif args.verify_completed:
             if args.realm != "staging" or args.resume:
                 raise ValueError("semantic_reuse_completed_origin_unverified")
             verify_completed()

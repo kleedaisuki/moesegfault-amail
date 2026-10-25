@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [semantic-reuse-staging-resume, semantic-reuse-staging, semantic-reuse-production, checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [semantic-reuse-staging-restore-ingress, semantic-reuse-staging-resume, semantic-reuse-staging, semantic-reuse-production, checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
         description: Documented RUN_* or INSPECT_* confirmation; normal split upgrade preserves live policy
         required: false
@@ -99,7 +99,7 @@ permissions:
 # Checks can supersede obsolete checks; shared-state manual operations never cancel each other.
 # Keep the existing manual group so in-flight acceptance remains mutually exclusive.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-production' || inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-complete' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging-resume' || inputs.target == 'semantic-reuse-staging' || inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose' || inputs.target == 'staging-maintenance-repair' || inputs.target == 'staging-semantic-inspect' || inputs.target == 'staging-semantic-recovery' || inputs.target == 'staging-semantic-e2e' || inputs.target == 'staging-semantic-diagnose')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-production' || inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-complete' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging-restore-ingress' || inputs.target == 'semantic-reuse-staging-resume' || inputs.target == 'semantic-reuse-staging' || inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose' || inputs.target == 'staging-maintenance-repair' || inputs.target == 'staging-semantic-inspect' || inputs.target == 'staging-semantic-recovery' || inputs.target == 'staging-semantic-e2e' || inputs.target == 'staging-semantic-diagnose')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
@@ -173,7 +173,7 @@ jobs:
 
   semantic-reuse-staging:
     name: Semantic reuse staging admission
-    if: always() && !cancelled() && (needs.semantic-reuse-build.result == 'success' || inputs.target == 'semantic-reuse-staging-resume') && github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1 && (inputs.staging_resume_run == '' || inputs.staging_resume_run == '40204723478')
+    if: always() && !cancelled() && (needs.semantic-reuse-build.result == 'success' || inputs.target == 'semantic-reuse-staging-resume' || inputs.target == 'semantic-reuse-staging-restore-ingress') && github.event_name == 'workflow_dispatch' && ((inputs.target == 'semantic-reuse-staging-restore-ingress' && inputs.confirm == 'RESTORE_SEMANTIC_REUSE_STAGING_INGRESS') || ((inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING')) && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1 && (inputs.staging_resume_run == '' || inputs.staging_resume_run == '40204723478')
     needs: semantic-reuse-build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -184,6 +184,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       AMAIL_BACKEND_HOTFIX: staging
+      AMAIL_STAGING_INGRESS_RESTORE: ${{ inputs.target == 'semantic-reuse-staging-restore-ingress' && 'true' || '' }}
       AMAIL_BACKEND_CONFIRM: ${{ inputs.confirm }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -201,11 +202,11 @@ jobs:
         with:
           python-version: '3.12'
       - name: Admit only the fixed successful build from the named partial
-        if: inputs.target == 'semantic-reuse-staging-resume'
+        if: inputs.target == 'semantic-reuse-staging-resume' || inputs.target == 'semantic-reuse-staging-restore-ingress'
         id: original
         run: python infra/ci/mail_backend_artifact.py admit-resume --source-run '${{ inputs.source_run }}'
       - name: Read only the fixed completed staging deployment receipt
-        if: inputs.staging_resume_run == '40204723478'
+        if: inputs.staging_resume_run == '40204723478' && inputs.target != 'semantic-reuse-staging-restore-ingress'
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
@@ -214,34 +215,40 @@ jobs:
           path: .temp/ci/semantic-reuse-completed
           merge-multiple: true
       - uses: actions/download-artifact@v4
-        if: inputs.staging_resume_run == ''
+        if: inputs.staging_resume_run == '' || inputs.target == 'semantic-reuse-staging-restore-ingress'
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.target == 'semantic-reuse-staging-resume' && inputs.source_run || github.run_id }}
+          run-id: ${{ (inputs.target == 'semantic-reuse-staging-resume' || inputs.target == 'semantic-reuse-staging-restore-ingress') && inputs.source_run || github.run_id }}
           artifact-ids: ${{ steps.original.outputs.artifact_id || needs.semantic-reuse-build.outputs.artifact_id }}
           path: .temp/ci/mail-backend
           merge-multiple: true
       - name: Restore exact tested Mail bytes without rebuilding other components
-        if: inputs.staging_resume_run == ''
+        if: inputs.staging_resume_run == '' || inputs.target == 'semantic-reuse-staging-restore-ingress'
         run: python infra/ci/mail_backend_artifact.py restore
       - uses: actions/setup-node@v4
-        if: inputs.staging_resume_run == ''
+        if: inputs.staging_resume_run == '' || inputs.target == 'semantic-reuse-staging-restore-ingress'
         with:
           node-version: 22
       - name: Install the existing pinned deployment tool
-        if: inputs.staging_resume_run == ''
+        if: inputs.staging_resume_run == '' || inputs.target == 'semantic-reuse-staging-restore-ingress'
         run: npm install --global wrangler@4.142.0
       - name: Apply the forward claim fence then replace API and maintenance with unchanged Cron
-        if: inputs.staging_resume_run == ''
+        if: inputs.staging_resume_run == '' && inputs.target != 'semantic-reuse-staging-restore-ingress'
         run: python infra/deploy/semantic_reuse_backend.py staging ${{ inputs.target == 'semantic-reuse-staging-resume' && '--resume' || '' }}
       - name: Verify only the completed runtime before the missing live journey
-        if: inputs.staging_resume_run == '40204723478'
+        if: inputs.staging_resume_run == '40204723478' && inputs.target != 'semantic-reuse-staging-restore-ingress'
         run: python infra/deploy/semantic_reuse_backend.py staging --verify-completed
+      - name: Restore only the authoritative staging ingress credential on tested API bytes
+        if: inputs.target == 'semantic-reuse-staging-restore-ingress'
+        run: python infra/deploy/semantic_reuse_backend.py staging --restore-staging-ingress
       - name: Retain the completed staging coordinates
         uses: actions/upload-artifact@v4
         with:
           name: semantic-reuse-staging-${{ github.run_id }}
-          path: .temp/semantic-reuse-staging.json
+          include-hidden-files: true
+          path: |
+            .temp/semantic-reuse-staging.json
+            .temp/semantic-reuse-ingress-restore.json
           if-no-files-found: error
           retention-days: 30
       - name: Retain exact partial coordinates without replaying writes
@@ -253,13 +260,12 @@ jobs:
           path: |
             .temp/production-upgrade-*.jsonl
             .temp/semantic-reuse-predecessor.json
-            .temp/semantic-reuse-ingress-auth.json
           if-no-files-found: ignore
           retention-days: 30
 
   semantic-reuse-journey:
     name: Semantic reuse live journey
-    if: always() && !cancelled() && needs.semantic-reuse-staging.result == 'success' && github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
+    if: always() && !cancelled() && needs.semantic-reuse-staging.result == 'success' && github.event_name == 'workflow_dispatch' && ((inputs.target == 'semantic-reuse-staging-restore-ingress' && inputs.confirm == 'RESTORE_SEMANTIC_REUSE_STAGING_INGRESS') || ((inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING')) && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
     needs: semantic-reuse-staging
     runs-on: windows-latest
     timeout-minutes: 25
@@ -300,7 +306,6 @@ jobs:
           STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
           STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
           CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
-          INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
           CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_semantic_e2e.py --reuse
