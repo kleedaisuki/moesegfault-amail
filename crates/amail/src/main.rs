@@ -41,10 +41,14 @@ use std::{
 
 /// Privacy disclosure for exploratory help, never compact command output.
 const SEMANTIC_PRIVACY_NOTICE: &str = concat!(
-    "Privacy: Active received and sent mail subjects plus bounded body-text excerpts ",
+    "Privacy: Semantic search and background semantic indexing are disabled by default. ",
+    "Enable or disable them with `amail semantic enable|disable` in the user profile; ",
+    "both require browser approval unless YOLO is enabled. When enabled, all active ",
+    "received and sent mail subjects plus bounded body-text excerpts ",
     "(combined first 12,000 UTF-8 bytes) are sent to OpenRouter and its model provider ",
-    "for background semantic indexing, even if --semantic is never used. ",
-    "--semantic also sends the search query. A multi-page semantic search keeps its query ",
+    "Voyage 4 for background semantic indexing. Disabling preserves existing embeddings ",
+    "and stops new provider requests; re-enabling rebuilds the index from active mail. ",
+    "While enabled, --semantic also sends the search query. A multi-page semantic search keeps its query ",
     "text and exact query vector in owner-scoped server state for up to 24 hours; ",
     "later pages reuse that vector without another provider call. ",
     "AMAIL_TELEMETRY=off does not disable indexing or this server retention."
@@ -129,6 +133,12 @@ enum Command {
     Billing {
         #[command(subcommand)]
         command: billing::Command,
+    },
+    /// Inspect or change account-wide semantic search with explicit user consent.
+    #[command(after_help = SEMANTIC_PRIVACY_NOTICE)]
+    Semantic {
+        #[command(subcommand)]
+        command: SemanticCommand,
     },
     /// Query provider feedback for one owned outbound message.
     Outcomes { id: String },
@@ -275,6 +285,26 @@ enum DaemonCommand {
 }
 
 #[derive(Subcommand)]
+enum SemanticCommand {
+    /// Read account-wide consent and background indexing progress.
+    Status,
+    /// Ask the user to approve sending all active mail to Voyage 4 via OpenRouter.
+    Enable,
+    /// Ask the user to stop semantic processing while retaining existing embeddings.
+    Disable,
+}
+
+impl SemanticCommand {
+    fn enabled(&self) -> Option<bool> {
+        match self {
+            Self::Status => None,
+            Self::Enable => Some(true),
+            Self::Disable => Some(false),
+        }
+    }
+}
+
+#[derive(Subcommand)]
 enum MailboxCommand {
     Acquire {
         address: String,
@@ -321,7 +351,7 @@ struct SearchArgs {
     /// KEY=VALUE filter; discover search lists metadata keys. Distinct keys may repeat this flag.
     #[arg(long = "meta")]
     metadata: Vec<String>,
-    /// Send this query to OpenRouter for semantic search; background mail indexing happens even without this option.
+    /// Send this query to Voyage 4 via OpenRouter; requires account-wide semantic opt-in.
     #[arg(long)]
     semantic: Option<String>,
     #[arg(long)]
@@ -881,6 +911,11 @@ fn approval_summary(cli: &Cli) -> String {
             "Synchronize messages within the profile's acquired mailboxes".into()
         }
         Command::Billing { .. } => "Inspect or open human-authorized billing".into(),
+        Command::Semantic { command } => match command {
+            SemanticCommand::Status => "Read account-wide semantic search status".into(),
+            SemanticCommand::Enable => "Enable account-wide semantic search and send all active mail to Voyage 4 via OpenRouter for background indexing".into(),
+            SemanticCommand::Disable => "Disable account-wide semantic search and new remote indexing requests; retain existing embeddings".into(),
+        },
         Command::SendStatus { .. } => "Inspect logical send status".into(),
         Command::SendReceipts { .. } => "Read local accepted-send receipts".into(),
         Command::SendingStatus => "Inspect sending policy and resource quotas".into(),
@@ -949,7 +984,7 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
             )?;
         }
         active = Some(store.activate(&terminal, "user")?);
-    } else if !cfg.yolo {
+    } else if !cfg.yolo && !semantic_mutation(&cli.command) {
         let requested_user = matches!(&cli.command, Command::Profile { command: ProfileCommand::Activate { name } } if name == "user")
             || matches!(&cli.command, Command::Profile { command: ProfileCommand::Release { name:Some(name) } } if name == "user");
         if active
@@ -1011,12 +1046,71 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
             }
         };
     }
+    if let Command::Semantic { command } = cli.command {
+        require_semantic_user(
+            &command,
+            active.as_ref().map(|profile| profile.name.as_str()),
+        )?;
+        return run_semantic(&api::Api::new(&cfg)?, command, cfg.yolo, cli.human);
+    }
     if let Err(error) = telemetry::init(&cfg) {
         telemetry::report_loss("initialize", &error);
     }
     command_journal::run_with_context(&cfg, command_kind(&cli.command), |command_id| {
         execute(cli, &cfg, command_id)
     })
+}
+
+fn semantic_mutation(command: &Command) -> bool {
+    matches!(command, Command::Semantic { command } if command.enabled().is_some())
+}
+
+fn require_semantic_user(command: &SemanticCommand, profile: Option<&str>) -> Result<()> {
+    if command.enabled().is_some() && profile != Some("user") {
+        return Err(machine::Failure {
+            code: "user_profile_required",
+            next_action: "activate_profile",
+            data: json!({}),
+            message: "semantic search changes require the user profile".into(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+fn semantic_consent(
+    enabled: bool,
+    generation: i64,
+    yolo: bool,
+    authorize: impl FnOnce(&str, &str) -> Result<()>,
+) -> Result<()> {
+    if yolo {
+        return Ok(());
+    }
+    let summary = if enabled {
+        format!("Enable account-wide semantic search (consent generation {generation}). All active received and sent mail subjects and bounded body text will be sent to Voyage 4 through OpenRouter for background indexing, including existing mail. New mail and semantic queries will also be processed remotely while enabled. Re-enabling rebuilds all active mail embeddings.")
+    } else {
+        format!("Disable account-wide semantic search (consent generation {generation}). Stop new remote indexing and semantic-query requests; retain existing embeddings. Requests already sent cannot be recalled. Re-enabling later will send active mail again to rebuild the index.")
+    };
+    authorize("semantic.change", &summary)
+}
+
+fn run_semantic(
+    api: &api::Api<'_>,
+    command: SemanticCommand,
+    yolo: bool,
+    human: bool,
+) -> Result<()> {
+    let state = api.semantic_status()?;
+    let Some(enabled) = command.enabled() else {
+        return emit(&state, human);
+    };
+    let generation = state
+        .get("generation")
+        .and_then(Value::as_i64)
+        .context("semantic status is missing its consent generation")?;
+    semantic_consent(enabled, generation, yolo, approval::authorize_request)?;
+    emit(&api.set_semantic(enabled, generation)?, human)
 }
 
 fn run_profile(
@@ -1141,6 +1235,7 @@ fn command_kind(command: &Command) -> Option<command_journal::CommandKind> {
         Command::TelemetryFlush { .. }
         | Command::Profile { .. }
         | Command::Mailbox { .. }
+        | Command::Semantic { .. }
         | Command::Daemon { .. }
         | Command::DaemonServe
         | Command::Discover { .. }
@@ -1433,12 +1528,13 @@ mod tests {
 
     /// Keep the third-party processing disclosure visible at first-use discovery points.
     #[test]
-    fn help_discloses_automatic_semantic_indexing() {
+    fn help_discloses_opt_in_semantic_indexing() {
         for args in [
             vec!["amail", "--help"],
             vec!["amail", "login", "--help"],
             vec!["amail", "auth", "login", "--help"],
             vec!["amail", "search", "--help"],
+            vec!["amail", "semantic", "--help"],
         ] {
             let help = match Cli::try_parse_from(args.clone()) {
                 Ok(_) => panic!("help unexpectedly parsed as a command: {args:?}"),
@@ -1452,13 +1548,73 @@ mod tests {
                 .join(" ");
             for phrase in [
                 "background semantic indexing",
-                "even if --semantic is never used",
+                "disabled by default",
+                "unless YOLO is enabled",
+                "Disabling preserves existing embeddings",
+                "re-enabling rebuilds the index",
+                "Voyage 4",
                 "--semantic also sends the search query",
                 "up to 24 hours",
                 "AMAIL_TELEMETRY=off does not disable indexing",
             ] {
                 assert!(output.contains(phrase), "missing {phrase} from {args:?}");
             }
+        }
+    }
+
+    #[test]
+    fn semantic_changes_require_user_but_status_does_not() {
+        for command in [SemanticCommand::Enable, SemanticCommand::Disable] {
+            assert!(require_semantic_user(&command, Some("user")).is_ok());
+            for profile in [None, Some("agent")] {
+                let error = require_semantic_user(&command, profile).unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<machine::Failure>().unwrap().code,
+                    "user_profile_required"
+                );
+            }
+        }
+        assert!(require_semantic_user(&SemanticCommand::Status, Some("agent")).is_ok());
+        assert!(require_semantic_user(&SemanticCommand::Status, None).is_ok());
+    }
+
+    #[test]
+    fn semantic_consent_binds_change_generation_and_respects_yolo() {
+        for enabled in [true, false] {
+            let mut calls = 0;
+            semantic_consent(enabled, 17, false, |operation, summary| {
+                calls += 1;
+                assert_eq!(operation, "semantic.change");
+                assert!(summary.contains("generation 17"));
+                assert!(summary.contains(if enabled {
+                    "Voyage 4 through OpenRouter"
+                } else {
+                    "retain existing embeddings"
+                }));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(calls, 1);
+            semantic_consent(enabled, 17, true, |_, _| {
+                panic!("YOLO must bypass browser approval")
+            })
+            .unwrap();
+            assert!(semantic_consent(enabled, 17, false, |_, _| anyhow::bail!(
+                "authorization_denied"
+            ))
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn semantic_commands_use_remote_activity_and_separate_consent() {
+        for action in ["status", "enable", "disable"] {
+            let command = Cli::try_parse_from(["amail", "semantic", action])
+                .unwrap()
+                .command;
+            assert_eq!(semantic_mutation(&command), action != "status");
+            assert!(!local_profile_operation(&command));
+            assert!(command_kind(&command).is_none());
         }
     }
 

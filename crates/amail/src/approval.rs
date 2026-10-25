@@ -63,6 +63,7 @@ fn operation_label(operation: &str) -> &'static str {
         "read" | "messages.archive" => "Download email",
         "pack" | "unpack" => "Process a mail archive",
         "billing" => "Open amail billing",
+        "semantic.change" => "Change account-wide semantic search consent",
         _ => "Run the requested amail operation",
     }
 }

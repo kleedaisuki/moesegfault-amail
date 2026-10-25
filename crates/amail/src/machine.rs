@@ -73,6 +73,8 @@ pub fn error_record(error: &anyhow::Error) -> Value {
             | "search_cursor_vector_changed" => "restart_search",
             "events_cursor_expired" => "restart_events",
             "required_client_version" => "upgrade_client",
+            "semantic_disabled" | "semantic_state_changed" => "inspect_semantic_status",
+            "user_profile_required" => "activate_profile",
             "invalid_billing_plan"
             | "invalid_billing_action"
             | "invalid_idempotency_key"
@@ -86,6 +88,9 @@ pub fn error_record(error: &anyhow::Error) -> Value {
                 "resume_billing_session"
             }
             "billing_unavailable" => "retry_later",
+            _ if failure.operation == "semantic.change" && failure.status.is_server_error() => {
+                "inspect_semantic_status"
+            }
             "send_held"
             | "recipient_suppressed"
             | "recipient_not_allowed"
@@ -146,6 +151,9 @@ mod tests {
     fn api_actions_and_codes_are_safe() {
         for (code, status, expected) in [
             ("search_cursor_vector_changed", 409, "restart_search"),
+            ("semantic_disabled", 409, "inspect_semantic_status"),
+            ("semantic_state_changed", 409, "inspect_semantic_status"),
+            ("user_profile_required", 403, "activate_profile"),
             ("events_cursor_expired", 410, "restart_events"),
             ("send_held", 503, "stop"),
             ("recipient_blocked", 403, "stop"),
@@ -182,6 +190,21 @@ mod tests {
         }
         .into();
         assert_eq!(error_record(&error)["next_action"], "query_send_status");
+    }
+    #[test]
+    fn uncertain_semantic_change_requires_status_not_replay() {
+        let error: anyhow::Error = crate::api::ApiFailure {
+            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            code: "internal_error".into(),
+            request_id: None,
+            operation: "semantic.change".into(),
+            message: "safe".into(),
+        }
+        .into();
+        assert_eq!(
+            error_record(&error)["next_action"],
+            "inspect_semantic_status"
+        );
     }
     #[test]
     fn uncertain_billing_creation_reuses_original_key() {

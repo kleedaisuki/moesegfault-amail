@@ -398,6 +398,8 @@ impl<'a> Api<'a> {
                     code: "transport_failed",
                     next_action: if operation == "messages.send" {
                         "query_send_status"
+                    } else if operation == "semantic.change" {
+                        "inspect_semantic_status"
                     } else if operation == "billing.session.create" {
                         "reuse_billing_session_key"
                     } else {
@@ -443,6 +445,8 @@ impl<'a> Api<'a> {
                 code: "response_incomplete",
                 next_action: if operation == "messages.send" {
                     "query_send_status"
+                } else if operation == "semantic.change" {
+                    "inspect_semantic_status"
                 } else if operation == "billing.session.create" {
                     "reuse_billing_session_key"
                 } else {
@@ -527,6 +531,21 @@ impl<'a> Api<'a> {
     /// Read authoritative effective resources and accrued, not necessarily settled, usage.
     pub fn billing_status(&self) -> Result<Value> {
         self.json(Method::GET, "/v1/billing", "billing.status", None)
+    }
+
+    /// Read account-wide semantic consent without triggering third-party processing.
+    pub fn semantic_status(&self) -> Result<Value> {
+        self.json(Method::GET, "/v1/semantic", "semantic.status", None)
+    }
+
+    /// Apply only the consent generation read before user approval or YOLO execution.
+    pub fn set_semantic(&self, enabled: bool, expected_generation: i64) -> Result<Value> {
+        self.json(
+            Method::POST,
+            "/v1/semantic",
+            "semantic.change",
+            Some(&serde_json::json!({"enabled":enabled,"expected_generation":expected_generation})),
+        )
     }
 
     /// Mint human-only browser authorization with a stable retry identity.
