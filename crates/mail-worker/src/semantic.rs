@@ -49,18 +49,19 @@ async fn status(database: &Database, user: &Principal) -> AppResult<Response> {
     let sql = format!(
         "SELECT COALESCE(p.enabled,0) AS enabled,COALESCE(p.generation,0) AS generation,
          (SELECT COUNT(*) FROM embedding_work w JOIN messages m ON m.id=w.message_id
-          WHERE w.owner_iss=?1 AND w.owner_sub=?2 AND m.deleted_at IS NULL AND {}) AS pending_messages,
-         (SELECT COUNT(*) FROM messages m WHERE m.owner_iss=?1 AND m.owner_sub=?2
-          AND m.deleted_at IS NULL AND m.embedding_json IS NOT NULL
-          AND m.embedding_model=?3 AND m.embedding_dimensions=256 AND m.embedding_input_version=1
-          AND m.embedding_consent_generation=p.generation AND {}) AS indexed_messages
+          WHERE w.owner_iss=?1 AND w.owner_sub=?2 AND m.deleted_at IS NULL
+          AND NOT EXISTS(SELECT 1 FROM semantic_compatible_embeddings c WHERE c.message_id=m.id)
+          AND {}) AS pending_messages,
+         (SELECT COUNT(*) FROM messages m JOIN semantic_compatible_embeddings c ON c.message_id=m.id
+          WHERE m.owner_iss=?1 AND m.owner_sub=?2 AND m.deleted_at IS NULL
+          AND {}) AS indexed_messages
          FROM (SELECT 1) seed LEFT JOIN semantic_preferences p ON p.owner_iss=?1 AND p.owner_sub=?2",
         crate::tmpaddr::message_filter("m"),
         crate::tmpaddr::message_filter("m"),
     );
     let row = database
         .prepare(sql)
-        .bind(&[bind_str(&user.iss), bind_str(&user.sub), bind_str(MODEL)])?
+        .bind(&[bind_str(&user.iss), bind_str(&user.sub)])?
         .first::<Status>(None)
         .await?
         .ok_or_else(|| AppError::conflict("semantic_state_changed"))?;
@@ -379,5 +380,164 @@ mod tests {
             None
         );
         assert_eq!(db.execute("UPDATE embedding_work SET lease_token='new-next',consent_lease_token='new-next',lease_until=299 WHERE message_id='one'",[]).unwrap(),0);
+    }
+
+    fn publish(db: &Connection, id: &str, model: &str, generation: i64) -> String {
+        let mut coordinates = vec![0.0_f32; 256];
+        coordinates[0] = 1.0;
+        let vector = serde_json::to_string(&coordinates).unwrap();
+        db.execute(
+            "UPDATE messages SET embedding_json=?1,embedding_model=?2,embedding_dimensions=256,
+            embedding_input_version=1,embedding_consent_generation=?3 WHERE id=?4",
+            params![vector, model, generation, id],
+        )
+        .unwrap();
+        vector
+    }
+
+    fn migrate_incremental(db: &Connection) {
+        db.execute_batch(include_str!(
+            "../migrations/0019_incremental_embeddings.sql"
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn incremental_reenable_reuses_vectors_and_migrates_qwen_once() {
+        let db = database();
+        for id in ["good", "qwen", "missing"] {
+            insert(&db, id, "sub");
+        }
+        db.execute_batch(include_str!("../migrations/0018_semantic_consent.sql"))
+            .unwrap();
+        assert!(change(&db, true, 0, "user", "session"));
+        let original = publish(&db, "good", MODEL, 1);
+        publish(&db, "qwen", "qwen/qwen3-embedding-8b", 1);
+        migrate_incremental(&db);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM embedding_work", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            db.query_row("SELECT generation FROM semantic_preferences", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT embedding_json FROM messages WHERE id='good'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            original
+        );
+        publish(&db, "qwen", MODEL, 1);
+        publish(&db, "missing", MODEL, 1);
+        assert!(change(&db, false, 1, "user", "session"));
+        insert(&db, "received-off", "sub");
+        assert!(change(&db, true, 2, "user", "session"));
+        assert_eq!(
+            db.query_row("SELECT message_id FROM embedding_work", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "received-off"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT embedding_consent_generation FROM messages WHERE id='good'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT embedding_json FROM messages WHERE id='good'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            original
+        );
+        publish(&db, "received-off", MODEL, 3);
+        assert!(change(&db, false, 3, "user", "session"));
+        assert!(change(&db, true, 4, "user", "session"));
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM embedding_work", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM semantic_compatible_embeddings",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            4
+        );
+    }
+
+    #[test]
+    fn incremental_toggle_preserves_backoff_and_quarantine_but_revokes_leases() {
+        let db = database();
+        insert(&db, "retry", "sub");
+        insert(&db, "quarantine", "sub");
+        db.execute_batch(include_str!("../migrations/0018_semantic_consent.sql"))
+            .unwrap();
+        assert!(change(&db, true, 0, "user", "session"));
+        db.execute("UPDATE embedding_work SET attempts=7,next_attempt_at=9000,last_error_code='provider_transient',
+            lease_token='old',consent_lease_token='old',lease_until=999 WHERE message_id='retry'",[]).unwrap();
+        db.execute("UPDATE embedding_work SET state='quarantined',attempts=3,last_error_code='provider_malformed'
+            WHERE message_id='quarantine'",[]).unwrap();
+        migrate_incremental(&db);
+        assert!(change(&db, false, 1, "user", "session"));
+        assert!(change(&db, true, 2, "user", "session"));
+        let retry: (i64, i64, i64, Option<String>, i64) = db.query_row(
+            "SELECT attempts,next_attempt_at,lease_until,lease_token,consent_generation FROM embedding_work WHERE message_id='retry'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
+        assert_eq!(retry, (7, 9000, 0, None, 3));
+        let poison: (String, i64, String) = db.query_row(
+            "SELECT state,attempts,last_error_code FROM embedding_work WHERE message_id='quarantine'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(
+            poison,
+            ("quarantined".into(), 3, "provider_malformed".into())
+        );
+    }
+
+    #[test]
+    fn incremental_migration_blocks_old_worker_claims_for_retained_vectors() {
+        let db = database();
+        insert(&db, "good", "sub");
+        insert(&db, "missing", "sub");
+        db.execute_batch(include_str!("../migrations/0018_semantic_consent.sql"))
+            .unwrap();
+        assert!(change(&db, true, 0, "user", "session"));
+        publish(&db, "good", MODEL, 1);
+        db.execute("UPDATE embedding_work SET lease_token='before',consent_lease_token='before',lease_until=99
+            WHERE message_id='missing'",[]).unwrap();
+        migrate_incremental(&db);
+        assert_eq!(
+            db.query_row(
+                "SELECT lease_token FROM embedding_work WHERE message_id='missing'",
+                [],
+                |r| r.get::<_, Option<String>>(0)
+            )
+            .unwrap(),
+            None
+        );
+        db.execute("INSERT INTO embedding_work(message_id,owner_iss,owner_sub,received_at,consent_generation)
+            VALUES('good','iss','sub',0,1)",[]).unwrap();
+        assert_eq!(db.execute("UPDATE embedding_work SET lease_token='v031',consent_lease_token='v031',lease_until=99
+            WHERE message_id='good'",[]).unwrap(), 0);
+        assert_eq!(db.execute("UPDATE embedding_work SET lease_token='new',consent_lease_token='new',lease_until=99
+            WHERE message_id='missing'",[]).unwrap(), 1);
     }
 }
