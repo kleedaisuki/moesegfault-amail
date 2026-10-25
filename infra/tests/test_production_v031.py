@@ -47,9 +47,9 @@ class ProductionV031Tests(unittest.TestCase):
         source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         body = source.split("  production-v031:\n", 1)[1].split("  production-v030:\n", 1)[0]
         self.assertIn("inputs.confirm == 'RUN_PRODUCTION_V031' && github.ref == 'refs/heads/main'", body)
-        self.assertIn("needs: [cli, worker, worker-build, site, dns, provider-live]", body)
+        self.assertIn("needs: production-v031-promotion-checks", body)
         self.assertIn("environment: production", body)
-        self.assertLess(body.index("python infra/ci/worker_artifact.py restore"),
+        self.assertLess(body.index("python infra/ci/accepted_staging_artifact.py restore"),
                         body.index("python infra/deploy/production_v031.py upgrade"))
         for name in ("deploy-worker", "deploy-trace-sink", "deploy-ingress", "deploy-events", "deploy-site"):
             job = source.split(f"  {name}:\n", 1)[1].split("    needs:", 1)[0]

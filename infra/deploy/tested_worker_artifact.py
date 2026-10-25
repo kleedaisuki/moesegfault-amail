@@ -1,11 +1,14 @@
-"""Recheck same-run public generated modules immediately before a provider write.
+"""Recheck admitted public generated modules immediately before a provider write.
 
 The workflow's successful full Worker gate is admission; this module is byte and
-identity verification, not an alternative admission or cross-run reuse policy.
-No ancestry exemption, fallback rebuild, provider capability or test verdict exists.
+identity verification. An explicit accepted-staging promotion uses the dedicated
+adapter's original producer identity, runtime closure and real-journey admission;
+the default same-run path and manifest format remain unchanged. Neither path can
+rebuild missing bytes or turn a failed staging writer into successful acceptance.
 """
 
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -24,6 +27,10 @@ def require_artifact(component: str) -> None:
     """
     if component not in ("mail_api", "trace_sink", "mail_ingress", "mail_events", "identity_test_inbox"):
         raise ValueError("artifact_component_unreviewed")
+    if os.getenv("AMAIL_ACCEPTED_ARTIFACT_PURPOSE"):
+        import accepted_staging_artifact
+        accepted_staging_artifact.verify_installed()
+        return
     with span("workers.artifact", "precondition", component=component) as facts:
         facts.reason = "same_run_artifact_required"
         manifest = artifact.FOLDER / "manifest.json"
