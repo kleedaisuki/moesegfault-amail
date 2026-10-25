@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import argparse
 from email.message import EmailMessage
+from email.policy import SMTP
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,8 @@ import sys
 import tempfile
 import time
 from typing import Any
+import urllib.error
+import urllib.request
 
 import staging_hosted_e2e as hosted
 import staging_mail_e2e as mail
@@ -38,6 +41,7 @@ SOURCE_SHA: str = "f262e8e433ffeabb7d67d0fc26c363be7e4133f8"
 API_VERSION: str = "d592cd2a-95a3-4c89-859a-18a191bd641a"
 SINK_VERSION: str = "5e556087-9a75-40db-9eb5-869a4b56372e"
 UUID: re.Pattern[str] = re.compile(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\Z")
+PRIVATE_INGRESS: str = "https://mail-staging.moesegfault.dev/internal/inbound"
 
 
 def acceptance_receipt(runtime: object, *, run_id: str, checkout_sha: str) -> dict[str, str]:
@@ -160,6 +164,40 @@ def await_address(binary: Path, environment: dict[str, str], address: str) -> No
     raise mail.ProbeFailure("semantic_fixture_address_timeout")
 
 
+def private_ingress_fixture(message: EmailMessage, address: str, secret: str) -> str:
+    """Submit one owned synthetic fixture through the existing protected ingress."""
+    mail.check(re.fullmatch(r"semantic-[a-f0-9]{16}@tmpaddr-staging\.moesegfault\.dev", address) is not None
+               and message.get_all("To") == [address] and 32 <= len(secret) <= 512,
+               "semantic_fixture_ingress_scope_invalid")
+    body: bytes = message.as_bytes(policy=SMTP)
+    mail.check(0 < len(body) <= 16_384, "semantic_fixture_ingress_size_invalid")
+    request: urllib.request.Request = urllib.request.Request(PRIVATE_INGRESS, data=body, method="POST",
+        headers={"Content-Type": "message/rfc822", "x-amail-ingress-secret": secret,
+                 "x-amail-envelope-to": address, "x-amail-api-version": "2"})
+    try:
+        # The mature redirect refusal keeps both the MIME and secret on the one
+        # literal staging origin, including foreign 307/308 responses.
+        with urllib.request.build_opener(mail.RejectRedirect).open(request, timeout=30) as response:
+            status_code: int = response.status
+            raw: bytes = response.read(16_385)
+    except urllib.error.HTTPError as error:
+        code: int = error.code
+        error.close()
+        label: str = str(code) if type(code) is int and 100 <= code <= 599 else "invalid"
+        raise mail.ProbeFailure("semantic_fixture_ingress_http_" + label) from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise mail.ProbeFailure("semantic_fixture_ingress_transport_unknown") from None
+    mail.check(status_code == 201 and len(raw) <= 16_384, "semantic_fixture_ingress_receipt_invalid")
+    try:
+        receipt: object = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        raise mail.ProbeFailure("semantic_fixture_ingress_receipt_invalid") from None
+    mail.check(isinstance(receipt, dict) and set(receipt) == {"id", "request_id"}
+               and all(isinstance(receipt.get(key), str) and UUID.fullmatch(receipt[key]) is not None
+                       for key in ("id", "request_id")), "semantic_fixture_ingress_receipt_invalid")
+    return receipt["id"]
+
+
 def execute(*, reuse: bool = False) -> None:
     import staging_identity_cdp as identity
 
@@ -205,16 +243,23 @@ def execute(*, reuse: bool = False) -> None:
         zone: str = os.environ["CLOUDFLARE_ZONE_ID"]
         routing_token: str = os.environ["CF_EMAIL_ROUTING_TOKEN"]
         mail.assert_route(zone, routing_token, address, True)
-        time.sleep(60)
+        if not reuse:
+            time.sleep(60)
         message: EmailMessage
         oracle: dict[str, Any]
         message, oracle = mail.make_mail(address, nonce + "-semantic", False)
-        mail.smtp_send_receipts(os.environ["CLOUDFLARE_API_TOKEN"], address, [(message, oracle)])
-        delivered: dict[str, dict[str, Any]] = mail.await_messages(binary, environment, {oracle["subject"]})
-        candidate: Any = delivered[oracle["subject"]].get("id")
-        mail.check(isinstance(candidate, str) and mail.MAIL_ID.fullmatch(candidate) is not None,
-                   "semantic_fixture_message_id_invalid")
-        message_id = candidate
+        if reuse:
+            message_id = private_ingress_fixture(message, address, os.environ.get("INGRESS_SECRET", ""))
+            received: dict[str, Any] = one(binary, environment, "get", message_id)
+            mail.check(received.get("id") == message_id and received.get("subject") == oracle["subject"],
+                       "semantic_fixture_ingress_not_cli_visible")
+        else:
+            mail.smtp_send_receipts(os.environ["CLOUDFLARE_API_TOKEN"], address, [(message, oracle)])
+            delivered: dict[str, dict[str, Any]] = mail.await_messages(binary, environment, {oracle["subject"]})
+            candidate: Any = delivered[oracle["subject"]].get("id")
+            mail.check(isinstance(candidate, str) and mail.MAIL_ID.fullmatch(candidate) is not None,
+                       "semantic_fixture_message_id_invalid")
+            message_id = candidate
 
         semantic_cleanup_required = True
         enabled: dict[str, Any] = status(binary, environment, "enable")
@@ -282,7 +327,8 @@ def execute(*, reuse: bool = False) -> None:
         json.dump(receipt, file, sort_keys=True)
     EVIDENCE.write_text(json.dumps({"schema": "amail-staging-semantic/v1",
         "source_run": os.environ.get("GITHUB_RUN_ID", "") if reuse else SOURCE_RUN,
-        "smtp_fixtures": 1, "semantic_query_intents": 1,
+        **({"fixture_transport": "private_ingress", "mail_fixtures": 1} if reuse else {"smtp_fixtures": 1}),
+        "semantic_query_intents": 1,
         "default_off": True, "background_backfill": True, "voyage4_query": True,
         "disable_literal_search": True, "reenable_reuses_vectors": reuse,
         "reenable_full_rebuild": not reuse,

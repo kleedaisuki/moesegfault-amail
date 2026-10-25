@@ -299,6 +299,7 @@ jobs:
           STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
           STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
           CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
           CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_semantic_e2e.py --reuse
