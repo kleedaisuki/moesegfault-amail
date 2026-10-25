@@ -172,8 +172,8 @@ jobs:
           retention-days: 30
 
   semantic-reuse-staging:
-    name: Deploy semantic reuse staging backend
-    if: always() && (needs.semantic-reuse-build.result == 'success' || inputs.target == 'semantic-reuse-staging-resume') && github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
+    name: Semantic reuse staging admission
+    if: always() && !cancelled() && (needs.semantic-reuse-build.result == 'success' || inputs.target == 'semantic-reuse-staging-resume') && github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1 && (inputs.staging_resume_run == '' || inputs.staging_resume_run == '40204723478')
     needs: semantic-reuse-build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -204,7 +204,17 @@ jobs:
         if: inputs.target == 'semantic-reuse-staging-resume'
         id: original
         run: python infra/ci/mail_backend_artifact.py admit-resume --source-run '${{ inputs.source_run }}'
+      - name: Read only the fixed completed staging deployment receipt
+        if: inputs.staging_resume_run == '40204723478'
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40204723478
+          artifact-ids: 12603825692
+          path: .temp/ci/semantic-reuse-completed
+          merge-multiple: true
       - uses: actions/download-artifact@v4
+        if: inputs.staging_resume_run == ''
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.target == 'semantic-reuse-staging-resume' && inputs.source_run || github.run_id }}
@@ -212,14 +222,21 @@ jobs:
           path: .temp/ci/mail-backend
           merge-multiple: true
       - name: Restore exact tested Mail bytes without rebuilding other components
+        if: inputs.staging_resume_run == ''
         run: python infra/ci/mail_backend_artifact.py restore
       - uses: actions/setup-node@v4
+        if: inputs.staging_resume_run == ''
         with:
           node-version: 22
       - name: Install the existing pinned deployment tool
+        if: inputs.staging_resume_run == ''
         run: npm install --global wrangler@4.142.0
       - name: Apply the forward claim fence then replace API and maintenance with unchanged Cron
+        if: inputs.staging_resume_run == ''
         run: python infra/deploy/semantic_reuse_backend.py staging ${{ inputs.target == 'semantic-reuse-staging-resume' && '--resume' || '' }}
+      - name: Verify only the completed runtime before the missing live journey
+        if: inputs.staging_resume_run == '40204723478'
+        run: python infra/deploy/semantic_reuse_backend.py staging --verify-completed
       - name: Retain the completed staging coordinates
         uses: actions/upload-artifact@v4
         with:
@@ -241,7 +258,7 @@ jobs:
 
   semantic-reuse-journey:
     name: Semantic reuse live journey
-    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
+    if: always() && !cancelled() && needs.semantic-reuse-staging.result == 'success' && github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging' || inputs.target == 'semantic-reuse-staging-resume') && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
     needs: semantic-reuse-staging
     runs-on: windows-latest
     timeout-minutes: 25

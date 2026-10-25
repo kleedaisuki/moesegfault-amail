@@ -27,12 +27,15 @@ STAGING = {"amail-mail-staging": "d592cd2a-95a3-4c89-859a-18a191bd641a",
            "amail-trace-sink-staging": "5e556087-9a75-40db-9eb5-869a4b56372e"}
 QUEUES = {"production": (previous.prior.QUEUE, previous.prior.DLQ),
           "staging": ("fcee510036af42c189e28c0b6ff9508e", "f023f804b7bd4d8691fbfcb60416a001")}
+COMPLETED_STAGING_RUN = "40204723478"
+COMPLETED_STAGING_SOURCE = "6db9d5f8444b3c2e471e5c5a00e48af95930500e"
 FAILURES = frozenset({"semantic_reuse_policy_changed", "semantic_reuse_adapter_unverified",
     "semantic_reuse_migration_unreviewed", "semantic_reuse_migration_unverified",
     "semantic_reuse_retained_graph_changed", "semantic_reuse_secrets_missing",
     "schema_objects_unverified", "schema_object_drift", "schema_columns_unverified",
     "schema_indexes_unverified", "schema_index_columns_unverified",
-    "schema_migration_provenance_unverified", "semantic_reuse_partial_unreviewed"}) | previous.prior.graph.FAILURES
+    "schema_migration_provenance_unverified", "semantic_reuse_partial_unreviewed",
+    "semantic_reuse_completed_origin_unverified"}) | previous.prior.graph.FAILURES
 
 
 def select(realm: str, pins: dict[str, str]) -> None:
@@ -179,13 +182,63 @@ def run(realm: str, *, resume: bool = False) -> None:
     print(f"semantic_reuse_backend={realm}_verified")
 
 
+def verify_completed() -> None:
+    """Read the one completed staging deployment; never repeat its mutations."""
+    import sys
+    sys.path.insert(0, str(ROOT / "infra/ci"))
+    import mail_backend_artifact as artifact
+    artifact.context("staging")
+    artifact.original_identity()
+    metadata = artifact.accepted.github(f"runs/{COMPLETED_STAGING_RUN}")
+    if (metadata.get("status") != "completed" or metadata.get("conclusion") != "success"
+            or str(metadata.get("id")) != COMPLETED_STAGING_RUN
+            or metadata.get("head_sha") != COMPLETED_STAGING_SOURCE
+            or metadata.get("head_branch") != artifact.BRANCH
+            or metadata.get("repository", {}).get("full_name") != artifact.accepted.REPO
+            or metadata.get("path") != ".github/workflows/ci.yml"
+            or metadata.get("event") != "workflow_dispatch" or metadata.get("run_attempt") != 1):
+        raise ValueError("semantic_reuse_completed_origin_unverified")
+    artifact.accepted.successful_jobs(COMPLETED_STAGING_RUN, frozenset({"Deploy semantic reuse staging backend"}))
+    artifact.accepted.runtime_closure(COMPLETED_STAGING_SOURCE, os.environ["GITHUB_SHA"])
+    origin = artifact.metadata(ROOT / ".temp/ci/semantic-reuse-completed/semantic-reuse-staging.json")
+    pins = dict(STAGING)
+    pins["amail-mail-staging"] = "75bbcb55-e6f5-42e3-b65b-acb6dbc990c9"
+    pins["amail-mail-maintenance-staging"] = "0ee61a70-4040-40fe-a117-48d41c92f2de"
+    if (origin.get("schema") != "semantic-index-reuse/v1" or origin.get("realm") != "staging"
+            or origin.get("run_id") != COMPLETED_STAGING_RUN or origin.get("source_sha") != COMPLETED_STAGING_SOURCE
+            or origin.get("migration") != 19 or origin.get("cron_changed") is not False
+            or any(origin.get(field) != pins[name] for field, name in
+                (("api_version", "amail-mail-staging"), ("maintenance_version", "amail-mail-maintenance-staging"),
+                 ("sink_version", "amail-trace-sink-staging")))):
+        raise ValueError("semantic_reuse_completed_origin_unverified")
+    current, policy = observe("staging", pins)
+    database = DatabaseClient(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"], "staging")
+    schema(database, "staging", 19)
+    if (previous.prior.digest(current["retained"]) != origin["retained_fingerprint"]
+            or previous.prior.digest(policy) != origin["policy_fingerprint"]):
+        raise ValueError("semantic_reuse_retained_graph_changed")
+    value = {**origin, "source_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+             "graph": current["graph"], "completion_mode": "read_only",
+             "original_deployment_run": COMPLETED_STAGING_RUN,
+             "original_deployment_source": COMPLETED_STAGING_SOURCE}
+    with (ROOT / ".temp/semantic-reuse-staging.json").open("x", encoding="utf-8") as file:
+        json.dump(value, file, sort_keys=True)
+    print("semantic_reuse_backend=staging_verified read_only=true")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("realm", choices=("staging", "production"))
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--verify-completed", action="store_true")
     args = parser.parse_args()
     try:
-        run(args.realm, resume=args.resume)
+        if args.verify_completed:
+            if args.realm != "staging" or args.resume:
+                raise ValueError("semantic_reuse_completed_origin_unverified")
+            verify_completed()
+        else:
+            run(args.realm, resume=args.resume)
     except Exception as error:
         reason = str(error) if isinstance(error, ValueError) and str(error) in FAILURES else "unknown"
         print(f"semantic_reuse_backend=unverified reason={reason} class={type(error).__name__}")

@@ -21,7 +21,7 @@ TREES = ("crates/mail-worker/build",)
 ENTRIES = ("crates/mail-worker/entry/api.mjs", "crates/mail-worker/entry/maintenance.mjs")
 BRANCH = "codex/semantic-index-reuse"
 BUILD_JOB = "Semantic reuse backend build"
-STAGING_JOB = "Deploy semantic reuse staging backend"
+STAGING_JOB = "Semantic reuse staging admission"
 PARTIAL_RUN = "40203420616"
 PARTIAL_SOURCE = "f3f13e4776871b7ab4232e113bc62a592b63d0f3"
 
