@@ -11,6 +11,7 @@ from email.message import EmailMessage
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -19,7 +20,6 @@ import time
 from typing import Any
 
 import staging_hosted_e2e as hosted
-import staging_identity_cdp as identity
 import staging_mail_e2e as mail
 
 
@@ -28,6 +28,42 @@ CONFIRMATION: str = "RUN_STAGING_SEMANTIC_V031"
 TMP_DOMAIN: str = "tmpaddr-staging.moesegfault.dev"
 POLICY: str = "voyage4_no_training_retention_v1"
 EVIDENCE: Path = mail.TEMP / "staging-semantic-evidence.json"
+RUNTIME: Path = mail.TEMP / "staging-semantic-runtime.json"
+ACCEPTANCE: Path = mail.TEMP / "staging-semantic-acceptance.json"
+SOURCE_RUN: str = "40188956353"
+SOURCE_SHA: str = "f262e8e433ffeabb7d67d0fc26c363be7e4133f8"
+API_VERSION: str = "d592cd2a-95a3-4c89-859a-18a191bd641a"
+SINK_VERSION: str = "5e556087-9a75-40db-9eb5-869a4b56372e"
+UUID: re.Pattern[str] = re.compile(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\Z")
+
+
+def acceptance_receipt(runtime: object, *, run_id: str, checkout_sha: str) -> dict[str, str]:
+    """Bind cleaned acceptance to the original producer and preflight's exact pins."""
+    expected: dict[str, str] = {"schema": "staging-semantic-acceptance/v1",
+        "source_run_id": SOURCE_RUN, "source_sha": SOURCE_SHA,
+        "run_id": run_id, "checkout_sha": checkout_sha,
+        "api_version": API_VERSION, "sink_version": SINK_VERSION}
+    mail.check(re.fullmatch(r"[1-9][0-9]{0,19}", run_id) is not None
+               and re.fullmatch(r"[0-9a-f]{40}", checkout_sha) is not None,
+               "semantic_acceptance_identity_invalid")
+    mail.check(isinstance(runtime, dict) and set(runtime) == set(expected) | {"maintenance_version"}
+               and all(isinstance(value, str) for value in runtime.values())
+               and all(runtime.get(key) == value for key, value in expected.items())
+               and UUID.fullmatch(runtime["maintenance_version"]) is not None,
+               "semantic_acceptance_runtime_unverified")
+    return {**expected, "maintenance_version": runtime["maintenance_version"]}
+
+
+def read_runtime() -> dict[str, str]:
+    mail.check(not RUNTIME.is_symlink() and RUNTIME.is_file() and RUNTIME.stat().st_size <= 16_384
+               and not ACCEPTANCE.exists() and not ACCEPTANCE.is_symlink(),
+               "semantic_acceptance_runtime_file_invalid")
+    try:
+        value: object = json.loads(RUNTIME.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise mail.ProbeFailure("semantic_acceptance_runtime_file_invalid") from None
+    return acceptance_receipt(value, run_id=os.environ.get("GITHUB_RUN_ID", ""),
+                              checkout_sha=os.environ.get("GITHUB_SHA", ""))
 
 
 def one(binary: Path, environment: dict[str, str], *args: str) -> dict[str, Any]:
@@ -93,10 +129,13 @@ def await_address(binary: Path, environment: dict[str, str], address: str) -> No
 
 
 def execute() -> None:
+    import staging_identity_cdp as identity
+
     mail.check(os.environ.get("GITHUB_REF") == BRANCH
                and os.environ.get("AMAIL_STAGING_SEMANTIC_CONFIRM") == CONFIRMATION
-               and os.environ.get("AMAIL_SOURCE_RUN") == "40188956353",
+               and os.environ.get("AMAIL_SOURCE_RUN") == SOURCE_RUN,
                "semantic_staging_confirmation_required")
+    runtime: dict[str, str] = read_runtime()
     username: str
     password: str
     username, password = hosted.validate_environment()
@@ -193,6 +232,10 @@ def execute() -> None:
     if primary is not None or cleanup is not None:
         labels: list[str] = [hosted.safe_stage_code(error) for error in (primary, cleanup) if error is not None]
         raise mail.ProbeFailure("_cleanup_".join(labels))
+    receipt: dict[str, str] = acceptance_receipt(runtime,
+        run_id=os.environ.get("GITHUB_RUN_ID", ""), checkout_sha=os.environ.get("GITHUB_SHA", ""))
+    with ACCEPTANCE.open("x", encoding="utf-8") as file:
+        json.dump(receipt, file, sort_keys=True)
     EVIDENCE.write_text(json.dumps({"schema": "amail-staging-semantic/v1",
         "source_run": "40188956353", "smtp_fixtures": 1, "semantic_query_intents": 1,
         "default_off": True, "background_backfill": True, "voyage4_query": True,
