@@ -20,14 +20,17 @@ Production API and maintenance share response-owned fresh Mail D1
 `moesegfault-mail-production-708b6d6c734779d657f5abb3`, and R2
 `moesegfault-mail-raw-production-708b6d6c734779d657f5abb3`.
 Current checked-in configurations are authoritative for bindings.
-The last completed production epoch is v0.3.0 upgrade run `40116604490`,
-source `d3d913d4bf59f48790a2753bc066033b4d8cf7a6`, receipt artifact `12570076705`.
-It retained all 11 existing address-ownership records and the unchanged allowed
-policy. Exact serving versions and formal publication are recorded in
-[its completed delivery](v0.3.0/production-delivery.md). This is the reviewed
-predecessor for v0.3.1, not permission to replay an older writer. Every future
-writer must admit fresh live pins and preserve the original external graph and
-policy; names or stale snapshots do not establish ownership.
+The current completed production backend epoch is v0.3.1 read-only completion
+`40199972693`, source `4bd01f1fc3234aed49117923bcb6080a332f03cf`, receipt
+`12601077928`, following original writer `40196627612`. The writer remains failed
+only at its old string-versus-integer health check; all mutations were admitted
+through its ten-phase journal and freshly verified without replay. Eleven live
+address records remain and the allowed policy/external graph fingerprints match
+the original inspection. Exact versions and proof boundaries are in
+[completed v0.3.1 delivery](v0.3.1/production-delivery.md). Formal assets/site/local
+upgrade remain separately release-gated. These promotion/completion controllers
+are now historical: future writers must explicitly admit the new epoch rather
+than replay old pins. Names or stale snapshots do not establish ownership.
 Original production D1 `ad06f7f3-8897-4150-b9a9-7a46a8e55b30` and R2
 `moesegfault-mail-raw-production` were retained, not silently migrated/deleted.
 Staging uses separate D1 `74f35f95-42ce-482c-86e6-dffbdd35cbbe` and R2
@@ -107,13 +110,12 @@ wait failure during schedule propagation. Do not repeat the journey after this
 successful acceptance unless the corresponding runtime contract changes.
 
 The owner authorized production publication after successful staging acceptance,
-followed by all local CLI entrypoints and the global amail Skill. Production must
-use `production-inspect` / `INSPECT_PRODUCTION_V031`, then `production` /
-`RUN_PRODUCTION_V031`, with `production_graph_freeze` set to
-`FREEZE_PRODUCTION_GRAPH_WRITERS`, trusted main, protected production and first
-attempt. The separate v0.3.1 controller pins the current v0.3.0 receipt, not a
-frozen v0.3.0/v0.2 writer replay. Prepared source does not establish a successful
-production rollout; the ordered cutover and receipt contract are in
+followed by all local CLI entrypoints and the global amail Skill. The backend is
+now completed via read-only run `40199972693` after the original writer's closed
+health-check type failure. Do not rerun `production` / `RUN_PRODUCTION_V031` or
+its historical completion target: the old v0.3.0 predecessor is no longer live.
+Formal release and local installation still require their own gates. The completed
+ordered cutover, exact current pins and journal-based proof boundaries are in
 [the v0.3.1 delivery note](v0.3.1/production-delivery.md).
 Promotion uses two explicit coordinates: `source_run` for the immutable checked
 producer and `staging_acceptance_run` for its successful narrow deployed journey.

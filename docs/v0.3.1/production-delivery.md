@@ -78,15 +78,16 @@ maintenance `c00d2f51-096d-4b83-8d49-e42e196b85ec` and sink
 `5e556087-9a75-40db-9eb5-869a4b56372e`. No full regression or deployment replay
 was used to obtain this acceptance. The earlier 420-second wait failure remains
 failed; it occurred inside schedule activation propagation, and warm acceptance
-does not prove a particular Cron invocation ran. Production promotion, formal
-release and local installation remain pending. The
+does not prove a particular Cron invocation ran. Production backend completion
+is recorded below; formal release and local installation remain pending. The
 [validation ledger](../validation.md) owns current acceptance status.
 
-### Production admission and order
+### Completed production admission and order (historical writer)
 
-The independent controller is `infra/deploy/production_v031.py`; the historical
-v0.3.0 writer must not be replayed. Use trusted `main`, protected `production`,
-first attempt and the existing shared production-graph writer lock:
+The completed controller is `infra/deploy/production_v031.py`; its predecessor
+pins are now historical and it must not be rerun. The following records its trusted
+`main`, protected `production`, first-attempt admission and shared graph writer
+lock, not authority to repeat the upgrade:
 
 | Existing workflow target | Confirmation | Required `production_graph_freeze` |
 | --- | --- | --- |
@@ -127,7 +128,7 @@ The provider order is:
    complete immutable graph, private surfaces, queues, capture settings, empty API
    Cron and unchanged policy/retained ownership again. Bounded unauthenticated,
    no-redirect public-health reads must report `status=ok`, `version=0.3.1` and
-   `api_version=2` within 120 seconds before success; propagation never authorizes
+   `api_version="2"` within 120 seconds before success; propagation never authorizes
    another deployment submission.
 
 The non-content `production-v031/v1` receipt records actual pins, source/run,
@@ -155,3 +156,51 @@ suites nor calls reused binaries a new build. Public-site replacement follows th
 verified public assets. Local replacement follows matching archive/Skill source
 verification, daemon stop and private backups; credentials and YOLO preferences
 must not be reset. Success receipts will be added only after actual readback.
+
+
+## Actual production backend completion
+
+Inspection [40196506986](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40196506986)
+passed against the v0.3.0 predecessor. The one writer
+[40196627612](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40196627612)
+at `b4c34664bfc59bd2c6611c5507f5e7b73784a93b` completed all ten recorded phases,
+then failed `production_v031_health_unverified` because its checker expected
+integer `2` instead of the established string `"2"`. Its workflow remains failed;
+there was no deployment or 31-minute wait replay.
+
+Named read-only completion
+[40199972693](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40199972693)
+completed **SUCCESS** at source `4bd01f1fc3234aed49117923bcb6080a332f03cf` on
+2026-10-25 at 21:58:36 Asia/Singapore (13:58:36 UTC). Receipt artifact
+[12601077928](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40199972693/artifacts/12601077928)
+has schema `production-v031-completion/v1` and verifies the fresh schema through
+0018, zero enabled semantic preferences, exact private active graph and public
+health `status=ok`, `version=0.3.1`, `api_version="2"`.
+
+| Role | Actual deployment | Actual version |
+| --- | --- | --- |
+| API, empty Cron | `4c7a4157-7d0a-487d-8f4e-63348c680df8` | `dd3e7d96-fde0-4ed9-adb8-ff5fcc76270f` |
+| Maintenance, `*/5 * * * *` | `24fe4478-3599-4f63-9ae3-92ab3caf150c` | `45662e34-b008-42d7-a76b-ba77c09693d0` |
+| Trace sink | `33b6b9dc-5a4c-4213-9eeb-bd20eb683515` | `2bc63288-c987-49f9-bee6-8bc25b35a8be` |
+| Retained ingress | `3192c6ef-7b49-40e7-b244-a8d9f9759028` | `5c296407-5048-43b3-aad6-ac106676e7f2` |
+| Retained lifecycle | `24026786-e338-439d-ae75-417b380a80aa` | `c17d92ad-cbc4-4ff3-a250-724f17d5bc60` |
+
+Eleven live address records remain. Sending policy is still allowed, fingerprint
+`e5c23a79ef5495ddc1dc6859f86dcd58a757f42631fa5444546cb5c537243213`;
+the retained external graph fingerprint is
+`f18a62c67d24c85771e34edb41a8e5b121c58564c1b003b89523ef96d9098d12`,
+exactly matching the accepted pre-write inspection. No consent was enabled and
+no policy, spending, contact or customer-mail test action was added.
+
+The completion proves the original scheduled-cohort wait, ownership and embedding
+checks by the admitted original controller's closed final failure and ten-phase
+journal (`bd11d90660882e1da78ca2947460fa43a7466e0f7e2779d23655824c2ba96cab`).
+Its proof fields are `original_controller_control_flow`, **not newly observed
+monotonic seconds, a reconstructed before-count or byte-equality evidence**.
+`old_http_drain` remains `NOT_CLAIMED`. An earlier read-only completion could not
+retrieve logs; the final mature log reader succeeded without replaying mutations.
+
+This completed receipt is the next reviewed production epoch. The old v0.3.1
+promotion/completion pins are historical; advance a future controller's explicit
+preconditions instead of rerunning them. Formal release assets, public site and
+local upgrade remain pending and must be recorded after their own gates.

@@ -4,6 +4,43 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
+## v0.3.1 production backend — delivered; formal assets pending
+
+Read-only production inspection
+[40196506986](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40196506986)
+accepted the exact v0.3.0 predecessor. Writer
+[40196627612](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40196627612),
+source `b4c34664bfc59bd2c6611c5507f5e7b73784a93b`, completed its ten recorded
+mutation/verification phases but failed only its final health checker: existing
+protocol field `api_version` is string `"2"`, not integer `2`. That workflow's
+conclusion remains **FAILED**; neither its writes nor its scheduled wait were
+replayed.
+
+The named **read-only** completion
+[40199972693](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40199972693)
+completed **SUCCESS** on 2026-10-25 at 21:58:36 Asia/Singapore (13:58:36 UTC),
+source `4bd01f1fc3234aed49117923bcb6080a332f03cf`. Safe receipt
+[12601077928](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40199972693/artifacts/12601077928)
+(`production-v031-completion/v1`) freshly verifies schema through 0018, default-off
+with zero enabled preferences, the active private graph and public
+`ok / 0.3.1 / api_version:"2"`. Current API is
+`dd3e7d96-fde0-4ed9-adb8-ff5fcc76270f`, maintenance
+`45662e34-b008-42d7-a76b-ba77c09693d0` with five-minute Cron, and sink
+`2bc63288-c987-49f9-bee6-8bc25b35a8be`. Ingress and lifecycle consumer retain their
+accepted v0.3.0 versions. Eleven live address records remain; allowed policy and
+retained external-graph fingerprints exactly match the baseline inspection.
+
+Ownership, embedding preservation and scheduled-cohort completion are proven by
+the original controller's closed failure point and ten-phase journal/control flow,
+not fabricated new pre-write counters or observed monotonic seconds. The receipt
+labels these proofs `original_controller_control_flow`, and explicitly makes no
+HTTP-drain claim. An earlier read-only completion failed log transport; the final
+completion used the mature reader without changing deployment state. See
+[production delivery](v0.3.1/production-delivery.md) for exact serving coordinates
+and fingerprints. Historical promotion/completion controllers are not safe to
+rerun against the now-advanced epoch. Formal v0.3.1 CLI/Skill publication, site and
+local upgrade are still pending their own release gates.
+
 ## v0.3.1 semantic consent — staging recovered and narrow acceptance delivered
 
 Source `f262e8e433ffeabb7d67d0fc26c363be7e4133f8` in
@@ -61,8 +98,8 @@ Production admission now has distinct successful source-gate and real-journey
 coordinates; it does not reinterpret the original failed writer as successful.
 This distinction enables incremental tooling checks instead of repeating green
 native/Wasm/provider suites. See [artifact promotion](deployment-artifact-foundation.md) and
-[the v0.3.1 cutover](v0.3.1/production-delivery.md). Production remains on its
-separately accepted v0.3.0 epoch until actual promotion is recorded.
+[the v0.3.1 cutover](v0.3.1/production-delivery.md). Actual production backend
+completion is recorded above; asset/site/local publication remains separate.
 
 ## v0.3.0 production release — delivered
 
