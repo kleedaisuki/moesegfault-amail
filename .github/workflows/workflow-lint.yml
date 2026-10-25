@@ -3,7 +3,7 @@ name: Workflow syntax guard
 
 on:
   push:
-    branches: [main, codex/amail-v0.1.0, codex/v0.3.0-multitenant, codex/v0.3.1-semantic-consent]
+    branches: [main, codex/amail-v0.1.0, codex/v0.3.0-multitenant, codex/v0.3.1-semantic-consent, codex/semantic-index-reuse]
   pull_request:
 
 permissions:

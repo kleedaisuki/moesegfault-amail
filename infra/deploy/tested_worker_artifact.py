@@ -27,6 +27,12 @@ def require_artifact(component: str) -> None:
     """
     if component not in ("mail_api", "trace_sink", "mail_ingress", "mail_events", "identity_test_inbox"):
         raise ValueError("artifact_component_unreviewed")
+    if os.getenv("AMAIL_BACKEND_HOTFIX"):
+        if component != "mail_api":
+            raise ValueError("artifact_component_unreviewed")
+        import mail_backend_artifact
+        mail_backend_artifact.require()
+        return
     if os.getenv("AMAIL_ACCEPTED_ARTIFACT_PURPOSE"):
         import accepted_staging_artifact
         accepted_staging_artifact.verify_installed()

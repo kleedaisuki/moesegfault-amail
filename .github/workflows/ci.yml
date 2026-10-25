@@ -5,7 +5,7 @@ name: CI and deploy
 on:
   pull_request:
   push:
-    branches: [main, codex/amail-v0.1.0, codex/v0.2.0-billing, codex/v0.3.0-multitenant, codex/v0.3.1-semantic-consent]
+    branches: [main, codex/amail-v0.1.0, codex/v0.2.0-billing, codex/v0.3.0-multitenant, codex/v0.3.1-semantic-consent, codex/semantic-index-reuse]
     # Skip only non-build documentation; PR/manual/release checks remain independent.
     # A skipped push supplies no exact-SHA CI result or acceptance/release artifact.
     paths-ignore:
@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [semantic-reuse-staging, semantic-reuse-production, checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
         description: Documented RUN_* or INSPECT_* confirmation; normal split upgrade preserves live policy
         required: false
@@ -99,10 +99,262 @@ permissions:
 # Checks can supersede obsolete checks; shared-state manual operations never cancel each other.
 # Keep the existing manual group so in-flight acceptance remains mutually exclusive.
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-complete' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose' || inputs.target == 'staging-maintenance-repair' || inputs.target == 'staging-semantic-inspect' || inputs.target == 'staging-semantic-recovery' || inputs.target == 'staging-semantic-e2e' || inputs.target == 'staging-semantic-diagnose')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-production' || inputs.target == 'production-inspect' || inputs.target == 'production' || inputs.target == 'production-complete' || inputs.target == 'production-api-only-maintenance' || inputs.target == 'production-fresh-bootstrap' || inputs.target == 'production-fresh-online') && 'amail-production-graph-writer' || (github.event_name == 'workflow_dispatch' && (inputs.target == 'semantic-reuse-staging' || inputs.target == 'staging' || inputs.target == 'staging-e2e' || inputs.target == 'staging-inspect' || inputs.target == 'staging-billing-diagnose' || inputs.target == 'staging-maintenance-repair' || inputs.target == 'staging-semantic-inspect' || inputs.target == 'staging-semantic-recovery' || inputs.target == 'staging-semantic-e2e' || inputs.target == 'staging-semantic-diagnose')) && 'amail-staging-graph-writer' || format('ci-{0}{1}', (github.event_name != 'workflow_dispatch' || inputs.target == 'checks') && 'checks-' || '', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
+  semantic-reuse-build:
+    name: Semantic reuse backend build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'semantic-reuse-staging' && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: worker-dependencies-v1
+          cache-bin: false
+          cache-workspace-crates: false
+      - name: Check only the affected semantic SQL and runtime contracts
+        run: |
+          cargo test -p amail-worker --locked --lib semantic::tests::incremental
+          cargo test -p amail-worker --locked --lib search_projection_is_minimal
+          cargo test -p amail-worker --locked --lib semantic::tests::empty_account_can_toggle_repeatedly_without_scheduled_work
+      - name: Fingerprint the existing bundler compiler
+        id: compiler
+        run: |
+          compiler=$({ rustc --version --verbose; cc --version; ldd --version; } | sha256sum | cut -d ' ' -f 1)
+          echo "identity=$compiler" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: bundler
+        with:
+          path: .cache/worker-build-check
+          key: worker-build-check-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.identity }}-0.8.5
+      - name: Install only a missing pinned bundler
+        if: steps.bundler.outputs.cache-hit != 'true'
+        run: cargo install worker-build --version 0.8.5 --locked --root "$GITHUB_WORKSPACE/.cache/worker-build-check"
+      - name: Set up the exact existing Wasm compiler and bundler
+        run: |
+          rustup target add wasm32-unknown-unknown
+          echo "$GITHUB_WORKSPACE/.cache/worker-build-check/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache/save@v4
+        if: steps.bundler.outputs.cache-hit != 'true'
+        with:
+          path: .cache/worker-build-check
+          key: ${{ steps.bundler.outputs.cache-primary-key }}
+      - name: Build only the changed Mail Worker
+        working-directory: crates/mail-worker
+        run: worker-build --release
+      - name: Exercise only semantic consent and incremental reuse in actual workerd
+        working-directory: infra/tests/worker-boundary
+        run: |
+          pnpm install --frozen-lockfile
+          node --test semantic-consent.test.mjs
+      - name: Package original Mail backend bytes
+        run: python infra/ci/mail_backend_artifact.py create
+      - uses: actions/upload-artifact@v4
+        id: artifact
+        with:
+          name: mail-backend-${{ github.sha }}
+          path: .temp/ci/mail-backend/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  semantic-reuse-staging:
+    name: Deploy semantic reuse staging backend
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'semantic-reuse-staging' && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
+    needs: semantic-reuse-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    env:
+      AMAIL_BACKEND_HOTFIX: staging
+      AMAIL_BACKEND_CONFIRM: ${{ inputs.confirm }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.semantic-reuse-build.outputs.artifact_id }}
+          path: .temp/ci/mail-backend
+          merge-multiple: true
+      - name: Restore exact tested Mail bytes without rebuilding other components
+        run: python infra/ci/mail_backend_artifact.py restore
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the existing pinned deployment tool
+        run: npm install --global wrangler@4.142.0
+      - name: Apply the forward claim fence then replace API and maintenance with unchanged Cron
+        run: python infra/deploy/semantic_reuse_backend.py staging
+      - name: Retain the completed staging coordinates
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-reuse-staging-${{ github.run_id }}
+          path: .temp/semantic-reuse-staging.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain exact partial coordinates without replaying writes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-reuse-staging-partial-${{ github.run_id }}
+          path: |
+            .temp/production-upgrade-*.jsonl
+            .temp/semantic-reuse-predecessor.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  semantic-reuse-journey:
+    name: Semantic reuse live journey
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'semantic-reuse-staging' && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
+    needs: semantic-reuse-staging
+    runs-on: windows-latest
+    timeout-minutes: 25
+    environment: staging
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AMAIL_STAGING_SEMANTIC_CONFIRM: RUN_SEMANTIC_REUSE_STAGING
+      AMAIL_STAGING_E2E_CONFIRM: RUN_STAGING_E2E
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: actions/download-artifact@v4
+        with:
+          name: semantic-reuse-staging-${{ github.run_id }}
+          path: .temp
+      - name: Reuse the verified formal CLI instead of rebuilding or regressing clients
+        run: |
+          New-Item -ItemType Directory -Path .temp/staging-cli -Force | Out-Null
+          gh release download v0.3.1 --repo kleedaisuki/moesegfault-amail --pattern amail-v0.3.1-x86_64-pc-windows-msvc.zip --dir .temp/staging-cli
+          if ($LASTEXITCODE -ne 0) { throw 'cli_release_download_failed' }
+          $archive = '.temp/staging-cli/amail-v0.3.1-x86_64-pc-windows-msvc.zip'
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'e9054f61b7ad51a58ad795ed96969c282832fd04111b12b83f4636115dc50ed9') { throw 'cli_release_hash_mismatch' }
+          Expand-Archive -LiteralPath $archive -DestinationPath .temp/staging-cli
+          "AMAIL_STAGING_TEST_BINARY=$(Join-Path $env:GITHUB_WORKSPACE '.temp/staging-cli/amail.exe')" >> $env:GITHUB_ENV
+      - name: Install only existing native browser and credential fixture adapters
+        run: python -m pip install pywin32==312 websocket-client==1.9.2
+      - name: Verify retained embeddings across one real off/on journey
+        env:
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+          CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_semantic_e2e.py --reuse
+      - name: Retain acceptance only after journey and cleanup success
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-reuse-acceptance-${{ github.run_id }}
+          path: .temp/semantic-reuse-acceptance.json
+          if-no-files-found: error
+          retention-days: 30
+
+  semantic-reuse-production:
+    name: Deploy semantic reuse production backend
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'semantic-reuse-production' && inputs.confirm == 'RUN_SEMANTIC_REUSE_PRODUCTION' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    env:
+      AMAIL_BACKEND_HOTFIX: production
+      AMAIL_BACKEND_CONFIRM: ${{ inputs.confirm }}
+      AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Admit the successful narrow staging run and unchanged original bytes
+        id: source
+        run: python infra/ci/mail_backend_artifact.py admit --source-run '${{ inputs.source_run }}'
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run }}
+          artifact-ids: ${{ steps.source.outputs.artifact_id }}
+          path: .temp/ci/mail-backend
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run }}
+          artifact-ids: ${{ steps.source.outputs.receipt_id }},${{ steps.source.outputs.acceptance_id }}
+          path: .temp/ci/mail-backend-staging
+          merge-multiple: true
+      - name: Verify and restore the original tested Mail backend
+        run: python infra/ci/mail_backend_artifact.py restore
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the existing pinned deployment tool
+        run: npm install --global wrangler@4.142.0
+      - name: Replace only API and maintenance after additive migration
+        run: python infra/deploy/semantic_reuse_backend.py production
+      - name: Retain completed production and original byte provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-reuse-production-${{ github.run_id }}
+          path: |
+            .temp/semantic-reuse-production.json
+            .temp/ci/mail-backend-admission.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain partial coordinates without automatic replay
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-reuse-production-partial-${{ github.run_id }}
+          path: |
+            .temp/production-upgrade-*.jsonl
+            .temp/semantic-reuse-predecessor.json
+          if-no-files-found: ignore
+          retention-days: 30
   changes:
     name: Select affected checks
     runs-on: ubuntu-latest

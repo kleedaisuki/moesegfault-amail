@@ -41,7 +41,8 @@ def context() -> dict:
             "run_attempt": int(attempt), "worker_build": "0.8.5", "rust": rust}
 
 
-def files(base: Path) -> dict[str, str]:
+def files(base: Path, *, trees: tuple[str, ...] = TREES,
+          entries: tuple[str, ...] = ENTRY_FILES) -> dict[str, str]:
     """Hash public generated trees and fixed entry wrappers, refusing unsafe inputs.
 
     Generated source maps/licenses are ordinary public build outputs too. File
@@ -49,7 +50,7 @@ def files(base: Path) -> dict[str, str]:
     and these exact input directories establish the public-data contract.
     """
     result, size = {}, 0
-    for tree in TREES:
+    for tree in trees:
         folder = base / tree
         if not folder.is_dir() or folder.is_symlink():
             raise ValueError(f"module_tree_missing: {tree}")
@@ -66,7 +67,7 @@ def files(base: Path) -> dict[str, str]:
             result[path.relative_to(base).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
         if not (folder / "worker/shim.mjs").is_file() or not (folder / "index.js").is_file():
             raise ValueError(f"generated_entry_missing: {tree}")
-    for name in ENTRY_FILES:
+    for name in entries:
         path = base / name
         if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != base and parent.is_relative_to(base)):
             raise ValueError("entry_symlink_refused")
