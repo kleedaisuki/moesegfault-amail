@@ -7,6 +7,7 @@ binary is restored by Actions; this harness neither rebuilds nor deploys it.
 from __future__ import annotations
 
 from collections.abc import Callable
+import argparse
 from email.message import EmailMessage
 import json
 import os
@@ -30,6 +31,8 @@ POLICY: str = "voyage4_no_training_retention_v1"
 EVIDENCE: Path = mail.TEMP / "staging-semantic-evidence.json"
 RUNTIME: Path = mail.TEMP / "staging-semantic-runtime.json"
 ACCEPTANCE: Path = mail.TEMP / "staging-semantic-acceptance.json"
+REUSE_RUNTIME: Path = mail.TEMP / "semantic-reuse-staging.json"
+REUSE_ACCEPTANCE: Path = mail.TEMP / "semantic-reuse-acceptance.json"
 SOURCE_RUN: str = "40188956353"
 SOURCE_SHA: str = "f262e8e433ffeabb7d67d0fc26c363be7e4133f8"
 API_VERSION: str = "d592cd2a-95a3-4c89-859a-18a191bd641a"
@@ -64,6 +67,35 @@ def read_runtime() -> dict[str, str]:
         raise mail.ProbeFailure("semantic_acceptance_runtime_file_invalid") from None
     return acceptance_receipt(value, run_id=os.environ.get("GITHUB_RUN_ID", ""),
                               checkout_sha=os.environ.get("GITHUB_SHA", ""))
+
+
+def reuse_receipt(runtime: object, *, run_id: str, checkout_sha: str) -> dict[str, str]:
+    """Export only the same-run deployment facts, never auxiliary operator data."""
+    expected: dict[str, str] = {"schema": "semantic-index-reuse/v1", "realm": "staging",
+        "run_id": run_id, "source_sha": checkout_sha}
+    mail.check(re.fullmatch(r"[1-9][0-9]{0,19}", run_id) is not None
+               and re.fullmatch(r"[0-9a-f]{40}", checkout_sha) is not None,
+               "semantic_reuse_identity_invalid")
+    pins: tuple[str, ...] = ("api_version", "maintenance_version", "sink_version")
+    mail.check(isinstance(runtime, dict)
+               and all(runtime.get(key) == value for key, value in expected.items())
+               and all(isinstance(runtime.get(key), str) and UUID.fullmatch(runtime[key]) is not None
+                       for key in pins), "semantic_reuse_runtime_unverified")
+    return {**expected, **{key: runtime[key] for key in pins},
+            "schema": "semantic-index-reuse-acceptance/v1", "cli_release": "v0.3.1"}
+
+
+def read_reuse_runtime() -> dict[str, str]:
+    mail.check(not REUSE_RUNTIME.is_symlink() and REUSE_RUNTIME.is_file()
+               and REUSE_RUNTIME.stat().st_size <= 16_384
+               and not REUSE_ACCEPTANCE.exists() and not REUSE_ACCEPTANCE.is_symlink(),
+               "semantic_reuse_runtime_file_invalid")
+    try:
+        value: object = json.loads(REUSE_RUNTIME.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise mail.ProbeFailure("semantic_reuse_runtime_file_invalid") from None
+    return reuse_receipt(value, run_id=os.environ.get("GITHUB_RUN_ID", ""),
+                         checkout_sha=os.environ.get("GITHUB_SHA", ""))
 
 
 def one(binary: Path, environment: dict[str, str], *args: str) -> dict[str, Any]:
@@ -128,14 +160,19 @@ def await_address(binary: Path, environment: dict[str, str], address: str) -> No
     raise mail.ProbeFailure("semantic_fixture_address_timeout")
 
 
-def execute() -> None:
+def execute(*, reuse: bool = False) -> None:
     import staging_identity_cdp as identity
 
-    mail.check(os.environ.get("GITHUB_REF") == BRANCH
-               and os.environ.get("AMAIL_STAGING_SEMANTIC_CONFIRM") == CONFIRMATION
-               and os.environ.get("AMAIL_SOURCE_RUN") == SOURCE_RUN,
-               "semantic_staging_confirmation_required")
-    runtime: dict[str, str] = read_runtime()
+    if reuse:
+        mail.check(os.environ.get("GITHUB_REF") == "refs/heads/codex/semantic-index-reuse"
+                   and os.environ.get("AMAIL_STAGING_SEMANTIC_CONFIRM") == "RUN_SEMANTIC_REUSE_STAGING",
+                   "semantic_reuse_confirmation_required")
+    else:
+        mail.check(os.environ.get("GITHUB_REF") == BRANCH
+                   and os.environ.get("AMAIL_STAGING_SEMANTIC_CONFIRM") == CONFIRMATION
+                   and os.environ.get("AMAIL_SOURCE_RUN") == SOURCE_RUN,
+                   "semantic_staging_confirmation_required")
+    runtime: dict[str, str] = read_reuse_runtime() if reuse else read_runtime()
     username: str
     password: str
     username, password = hosted.validate_environment()
@@ -184,18 +221,25 @@ def execute() -> None:
         mail.check(enabled["enabled"] and enabled["pending_messages"] >= 1,
                    "semantic_enable_did_not_backfill")
         await_index(binary, environment, enabled["generation"])
-        semantic: list[dict[str, Any]] = search_once(binary, environment,
-            "--mailbox", address, "--semantic", "synthetic harbor notification", "--limit", "100")
-        mail.check(any(row.get("id") == message_id for row in semantic), "semantic_search_missing_fixture")
+        indexed: dict[str, Any] = status(binary, environment)
         disabled: dict[str, Any] = status(binary, environment, "disable")
         mail.check(disabled["enabled"] is False, "semantic_disable_failed")
         literal: list[dict[str, Any]] = search_once(binary, environment,
             "--mailbox", address, "--title", oracle["subject"], "--limit", "100")
         mail.check(any(row.get("id") == message_id for row in literal), "semantic_disabled_literal_missing_fixture")
         resumed: dict[str, Any] = status(binary, environment, "enable")
-        mail.check(resumed["enabled"] and resumed["generation"] > disabled["generation"]
-                   and resumed["pending_messages"] >= 1, "semantic_reenable_did_not_rebuild")
-        await_index(binary, environment, resumed["generation"])
+        mail.check(resumed["enabled"] and resumed["generation"] > disabled["generation"],
+                   "semantic_reenable_failed")
+        if reuse:
+            mail.check(resumed["pending_messages"] == 0
+                       and resumed["indexed_messages"] == indexed["indexed_messages"],
+                       "semantic_reenable_did_not_reuse_vectors")
+        else:
+            mail.check(resumed["pending_messages"] >= 1, "semantic_reenable_did_not_rebuild")
+            await_index(binary, environment, resumed["generation"])
+        semantic: list[dict[str, Any]] = search_once(binary, environment,
+            "--mailbox", address, "--semantic", "synthetic harbor notification", "--limit", "100")
+        mail.check(any(row.get("id") == message_id for row in semantic), "semantic_search_missing_fixture")
         mail.check(status(binary, environment, "disable")["enabled"] is False,
                    "semantic_final_disable_failed")
         semantic_cleanup_required = False
@@ -232,21 +276,26 @@ def execute() -> None:
     if primary is not None or cleanup is not None:
         labels: list[str] = [hosted.safe_stage_code(error) for error in (primary, cleanup) if error is not None]
         raise mail.ProbeFailure("_cleanup_".join(labels))
-    receipt: dict[str, str] = acceptance_receipt(runtime,
+    receipt: dict[str, str] = runtime if reuse else acceptance_receipt(runtime,
         run_id=os.environ.get("GITHUB_RUN_ID", ""), checkout_sha=os.environ.get("GITHUB_SHA", ""))
-    with ACCEPTANCE.open("x", encoding="utf-8") as file:
+    with (REUSE_ACCEPTANCE if reuse else ACCEPTANCE).open("x", encoding="utf-8") as file:
         json.dump(receipt, file, sort_keys=True)
     EVIDENCE.write_text(json.dumps({"schema": "amail-staging-semantic/v1",
-        "source_run": "40188956353", "smtp_fixtures": 1, "semantic_query_intents": 1,
+        "source_run": os.environ.get("GITHUB_RUN_ID", "") if reuse else SOURCE_RUN,
+        "smtp_fixtures": 1, "semantic_query_intents": 1,
         "default_off": True, "background_backfill": True, "voyage4_query": True,
-        "disable_literal_search": True, "reenable_full_rebuild": True,
+        "disable_literal_search": True, "reenable_reuses_vectors": reuse,
+        "reenable_full_rebuild": not reuse,
         "left_disabled": True, "private_fixture_cleanup": True}, sort_keys=True), encoding="utf-8")
     print("staging_semantic_single_fixture_journey_verified")
 
 
 def main() -> int:
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--reuse", action="store_true")
+    arguments: argparse.Namespace = parser.parse_args()
     try:
-        execute()
+        execute(reuse=arguments.reuse)
     except Exception as error:
         print("staging_semantic_e2e_failed:" + hosted.safe_stage_code(error), file=sys.stderr)
         return 1
