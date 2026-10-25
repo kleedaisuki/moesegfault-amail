@@ -17,6 +17,9 @@ import staging_semantic_recovery as recovery
 
 
 class RecoveryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        (ROOT / ".temp").mkdir(exist_ok=True)
+
     def database(self) -> tuple[sqlite3.Connection, Mock]:
         connection = sqlite3.connect(":memory:")
         connection.row_factory = sqlite3.Row
