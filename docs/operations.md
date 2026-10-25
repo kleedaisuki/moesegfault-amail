@@ -20,14 +20,14 @@ Production API and maintenance share response-owned fresh Mail D1
 `moesegfault-mail-production-708b6d6c734779d657f5abb3`, and R2
 `moesegfault-mail-raw-production-708b6d6c734779d657f5abb3`.
 Current checked-in configurations are authoritative for bindings.
-The authorized v0.1.2 normal upgrade in run `37104468990` replaced only API
-(`50bd330d-2f9b-4102-8c8e-9bbaada927fe`) and scheduled maintenance
-(`293d4049-c56a-40ee-8bc3-ef345a7a4eb7`), preserving exact live allowed policy
-and the retained external graph. Receipt artifact `11267970678` records deployment
-coordinates. Before a future writer run, explicitly review and advance the
-source-owned predecessor pins; the v0.1.2 controller intentionally refuses to
-repeat an upgrade against the now-replaced original epoch. Do not rerun it to
-reset state or turn an old snapshot into current authority.
+The last completed production epoch is v0.3.0 upgrade run `40116604490`,
+source `d3d913d4bf59f48790a2753bc066033b4d8cf7a6`, receipt artifact `12570076705`.
+It retained all 11 existing address-ownership records and the unchanged allowed
+policy. Exact serving versions and formal publication are recorded in
+[its completed delivery](v0.3.0/production-delivery.md). This is the reviewed
+predecessor for v0.3.1, not permission to replay an older writer. Every future
+writer must admit fresh live pins and preserve the original external graph and
+policy; names or stale snapshots do not establish ownership.
 Original production D1 `ad06f7f3-8897-4150-b9a9-7a46a8e55b30` and R2
 `moesegfault-mail-raw-production` were retained, not silently migrated/deleted.
 Staging uses separate D1 `74f35f95-42ce-482c-86e6-dffbdd35cbbe` and R2
@@ -39,7 +39,97 @@ and clients are distinct. HTTP health does not establish message delivery.
 
 ## Supported hosted lanes
 
-### v0.3.0 multi-tenant candidate
+### v0.3.1 semantic-consent cutover
+
+The active candidate branch is `codex/v0.3.1-semantic-consent`. Use the existing
+`checks` target for credential-free native/Wasm/daemon checks, `staging-inspect`
+with `INSPECT_STAGING_V031` for read-only fixed-graph admission, and `staging`
+with `RUN_STAGING_V031` for the serialized staging writer. Same-run checked
+artifacts precede mutations by default. The explicitly reviewed promotion path
+can instead consume the original successful producer artifacts plus an unchanged
+runtime closure and a separate successful real-user acceptance receipt; see
+[artifact admission](deployment-artifact-foundation.md). No source check or candidate site
+establishes that the new semantic contract is deployed.
+
+This upgrade is a privacy cutover, not an ordinary model-name replacement:
+existing/new accounts become default-off; only `user` changes the account-wide
+setting, using normal browser consent or an existing explicit YOLO preference.
+Migration `0018_semantic_consent.sql` preserves stored embeddings, invalidates
+old semantic jobs and prevents old Workers claiming new work. Fresh enablement
+rebuilds the complete eligible corpus through `voyageai/voyage-4`, 256 dimensions;
+disable retains vectors and revokes new provider admission/publication. See
+[indexing privacy](semantic-indexing-privacy-decision.md) and
+[indexer recovery](semantic-indexer-operations.md).
+
+The approved policy `voyage4_no_training_retention_v1` fixes provider `voyageai`,
+disables fallbacks, denies training collection and turns response cache off.
+It does **not** require or promise zero upstream retention; Voyage may retain
+inputs/outputs for an unspecified period under its terms. Do not override stricter
+account ZDR or enable OpenRouter content-logging/product-use opt-ins to pass the
+provider gate. Consent and status must disclose this policy before rollout.
+
+The staging order is: install the compatible trace sink, install the fail-closed
+API before 0018, install paused private maintenance, then bracket the exact
+API/maintenance serving pins, empty schedules, capture-off and preserved hold for
+31 minutes before applying 0018 and activating maintenance. This bounds the old
+scheduled cohort using Cron propagation plus scheduled invocation limits; it is
+**not an HTTP drain** and cannot recall already admitted provider requests.
+During the pre-migration phase only semantic processing is unavailable; ordinary
+mail remains compatible. Never shorten the witness to a bare sleep, clear old
+leases, erase vectors or enable customer consent to make a test pass.
+
+After actual deployment, `staging-e2e` / `RUN_STAGING_E2E` on this branch uses the
+existing native PKCE/SMTP/ZIP/profile journey plus the opt-in synthetic semantic
+journey. The dedicated semantic confirmation is supplied by that guarded workflow,
+not permission to index production customer mail. Hosted acceptance is recorded
+only after completion in [validation](validation.md).
+
+Run `40188956353` passed its native, Worker/Wasm, 144 boundary cases, provider and
+candidate-assembly source gates, but the writer failed during full-schema
+verification before maintenance activation. Do not dispatch the full writer again
+or relabel that run successful. The named `staging-semantic-inspect` /
+`INSPECT_STAGING_SEMANTIC_V031` target admits only this owned partial transition;
+after diagnosis, `staging-semantic-recovery` /
+`RUN_STAGING_SEMANTIC_RECOVERY_V031` continues only remaining verified work with
+`source_run=40188956353`. It preserves the already deployed API/sink, applied 0018
+and completed scheduled witness rather than replaying them; only maintenance is
+activated after exact schema admission, with no site/adapters replay. Next use
+`staging-semantic-e2e` / `RUN_STAGING_SEMANTIC_V031`, the same `source_run`, and
+`staging_resume_run` equal to the successful recovery run. This narrow journey
+uses one new owned SMTP fixture for semantic consent/indexing rather than repeating
+the already green full native/SMTP/profile regression. Recovery completed in
+`40193614404`, and narrow semantic acceptance completed in `40195321997`, artifact
+`12600320617`. Use producer `source_run=40188956353` with
+`staging_acceptance_run=40195321997` for the reviewed promotion; these are separate
+evidence coordinates, not a successful conclusion for the old failed writer.
+See [validation](validation.md) for exact pins, cleanup and the earlier bounded
+wait failure during schedule propagation. Do not repeat the journey after this
+successful acceptance unless the corresponding runtime contract changes.
+
+The owner authorized production publication after successful staging acceptance,
+followed by all local CLI entrypoints and the global amail Skill. Production must
+use `production-inspect` / `INSPECT_PRODUCTION_V031`, then `production` /
+`RUN_PRODUCTION_V031`, with `production_graph_freeze` set to
+`FREEZE_PRODUCTION_GRAPH_WRITERS`, trusted main, protected production and first
+attempt. The separate v0.3.1 controller pins the current v0.3.0 receipt, not a
+frozen v0.3.0/v0.2 writer replay. Prepared source does not establish a successful
+production rollout; the ordered cutover and receipt contract are in
+[the v0.3.1 delivery note](v0.3.1/production-delivery.md).
+Promotion uses two explicit coordinates: `source_run` for the immutable checked
+producer and `staging_acceptance_run` for its successful narrow deployed journey.
+Tooling-only or merge deltas run affected checks and verify the accepted runtime
+closure rather than repeating already green native/Wasm/provider suites.
+
+The staging database also retains two historical operations-only escrow schemas.
+Their exact reference is `infra/deploy/staging-acceptance-migrations/0001_quota_escrow.sql`
+and the fixed `staging_acceptance_` → `staging_d1_probe_` namespace mirror established
+by commit `f27c727332c7cbc37c34604afe7e18c014075706`. The one-off probe was retired,
+not its retained database records. Staging schema admission validates all 163
+objects, columns and indexes from those references plus the 18 Mail migrations;
+it does not ignore arbitrary prefixed objects or delete auxiliary records.
+Production keeps the strict 133-object Mail-only contract.
+
+### Historical v0.3.0 multi-tenant lane
 
 The candidate branch is `codex/v0.3.0-multitenant`. Use `target=checks` for
 credential-free native/Wasm and real daemon/profile checks, `staging-inspect`
@@ -85,9 +175,9 @@ The actual workflow input/confirmation schema is authoritative; no historical
 incident document may restore a removed dispatch mode. staging-e2e retains the
 normal native-login/two-SMTP/ZIP/search journey and RUN_STAGING_E2E confirmation.
 
-### v0.2.0 staging-only Billing candidate
+### Historical v0.2.0 staging-only Billing lane
 
-The active lane is `codex/v0.2.0-billing`, with `RUN_STAGING_V020` and
+The historical lane is `codex/v0.2.0-billing`, with `RUN_STAGING_V020` and
 `INSPECT_STAGING_V020`. See [delivery contract](v0.2.0/staging-delivery.md) for
 Billing realm URLs, service-key provisioning and exact artifact admission.
 Production remains on its independently accepted release until separately authorized.
@@ -313,14 +403,14 @@ not a global identity contract. The outbound RFC field is not fabricated from
 provider-ID syntax. This optional probe is not another sending campaign, a global
 policy enable, or production mail authority.
 
-### Normal production active-split upgrade
+### Historical v0.1.2 normal production active-split upgrade
 
-The normal `production` target now requires `RUN_PRODUCTION_SPLIT_UPGRADE` plus
+The historical v0.1.2 `production` target requires `RUN_PRODUCTION_SPLIT_UPGRADE` plus
 `FREEZE_PRODUCTION_GRAPH_WRITERS`, trusted main, protected production environment
 and first attempt. Before rollout, use the existing `production-inspect` target
 with `INSPECT_PRODUCTION_V012` and the same freeze for read-only actual admission.
-This lane is implemented but not yet actual production upgrade acceptance; record
-its hosted inspection/deployment evidence in [validation](validation.md).
+Its completed historical acceptance is in [validation](validation.md). Its old
+predecessor pins are not current writer authority; use the active release lane.
 
 The source-owned predecessor is successful online run `36938451911`, artifact
 `11199880674`, receipt SHA256
@@ -382,9 +472,11 @@ Do not build a new incident workflow around every provider failure.
 2. Use scoped existing credentials: CLOUDFLARE_ACCOUNT_ID/API_TOKEN for deployment,
    CF_EMAIL_ROUTING_TOKEN for literal rules, OPENROUTER_API_KEY for indexing, stable
    realm-specific INGRESS_SECRET for ingress/API. No browser/global-key fallback.
-3. Apply forward-compatible migrations before dependent runtime. API stays fetch-
-   only with empty Cron; maintenance owns scheduling. Deploy compatible sink/readers
-   before producers. Preserve direct forwards and lifecycle attribution.
+3. Apply forward-compatible migrations before dependent runtime, except when the
+   active privacy cutover explicitly installs a pre-migration fail-closed API and
+   paused maintenance before its additive migration. API stays fetch-only with
+   empty Cron; maintenance owns scheduling. Deploy compatible sink/readers before
+   producers. Preserve direct forwards and lifecycle attribution.
 4. Independently read serving version/deployment, exact immutable bindings, Queue
    producers/consumer/DLQ, capture flags, public surfaces and schedules. Names or
    TOML intent alone do not prove the active graph.

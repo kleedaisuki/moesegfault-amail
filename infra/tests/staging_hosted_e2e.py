@@ -280,7 +280,8 @@ def execute() -> None:
                 raise HostedProbeError(f"mail_{safe_stage_code(error)}") from None
             if outcome != 0:
                 raise HostedProbeError("inbound_acceptance_failed")
-            if os.environ.get("GITHUB_REF") == "refs/heads/codex/v0.3.0-multitenant":
+            if os.environ.get("GITHUB_REF") in {"refs/heads/codex/v0.3.0-multitenant",
+                    "refs/heads/codex/v0.3.1-semantic-consent"}:
                 import staging_v030_profiles
                 try:
                     profile_evidence = staging_v030_profiles.execute(binary, home, run_dir, nonce)
@@ -313,7 +314,8 @@ def execute() -> None:
     finally:
         try:
             cleanup = cleanup_run(run_dir, binary, release_user=(
-                os.environ.get("GITHUB_REF") == "refs/heads/codex/v0.3.0-multitenant"))
+                os.environ.get("GITHUB_REF") in {"refs/heads/codex/v0.3.0-multitenant",
+                    "refs/heads/codex/v0.3.1-semantic-consent"}))
         except Exception:
             cleanup = HostedProbeError("run_cleanup_failed")
     failure = acceptance_failure(primary, cleanup)

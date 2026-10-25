@@ -1,0 +1,7 @@
+{
+  "schema": "amail-accepted-candidate/v1",
+  "version": "0.3.1",
+  "source_run": "40188956353",
+  "source_sha": "f262e8e433ffeabb7d67d0fc26c363be7e4133f8",
+  "staging_acceptance_run": "40195321997"
+}

@@ -1,33 +1,91 @@
-# Automatic indexing privacy
+# Opt-in semantic indexing privacy
 
-Eligible active messages are automatically indexed even when the user never runs
---semantic. This is an explicit disclosed product choice, **not telemetry**;
-AMAIL_TELEMETRY=off cannot disable indexing. Current bounded production indexing
-acceptance is in [validation](validation.md).
+The v0.3.1 contract replaces automatic account-wide third-party indexing with an
+account-level switch that is **off by default**, including for existing accounts.
+Both enabling and disabling require the `user` profile and human browser approval
+unless the human already explicitly configured YOLO. An agent profile cannot use
+YOLO to gain user authority. The setting affects all profiles in the account.
+Telemetry settings are independent. Publication and hosted acceptance are recorded
+in [validation](validation.md), not established by this contract.
 
-The private scheduled maintenance Worker sends the longest valid UTF-8 prefix
-of at most 12,000 bytes from subject plus extracted text to OpenRouter's configured
-qwen/qwen3-embedding-8b route, requesting 256 dimensions. It does not send raw MIME,
-ZIP/attachments, tokens or arbitrary other-account material. Semantic queries also
-cross that provider boundary. Literal search continues to examine stored full text;
-exact cosine refers to the stored projection, not omitted message sections.
+| State or transition | Content processing | Stored document embeddings |
+| --- | --- | --- |
+| Default / disabled | No new document or query requests to the embedding provider | Existing embeddings remain stored, but cannot enable semantic search |
+| Enable, after approval | Background work indexes all eligible retained mail, then subsequent eligible mail | A fresh indexing generation replaces old vectors only after successful publication |
+| Disable, after approval | Stops admitting new provider requests; in-flight transmitted bytes cannot be recalled | Old vectors are not deleted merely because indexing is disabled |
+| Re-enable, after approval | Re-indexes the complete eligible retained corpus, including already indexed mail | Never treats a retained old vector as proof that the new generation is complete |
 
-Provider zero-data-retention/no-training routing and disabled response cache reduce
-retention, not transfer. Never claim content stays only in Cloudflare or that not
-using --semantic prevents processing. Manual/help/skill must disclose automatic
-processing and the bounded projection consistently. A provider/model/input change
-requires reviewed policy plus forward migration, not merely changing a model name.
+Use `amail semantic status`, `amail semantic enable` or `amail semantic disable`.
+An already-enabled enable is not a new full-index request. A switch approval is
+bound to the observed generation: a concurrent change requires fresh review, not
+blind replay. An agent profile cannot change this account-wide setting.
+
+The private scheduled maintenance Worker sends the longest valid UTF-8 prefix of
+at most 12,000 bytes from subject plus extracted text through OpenRouter to
+Voyage 4. It does not send raw MIME, ZIP/attachments, tokens or arbitrary
+other-account material. An enabled semantic search also sends its query text.
+Ordinary literal search needs no embedding-provider query and remains available
+with semantic indexing disabled.
+
+Retaining an embedding is not a remote retransmission: on re-enable the service
+re-sends the **mail text** to compute a fresh embedding, rather than uploading an
+old vector as if it could be converted into another model's embedding space.
+The dedicated forward migration preserves existing vectors while disabling
+processing. Model identity, dimensions, input version and consent/indexing
+generation prevent old Qwen and new Voyage projections from being mixed.
+
+The route is [`voyageai/voyage-4`](https://openrouter.ai/voyageai/voyage-4),
+requesting 256 dimensions supported by
+[Voyage's model contract](https://www.mongodb.com/docs/voyageai/models/text-embeddings/).
+Matryoshka representation learning ([MRL](https://arxiv.org/abs/2205.13147))
+motivates flexible output sizes, not a claim that this workload has measured
+256-dimensional quality equivalent to larger vectors. Explicit model/generation
+identity follows the practical requirement to
+[re-index rather than mix model spaces](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/semantic-text-setup-configuration).
+
+## Approved Voyage retention policy
+
+The owner explicitly approved the non-ZDR Voyage route for v0.3.1. The fixed
+policy is `voyage4_no_training_retention_v1`: only provider `voyageai`, no provider
+fallbacks, `data_collection: deny`, and `X-OpenRouter-Cache: false`. The request
+omits `provider.zdr`; it does not send `zdr: false` to weaken stricter account
+policy. If account-level ZDR or another provider restriction rejects this route,
+fail closed instead of changing that account setting or selecting another model.
+
+No-training and zero retention are different promises. The selected provider is
+restricted to its no-training policy, but **may retain transmitted mail text,
+queries and outputs under its terms for an unspecified period**. amail does not
+promise a provider-side deletion deadline or zero retention. Disabling indexing
+or deleting local/service mail does not request, prove or guarantee erasure at
+OpenRouter or Voyage. The enable browser must disclose this boundary before
+approval; status exposes the policy identity rather than implying a ZDR route.
+
+[OpenRouter's provider policy documentation](https://openrouter.ai/docs/guides/privacy/provider-logging)
+separates training controls from upstream retention. Its own prompt/output
+logging and product-use options are opt-in, while request metadata is retained;
+operators must leave content logging/use disabled rather than assuming the
+per-request provider policy controls OpenRouter account logging. See
+[OpenRouter data collection](https://openrouter.ai/docs/guides/privacy/data-collection).
+Disabling response cache does not change an upstream retention policy.
+
+Never claim content stays only in Cloudflare or that disabling indexing deletes
+material already transferred to a provider. A disable
+or deletion that wins before provider admission prevents a new request; an
+already admitted call may still transmit, but a stale generation cannot publish
+its result. No transaction is held open across provider I/O.
 
 The D1 work ledger and bounded fair owner scheduling prevent old poison rows from
-starving later mail. Unavailable/missing/mismatched/quarantined vectors make semantic
-search typed incomplete, never silently omit messages from supposedly exact ranking.
-[Indexer operations](semantic-indexer-operations.md) owns retry/recovery semantics.
+starving later mail. Unavailable/missing/mismatched/quarantined vectors make an
+enabled semantic search typed incomplete, never silently omit messages from an
+apparently exact ranking. [Indexer operations](semantic-indexer-operations.md)
+owns retry and recovery semantics.
 
-A delete before claim/active-row read prevents transfer; deletion during an in-flight
-provider call cannot recall transmitted bytes, but blocks vector publication.
-The local invariant is useful, not distributed erasure. Search origins retain private
-request/vector/MAC only for their bounded continuation lifetime and are scrubbed at
-expiry/staleness as described in [search jobs](search-jobs.md).
+Search origins retain private request/vector/MAC only for their bounded
+continuation lifetime and are scrubbed at expiry/staleness as described in
+[search jobs](search-jobs.md). `AMAIL_TELEMETRY=off` changes diagnostic processing,
+not the account's semantic consent or server search-task retention.
 
-References: [OpenRouter ZDR](https://openrouter.ai/blog/insights/zero-data-retention/),
-[response cache](https://openrouter.ai/docs/guides/features/response-caching).
+Related distinction: [OpenRouter ZDR](https://openrouter.ai/docs/guides/privacy/zero-data-retention)
+is a stricter routing constraint, **not provided by this approved Voyage policy**;
+[response cache](https://openrouter.ai/docs/guides/features/response-caching)
+is a separate control.

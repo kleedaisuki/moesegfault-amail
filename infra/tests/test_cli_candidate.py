@@ -105,7 +105,10 @@ class CandidateTests(unittest.TestCase):
             for required in ("unpublished staging candidate", "defaults\nto production", "AMAIL_HOME",
                              ".temp/amail-staging-acceptance", "https://mail-staging.moesegfault.dev",
                              "https://identity-staging.moesegfault.dev", "amail-cli-staging",
-                             "http://127.0.0.1/callback", "separate realm", "OpenRouter", "--semantic"):
+                             "http://127.0.0.1/callback", "separate realm", "OpenRouter", "--semantic",
+                             "disabled by default", "Only the `user` profile",
+                             "browser approval unless the human explicitly configured YOLO",
+                             "Disabling keeps", "Re-enabling reindexes all active mail"):
                 self.assertIn(required, readme)
             self.assertEqual((self.root / "README.md").read_text(), "README.md")
             # chmod on Windows does not model Unix executable permissions.

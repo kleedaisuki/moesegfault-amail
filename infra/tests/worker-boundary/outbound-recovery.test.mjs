@@ -141,7 +141,7 @@ test("legacy accepted repair clears vectors, revokes embedding lease and removes
   await accepted(db, bucket, "legacy", replacement);
   await tick();
   const oldVector = JSON.stringify([1, ...Array(255).fill(0)]);
-  await db.prepare("UPDATE messages SET body_text='obsolete projection',is_read=0,embedding_json=?1,embedding_model='qwen/qwen3-embedding-8b',embedding_dimensions=256,embedding_input_version=1,embedding_truncated=0 WHERE id='legacy'").bind(oldVector).run();
+  await db.prepare("UPDATE messages SET body_text='obsolete projection',is_read=0,embedding_json=?1,embedding_model='qwen/qwen3-embedding-8b',embedding_dimensions=256,embedding_input_version=1,embedding_truncated=0,embedding_consent_generation=0 WHERE id='legacy'").bind(oldVector).run();
   await db.exec("INSERT INTO message_text_chunks(message_id,chunk_index,body) VALUES('legacy',99,'obsolete suffix');");
   await db.exec("UPDATE send_requests SET state='accepted',index_next_attempt_at=0 WHERE message_id='legacy';");
   await db.prepare("INSERT INTO embedding_work(message_id,owner_iss,owner_sub,received_at,attempts,lease_until,lease_token) VALUES('legacy',?1,?2,?3,7,?4,'synthetic-old-embedding-token')")

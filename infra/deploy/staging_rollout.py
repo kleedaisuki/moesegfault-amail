@@ -39,6 +39,8 @@ INSPECT_CONFIRM = "INSPECT_STAGING_V020"
 FAILURES = frozenset({
     "staging_context_unverified", "staging_api_privacy_unverified", "staging_legacy_graph_unverified",
     "staging_split_predecessor_unverified", "staging_old_invocation_bound_unverified",
+    "staging_semantic_context_unverified", "staging_semantic_predecessor_unverified",
+    "staging_semantic_witness_unverified",
     "staging_predecessor_unverified", "staging_predecessor_changed", "staging_predecessor_schedule_changed",
     "staging_cutover_api_changed", "staging_maintenance_secrets_missing", "staging_inspect_resume_unverified",
     "staging_resume_tree_unverified", "staging_resume_checkout_unverified", "staging_resume_runtime_changed",
@@ -343,6 +345,64 @@ def deploy_maintenance(active: bool) -> str:
     return version
 
 
+def semantic_quiesce() -> None:
+    """Pause the new consent-aware runtime before applying its forward migration.
+
+    Only the old scheduled cohort has a platform wall bound. The new API fails
+    semantic requests closed without migration 0018; already-admitted old HTTP
+    requests are not recalled and this phase makes no HTTP-drain claim.
+    """
+    context()
+    if os.getenv("GITHUB_REF") != "refs/heads/codex/v0.3.1-semantic-consent":
+        raise ValueError("staging_semantic_context_unverified")
+    value = predecessor()
+    if value["rollout"] != "split":
+        raise ValueError("staging_semantic_predecessor_unverified")
+    account, token = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
+    previous = value["scripts"][MAINTENANCE]["version"]
+    usage = bounded_usage_model(capture.readback(account, token, MAINTENANCE, f"versions/{previous}"))
+    version = deploy_maintenance(False)
+    expected = os.environ["AMAIL_EXPECTED_WORKER_VERSION"]
+    started = time.monotonic()
+    samples = 0
+    while True:
+        if pin_api(account, token, expected, phase="queue-api", queue_id=os.environ["AMAIL_TRACE_QUEUE_ID"]) != "match":
+            raise ValueError("staging_cutover_api_changed")
+        verify_maintenance("staging", "paused", account, token, version, os.environ["AMAIL_TRACE_QUEUE_ID"])
+        graph.held_send("staging")
+        samples += 1
+        elapsed = time.monotonic() - started
+        if elapsed >= WINDOW_SECONDS:
+            break
+        time.sleep(min(60, WINDOW_SECONDS - elapsed))
+    write(WITNESS, {"schema": "staging-semantic-cutover/v1", "source_sha": os.getenv("GITHUB_SHA"),
+                   "run_id": os.getenv("GITHUB_RUN_ID"), "api_version": expected,
+                   "paused_maintenance_version": version, "old_maintenance_version": previous,
+                   "old_usage_model": usage, "observed_monotonic_seconds": elapsed,
+                   "propagation_limit_seconds": PROPAGATION_SECONDS,
+                   "invocation_limit_seconds": INVOCATION_SECONDS, "pin_samples": samples,
+                   "old_http_drain": "NOT_CLAIMED"})
+
+
+
+def semantic_activation_ready() -> None:
+    """Require this run's completed pause witness and exact forward schema."""
+    value = json.loads(WITNESS.read_text(encoding="utf-8"))
+    if (value.get("schema") != "staging-semantic-cutover/v1"
+            or value.get("source_sha") != os.getenv("GITHUB_SHA")
+            or value.get("run_id") != os.getenv("GITHUB_RUN_ID")
+            or value.get("api_version") != os.getenv("AMAIL_EXPECTED_WORKER_VERSION")
+            or type(value.get("observed_monotonic_seconds")) not in (int, float)
+            or value["observed_monotonic_seconds"] < WINDOW_SECONDS):
+        raise ValueError("staging_semantic_witness_unverified")
+    verify_maintenance("staging", "paused", os.environ["CLOUDFLARE_ACCOUNT_ID"],
+                       os.environ["CLOUDFLARE_API_TOKEN"], value["paused_maintenance_version"],
+                       os.environ["AMAIL_TRACE_QUEUE_ID"])
+    from mail_schema_contract import expected_schema, verify_schema
+    database = DatabaseClient(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"], "staging")
+    verify_schema(lambda sql: database.query(sql)["results"], expected_schema(staging_auxiliary=True))
+
+
 def lease_fences() -> dict:
     """Observe execution leases only; a nonempty pending backlog is legitimate."""
     database = DatabaseClient(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"], "staging")
@@ -360,6 +420,8 @@ def cutover() -> None:
     context()
     value = predecessor()
     if value["rollout"] == "split":
+        if os.getenv("GITHUB_REF") == "refs/heads/codex/v0.3.1-semantic-consent":
+            semantic_activation_ready()
         deploy_maintenance(True)
         return
     version = deploy_maintenance(False)
@@ -398,13 +460,14 @@ def cutover() -> None:
 def main() -> int:
     """One closed phase; failures do not retry a submit or authorize recovery."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("preflight", "inspect-preflight", "before-api", "cutover"))
+    parser.add_argument("phase", choices=("preflight", "inspect-preflight", "before-api", "cutover", "semantic-quiesce"))
     args = parser.parse_args()
     try:
         if args.phase == "inspect-preflight":
             preflight(read_only=True)
         else:
-            {"preflight": preflight, "before-api": before_api, "cutover": cutover}[args.phase]()
+            {"preflight": preflight, "before-api": before_api, "cutover": cutover,
+             "semantic-quiesce": semantic_quiesce}[args.phase]()
     except Exception as error:
         reason = str(error) if isinstance(error, ValueError) and str(error) in FAILURES else "unknown"
         print(f"staging_rollout_{args.phase}=UNVERIFIED reason={reason}")

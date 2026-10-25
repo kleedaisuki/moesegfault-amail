@@ -24,6 +24,8 @@ pub(crate) fn operation_from_cli(raw: &str) -> Option<Operation> {
         "messages.list" => Operation::MessagesList,
         "messages.search" => Operation::MessagesSearch,
         "messages.search.poll" => Operation::SearchPoll,
+        "semantic.status" => Operation::SemanticStatus,
+        "semantic.change" => Operation::SemanticChange,
         "messages.get" => Operation::MessagesGet,
         "messages.archive" => Operation::MessagesArchive,
         "messages.mark" => Operation::MessagesMark,
@@ -744,6 +746,15 @@ mod tests {
         );
         assert!(operation_from_cli("messages.search.poll/private-input").is_none());
         assert!(operation_from_cli("messages.search.poll.extra").is_none());
+        assert_eq!(
+            operation_from_cli("semantic.status"),
+            Some(Operation::SemanticStatus)
+        );
+        assert_eq!(
+            operation_from_cli("semantic.change"),
+            Some(Operation::SemanticChange)
+        );
+        assert!(operation_from_cli("semantic.change/enable").is_none());
     }
 
     /// Valid context retains causal identity without copying arbitrary headers.

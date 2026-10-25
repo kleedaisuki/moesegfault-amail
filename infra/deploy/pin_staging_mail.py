@@ -191,6 +191,11 @@ def bindings_match(version: dict, expected_version: str, *, phase: str = "pre-qu
     if realm == "production" and expected_version == "8dc1268f-6947-404b-bb89-95c4f1e5cde9":
         # Successful production receipt11501340995 predates temporary-domain support.
         expected.pop("MAIL_TMP_DOMAIN", None)
+    if (realm, expected_version) in {
+            ("staging", "b58206db-71b8-4020-b236-378bb4ceb419"),
+            ("production", "0592192f-5937-445c-8c26-73ab18799bba")}:
+        # Completed v0.3.0 receipts bind this model to these immutable versions.
+        expected["OPENROUTER_EMBEDDING_MODEL"] = ("plain_text", "qwen/qwen3-embedding-8b")
     return _bindings_match(version, expected_version, expected)
 
 

@@ -284,6 +284,21 @@ fn address_problem_code(problem: &Value) -> &'static str {
     }
 }
 
+/// Semantic control errors never expose arbitrary upstream or response prose.
+fn semantic_problem_code(problem: &Value) -> &'static str {
+    match problem
+        .get("code")
+        .or_else(|| problem.get("error_code"))
+        .and_then(Value::as_str)
+    {
+        Some("semantic_policy_changed") => "semantic_policy_changed",
+        Some("semantic_state_changed") => "semantic_state_changed",
+        Some("semantic_disabled") => "semantic_disabled",
+        Some("invalid_semantic_preference") => "invalid_semantic_preference",
+        _ => address_problem_code(problem),
+    }
+}
+
 /// Keep transport failure output fixed even when reqwest carries a sensitive URL.
 pub(crate) fn transport_kind(error: &reqwest::Error) -> &'static str {
     if error.is_timeout() {
@@ -398,6 +413,8 @@ impl<'a> Api<'a> {
                     code: "transport_failed",
                     next_action: if operation == "messages.send" {
                         "query_send_status"
+                    } else if operation == "semantic.change" {
+                        "inspect_semantic_status"
                     } else if operation == "billing.session.create" {
                         "reuse_billing_session_key"
                     } else {
@@ -443,6 +460,8 @@ impl<'a> Api<'a> {
                 code: "response_incomplete",
                 next_action: if operation == "messages.send" {
                     "query_send_status"
+                } else if operation == "semantic.change" {
+                    "inspect_semantic_status"
                 } else if operation == "billing.session.create" {
                     "reuse_billing_session_key"
                 } else {
@@ -464,6 +483,8 @@ impl<'a> Api<'a> {
                 .unwrap_or("http_error");
             let code = if operation == "addresses.add" {
                 address_problem_code(&problem)
+            } else if matches!(operation, "semantic.status" | "semantic.change") {
+                semantic_problem_code(&problem)
             } else {
                 raw_code
             };
@@ -527,6 +548,26 @@ impl<'a> Api<'a> {
     /// Read authoritative effective resources and accrued, not necessarily settled, usage.
     pub fn billing_status(&self) -> Result<Value> {
         self.json(Method::GET, "/v1/billing", "billing.status", None)
+    }
+
+    /// Read account-wide semantic consent without triggering third-party processing.
+    pub fn semantic_status(&self) -> Result<Value> {
+        self.json(Method::GET, "/v1/semantic", "semantic.status", None)
+    }
+
+    /// Apply only the consent generation read before user approval or YOLO execution.
+    pub fn set_semantic(
+        &self,
+        enabled: bool,
+        expected_generation: i64,
+        policy_id: &str,
+    ) -> Result<Value> {
+        self.json(
+            Method::POST,
+            "/v1/semantic",
+            "semantic.change",
+            Some(&serde_json::json!({"enabled":enabled,"expected_generation":expected_generation,"policy_id":policy_id})),
+        )
     }
 
     /// Mint human-only browser authorization with a stable retry identity.
@@ -1127,6 +1168,83 @@ mod tests {
             })),
             "http_error"
         );
+    }
+
+    #[test]
+    fn semantic_control_codes_are_closed_and_keep_policy_upgrade_identity() {
+        for code in [
+            "semantic_policy_changed",
+            "semantic_state_changed",
+            "semantic_disabled",
+            "invalid_semantic_preference",
+            "user_profile_required",
+            "profile_session_expired",
+        ] {
+            assert_eq!(
+                semantic_problem_code(
+                    &serde_json::json!({"code":code,"detail":"private@example.org"})
+                ),
+                code
+            );
+            assert_eq!(
+                semantic_problem_code(&serde_json::json!({"error_code":code})),
+                code
+            );
+        }
+        assert_eq!(
+            semantic_problem_code(&serde_json::json!({"code":"private@example.org"})),
+            "http_error"
+        );
+        assert_eq!(
+            semantic_problem_code(&serde_json::json!({"detail":"private@example.org"})),
+            "http_error"
+        );
+    }
+
+    #[test]
+    fn real_semantic_policy_response_requires_upgrade_without_private_prose() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+        };
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp");
+        std::fs::create_dir_all(&root).unwrap();
+        let home = tempfile::tempdir_in(root).unwrap();
+        let cfg = telemetry::tests::config(home.path());
+        let preference = telemetry::enabled();
+        telemetry::set_enabled(false);
+        let api = Api::new(&cfg).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() <= 8192);
+            }
+            let body = serde_json::json!({"code":"semantic_policy_changed","detail":"private@example.org"}).to_string();
+            write!(stream, "HTTP/1.1 409 Conflict\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let error = api
+            .execute_request(
+                api.http.post(format!("http://{address}/v1/semantic")),
+                "semantic.change",
+                telemetry::RequestSpan::new(&cfg, "semantic.change"),
+            )
+            .unwrap_err();
+        server.join().unwrap();
+        telemetry::set_enabled(preference);
+        let record = crate::machine::error_record(&error);
+        assert_eq!(record["code"], "semantic_policy_changed");
+        assert_eq!(record["next_action"], "upgrade_client");
+        assert!(!error.to_string().contains("private@example.org"));
+        assert!(!record.to_string().contains("private@example.org"));
     }
 
     #[test]

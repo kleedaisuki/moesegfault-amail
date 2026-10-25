@@ -16,6 +16,7 @@ mod platform;
 mod profiles;
 mod resource;
 mod search_jobs;
+mod semantic;
 mod telemetry_read;
 mod tmpaddr;
 mod trace;
@@ -1027,11 +1028,12 @@ async fn claim_embedding<'a>(
     let claimed_at = now();
     let claim = database
         .prepare(format!(
-            "UPDATE embedding_work SET lease_until=?1,lease_token=?2
+            "UPDATE embedding_work SET lease_until=?1,lease_token=?2,consent_lease_token=?2
              WHERE message_id=?3 AND state='pending'
                AND next_attempt_at<=?4 AND lease_until<=?4
+               AND EXISTS (SELECT 1 FROM semantic_preferences p WHERE p.owner_iss=embedding_work.owner_iss AND p.owner_sub=embedding_work.owner_sub AND p.enabled=1 AND p.generation=embedding_work.consent_generation)
                AND EXISTS (SELECT 1 FROM messages
-                           WHERE id=?3 AND deleted_at IS NULL AND embedding_json IS NULL AND {} AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted'))",
+                           WHERE id=?3 AND deleted_at IS NULL AND {} AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted'))",
             tmpaddr::message_filter("messages"),
         ))
         .bind(&[
@@ -1059,7 +1061,7 @@ async fn claim_embedding<'a>(
     Ok(Some(EmbeddingLease { message_id, token }))
 }
 
-/// Recheck active, unindexed content under the live lease before transfer.
+/// Recheck active content and current consent under the live lease before transfer.
 async fn read_leased_embedding(
     database: &Database,
     lease: &EmbeddingLease<'_>,
@@ -1068,9 +1070,10 @@ async fn read_leased_embedding(
         .prepare(format!(
             "SELECT m.subject,m.body_text,w.attempts
              FROM messages m JOIN embedding_work w ON w.message_id=m.id
-             WHERE m.id=?1 AND m.deleted_at IS NULL AND m.embedding_json IS NULL
+             WHERE m.id=?1 AND m.deleted_at IS NULL
+               AND EXISTS (SELECT 1 FROM semantic_preferences p WHERE p.owner_iss=w.owner_iss AND p.owner_sub=w.owner_sub AND p.enabled=1 AND p.generation=w.consent_generation)
                AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=m.id AND s.owner_iss=m.owner_iss AND s.owner_sub=m.owner_sub AND s.state='accepted')
-               AND w.lease_token=?2 AND w.lease_until>?3 AND {}",
+               AND w.lease_token=?2 AND w.consent_lease_token=?2 AND w.lease_until>?3 AND {}",
             tmpaddr::message_filter("m"),
         ))
         .bind(&[
@@ -1103,7 +1106,7 @@ async fn process_embedding(
         Err(platform::CronEmbeddingFailure::Deferred) => {
             // This is policy deferral, not an attempted provider defect. Release
             // only our token; keep attempts, next due time and cooldown unchanged.
-            database.prepare("UPDATE embedding_work SET lease_until=0,lease_token=NULL WHERE message_id=?1 AND lease_token=?2")
+            database.prepare("UPDATE embedding_work SET lease_until=0,lease_token=NULL,consent_lease_token=NULL WHERE message_id=?1 AND lease_token=?2")
                 .bind(&[bind_str(lease.message_id), bind_str(&lease.token)])?.run().await?;
             Err(maintenance::deferred())
         }
@@ -1121,7 +1124,7 @@ async fn process_embedding(
     }
 }
 
-/// Commit only if the message remains active, unindexed, and leased to us.
+/// Replace a retained projection only under the current live consent and lease.
 async fn persist_embedding_success(
     env: &Env,
     database: &Database,
@@ -1136,10 +1139,12 @@ async fn persist_embedding_success(
         .prepare(format!(
             "UPDATE messages
              SET embedding_json=?1,embedding_model=?2,embedding_dimensions=256,
-                 embedding_input_version=1,embedding_truncated=?3
-             WHERE id=?4 AND deleted_at IS NULL AND embedding_json IS NULL
+                 embedding_input_version=1,embedding_truncated=?3,
+                 embedding_consent_generation=(SELECT consent_generation FROM embedding_work WHERE message_id=?4 AND lease_token=?5)
+             WHERE id=?4 AND deleted_at IS NULL
                AND EXISTS (SELECT 1 FROM embedding_work
-                           WHERE message_id=?4 AND lease_token=?5 AND lease_until>?6) AND {}",
+                           WHERE message_id=?4 AND lease_token=?5 AND consent_lease_token=?5 AND lease_until>?6
+                             AND EXISTS (SELECT 1 FROM semantic_preferences p WHERE p.owner_iss=embedding_work.owner_iss AND p.owner_sub=embedding_work.owner_sub AND p.enabled=1 AND p.generation=embedding_work.consent_generation)) AND {}",
             tmpaddr::message_filter("messages"),
         ))
         .bind(&[
@@ -1173,10 +1178,10 @@ async fn persist_embedding_failure(
         }
     }
     let next = now() + embedding_retry_delay(attempts, lease.message_id);
-    database
+    let changed = database
         .prepare(
             "UPDATE embedding_work
-             SET attempts=?1,next_attempt_at=?2,lease_until=0,lease_token=NULL,
+             SET attempts=?1,next_attempt_at=?2,lease_until=0,lease_token=NULL,consent_lease_token=NULL,
                  state=?3,last_error_code=?4
              WHERE message_id=?5 AND lease_token=?6",
         )
@@ -1189,7 +1194,11 @@ async fn persist_embedding_failure(
             bind_str(&lease.token),
         ])?
         .run()
-        .await?;
+        .await?
+        .meta()?.and_then(|meta| meta.changes).unwrap_or(0);
+    if changed != 1 {
+        return Ok(false);
+    }
     if quarantine {
         diagnostics.note(DeepCondition::DocumentQuarantined);
     }
@@ -1217,6 +1226,8 @@ const EMBEDDING_DUE_SQL: &str = "SELECT message_id FROM (
                 ORDER BY w.next_attempt_at,w.received_at,w.message_id
               ) AS owner_rank
        FROM embedding_work w
+       JOIN semantic_preferences p ON p.owner_iss=w.owner_iss AND p.owner_sub=w.owner_sub
+         AND p.enabled=1 AND p.generation=w.consent_generation
        LEFT JOIN embedding_owner_schedule o
          ON o.owner_iss=w.owner_iss AND o.owner_sub=w.owner_sub
        WHERE w.state='pending' AND w.next_attempt_at<=?1 AND w.lease_until<=?1
@@ -1235,7 +1246,7 @@ async fn dispatch(
     if req.method() == Method::Get && path == "/health" {
         trace.operation(Operation::Health);
         return Ok(Response::from_json(
-            &serde_json::json!({"status":"ok","request_id":request_id,"version":"0.3.0","api_version":"2"}),
+            &serde_json::json!({"status":"ok","request_id":request_id,"version":env!("CARGO_PKG_VERSION"),"api_version":"2"}),
         )?);
     }
     if path == "/internal/inbound" && req.method() == Method::Post {
@@ -1270,7 +1281,10 @@ async fn dispatch(
         }
         return telemetry_attempts(&mut req, request_id, trace).await;
     }
-    if operation == Operation::Unknown && !profiles::is_route(req.method(), &path) {
+    if operation == Operation::Unknown
+        && !profiles::is_route(req.method(), &path)
+        && !semantic::is_route(req.method(), &path)
+    {
         return Err(AppError::not_found());
     }
     let database = db(&env)?;
@@ -1279,6 +1293,9 @@ async fn dispatch(
     }
     user.profile = profiles::resolve(&req, &database, &user).await?;
     user.enrollment_fence = true;
+    if semantic::is_route(req.method(), &path) {
+        return semantic::dispatch(&mut req, &database, &user).await;
+    }
     if req.method() == Method::Post
         && matches!(
             segments.as_slice(),
@@ -1390,6 +1407,8 @@ fn address_diagnostics_enabled(env: &Env) -> bool {
 /// Classify only known routes after authentication; never retain URL segments.
 fn operation_for(method: Method, segments: &[&str]) -> Operation {
     match (method, segments) {
+        (Method::Get, ["v1", "semantic"]) => Operation::SemanticStatus,
+        (Method::Post, ["v1", "semantic"]) => Operation::SemanticChange,
         (Method::Get, ["v1", "billing"]) => Operation::BillingStatus,
         (Method::Post, ["v1", "billing", "sessions"]) => Operation::BillingSessionCreate,
         (Method::Get, ["v1", "billing", "sessions", _]) => Operation::BillingSessionStatus,
@@ -2538,7 +2557,7 @@ fn search_projection(input: &SearchRequest) -> String {
         "'{}' AS metadata_json"
     };
     let vector = if input.semantic.is_some() {
-        "embedding_json,embedding_model,embedding_dimensions,embedding_input_version"
+        "embedding_json,embedding_model,embedding_dimensions,CASE WHEN embedding_consent_generation=(SELECT generation FROM semantic_preferences p WHERE p.owner_iss=messages.owner_iss AND p.owner_sub=messages.owner_sub AND p.enabled=1) THEN embedding_input_version ELSE NULL END AS embedding_input_version"
     } else {
         "NULL AS embedding_json"
     };
@@ -3730,6 +3749,11 @@ mod tests {
             .unwrap(),
             1
         );
+        // This historical 0007 fixture also exercises the current fair scheduler.
+        // The consent migration itself has independent full-schema tests.
+        db.execute_batch("ALTER TABLE embedding_work ADD COLUMN consent_generation INTEGER NOT NULL DEFAULT 0;
+            CREATE TABLE semantic_preferences(owner_iss TEXT,owner_sub TEXT,enabled INTEGER,generation INTEGER,PRIMARY KEY(owner_iss,owner_sub));
+            INSERT INTO semantic_preferences VALUES('i','a',1,0),('i','b',1,0);").unwrap();
         db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES('new','a','i','b','inbound','s','[]','subject','body','{}',100,0,1,0,'k',1)",[]).unwrap();
         let due = db
             .prepare(EMBEDDING_DUE_SQL)
@@ -3751,6 +3775,11 @@ mod tests {
             .unwrap();
         assert_eq!(due[0], "old-01");
         for n in 0..25 {
+            db.execute(
+                "INSERT INTO semantic_preferences VALUES('i',?1,1,0)",
+                [format!("fresh-owner-{n:02}")],
+            )
+            .unwrap();
             db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES(?1,'a','i',?2,'inbound','s','[]','subject','body','{}',?3,0,1,0,'k',1)",rusqlite::params![format!("fresh-{n:02}"),format!("fresh-owner-{n:02}"),200+n]).unwrap();
         }
         db.execute(
@@ -4168,7 +4197,10 @@ mod tests {
             ..Default::default()
         });
         assert!(detailed.contains("body_text,metadata_json"));
-        assert!(detailed.contains("embedding_json,embedding_model,embedding_dimensions,embedding_input_version FROM messages"));
+        assert!(detailed.contains("embedding_json,embedding_model,embedding_dimensions,CASE WHEN embedding_consent_generation="));
+        assert!(detailed.contains(
+            "p.enabled=1) THEN embedding_input_version ELSE NULL END AS embedding_input_version"
+        ));
         assert!(search_summary_projection().contains("substr(subject,1,2048)"));
     }
 

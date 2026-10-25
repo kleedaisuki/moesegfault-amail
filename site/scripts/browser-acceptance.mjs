@@ -216,11 +216,11 @@ try {
         assert.equal(await page.locator('main#main').count(), 1);
         const text = await page.locator('main').innerText();
         const state = published
-          ? { '/': 'v0.3.0 已发布', '/manual/': 'v0.3.0 已发布', '/changelog/': 'v0.3.0 已正式发布' }
-          : { '/': 'v0.3.0 尚未发布', '/manual/': 'v0.3.0 尚未开放下载', '/changelog/': 'v0.3.0 仍在验收' };
+          ? { '/': 'v0.3.1 已发布', '/manual/': 'v0.3.1 已发布', '/changelog/': 'v0.3.1 已正式发布' }
+          : { '/': 'v0.3.1 尚未发布', '/manual/': 'v0.3.1 尚未开放下载', '/changelog/': 'v0.3.1 仍在验收' };
         assert.ok(text.includes(state[route]), 'route-local publication status missing');
         if (published) {
-          assert.doesNotMatch(text, /staging 候选|v0\.3\.0 尚未|v0\.3\.0 仍在验收|候选记录日期/);
+          assert.doesNotMatch(text, /staging 候选|v0\.3\.1 尚未|v0\.3\.1 仍在验收|候选记录日期/);
           assert.ok(await page.locator(`a[href="${releaseTagUrl}"]`).count() > 0);
           if (route === '/manual/') {
             for (const asset of releaseDownloads) {
@@ -229,7 +229,7 @@ try {
             }
           }
         } else {
-          assert.ok(text.includes('这是 v0.3.0 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。'));
+          assert.ok(text.includes('这是 v0.3.1 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。'));
           for (const asset of releaseDownloads) assert.equal(await page.locator(`a[href="${asset.href}"]`).count(), 0);
         }
         if (route === '/manual/') {
@@ -238,8 +238,10 @@ try {
           }
         }
         if (route === '/changelog/') {
-          assert.equal(await page.locator('h2[id="v0.3.0"]').count(), 1,
+          assert.equal(await page.locator('h2[id="v0.3.1"]').count(), 1,
             'candidate changelog entry must exist independently of page status');
+          assert.equal(await page.locator('.toc a[href="#v0.3.1"]').count(), 1);
+          assert.equal(await page.locator('h2[id="v0.3.0"]').count(), 1);
           assert.equal(await page.locator('.toc a[href="#v0.3.0"]').count(), 1);
           assert.equal(await page.locator('h2[id="v0.1.0"]').count(), 1);
           assert.equal(await page.locator('.toc a[href="#v0.1.0"]').count(), 1);
@@ -298,8 +300,8 @@ try {
       });
       if (route !== '/') await check(result, 'TOC activation and heading visibility', () => toc(page, stem, result));
       if (route === '/manual/') await check(result, 'privacy introduction renders semantic emphasis', async () => {
-        // The pre-use warning must render as emphasis, not raw Markdown syntax.
-        const label = '使用前的隐私提示：';
+        // The current opt-in warning must render as emphasis, not raw Markdown.
+        const label = '语义检索默认关闭：';
         const count = await page.locator('.manual-prose strong').evaluateAll((elements, text) =>
           elements.filter((el) => el.textContent.trim() === text).length, label);
         assert.equal(count, 1, 'privacy introduction must have exactly one strong label');

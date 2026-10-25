@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "amail"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "amail-trace-schema",
  "anyhow",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "amail-events"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "js-sys",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "amail-identity-test-inbox"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "futures-util",
  "uuid",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "amail-ingress"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "futures-util",
  "js-sys",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "amail-role-monitor"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "amail-trace-schema",
  "js-sys",
@@ -129,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "amail-trace-schema"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "amail-trace-sink"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "amail-trace-schema",
  "serde-wasm-bindgen",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "amail-worker"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "amail-trace-schema",
  "ammonia",

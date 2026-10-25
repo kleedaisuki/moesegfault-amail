@@ -1,5 +1,5 @@
 /** Current release coordinates; published links require the gated published build. */
-export const releaseVersion = 'v0.3.0';
+export const releaseVersion = 'v0.3.1';
 export const releaseTagUrl = `https://github.com/kleedaisuki/moesegfault-amail/releases/tag/${releaseVersion}`;
 
 /** Exact public assets produced by the current tag release workflow. */

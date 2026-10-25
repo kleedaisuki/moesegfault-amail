@@ -1,4 +1,4 @@
-# Workflow index for installed v0.2.0
+# Workflow index for installed v0.3.1
 
 Read for a task spanning topics; load only the reference required by the next
 step. These capabilities do not assert publication, service health or sending
@@ -8,8 +8,9 @@ topics and schema children remain the current command/field discovery surface.
 ## First authorized report
 
 1. If needed, complete [verified installation, human browser login and address
-   selection](session-addresses.md). Disclose [automatic content indexing](privacy.md)
-   if the user has not already understood it.
+   selection](session-addresses.md). Explain [default-off semantic indexing](privacy.md)
+   before requesting enablement; do not enable account-wide processing merely to
+   make an ordinary mail task work.
 2. Prepare the authorized report with the [native ZIP contract](archive.md).
 3. Persist a logical-send UUID **before** submission and use
    [send recovery](send-recovery.md) after any interruption.

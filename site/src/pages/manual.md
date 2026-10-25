@@ -8,7 +8,7 @@ description: amail 的安装、登录、地址管理、邮件检索和 ZIP 收�
 
 amail 是一个面向 AI Agent 的命令行邮件客户端。你在浏览器里完成 moeSegFault 登录，为终端分配 Profile 和邮箱读写占用，再让 Agent 检索邮件、更新状态和发送消息。初始 `user` Profile 默认逐操作弹出网页确认。它**没有收件箱网页，也没有 `view` 命令**：邮件内容以 ZIP 消息包交接，默认检索输出则是适合继续处理的紧凑数据。
 
-**使用前的隐私提示：** 服务端会自动为收发邮件建立语义索引，把邮件主题与正文提取文本发送给 OpenRouter 及其上游模型服务商；即使从不使用 `--semantic`，也会进行这一步。首发版没有逐账号关闭索引的选项。注册收件地址前，请先阅读[隐私与边界](#隐私与边界)。
+**语义检索默认关闭：** 新账号和升级后的账号都不会默认把邮件交给模型处理。只有 `user` Profile 可启用或关闭，默认需在浏览器批准；人类显式设置的 YOLO 沿用。启用后，后台会把全部符合条件的保留邮件及后续新邮件的主题、正文片段经 OpenRouter 发送给 Voyage 4。所选上游不训练，但可能留存输入与输出，不能承诺零留存或关闭后的远端删除。关闭保留旧向量，重新启用会重新索引全部符合条件的邮件。请先阅读[隐私与边界](#隐私与边界)。
 
 | 你负责 | Agent 可以负责 |
 | --- | --- |
@@ -18,11 +18,11 @@ amail 是一个面向 AI Agent 的命令行邮件客户端。你在浏览器里�
 
 ### 可以直接交给 Agent 的首次任务
 
-> 请确认当前真正公开的 amail 版本，按我的系统选择 CLI 与配套 Agent Skill，使用同一 Release 的 SHA256SUMS 校验后安装；如果尚未完整发布，不要用候选包替代。先说明自动第三方邮件索引的处理方式，再启动 `amail login`，让我自己完成浏览器授权。检查会话与现有地址，优先复用启用的地址。随后只准备我明确授权的任务通知，不要求我学习命令，也不索要口令或令牌。
+> 请确认当前真正公开的 amail 版本，按我的系统选择 CLI 与配套 Agent Skill，使用同一 Release 的 SHA256SUMS 校验后安装；如果尚未完整发布，不要用候选包替代。先说明语义索引默认关闭及启用后的第三方处理方式，再启动 `amail login`，让我自己完成浏览器授权。检查会话与现有地址，优先复用启用的地址。随后只准备我明确授权的任务通知，不要求我学习命令，也不索要口令或令牌。
 
 ## 订阅与用量
 
-v0.3.0 候选沿用 Free、Lite、Plus 三档；同一账户的所有 Profile、普通地址与临时地址共享发信和存储资源池，临时地址有独立且更高的数量额度。收信不按封计费，不设置普通邮箱留存邮件条数上限，语义搜索不按次数收费。超额按实际用量结算，必须先由用户在网页授权并设置预算；Agent 不能自行提高预算。临时邮箱仍受六小时的绝对存续上限约束，付费不延长它。
+v0.3.1 沿用 Free、Lite、Plus 三档；同一账户的所有 Profile、普通地址与临时地址共享发信和存储资源池，临时地址有独立且更高的数量额度。收信不按封计费，不设置普通邮箱留存邮件条数上限，语义搜索不按次数收费。超额按实际用量结算，必须先由用户在网页授权并设置预算；Agent 不能自行提高预算。临时邮箱仍受六小时的绝对存续上限约束，付费不延长它。
 
 社区固定美元价格：Free $0、Lite $1.50／月、Plus $4.50／月；超额发信 $0.001／收件人、储存 $0.15／GB·月、地址 $0.50／个·月。储存按十进制 GB，储存和地址超额按实际占用时间累计。金额使用整数微美元（USD micros，1 美元 = 1,000,000 微美元），不是实时汇率换算。历史人民币账目保留原币种，与新美元账目分开；旧人民币预算不能授权美元支出，需要重新在网页确认。
 
@@ -34,7 +34,7 @@ Agent 可发起订阅授权并打开网页，但必须让你本人完成确认�
 
 ## 从小入口探索完整工作流
 
-以下工作流在 v0.3.0 中继续适用。页面顶部的发布状态、实际安装版本与服务端策略分别决定安装来源、命令可用性和操作授权；文档本身不开放发送。先检查 `amail --version` 和命令帮助，再用 `amail discover` 探索当前版本支持的工作流。
+以下工作流在 v0.3.1 中继续适用。页面顶部的发布状态、实际安装版本与服务端策略分别决定安装来源、命令可用性和操作授权；文档本身不开放发送。先检查 `amail --version` 和命令帮助，再用 `amail discover` 探索当前版本支持的工作流。
 
 渐进式披露（Progressive Disclosure）不是删掉复杂能力，而是让 Agent 按任务逐步进入可查询的空间：
 
@@ -87,11 +87,11 @@ amail events --kind bounced --since 2026-10-03T00:00:00Z --limit 20
 
 | 你的设备 | 选择的安装包 |
 | --- | --- |
-| Linux，Intel／AMD 64 位（x86-64） | `amail-v0.3.0-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux，ARM 64 位（AArch64） | `amail-v0.3.0-aarch64-unknown-linux-gnu.tar.gz` |
-| Windows，Intel／AMD 64 位（x86-64） | `amail-v0.3.0-x86_64-pc-windows-msvc.zip` |
-| macOS，Apple 芯片（M 系列） | `amail-v0.3.0-aarch64-apple-darwin.tar.gz` |
-| macOS，Intel 芯片 | `amail-v0.3.0-x86_64-apple-darwin.tar.gz` |
+| Linux，Intel／AMD 64 位（x86-64） | `amail-v0.3.1-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux，ARM 64 位（AArch64） | `amail-v0.3.1-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows，Intel／AMD 64 位（x86-64） | `amail-v0.3.1-x86_64-pc-windows-msvc.zip` |
+| macOS，Apple 芯片（M 系列） | `amail-v0.3.1-aarch64-apple-darwin.tar.gz` |
+| macOS，Intel 芯片 | `amail-v0.3.1-x86_64-apple-darwin.tar.gz` |
 
 这些是**原生**安装包；目前没有 Windows ARM 原生包，也没有 Linux musl 包。Linux 包使用 GNU libc。若不确定 CPU 类型，Linux/macOS 可运行 `uname -m`（`x86_64` 或 `aarch64`／`arm64`）；Windows 在“设置 → 系统 → 系统信息”查看系统类型。安装包和校验文件必须来自**同一个** GitHub Release，不要从聊天消息复制别人提供的散列值。
 
@@ -100,7 +100,7 @@ amail events --kind bounced --since 2026-10-03T00:00:00Z --limit 20
 在下载目录的终端运行；若是 ARM 64 位，将第一行换成表中的 ARM 文件名：
 
 ```sh
-archive=amail-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
+archive=amail-v0.3.1-x86_64-unknown-linux-gnu.tar.gz
 awk -v file="$archive" '$2 == file { print }' SHA256SUMS | sha256sum --check -
 ```
 
@@ -120,7 +120,7 @@ amail --version
 Apple 芯片使用下列文件名；Intel Mac 将第一行换成表中的 Intel 文件名：
 
 ```sh
-archive=amail-v0.3.0-aarch64-apple-darwin.tar.gz
+archive=amail-v0.3.1-aarch64-apple-darwin.tar.gz
 awk -v file="$archive" '$2 == file { print }' SHA256SUMS | shasum -a 256 --check -
 ```
 
@@ -141,7 +141,7 @@ amail --version
 
 ```powershell
 & {
-$archive = 'amail-v0.3.0-x86_64-pc-windows-msvc.zip'
+$archive = 'amail-v0.3.1-x86_64-pc-windows-msvc.zip'
 $checksumLines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith("  $archive", [StringComparison]::Ordinal) })
 if ($checksumLines.Count -ne 1) { throw 'SHA256SUMS 中没有唯一的安装包记录' }
 $expected = ($checksumLines[0] -split '\s+')[0]
@@ -160,7 +160,7 @@ amail --version
 
 上面的 SHA-256 校验不通过时，`throw` 会中止该段，不要继续解压。用户 `PATH` 修改会对新开的终端生效；当前终端也已临时加入路径。若 PowerShell 受设备策略限制，请让设备管理员协助，而不是关闭安全策略。
 
-Agent Skill 的文件名为 `amail-agent-skill-v0.3.0.zip`；它应与 CLI 安装包来自同一个 GitHub Release。解压前，按上面的系统校验步骤，将文件名换成 Skill ZIP，核对 `SHA256SUMS` 中对应的唯一记录。Agent 若支持安装 Skill，可将 ZIP 中的 `amail/` 文件夹及其引用文档一并放入其 Skill 目录；具体目录以该 Agent 的安装说明为准。这不是 CLI 的运行依赖，也不要用它替代 CLI 安装包校验。准备好之后，让 Agent **在你的设备上**启动登录：
+Agent Skill 的文件名为 `amail-agent-skill-v0.3.1.zip`；它应与 CLI 安装包来自同一个 GitHub Release。解压前，按上面的系统校验步骤，将文件名换成 Skill ZIP，核对 `SHA256SUMS` 中对应的唯一记录。Agent 若支持安装 Skill，可将 ZIP 中的 `amail/` 文件夹及其引用文档一并放入其 Skill 目录；具体目录以该 Agent 的安装说明为准。这不是 CLI 的运行依赖，也不要用它替代 CLI 安装包校验。准备好之后，让 Agent **在你的设备上**启动登录：
 
 ```sh
 amail login
@@ -177,7 +177,7 @@ amail auth logout
 
 ## 守护进程与终端 Profile
 
-v0.3.0 的 CLI 是薄客户端：未发现本机守护进程（daemon）时会自动启动一个，由它集中处理网络请求、邮件计算与并发资源。同一终端先后启动的多个 `amail` 进程共享当前 Profile，不需要每条命令重新登录。
+v0.3.1 的 CLI 是薄客户端：未发现本机守护进程（daemon）时会自动启动一个，由它集中处理网络请求、邮件计算与并发资源。同一终端先后启动的多个 `amail` 进程共享当前 Profile，不需要每条命令重新登录。
 
 默认配置与 SQLite 数据库位于 `~/.amail`，Windows 为 `%USERPROFILE%\.amail`；安装包中的二进制放在其 `bin` 子目录。可用 `AMAIL_HOME` 显式选择另一个应用目录；不同目录不是绕过云端占用的办法。`config.toml` 只需填写要覆盖的设置，例如下面列出的安全默认值：
 
@@ -270,7 +270,7 @@ amail mailbox export build-test@tmpaddr.moesegfault.dev --output history.zip
 | 普通邮箱 | 1 | 3 | 5 |
 | 临时邮箱 | 3 | 6 | 10 |
 
-两类地址分别计算数量，但所有 Profile、普通邮箱和临时邮箱共享同一账户的发信与存储资源池。临时邮箱的自动第三方语义索引规则与普通邮箱相同。
+两类地址分别计算数量，但所有 Profile、普通邮箱和临时邮箱共享同一账户的发信与存储资源池。临时邮箱与普通邮箱共享账户的语义检索开关，默认关闭；启用后临时邮件也会参与第三方索引。
 
 ## 查找邮件，而不是翻页
 
@@ -288,7 +288,7 @@ amail search --semantic "讨论发布风险的邮件"
 
 `--meta` 原有四个键为 `message_id`（原始邮件 ID）、`in_reply_to`（回复关系）、`content_type`（内容类型）和 `attachment_name`（附件名称）。v0.2.0 还支持 `rfc_message_id`（已验证 RFC 标识）、`provider_id`（供应商标识）、`reply_to`（建议回复地址）和 `references`（关联链中的单个标识）。可以用多个 `--meta KEY=VALUE` 分别指定不同键，并与其他条件一起筛选；同一个键在一次命令里写两遍会报错，而不会悄悄覆盖前一个条件。
 
-多个条件一起使用时表示“同时满足”。时间区间的起点包含在内，终点不包含；`--regex` 对文本条件启用正则匹配，`--case-sensitive` 启用区分大小写。语义检索在服务端执行：邮件文本会自动建立索引；使用 `--semantic` 时，检索词也会发送给 OpenRouter。若第一页还有后续结果，服务端会在仅限本账号读取的检索任务中保留该检索词、其查询向量和游标签名密钥，最长 24 小时；后续页面复用同一向量，不会再次把检索词发送给模型。游标过期或邮箱变更时需从第一页重新检索，不能拼接新旧结果。普通条件检索不会额外把检索词发送给模型，但不会停止邮件的自动索引。默认输出是紧凑的 JSON Lines，适合管道捕获和 Agent 进一步筛选；它不是为屏幕阅读设计的邮件视图。
+多个条件一起使用时表示“同时满足”。时间区间的起点包含在内，终点不包含；`--regex` 对文本条件启用正则匹配，`--case-sensitive` 启用区分大小写。语义检索默认关闭。使用 `amail semantic status` 查看账户状态；只有 `user` 可执行 `amail semantic enable` 或 `amail semantic disable`，默认弹出网页确认，已显式配置 YOLO 时沿用该授权方式。开关影响账户内全部 Profile。启用后才在后台为全部符合条件的保留邮件及新邮件建立索引；使用 `--semantic` 时，检索词也会经 OpenRouter 发送给 Voyage 4。若第一页还有后续结果，服务端会在仅限本账号读取的检索任务中保留该检索词、其查询向量和游标签名密钥，最长 24 小时；后续页面复用同一向量，不会再次把检索词发送给模型。游标过期或邮箱变更时需从第一页重新检索，不能拼接新旧结果。普通条件检索不把检索词发送给模型，关闭语义检索时仍可使用；已启用时，不使用 `--semantic` 本身不会停止后台邮件索引。默认输出是紧凑的 JSON Lines，适合管道捕获和 Agent 进一步筛选；它不是为屏幕阅读设计的邮件视图。
 
 范围很广的精确检索可能需要较长时间。amail 会自动等待，**结果完整前不会在标准输出写入部分结果**；若中断或超时，终端错误提示会给出任务 ID，可在 24 小时内续作：
 
@@ -387,7 +387,13 @@ amail --human search --title "release"
 
 ## 隐私与边界
 
-除了诊断遥测，自动语义索引还有独立的内容数据流：服务端将邮件主题与正文提取文本拼接，取开头**最多 12,000 个 UTF-8 字节**经 OpenRouter 交给 Qwen3 Embedding 8B 模型服务，以生成 256 维向量。原始 ZIP 和附件文件不会作为这次嵌入请求的输入；使用 `--semantic` 时，检索词也会发送给该服务。若该语义检索有后续页面，服务端还会把检索词和实际用于第一页的查询向量保存在本账号专属任务中，最长 **24 小时**，到期清除；后续页面不再次请求服务商。没有后续页面的快速检索不会为游标保留这一副本。普通条件检索不需要向模型发送检索词，但无论你是否使用语义检索，后台仍会为邮件自动建立索引。目前没有逐账号关闭这一处理的选项；`AMAIL_TELEMETRY=off` 也不会关闭它或服务器任务留存。请在使用地址收发邮件前考虑是否接受。
+语义检索与诊断遥测是独立的数据流。v0.3.1 默认关闭语义检索，升级也不会替用户保留旧版的自动处理授权。只有 `user` Profile 可启用或关闭；默认都需要人类网页批准，显式配置的 YOLO 可跳过普通操作确认。此开关影响账户内所有 Profile，Agent 不应自行修改 YOLO。
+
+启用后，后台将全部符合条件的保留邮件及后续新邮件的主题与正文提取文本拼接，取开头**最多 12,000 个 UTF-8 字节**经 OpenRouter 交给 Voyage 4，生成邮件嵌入向量（embeddings）。原始 ZIP 和附件文件不作为这次请求的输入；使用 `--semantic` 时，检索词也会发送给该服务。若该语义检索有后续页面，服务端会把检索词和第一页查询向量保存在本账号专属任务中，最长 **24 小时**；后续页面复用向量，不再请求服务商。没有后续页面的快速检索不为游标保留这一副本。
+
+当前政策标识为 `voyage4_no_training_retention_v1`：请求固定到 `voyageai`，不允许回退供应商，设置 `data_collection: deny` 并关闭响应缓存，不设置请求级 `zdr`。这是人类明确批准的**不保证零留存（non-ZDR）的路由**：上游按其政策不用于训练，但可能依其条款保留邮件文本、检索词和输出，期限未明确，不能承诺零留存或固定天数删除。`amail semantic status` 提供政策标识，启用确认页也会说明此边界。OpenRouter 自身的内容日志、产品改进选项是独立的账号自愿开启设置；运营侧应保持关闭，不能把缓存关闭或 no-training 当成其替代品。[供应商留存说明](https://openrouter.ai/docs/guides/privacy/provider-logging)与 [OpenRouter 数据收集说明](https://openrouter.ai/docs/guides/privacy/data-collection)分别解释这两层。更严格的账号级零留存约束若导致请求不可用，应保持失败，不能擅自关闭约束或换供应商。
+
+关闭后，不再接纳新的邮件索引或查询模型请求，语义搜索不可用，但**旧邮件向量不删除**。已发出的远端请求无法撤回，其过期结果不能写入新代际；关闭开关或删除邮件也不代表上游已删除副本。再次启用会重新为全部符合条件的保留邮件建立索引，包括已有旧向量的邮件：重新发送的是生成向量所需的邮件文本，不是把旧向量上传来转换模型。专门的迁移保留旧数据并隔离 Qwen / Voyage 向量空间，不在迁移时自动发送旧邮件。普通条件检索始终不需要向模型发送检索词；`AMAIL_TELEMETRY=off` 不改变语义授权，也不清除服务器任务留存。
 
 amail 会记录用于诊断的本地操作轨迹，并向邮件服务上传脱敏遥测。轨迹不应包含邮件正文、标题、完整地址、令牌、ZIP 路径或搜索词；服务端也只需保留定位故障所需的结构化信息。使用 `amail config` 可查看当前遥测状态；设置环境变量 `AMAIL_TELEMETRY=off` 可停止后续诊断记录与上传，但不会删除已有的本地诊断记录。
 

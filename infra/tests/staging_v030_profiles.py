@@ -23,7 +23,7 @@ import staging_mail_e2e as mail
 
 TMP_DOMAIN: str = "tmpaddr-staging.moesegfault.dev"
 ANCHOR: str = "v030-probe-anchor"
-DenialCase = Literal["permanent", "reader_during_writer", "writer_during_readers"]
+DenialCase = Literal["permanent", "reader_during_writer", "writer_during_readers", "semantic_enable", "semantic_disable"]
 SAFE_DENIAL_CODES: frozenset[str] = frozenset({
     "user_profile_required", "profile_session_required", "profile_session_expired",
     "profile_request_failed", "profile_transport_unknown", "profile_in_use",
@@ -134,7 +134,8 @@ def active_temporary(binary: Path, env: dict[str, str], address: str) -> dict[st
 
 def execute(binary: Path, home: Path, run_dir: Path, nonce: str) -> dict[str, bool | int | str]:
     check(os.environ.get("AMAIL_STAGING_E2E_CONFIRM") == "RUN_STAGING_E2E"
-          and os.environ.get("GITHUB_REF") == "refs/heads/codex/v0.3.0-multitenant",
+          and os.environ.get("GITHUB_REF") in {"refs/heads/codex/v0.3.0-multitenant",
+              "refs/heads/codex/v0.3.1-semantic-consent"},
           "profiles_staging_confirmation_required")
     check(re.fullmatch(r"[a-f0-9]{16}", nonce) is not None, "profiles_nonce_invalid")
     check(mail.TEMP in run_dir.resolve().parents and home.resolve().parent == run_dir.resolve()
@@ -193,6 +194,13 @@ def execute(binary: Path, home: Path, run_dir: Path, nonce: str) -> dict[str, bo
         activated_b = True
         evidence["ephemeral_profiles"] = 2
         print("staging_profiles_ephemeral_terminals_verified")
+
+        if os.environ.get("GITHUB_REF") == "refs/heads/codex/v0.3.1-semantic-consent":
+            for action in ("enable", "disable"):
+                case: DenialCase = "semantic_enable" if action == "enable" else "semantic_disable"
+                rejected(binary, env_b, ["semantic", action], "user_profile_required", case=case)
+            evidence["agent_semantic_setting_denied"] = True
+            print("staging_profiles_agent_semantic_setting_denied")
 
         rejected(binary, env_b, ["address", "add", "v030-permanent-" + nonce],
                  "user_profile_required", case="permanent")

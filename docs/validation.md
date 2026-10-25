@@ -4,6 +4,66 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
+## v0.3.1 semantic consent — staging recovered and narrow acceptance delivered
+
+Source `f262e8e433ffeabb7d67d0fc26c363be7e4133f8` in
+[40188956353](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40188956353)
+passed all three native CLI jobs, Worker/Wasm acceptance including **144 boundary
+cases**, the approved synthetic Voyage provider contract and native-candidate
+assembly. These successful producer jobs remain reusable evidence for unchanged
+runtime inputs; they are **not** a successful staging deployment.
+
+The overall writer failed during full-schema verification **before maintenance
+activation**, after installing the new API and sink, applying migration 0018 and
+completing the 31-minute scheduled-cohort witness. Its retained partial graph is:
+
+| Role | Captured staging version |
+| --- | --- |
+| API | `d592cd2a-95a3-4c89-859a-18a191bd641a` |
+| Paused maintenance | `e42df778-c8a8-4975-abdd-83cb73dad372` |
+| Trace sink | `5e556087-9a75-40db-9eb5-869a4b56372e` |
+
+Original witness artifact `12597862883` belongs to that producer and partial
+transition; it is not a newly executed wait or proof of active maintenance.
+
+The named exact-owned recovery
+[40193614404](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40193614404)
+completed **SUCCESS** at orchestration source
+`802bc116dde3e2f6390a90b66346920c18dee72e`. Receipt artifact
+[12599375984](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40193614404/artifacts/12599375984)
+verifies all 163 source-derived schema objects plus complete column/index
+metadata, with zero unknown or drifted objects. Only maintenance was activated,
+at `c00d2f51-096d-4b83-8d49-e42e196b85ec`; the API and sink above stayed unchanged.
+Migration 0018 and the original scheduled witness were admitted and reused,
+not reapplied or waited again. This successful continuation does not change the
+original producer run's failed overall conclusion.
+
+The semantic-only real journey
+[40195321997](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40195321997)
+completed **SUCCESS** on 2026-10-25 at 21:05:15 Asia/Singapore (13:05:15 UTC),
+checkout `205eb3dd3f7e723ff1be9ac08c9838e4635e17a5`. Acceptance artifact
+[12600320617](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40195321997/artifacts/12600320617)
+binds original producer `40188956353` / `f262e8e433ffeabb7d67d0fc26c363be7e4133f8`
+to that checkout and the exact retained API/sink plus recovered maintenance above.
+One owned SMTP fixture exercised default-off, enable/full-index readiness, one
+semantic query, disable with literal search, re-enable/full-index readiness and
+final disable. Owned mail/profile/credential cleanup completed before the success
+receipt was published. Unrelated green native/Wasm/provider regressions were not
+repeated.
+
+Earlier narrow run `40193772432` exhausted its 420-second index wait entirely
+inside the documented 15-minute schedule-activation window. Read-only diagnosis
+found no durable provider-failure evidence; later warm-Cron acceptance on unchanged
+runtime supports schedule propagation as the explanation, not direct proof of
+which invocation ran. The earlier failed run remains failed.
+
+Production admission now has distinct successful source-gate and real-journey
+coordinates; it does not reinterpret the original failed writer as successful.
+This distinction enables incremental tooling checks instead of repeating green
+native/Wasm/provider suites. See [artifact promotion](deployment-artifact-foundation.md) and
+[the v0.3.1 cutover](v0.3.1/production-delivery.md). Production remains on its
+separately accepted v0.3.0 epoch until actual promotion is recorded.
+
 ## v0.3.0 production release — delivered
 
 The owner authorized production promotion on 2026-10-25. After the legacy

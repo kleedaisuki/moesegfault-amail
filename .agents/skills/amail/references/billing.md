@@ -1,7 +1,7 @@
 # Billing, resource plans and human authorization
 
 Read for subscriptions, usage, spending limits or authorization recovery. These
-v0.3.0 commands describe installed behavior, not a claim of staging/production
+v0.3.1 commands describe installed behavior, not a claim of staging/production
 availability. `amail discover billing` is the offline command index.
 
 ## Resource model

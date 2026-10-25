@@ -278,24 +278,30 @@ def explore(actor: str, environment: dict[str, str], address: str, message: dict
             "explicit_unread_state_missing")
     cli(environment, "sync", "--all", "--out-dir", str(RUN / actor / "export"))
     marker(f"actor_{actor.lower()}_combined_filters_regex_case_readstate_export_verified")
+    if os.environ.get("USER_JOURNEY_SEMANTIC_CONFIRM") != "RUN_OWNED_SEMANTIC_SEARCH":
+        marker(f"actor_{actor.lower()}_semantic_search_not_requested")
+        return
+    preferences = cli(environment, "semantic", "status")
+    require(len(preferences) == 1 and preferences[0].get("enabled") is True,
+            "owned_semantic_search_requires_user_opt_in")
     deadline = time.monotonic() + 420
     while time.monotonic() < deadline:
         try:
             rows = cli(environment, "search", "--semantic", "reproducible delivery through simple invariants")
         except identity.ProbeError as error:
-            # Automatic indexing is asynchronous. Only this exact typed state
+            # User-enabled background indexing is asynchronous. Only this typed state
             # permits a bounded wait; never turn unrelated 503/auth errors into
             # empty successful results or force indexing through an admin path.
             if str(error) != "amail_search_failed:semantic_index_incomplete":
                 raise
-            marker(f"actor_{actor.lower()}_automatic_index_pending_bounded_wait")
+            marker(f"actor_{actor.lower()}_authorized_index_pending_bounded_wait")
             time.sleep(30)
             continue
         if any(row.get("id") == ident for row in rows):
-            marker(f"actor_{actor.lower()}_automatic_index_and_semantic_search_verified")
+            marker(f"actor_{actor.lower()}_authorized_index_and_semantic_search_verified")
             return
         time.sleep(30)
-    raise identity.ProbeError("automatic_semantic_index_not_ready")
+    raise identity.ProbeError("authorized_semantic_index_not_ready")
 
 
 def owned_send_grant(actor: str, sender: str, recipient: str) -> None:
@@ -456,7 +462,7 @@ def main() -> int:
         materials = {actor: credential(actor) for actor in ("A", "B")}
         RUN.mkdir(parents=True, exist_ok=False)
         require(BINARY.is_file(), "release_candidate_binary_missing")
-        marker("owned_synthetic_mail_automatic_openrouter_indexing_disclosed_and_authorized")
+        marker("semantic_indexing_preferences_unchanged_by_journey")
         if os.environ.get("USER_JOURNEY_PHASE") == "register":
             for actor, material in materials.items():
                 register(actor, material)

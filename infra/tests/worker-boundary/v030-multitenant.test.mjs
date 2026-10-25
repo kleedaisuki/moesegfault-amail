@@ -305,7 +305,7 @@ test("actual maintenance purges released temporary content and credits storage o
       assert.ok(await bucket.get(`messages/${id}.zip`));
       assert.ok(await bucket.get(`raw/${id}.eml`));
       if (kind === "vector") {
-        await db.prepare("UPDATE messages SET embedding_json=?2,embedding_model='qwen/qwen3-embedding-8b',embedding_dimensions=256,embedding_input_version=1 WHERE id=?1")
+        await db.prepare("UPDATE messages SET embedding_json=?2,embedding_model='qwen/qwen3-embedding-8b',embedding_dimensions=256,embedding_input_version=1,embedding_consent_generation=0 WHERE id=?1")
           .bind(id, JSON.stringify(Array(256).fill(0.0625))).run();
       }
     }

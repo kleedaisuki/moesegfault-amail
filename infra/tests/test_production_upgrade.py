@@ -46,11 +46,13 @@ class ProductionUpgradeTests(unittest.TestCase):
             with self.assertRaises(health.HealthError):
                 upgrade.graph.global_policy()
 
-    def test_policy_preservation_is_only_for_production_active_state(self):
-        """Staging and activation cannot bypass their unchanged held contract."""
-        for realm, state in (("staging", "active"), ("production", "paused")):
+    def test_policy_preservation_is_only_for_production_stable_split_states(self) -> None:
+        """A privacy pause preserves policy; staging and activation still require hold."""
+        for realm, state in (("staging", "active"), ("staging", "paused"), ("production", "prepared")):
             with self.assertRaisesRegex(ValueError, "split_policy_unverified"):
                 upgrade.graph.verify(realm, state, expected_policy=self.policy())
+        with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, "split_pins_unverified"):
+            upgrade.graph.verify("production", "paused", expected_policy=self.policy())
 
     def test_retained_subscription_matches_documented_destination_not_invented_row_type(self):
         """Use the API response shape; wrong selectors and extra delivery paths stop."""

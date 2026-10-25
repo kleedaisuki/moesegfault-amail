@@ -68,7 +68,7 @@ def rows(connection: sqlite3.Connection, sql: str) -> list[dict]:
     return [dict(row) for row in connection.execute(sql).fetchall()]
 
 
-def expected_schema(migration_count: int | None = None) -> SchemaContract:
+def expected_schema(migration_count: int | None = None, *, staging_auxiliary: bool = False) -> SchemaContract:
     """Compile the reviewed migration chain into a disposable in-memory reference.
 
     This is not a Mail runtime/build or provider write. It is performed only by
@@ -89,6 +89,12 @@ def expected_schema(migration_count: int | None = None) -> SchemaContract:
         connection.row_factory = sqlite3.Row
         for file in files:
             connection.executescript(file.read_text(encoding="utf-8"))
+        if staging_auxiliary:
+            auxiliary = (ROOT / "infra/deploy/staging-acceptance-migrations/0001_quota_escrow.sql").read_text(encoding="utf-8")
+            connection.executescript(auxiliary)
+            # f27c727332c7cbc37c34604afe7e18c014075706 created this exact
+            # namespace-only mirror. Its retired probe is not a new migration.
+            connection.executescript(auxiliary.replace("staging_acceptance_", "staging_d1_probe_"))
         objects = {row["name"]: (row["type"], row["tbl_name"], sql_tokens(row["sql"]))
                    for row in rows(connection, SCHEMA_SQL)}
         tables = [name for name, (kind, _, _) in objects.items() if kind == "table"]

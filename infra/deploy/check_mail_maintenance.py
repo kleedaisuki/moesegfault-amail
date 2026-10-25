@@ -175,6 +175,11 @@ def verify(realm: str, state: str, account: str, token: str, version: str, queue
     if realm == "production" and version == "271e6d3f-9355-4804-b0c4-0d2426ad6c5a":
         # Successful production receipt11501340995 supplies this immutable old cohort.
         expected.pop("MAIL_TMP_DOMAIN", None)
+    if (realm, version) in {
+            ("staging", "9a45a11b-31e6-4415-b240-d9c97b4c3053"),
+            ("production", "ec73a333-0fba-497f-8f38-1fceffebc122")}:
+        # Only these accepted v0.3.0 predecessors retain the old vector space.
+        expected["OPENROUTER_EMBEDDING_MODEL"] = ("plain_text", "qwen/qwen3-embedding-8b")
     if missing_issuer_predecessor:
         # This is one immutable failed v0.2 cohort, not a generally optional issuer.
         # The old v0.1 cohort remains separately defined by predecessor=True.

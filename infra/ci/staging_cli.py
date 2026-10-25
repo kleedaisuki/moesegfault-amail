@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+from typing import Any
 import zipfile
 
 import cli_candidate as candidate
@@ -22,6 +23,40 @@ BUNDLE = ROOT / ".temp/staging-cli-bundle"
 BINARY = ROOT / ".temp/staging-cli/amail.exe"
 ADMISSION = ROOT / ".temp/staging-cli-admission.json"
 REPO = "kleedaisuki/moesegfault-amail"
+SEMANTIC_RUN = "40188956353"
+SEMANTIC_SHA = "f262e8e433ffeabb7d67d0fc26c363be7e4133f8"
+
+
+def semantic_context() -> None:
+    """The narrow new journey can reuse only this reviewed runtime producer."""
+    expected = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_REF": "refs/heads/codex/v0.3.1-semantic-consent",
+                "GITHUB_RUN_ATTEMPT": "1", "AMAIL_SOURCE_RUN": SEMANTIC_RUN,
+                "AMAIL_STAGING_SEMANTIC_CONFIRM": "RUN_STAGING_SEMANTIC_V031"}
+    if any(os.getenv(key) != value for key, value in expected.items()):
+        raise ValueError("candidate_semantic_context_unverified")
+    import accepted_staging_artifact as accepted
+    accepted.runtime_closure(SEMANTIC_SHA, os.environ["GITHUB_SHA"])
+
+
+def admit_semantic(run_id: str) -> dict[str, Any]:
+    """Source gates passed; deployment acceptance remains a separate obligation."""
+    semantic_context()
+    if run_id != SEMANTIC_RUN:
+        raise ValueError("candidate_semantic_source_unverified")
+    import accepted_staging_artifact as accepted
+    source = accepted.producer(run_id)
+    if source["source_sha"] != SEMANTIC_SHA:
+        raise ValueError("candidate_semantic_source_unverified")
+    current = candidate.context()
+    info = {**current, "source_sha": SEMANTIC_SHA, "run_id": SEMANTIC_RUN, "run_attempt": 1}
+    value = {"identity": info, "artifact_id": source["cli_artifact_id"],
+             "semantic_only": True, "orchestration_sha": current["source_sha"]}
+    ADMISSION.parent.mkdir(exist_ok=True)
+    candidate.write_json(ADMISSION, value)
+    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+        output.write(f"artifact_id={value['artifact_id']}\n")
+    return value
 
 
 def github(path: str) -> dict:
@@ -44,7 +79,7 @@ def admit(run_id: str) -> dict:
     run = github(f"actions/runs/{run_id}")
     if (str(run.get("id")) != run_id or run.get("status") != "completed"
             or run.get("conclusion") != "success" or run.get("head_sha") != os.getenv("GITHUB_SHA")
-            or run.get("head_branch") not in ("codex/v0.2.0-billing", "codex/v0.3.0-multitenant")
+            or run.get("head_branch") not in ("codex/v0.2.0-billing", "codex/v0.3.0-multitenant", "codex/v0.3.1-semantic-consent")
             or f"refs/heads/{run.get('head_branch')}" != os.getenv("GITHUB_REF")
             or run.get("path") != ".github/workflows/ci.yml"
             or run.get("event") != "workflow_dispatch"
@@ -77,6 +112,12 @@ def extract() -> None:
     admission = json.loads(ADMISSION.read_text(encoding="utf-8"))
     info = admission["identity"]
     current = candidate.context()
+    if admission.get("semantic_only") is True:
+        semantic_context()
+        if (admission.get("orchestration_sha") != current["source_sha"]
+                or info.get("source_sha") != SEMANTIC_SHA or info.get("run_id") != SEMANTIC_RUN):
+            raise ValueError("candidate_semantic_source_unverified")
+        current["source_sha"] = SEMANTIC_SHA
     if any(info.get(key) != value for key, value in current.items() if key not in ("run_id", "run_attempt")):
         raise ValueError("candidate_checkout_changed")
     manifest = json.loads((BUNDLE / "candidate.json").read_text(encoding="utf-8"))
@@ -129,11 +170,16 @@ def verify_windows_entries(entries: list[zipfile.ZipInfo]) -> None:
 def main() -> int:
     """Expose fixed admission/extraction phases; no fallback rebuild is performed."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("admit", "extract"))
+    parser.add_argument("phase", choices=("admit", "admit-semantic", "extract"))
     parser.add_argument("--run", default="")
     args = parser.parse_args()
     try:
-        admit(args.run) if args.phase == "admit" else extract()
+        if args.phase == "admit-semantic":
+            admit_semantic(args.run)
+        elif args.phase == "admit":
+            admit(args.run)
+        else:
+            extract()
     except Exception:
         print("staging_cli_candidate=UNVERIFIED")
         return 1

@@ -65,7 +65,20 @@ Unenrolled v0.2 owners remain compatible. Once an account enables profiles, its
 automation must use the matching new CLI/Skill. For a headless launcher without
 an OS terminal, reuse one stable `AMAIL_TERMINAL_ID` for the logical workflow.
 See the [multi-tenant architecture](docs/v0.3.0/architecture.md) and
-[upgrade notes](docs/releases/v0.3.0.md).
+[profile upgrade notes](docs/releases/v0.3.0.md).
+
+## Semantic indexing (v0.3.1 candidate)
+
+Semantic indexing is account-wide and **off by default**, including after upgrade.
+`amail semantic status|enable|disable` exposes the setting. Only `user` may change
+it, with browser approval unless the human explicitly configured YOLO. Enabling
+indexes all eligible retained and subsequent mail through OpenRouter / Voyage 4;
+disabling preserves old document embeddings but admits no new model requests.
+Re-enabling starts a full fresh index. The dedicated forward migration preserves
+legacy vectors without mixing Qwen and Voyage spaces or silently granting consent.
+See [v0.3.1 notes](docs/releases/v0.3.1.md) and
+[indexing privacy](docs/semantic-indexing-privacy-decision.md). Publication and
+deployed acceptance remain separate from source capabilities.
 
 ## Repository development
 
