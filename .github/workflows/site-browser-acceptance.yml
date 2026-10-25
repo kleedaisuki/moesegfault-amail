@@ -24,8 +24,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select affected browser checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      browser: ${{ steps.delta.outputs.browser }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Compare this update rather than the complete pull request
+        id: delta
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          BEFORE: ${{ github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ] || [ "$ACTION" != synchronize ] || ! [[ "$BEFORE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'browser=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+          # Workflow-only edits do not regress an unchanged site; new browser
+          # runtime settings can be exercised with an explicit dispatch.
+          if grep -Eq '^site/' <<< "$changed"; then
+            echo 'browser=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'browser=false' >> "$GITHUB_OUTPUT"
+          fi
+
   browser:
     name: Four-width site browser acceptance
+    needs: changes
+    if: needs.changes.outputs.browser == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
