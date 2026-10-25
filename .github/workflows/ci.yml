@@ -190,7 +190,7 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       BILLING_SERVICE_KEY: ${{ secrets.BILLING_SERVICE_KEY }}
-      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
+      INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
     steps:
       - uses: actions/checkout@v4
@@ -253,6 +253,7 @@ jobs:
           path: |
             .temp/production-upgrade-*.jsonl
             .temp/semantic-reuse-predecessor.json
+            .temp/semantic-reuse-ingress-auth.json
           if-no-files-found: ignore
           retention-days: 30
 
@@ -299,7 +300,7 @@ jobs:
           STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
           STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
           CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
-          INGRESS_SECRET: ${{ secrets.INGRESS_SECRET }}
+          INGRESS_SECRET: ${{ secrets.INGRESS_SECRET_STAGING }}
           CLOUDFLARE_ZONE_ID: 6edff81c6ed02f412e70868076411a5e
           PYTHONDONTWRITEBYTECODE: '1'
         run: python infra/tests/staging_semantic_e2e.py --reuse

@@ -47,6 +47,7 @@ class SemanticReuseDeploymentTests(unittest.TestCase):
             stack.enter_context(patch.object(deploy, "observe", return_value=({"retained": {}, "graph": {}}, {})))
             stack.enter_context(patch.object(deploy, "DatabaseClient"))
             schema = stack.enter_context(patch.object(deploy, "schema"))
+            stack.enter_context(patch.object(deploy, "check_staging_ingress_auth"))
             write = stack.enter_context(patch.object(deploy, "replace"))
             migration = stack.enter_context(patch.object(deploy.subprocess, "run"))
             deploy.verify_completed()

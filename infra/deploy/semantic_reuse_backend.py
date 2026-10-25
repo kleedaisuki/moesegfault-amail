@@ -9,10 +9,13 @@ import subprocess
 import tempfile
 import tomllib
 from typing import Any
+import urllib.error
+import urllib.request
 
 import production_v031 as previous
 import check_staging_adapters as adapters
 from direct_contact_health import DatabaseClient
+from fresh_bootstrap_scope import NoRedirect
 from mail_schema_contract import expected_schema, verify_schema
 from pin_staging_mail import expected_bindings, run as pin_api
 from tested_worker_artifact import require_artifact
@@ -35,7 +38,7 @@ FAILURES = frozenset({"semantic_reuse_policy_changed", "semantic_reuse_adapter_u
     "schema_objects_unverified", "schema_object_drift", "schema_columns_unverified",
     "schema_indexes_unverified", "schema_index_columns_unverified",
     "schema_migration_provenance_unverified", "semantic_reuse_partial_unreviewed",
-    "semantic_reuse_completed_origin_unverified"}) | previous.prior.graph.FAILURES
+    "semantic_reuse_completed_origin_unverified", "semantic_reuse_ingress_auth_unverified"}) | previous.prior.graph.FAILURES
 
 
 def select(realm: str, pins: dict[str, str]) -> None:
@@ -217,6 +220,7 @@ def verify_completed() -> None:
     if (previous.prior.digest(current["retained"]) != origin["retained_fingerprint"]
             or previous.prior.digest(policy) != origin["policy_fingerprint"]):
         raise ValueError("semantic_reuse_retained_graph_changed")
+    check_staging_ingress_auth()
     value = {**origin, "source_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
              "graph": current["graph"], "completion_mode": "read_only",
              "original_deployment_run": COMPLETED_STAGING_RUN,
@@ -224,6 +228,41 @@ def verify_completed() -> None:
     with (ROOT / ".temp/semantic-reuse-staging.json").open("x", encoding="utf-8") as file:
         json.dump(value, file, sort_keys=True)
     print("semantic_reuse_backend=staging_verified read_only=true")
+
+
+def check_staging_ingress_auth() -> None:
+    """An empty authenticated request must stop at size validation, before D1/R2."""
+    secret = os.environ.get("INGRESS_SECRET", "")
+    if not 32 <= len(secret) <= 512:
+        raise ValueError("semantic_reuse_ingress_auth_unverified")
+    request = urllib.request.Request("https://mail-staging.moesegfault.dev/internal/inbound",
+        data=b"", method="POST", headers={"Content-Type": "application/octet-stream",
+                                          "x-amail-ingress-secret": secret, "x-amail-api-version": "2"})
+    try:
+        response = urllib.request.build_opener(NoRedirect).open(request, timeout=30)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        raw = response.read(16_385)
+        status = response.status
+        content_type = response.headers.get("content-type", "")
+        correlation = response.headers.get("x-amail-request-id", "")
+    value: Any = None
+    if len(raw) <= 16_384:
+        try:
+            value = json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            pass
+    code = value.get("code", value.get("error_code")) if isinstance(value, dict) else None
+    result = {"http_status": status, "code": code if code in ("inbound_size", "forbidden") else "unrecognized",
+              "json_response": isinstance(value, dict),
+              "json_content_type": content_type.split(";", 1)[0] in ("application/json", "application/problem+json"),
+              "application_correlation_present": previous.legacy.UUID.fullmatch(correlation) is not None,
+              "empty_body": True, "envelope_header_sent": False}
+    (ROOT / ".temp/semantic-reuse-ingress-auth.json").write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
+    print(json.dumps({"event": "semantic_reuse_ingress_auth", **result}, sort_keys=True))
+    if status != 400 or code != "inbound_size":
+        raise ValueError("semantic_reuse_ingress_auth_unverified")
 
 
 def main() -> int:
