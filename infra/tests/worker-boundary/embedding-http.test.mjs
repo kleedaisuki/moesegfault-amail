@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Log, LogLevel, Miniflare } from "miniflare";
-import { applyMigrations } from "./migration-fixture.mjs";
+import { applyMigrations, seedSemanticConsent } from "./migration-fixture.mjs";
 import { workerModuleRules } from "./worker-module-rules.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -16,7 +16,7 @@ const endpoint = "https://openrouter.ai/api/v1/embeddings";
 const querySentinel = "SYNTHETIC_PRIVATE_QUERY_8dacf2";
 const bodySentinel = "SYNTHETIC_PRIVATE_PROVIDER_BODY_0613";
 const keySentinel = "SYNTHETIC_PRIVATE_KEY_bf6a";
-const model = "qwen/qwen3-embedding-8b";
+const model = "voyageai/voyage-4";
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 /** The real OIDC verifier checks an ephemeral locally signed token. */
@@ -69,6 +69,7 @@ async function exercise(providerResponse) {
   try {
     const { MAIL_DB: db } = await mf.getBindings();
     await applyMigrations(db, path.join(worker, "migrations"));
+    await seedSemanticConsent(db, issuer, "synthetic");
     const response = await mf.dispatchFetch("https://mail-staging.moesegfault.dev/v1/messages/search", {
       method: "POST", headers: { ...apiVersionHeaders, authorization: `Bearer ${token()}`, "content-type": "application/json" },
       body: JSON.stringify({ semantic: querySentinel }),
@@ -98,7 +99,7 @@ for (const status of [301, 302, 303, 307, 308]) {
   });
 }
 
-test("valid 256D Qwen JSON at exactly 64 KiB is accepted", async () => {
+test("valid 256D Voyage JSON at exactly 64 KiB is accepted", async () => {
   const envelope = { data: [{ embedding: Array(256).fill(2) }], padding: "" };
   const base = JSON.stringify(envelope);
   envelope.padding = "x".repeat(64 * 1024 - Buffer.byteLength(base));

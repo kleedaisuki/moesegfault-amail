@@ -55,3 +55,9 @@ export async function seedResourceAccount(db, issuer, subject) {
   await db.prepare("INSERT OR IGNORE INTO resource_periods(owner_iss,owner_sub,period_start,period_end,accounted_at) VALUES(?1,?2,unixepoch('now','start of month'),unixepoch('now','start of month','+1 month'),unixepoch())")
     .bind(issuer, subject).run();
 }
+
+/** Synthetic-only consent setup for tests whose purpose is provider processing. */
+export async function seedSemanticConsent(db, issuer, subject) {
+  await db.prepare("INSERT INTO semantic_preferences(owner_iss,owner_sub,enabled,generation) VALUES(?1,?2,1,1)")
+    .bind(issuer, subject).run();
+}

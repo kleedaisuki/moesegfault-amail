@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
-import { applyMigrations, seedResourceAccount } from "./migration-fixture.mjs";
+import { applyMigrations, seedResourceAccount, seedSemanticConsent } from "./migration-fixture.mjs";
 import { workerModuleRules } from "./worker-module-rules.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -400,7 +400,7 @@ async function withProvider({ rules = [], listPage, getRule, beforeDelete, creat
         EMAIL_INGRESS_WORKER_NAME: "synthetic-ingress", ADDRESS_DIAGNOSTICS: "v1",
         ...(embeddingReply ? {
           OPENROUTER_API_KEY: "synthetic-embedding-key",
-          OPENROUTER_EMBEDDING_MODEL: "qwen/qwen3-embedding-8b",
+          OPENROUTER_EMBEDDING_MODEL: "voyageai/voyage-4",
         } : {}),
       },
       d1Databases: { MAIL_DB: "address-shared" }, outboundService,
@@ -468,6 +468,7 @@ test("full routing allowance plus twenty embeddings still reaches later maintena
   } }, async ({ db, insert, tick, calls, store }) => {
     for (const recipient of addresses) await insert(recipient);
     for (let owner = 0; owner < 5; owner++) {
+      await seedSemanticConsent(db, issuer, `owner-budget-${String(owner).padStart(3, "0")}`);
       for (let item = 0; item < 4; item++) {
         const id = `budget-message-${owner}-${item}`;
         await db.prepare("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES(?1,?2,?3,?4,'inbound','synthetic@example.invalid','[]','Synthetic budget document','synthetic only','{}',0,0,1,0,?5,1)")

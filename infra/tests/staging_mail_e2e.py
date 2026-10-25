@@ -163,7 +163,7 @@ SAFE_API_CODES = frozenset({
     "address_limit", "address_provision_unknown", "address_state_changed",
     "address_deleting", "address_retired", "not_found", "service_unavailable", "send_held",
     "semantic_index_incomplete", "http_error", "unauthorized", "invalid_json",
-    "semantic_index_corrupt", "semantic_unavailable", "semantic_quota",
+    "semantic_index_corrupt", "semantic_unavailable", "semantic_quota", "semantic_disabled",
     "search_job_quota", "search_job_prepare_unknown", "search_resource_limit",
     "reserved_or_invalid_name", "search_job_stale", "search_cursor_stale",
 })
@@ -1184,6 +1184,77 @@ def cleanup_run(
         print("address_route_retired")
 
 
+def semantic_journey(binary: Path, env: dict[str, str], address: str,
+                     expected_ids: set[str]) -> None:
+    """Opt the protected synthetic actor in, rebuild twice, then leave it disabled."""
+    check(os.environ.get("GITHUB_REF") == "refs/heads/codex/v0.3.1-semantic-consent"
+          and os.environ.get("AMAIL_STAGING_E2E_CONFIRM") == "RUN_STAGING_E2E"
+          and os.environ.get("AMAIL_STAGING_SEMANTIC_CONFIRM") == "RUN_STAGING_SEMANTIC_V031",
+          "semantic_staging_confirmation_required")
+
+    def status(action: str) -> dict[str, object]:
+        values: list[dict[str, object]] = amail(binary, env, "semantic", action, failure="semantic_cli_failed")
+        check(len(values) == 1 and type(values[0].get("enabled")) is bool
+              and type(values[0].get("generation")) is int,
+              "semantic_status_shape_invalid")
+        return values[0]
+
+    def await_index(generation: object) -> None:
+        deadline: float = time.monotonic() + 420
+        while time.monotonic() < deadline:
+            current: dict[str, object] = status("status")
+            check(current.get("enabled") is True and current.get("generation") == generation,
+                  "semantic_generation_changed_during_index")
+            if current.get("pending_messages") == 0:
+                check(type(current.get("indexed_messages")) is int
+                      and int(current["indexed_messages"]) >= len(expected_ids),
+                      "semantic_backfill_count_invalid")
+                return
+            time.sleep(5)
+        raise ProbeFailure("semantic_background_backfill_timeout")
+
+    initial: dict[str, object] = status("status")
+    check(initial.get("enabled") is False, "semantic_default_not_disabled")
+    check(initial.get("model") == "voyageai/voyage-4" and initial.get("dimensions") == 256,
+          "semantic_model_contract_invalid")
+    primary: ProbeFailure | None = None
+    cleanup: ProbeFailure | None = None
+    try:
+        first: dict[str, object] = status("enable")
+        check(first.get("enabled") is True, "semantic_enable_failed")
+        await_index(first.get("generation"))
+        check(status("enable").get("generation") == first.get("generation"),
+              "semantic_retry_rebuilt_corpus")
+        hits: list[dict[str, object]] = rows(amail(binary, env, "search", "--mailbox", address,
+            "--semantic", "synthetic signal and reference message", "--limit", "100",
+            failure="semantic_search_failed"))
+        check(expected_ids <= {row.get("id") for row in hits}, "semantic_backfill_search_missing_mail")
+        disabled: dict[str, object] = status("disable")
+        check(disabled.get("enabled") is False, "semantic_disable_failed")
+        ordinary: list[dict[str, object]] = rows(amail(binary, env, "search", "--mailbox", address,
+            "--limit", "100", failure="semantic_disabled_literal_search_failed"))
+        check(expected_ids <= {row.get("id") for row in ordinary}, "semantic_disabled_literal_search_missing_mail")
+        resumed: dict[str, object] = status("enable")
+        check(resumed.get("enabled") is True and type(resumed.get("generation")) is int
+              and int(resumed["generation"]) > int(disabled["generation"]),
+              "semantic_reenable_generation_invalid")
+        check(type(resumed.get("pending_messages")) is int
+              and int(resumed["pending_messages"]) >= len(expected_ids),
+              "semantic_reenable_did_not_backfill_history")
+        await_index(resumed.get("generation"))
+        print("staging_semantic_default_off_enable_rebuild_disable_reenable_verified")
+    except ProbeFailure as error:
+        primary = error
+    finally:
+        try:
+            check(status("disable").get("enabled") is False, "semantic_cleanup_not_disabled")
+        except ProbeFailure as error:
+            cleanup = error
+    failure: ProbeFailure | None = acceptance_failure(primary, cleanup)
+    if failure:
+        raise failure
+
+
 def main() -> int:
     """Run after native login, then retire only the run-owned alias. / 登录后执行并只清理本次别名。"""
 
@@ -1293,6 +1364,8 @@ def main() -> int:
             check(len(hits) == 1 and hits[0].get("id") == distractor_id, "relation_search_hit")
         print("smtp_reply_relationship_search_verified")
         search_cases(binary, env, address, rich_oracle, rich_row)
+        if os.environ.get("GITHUB_REF") == "refs/heads/codex/v0.3.1-semantic-consent":
+            semantic_journey(binary, env, address, {target, distractor_id})
         amail(binary, env, "mark", target, "--read", failure="mark_read_failed")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--read", failure="read_search_failed"), rich_oracle["subject"], 1, "read_search_count")
         selected(amail(binary, env, "search", "--title", rich_oracle["subject"], "--unread", failure="unread_search_failed"), rich_oracle["subject"], 0, "unread_search_count")
