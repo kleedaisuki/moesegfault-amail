@@ -1,38 +1,115 @@
-# Automatic semantic indexer: D1 ledger and recovery
+# Semantic indexer: consent generations, D1 ledger and recovery
 
-Implementation contract: the private scheduled maintenance Worker runs the shared indexing logic; the API has empty Cron. Bounded production indexing is accepted in [validation](validation.md). Automatic indexing applies to every eligible active message, not only users invoking --semantic; see [privacy](semantic-indexing-privacy-decision.md).
+The v0.3.1 indexer is **off by default per account**, including after upgrading an
+existing account. The private scheduled maintenance Worker runs indexing; the API
+has empty Cron. `amail semantic status|enable|disable` exposes the account-wide
+setting. Only an active `user` profile can change it, normally after browser
+approval; an existing human-configured YOLO setting retains its usual behavior.
+All other profiles share the resulting setting, not permission to change it.
+See [privacy](semantic-indexing-privacy-decision.md) and [validation](validation.md).
 
-## Contract and state
+## State ownership and transitions
 
-`messages` is the content source and `embedding_work` is the durable work ledger. The D1 `AFTER INSERT` trigger creates work in the same transaction for both inbound and reconciled outbound messages. Migration 0007 backfills only active NULL-vector messages. The ledger holds an opaque message ID, immutable owner IDs, arrival time, retry/lease state and fixed error codes—never a subject, body, vector, address or provider response. Soft deletion and successful vector writes remove work via triggers; physical deletion does too. The `embedding_owner_schedule` table tracks last service time and is removed when that owner's final work item disappears. `embedding_dependency` holds one global cooldown timestamp.
+`messages` owns the mail and its retained document vector. The consent/indexing
+generation owns whether that vector is current; retaining a value never grants
+permission to use it. `embedding_work` is a durable queue, not a second copy of
+mail. It holds opaque message/owner identities, arrival time, generation,
+retry/lease state and fixed error codes, never subjects, bodies, addresses or
+provider responses. `embedding_owner_schedule` tracks bounded fair service;
+`embedding_dependency` holds the global provider cooldown.
 
-Every five-minute Cron sweep reads only up to 20 due **IDs**. SQL gives each owner at most four rows per sweep, prioritizes first pending work before second work, and then least-recently-served owners. This avoids the old oldest-20 poison-row starvation and also rotates across more than 20 active owners. It is still a bounded batch, not a five-minute indexing SLA. The owner-partitioned window query is deliberately simple; monitor D1 rows-read/latency at hosted scale before adding Queue wake-ups or a more elaborate ready-owner index. Cloudflare documents D1's SQLite semantics and scheduled handlers' 15-minute wall limit: [D1 SQL](https://developers.cloudflare.com/d1/sql-api/sql-statements/), [Workers scheduled handler](https://developers.cloudflare.com/workers/runtime-apis/handlers/scheduled/), [Workers limits](https://developers.cloudflare.com/workers/platform/limits/).
+| Transition | Durable effect | Provider effect |
+| --- | --- | --- |
+| Forward migration 0018 | Preserve legacy embeddings; absent preferences mean consent off; revoke old work/lease eligibility | No mail re-send |
+| Disabled to enabled | Advance generation and enqueue every eligible retained message, even if a vector exists | Full background indexing starts on later bounded maintenance passes |
+| Enabled to disabled | Revoke new work and stale publication eligibility; keep document vectors | No newly admitted document/query requests |
+| Same desired state | No state transition or full-index restart | No extra provider work |
+| Re-enable | New generation and another complete eligible corpus pass | Mail text is sent again to compute fresh vectors |
 
-Before each provider call, the worker conditionally claims a **20-minute lease**, then reads exactly one still-active NULL-vector message under that lease. The lease exceeds Cloudflare's current 15-minute maximum Cron wall time, preventing a second scheduled invocation from reclaiming a row while the first may still be waiting on OpenRouter; a terminated invocation is recovered after lease expiry at the next sweep. If Cloudflare raises that platform limit, revisit this invariant before deployment. It sends the longest valid UTF-8 prefix of at most 12,000 bytes from `subject + "\n" + body_text` to OpenRouter as `search_document`. A successful write requires an active row, NULL vector, matching unexpired lease token, and records the configured model, 256 dimensions, input version 1 and whether the projection was truncated. There is no transaction spanning a network call: a delete *during* the final read-to-send interval cannot undo an in-flight transfer. A delete before claim or before the active-row read prevents a call; a delete during the call prevents the vector write. This is the strongest useful local invariant without holding a database transaction over provider I/O. See [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/).
+Switches use the caller's observed generation as a compare-and-swap condition.
+A conflicting concurrent opposite-state switch requires a fresh status/approval decision rather
+than silently replaying consent. Index state and consent are separate: enabled
+with a pending corpus is not ready, and disabled with stored vectors is not enabled.
 
-Transient errors use per-message backoff of about 5 minutes, 15 minutes, 1 hour, 6 hours, then at most 24 hours including deterministic jitter. Provider 401/403, 429 and transport/5xx errors additionally open a 60-, 15- or 5-minute global cooldown, respectively, so a broken route does not consume the corpus one call at a time. Ambiguous HTTP 400/413/422 is *not* proof of bad mail: it backs off the row, and three such results in one sweep open a one-hour global cooldown. A locally impossible input is quarantined immediately; a malformed/nonfinite/wrong-dimension provider vector is quarantined after three attempts. Quarantine means semantic search remains typed `semantic_index_incomplete`, **not** that the row is silently omitted. The error code is fixed and no provider body is retained. Logs say only that a quarantine or cooldown occurred.
+Each provider admission requires current enabled consent and generation as well
+as a live eligible message. Publication requires that same consent generation and
+lease, preventing disable/re-enable or deletion from accepting an old result.
+There is no transaction across provider I/O: already admitted bytes cannot be
+recalled by a concurrent disable. Never describe this as distributed erasure.
 
-Search jobs checkpoint the query model. A document vector is scored only when `embedding_model`, dimensions and input version match; existing jobs without a model checkpoint fail typed incomplete and should be restarted. Migration 0007 labels prior vectors as version 1 only if their existing metadata says the configured Qwen model and 256 dimensions, and their JSON is a 256-element numeric array within the expected normalized coordinate range; current staging and production Wrangler configurations set `qwen/qwen3-embedding-8b`. This reuses known-compatible projections without new content transfer. Unknown/mismatched or obviously malformed legacy vectors are cleared and backfilled as work, so their content can be re-sent automatically. A model/input change needs a reviewed forward migration that re-enqueues affected rows; changing `OPENROUTER_EMBEDDING_MODEL` alone intentionally makes mixed-space semantic search unavailable rather than silently wrong. Literal search is unaffected.
+`semantic_preferences` stores the account switch and monotone `generation`.
+`embedding_work.consent_generation` and its mirrored consent lease token fence
+claims, including claims attempted by an overlapping old Worker;
+`messages.embedding_consent_generation` identifies a successfully published
+projection. The additive `0018_semantic_consent.sql` migration invalidates legacy
+semantic continuation generations without deleting retained document vectors.
 
-## Operator readout and recovery
+## Bounded processing and model migration
 
-Run these **SELECT-only** queries on the intended staging or production D1; do not retrieve subjects, bodies, vectors or raw provider errors for health checks. Timestamps are Unix milliseconds.
+Every five-minute Cron sweep selects at most 20 due IDs with at most four rows per
+owner, favoring least-recently-served owners and first pending work over second.
+This rotates across more than 20 owners without letting poison rows monopolize
+the batch. It is a throughput bound, not a five-minute full-index SLA. The
+20-minute per-item lease exceeds the current 15-minute scheduled-handler wall
+limit; revisit it if Cloudflare raises that limit.
+
+The input is the longest valid UTF-8 prefix of at most 12,000 bytes from
+`subject + "\n" + body_text`. Requests go through OpenRouter to Voyage 4, with
+separate document/query task types. Raw MIME, ZIPs and attachments are not inputs.
+The exact route is `voyageai/voyage-4`, requesting 256 dimensions; see
+[the route](https://openrouter.ai/voyageai/voyage-4) and
+[Voyage's dimension/task contract](https://www.mongodb.com/docs/voyageai/models/text-embeddings/).
+The dedicated forward migration does not transform Qwen coordinates into Voyage
+coordinates: the spaces are incompatible even when dimensions match. A successful
+fresh result replaces the corresponding retained vector and records model,
+dimensions, input version and active generation. Semantic queries only score
+current-generation vectors with exactly matching metadata; incomplete or
+quarantined rows produce typed incomplete, never a silent partial ranking.
+Ordinary literal search remains independent.
+
+Transient errors retain the existing per-message backoff: approximately five
+minutes, 15 minutes, one hour, six hours, then at most 24 hours with deterministic
+jitter. Provider authentication, throttling and transport/5xx errors open a global
+cooldown rather than spending a call per message on a broken route. Ambiguous
+400/413/422 responses are not proof of corrupt mail; repeated ambiguous responses
+open cooldown. Locally impossible inputs and repeated invalid vectors quarantine
+the row. Fixed codes, not provider bodies or mail, belong in diagnostics.
+
+## Readout and recovery
+
+Use aggregate SELECT-only diagnostics in the intended realm. Do not retrieve
+subjects, bodies, vectors or raw provider errors for health checks. Separate
+**disabled retained vectors**, **enabled current vectors**, **pending work** and
+**quarantined work**: counting only NULL vectors is no longer a correct backlog
+measure because a retained old vector may await re-indexing.
 
 ```sql
-SELECT state, CASE WHEN lease_until > CAST(unixepoch()*1000 AS INTEGER) THEN 'leased'
-                   WHEN next_attempt_at > CAST(unixepoch()*1000 AS INTEGER) THEN 'backoff'
-                   ELSE 'due' END AS bucket,
+SELECT state,
+       CASE WHEN lease_until > CAST(unixepoch()*1000 AS INTEGER) THEN 'leased'
+            WHEN next_attempt_at > CAST(unixepoch()*1000 AS INTEGER) THEN 'backoff'
+            ELSE 'due' END AS bucket,
        COUNT(*) AS messages, MIN(received_at) AS oldest_received_at
 FROM embedding_work GROUP BY state,bucket;
 
 SELECT blocked_until,last_error_code FROM embedding_dependency WHERE id=1;
-
-SELECT COUNT(*) AS active_missing_vector FROM messages
-WHERE deleted_at IS NULL AND embedding_json IS NULL;
 ```
 
-Counts should reconcile: active missing vectors should equal pending plus quarantined work, except during a just-started migration or a live transaction. A large due backlog means throughput/latency is insufficient; a growing quarantine count is an operator alert. Do not assume a successful Cron invocation means every provider call succeeded. Current production synthetic-message indexing evidence is in [validation](validation.md); aggregate health still does not prove every provider call or a latency SLA.
+A growing due backlog is a capacity signal, not proof of a failed Cron invocation;
+a growing quarantine needs diagnosis. After correcting a provider dependency,
+let cooldown expire or explicitly review a targeted reset. Never delete work to
+make incomplete search appear healthy, clear retained vectors as a disabling
+mechanism, or enable accounts as an operator migration shortcut. Quarantine reset
+must preserve the active message and its current consent generation.
 
-After correcting a dependency, the global cooldown expires by itself. A reviewed operator recovery may advance `blocked_until` to zero, but **never** delete work to hide incomplete search. Quarantined rows require diagnosis by fixed error code and an explicit reset of `state='pending'`, `attempts=0`, `next_attempt_at=0`, `lease_until=0`, `lease_token=NULL`; keep their active message rows and preserve the audit trail externally. Do not reset all quarantines as a blind reaction to a provider outage. Migrations must precede the Worker deployment; Cloudflare rolls back a failed migration, not a previously applied one: [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/), [Wrangler apply behavior](https://developers.cloudflare.com/d1/wrangler-commands/).
+Deploy from reviewed same-run artifacts with the old background sender fenced
+before migration; changing a model name alone is not a migration. Historical
+migrations 0007/0010 remain immutable. Search jobs/cursors are invalidated across
+a consent/model generation change instead of reusing incompatible query vectors.
+Hosted boundary tests and a synthetic end-to-end journey must exercise default
+zero egress, user approval, full indexing, disable during a provider call,
+retained vectors and full re-enable. Use no customer mail as a canary.
 
-Local validation: `cargo test -p amail-worker --lib --locked` (35 tests) and `cargo check -p amail-worker --locked --target wasm32-unknown-unknown` passed on Windows 2026-09-29. SQLite tests cover backfill, automatic insert, soft-delete cancellation, duplicate claim exclusion, poison-row skip, per-owner fairness including more than 20 owners, bounded retry policy and UTF-8 truncation. These do **not** prove hosted D1 query cost, real OpenRouter failure shapes, Cron timing, or deletion races in production. Use synthetic staging mail and a fake provider before release; never use customer mail for the canary.
+References: [D1 SQL](https://developers.cloudflare.com/d1/sql-api/sql-statements/),
+[D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/),
+[Workers scheduled handler](https://developers.cloudflare.com/workers/runtime-apis/handlers/scheduled/),
+[Workers limits](https://developers.cloudflare.com/workers/platform/limits/).

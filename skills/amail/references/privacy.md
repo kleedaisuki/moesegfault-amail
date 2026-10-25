@@ -1,22 +1,37 @@
 # Privacy and protected task files
 
 Read when explaining mail processing, choosing suitable content, or changing
-diagnostics. These are v0.2.0 processing contracts, not a promise that a particular
+diagnostics. These are v0.3.1 processing contracts, not a promise that a particular
 service is currently available or sending is enabled.
 
 ## Content indexing is separate from diagnostics
 
-The service automatically sends each eligible received or sent mail's subject
-plus extracted body text, bounded to the combined first **12,000 UTF-8 bytes**, to
-OpenRouter and its upstream embedding provider for background semantic indexing.
-Raw ZIPs and attachments are not embedding inputs. This happens even if the agent
-never runs `--semantic`. There is no per-account indexing opt-out.
+Semantic indexing is **off by default**, including for upgraded accounts. Both
+enabling and disabling require the `user` profile and user browser approval unless
+the human explicitly configured YOLO. All account profiles share the setting.
+Do not automate the approval
+or infer it from a mail task. Use `amail semantic status|enable|disable`.
+
+After enablement, background indexing sends every eligible retained received or
+sent mail's subject plus extracted body text, bounded to the combined first
+**12,000 UTF-8 bytes**, through OpenRouter to Voyage 4. It continues for new mail
+while enabled. Raw ZIPs and attachments are not embedding inputs.
+
+Disabling stops admission of new document/query provider requests and makes
+semantic search unavailable, but does not delete already stored document
+embeddings. Already admitted requests cannot recall transmitted bytes; stale
+results cannot publish into the new consent generation. Re-enabling starts a
+full background re-index, including mail with retained embeddings: it sends mail
+text again to compute new vectors, not old vectors as a substitute for text.
+Enabling an already-enabled setting does not restart indexing.
 
 A semantic search also sends its query text. When page 1 has further pages, the
 service retains the query text and exact query vector in owner-scoped state for
 up to **24 hours**; later pages reuse that vector without another provider call.
-Ordinary searches do not send a query to the model, but do not stop automatic
-mail indexing. Do not say that avoiding `--semantic` prevents content transfer.
+Ordinary searches do not send a query to the model and work while indexing is
+disabled. Avoiding `--semantic` alone does not stop document transfer if the user
+has enabled account indexing. An embedding migration never mixes old Qwen and
+new Voyage vector spaces or silently grants consent.
 
 `AMAIL_TELEMETRY=off` stops subsequent diagnostic collection/upload, not semantic
 indexing or server query retention, and does not delete previous local diagnostics.

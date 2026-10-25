@@ -6,6 +6,17 @@ Status: implemented contract; bounded actual acceptance and remaining scale limi
 
 The synchronous Worker now returns a typed resource error rather than a false partial page when a query needs more than one invocation's D1-query, transfer, or reconstructed-body budget. This preserves correctness but leaves a large account unable to obtain an exact semantic result at all. A 1 GiB archive can contain many small messages; an exhaustive 256-dimensional cosine scan may need multiple invocations even with bounded top-K memory. A durable, owner-scoped continuation converts the budget boundary into progress, not a terminal limitation.
 
+## Semantic consent boundary
+
+In v0.3.1 semantic processing is account-wide and off by default, including after
+upgrade. Only the active `user` profile may change it with normal browser approval
+or previously explicit YOLO. Disabled semantic requests never call the provider;
+lexical jobs still work. Enable/re-enable starts a complete background indexing
+generation, while disable retains document vectors but revokes their use. Consent
+generation/model changes invalidate existing semantic jobs and cursors rather than
+letting a stored query vector revive disabled processing. See
+[indexing privacy](semantic-indexing-privacy-decision.md).
+
 ## Wire contract
 
 `POST /v1/messages/search` still returns final HTTP 200 `{messages,next_cursor,request_id}` when one invocation suffices. Otherwise it returns HTTP 202 `{job_id,state:"running",retry_after_ms:500,request_id}`. Authenticated `GET /v1/messages/search/jobs/{opaque UUID}` advances one bounded batch and returns the same 202 or final 200. A job belongs to immutable `(iss,sub)`; another user receives 404 rather than existence disclosure. Expired jobs receive 410 `search_job_expired`, and changed search generation receives 409 `search_job_stale`. CLI polls transparently, emits only final result rows on stdout, and can resume by ID. The path contains an opaque random UUID, not an address or query.

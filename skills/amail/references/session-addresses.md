@@ -1,7 +1,7 @@
 # Session, bootstrap and address lifecycle
 
 Read only for first use, authentication or an address operation. Installed
-v0.3.0 commands do not establish release publication or remote policy. For terminal
+v0.3.1 commands do not establish release publication or remote policy. For terminal
 activation, daemon configuration, occupancy and test addresses, first read
 [profiles and temporary mail](profiles.md).
 
