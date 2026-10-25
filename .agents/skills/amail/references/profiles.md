@@ -1,6 +1,6 @@
 # Daemon, terminal profiles and temporary mail
 
-Read this for v0.3.0 profile isolation and testing mailboxes. Candidate documentation
+Read this for v0.3.1 profile isolation and testing mailboxes. Candidate documentation
 does not establish publication, remote deployment or permission to send.
 
 ## Local ownership
@@ -125,5 +125,6 @@ These are independent address allowances, not new resource pools. All profiles,
 temporary mailboxes and permanent mailboxes share the account's existing send
 and storage resources; creating a profile never multiplies the subscription.
 Provider capacity, spending approval and sending policy remain independent.
-Automatic third-party semantic indexing still applies to eligible temporary mail;
-read [privacy](privacy.md) before accepting sensitive fixtures.
+Temporary and permanent mail share the account's default-off semantic setting.
+If the human enables it, eligible temporary mail is also indexed through
+OpenRouter/Voyage 4; read [privacy](privacy.md) before requesting enablement.

@@ -51,7 +51,8 @@ class BillingWorkflowTests(unittest.TestCase):
         self.assertIn("inputs.confirm == 'RUN_STAGING_E2E' && inputs.billing_confirm == 'RUN_STAGING_BILLING_V020' "
                       "&& inputs.billing_plan == 'lite' && inputs.billing_trace && "
                       "inputs.billing_metering_confirm == 'RUN_STAGING_BILLING_METERING_V020'", source)
-        self.assertIn("inputs.billing_metering_confirm == 'RUN_STAGING_BILLING_METERING_V020' && 50 || 40", source)
+        self.assertIn("(inputs.billing_metering_confirm == 'RUN_STAGING_BILLING_METERING_V020' || "
+                      "github.ref == 'refs/heads/codex/v0.3.1-semantic-consent') && 50 || 40", source)
         self.assertIn("$env:AMAIL_STAGING_BILLING_METERING_CONFIRM -ne 'RUN_STAGING_BILLING_METERING_V020'", source)
 
 

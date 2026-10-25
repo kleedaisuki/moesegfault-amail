@@ -106,7 +106,8 @@ class CandidateTests(unittest.TestCase):
                              ".temp/amail-staging-acceptance", "https://mail-staging.moesegfault.dev",
                              "https://identity-staging.moesegfault.dev", "amail-cli-staging",
                              "http://127.0.0.1/callback", "separate realm", "OpenRouter", "--semantic",
-                             "disabled by default", "explicit\nuser browser approval",
+                             "disabled by default", "Only the `user` profile",
+                             "browser approval unless the human explicitly configured YOLO",
                              "Disabling keeps", "Re-enabling reindexes all active mail"):
                 self.assertIn(required, readme)
             self.assertEqual((self.root / "README.md").read_text(), "README.md")

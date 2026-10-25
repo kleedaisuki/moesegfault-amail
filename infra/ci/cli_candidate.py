@@ -104,9 +104,10 @@ that home for this acceptance task. Keep that directory private and never upload
 its SQLite database, daemon endpoint or credentials as test artifacts. Use
 `amail daemon stop` before removing an isolated acceptance home.
 
-Semantic search is disabled by default. Enabling or disabling it requires explicit
-user browser approval. While enabled, background indexing sends mail subject/body
-text to OpenRouter and Voyage 4; `--semantic` also sends the query. Disabling keeps
+Semantic search is disabled by default. Only the `user` profile can enable or
+disable it, with browser approval unless the human explicitly configured YOLO.
+While enabled, background indexing sends mail subject/body text to OpenRouter and
+Voyage 4; `--semantic` also sends the query. Disabling keeps
 existing embeddings but stops new indexing. Re-enabling reindexes all active mail. Read the [staging privacy boundary](https://amail-staging.moesegfault.dev/manual/#隐私与边界)
 before creating an address; use nonsensitive synthetic content for acceptance.
 Staging testing does not authorize general sending or change a global send hold.
