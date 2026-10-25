@@ -125,6 +125,8 @@ def schema_facts(database: DatabaseClient) -> dict[str, Any]:
             "expected_object_count": len(contract.objects), "observed_object_count": len(actual),
             "missing_objects": sorted(set(contract.objects) - set(actual)),
             "unknown_object_count": len(set(actual) - set(contract.objects)),
+            "unknown_objects": sorted(name for name in set(actual) - set(contract.objects)
+                                      if len(name) <= 128 and schema.IDENTIFIER.fullmatch(name)),
             "drift_objects": drift, "column_drift": columns,
             "expected_migration_count": len(contract.migrations)}
 
@@ -214,7 +216,7 @@ def main() -> int:
         reason = "unverified"
         if isinstance(error, FileNotFoundError):
             reason = "required_artifact_missing"
-        elif isinstance(error, ValueError) and str(error) in SCHEMA_ERRORS:
+        elif isinstance(error, ValueError) and str(error) in SCHEMA_ERRORS | rollout.FAILURES:
             reason = str(error)
         print(f"staging_semantic_recovery={reason}")
         return 1
