@@ -211,7 +211,11 @@ def main() -> int:
         else:
             run(mode)
     except Exception as error:
-        reason = str(error) if isinstance(error, ValueError) and str(error) in SCHEMA_ERRORS else "unverified"
+        reason = "unverified"
+        if isinstance(error, FileNotFoundError):
+            reason = "required_artifact_missing"
+        elif isinstance(error, ValueError) and str(error) in SCHEMA_ERRORS:
+            reason = str(error)
         print(f"staging_semantic_recovery={reason}")
         return 1
     print(f"staging_semantic_recovery={mode}_verified")

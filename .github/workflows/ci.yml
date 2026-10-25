@@ -2150,6 +2150,7 @@ jobs:
           run-id: 40188956353
           github-token: ${{ github.token }}
           path: .temp
+          merge-multiple: true
       - name: Admit successful source gates and exact runtime closure without rebuilding
         if: inputs.target == 'staging-semantic-recovery'
         id: accepted
