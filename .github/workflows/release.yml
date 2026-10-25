@@ -28,6 +28,11 @@ jobs:
       recover: ${{ steps.version.outputs.recover }}
       publish: ${{ steps.version.outputs.publish }}
       source_sha: ${{ steps.version.outputs.source_sha }}
+      reuse_candidate: ${{ steps.candidate.outputs.reuse_candidate }}
+      build_matrix: ${{ steps.candidate.outputs.build_matrix }}
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,6 +73,12 @@ jobs:
           esac
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           printf 'recover=%s\npublish=%s\nsource_sha=%s\n' "$recover" "$publish" "$source_sha" >> "$GITHUB_OUTPUT"
+      - name: Select accepted native reuse and only previously unbuilt platforms
+        id: candidate
+        if: steps.version.outputs.recover != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python infra/release/promote_candidate.py admit '${{ steps.version.outputs.tag }}'
 
   build:
     name: Build ${{ matrix.target }}
@@ -75,18 +86,7 @@ jobs:
     if: needs.preflight.outputs.recover != 'true'
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
+      matrix: ${{ fromJSON(needs.preflight.outputs.build_matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -107,15 +107,20 @@ jobs:
           cache-workspace-crates: false
           cache-on-failure: true
       - name: Test CLI on release platform
+        if: needs.preflight.outputs.reuse_candidate != 'true'
         run: cargo test -p amail --locked --all-targets
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Exercise the native daemon/profile journey on the release platform
+        if: needs.preflight.outputs.reuse_candidate != 'true'
         shell: bash
         run: python scripts/v030_profile_journey.py --binary "target/debug/amail${{ runner.os == 'Windows' && '.exe' || '' }}"
       - name: Build release binary
         run: cargo build -p amail --locked --release
+      - name: Check the newly built platform binary version
+        shell: bash
+        run: test "$(target/release/amail${{ runner.os == 'Windows' && '.exe' || '' }} --version)" = "amail ${RELEASE_TAG#v}"
       - name: Archive Unix binary
         if: runner.os != 'Windows'
         shell: bash
@@ -143,10 +148,67 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  reuse-candidate:
+    name: Package the three already-tested native executables
+    needs: preflight
+    if: needs.preflight.outputs.recover != 'true' && needs.preflight.outputs.reuse_candidate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Admit original native producers and successful semantic acceptance
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python infra/release/promote_candidate.py admit '${{ needs.preflight.outputs.tag }}'
+      - name: Download the original complete candidate bundle
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.candidate.outputs.cli_artifact_id }}
+          run-id: ${{ steps.candidate.outputs.source_run }}
+          github-token: ${{ github.token }}
+          path: .temp/release-candidate
+          merge-multiple: true
+      - name: Download the matching deployed semantic acceptance receipt
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.candidate.outputs.acceptance_artifact_id }}
+          run-id: ${{ steps.candidate.outputs.acceptance_run }}
+          github-token: ${{ github.token }}
+          path: .temp/ci/staging-acceptance
+          merge-multiple: true
+      - name: Verify original bytes and package public docs with native provenance
+        run: python infra/release/promote_candidate.py package '${{ needs.preflight.outputs.tag }}'
+      - name: Attest packaging of the unchanged tested executable bytes
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest@v4
+        with:
+          subject-path: .temp/reused-release/amail-${{ needs.preflight.outputs.tag }}-*
+      - name: Upload repackaged native archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: amail-tested-native-repack
+          path: .temp/reused-release/amail-${{ needs.preflight.outputs.tag }}-*
+          if-no-files-found: error
+          retention-days: 14
+
   assemble:
     name: Assemble and verify release bundle
-    needs: [preflight, build]
-    if: needs.preflight.outputs.recover != 'true'
+    needs: [preflight, build, reuse-candidate]
+    if: >-
+      always() && !cancelled() && needs.preflight.outputs.recover != 'true' &&
+      needs.build.result == 'success' &&
+      (needs.preflight.outputs.reuse_candidate != 'true' || needs.reuse-candidate.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
