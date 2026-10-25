@@ -798,6 +798,33 @@ struct EmbeddingData {
 
 /// OpenRouter embedding input ceiling in UTF-8 bytes, shared with document projection.
 pub const EMBEDDING_INPUT_MAX_BYTES: usize = 12_000;
+pub(crate) const EMBEDDING_MODEL: &str = "voyageai/voyage-4";
+pub(crate) const EMBEDDING_DIMENSIONS: usize = 256;
+
+fn embedding_payload(
+    model: &str,
+    input: &str,
+    input_type: &str,
+) -> std::result::Result<serde_json::Value, EmbeddingFailure> {
+    if model != EMBEDDING_MODEL {
+        return Err(EmbeddingFailure::Dependency);
+    }
+    // OpenRouter accepts provider-specific strings; Voyage uses query/document.
+    // https://docs.voyageai.com/reference/embeddings-api
+    let input_type = match input_type {
+        "search_query" => "query",
+        "search_document" => "document",
+        _ => return Err(EmbeddingFailure::InvalidInput),
+    };
+    Ok(serde_json::json!({
+        "model": model,
+        "dimensions": EMBEDDING_DIMENSIONS,
+        "encoding_format": "float",
+        "input": input,
+        "input_type": input_type,
+        "provider": {"zdr":true,"data_collection":"deny"}
+    }))
+}
 
 /// Fixed, non-content-bearing failure classes for durable indexing decisions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -922,6 +949,11 @@ async fn embedding_exchange(
     signal: &worker::AbortSignal,
     mut reader: Option<&mut Option<JsValue>>,
 ) -> std::result::Result<Vec<f32>, EmbeddingFailure> {
+    let model = env
+        .var("OPENROUTER_EMBEDDING_MODEL")
+        .map_err(|_| EmbeddingFailure::Dependency)?
+        .to_string();
+    let payload = embedding_payload(&model, input, input_type)?;
     let headers = Headers::new();
     headers
         .set(
@@ -946,11 +978,6 @@ async fn embedding_exchange(
     headers
         .set("X-OpenRouter-Cache", "false")
         .map_err(|_| EmbeddingFailure::Dependency)?;
-    let payload = serde_json::json!({
-        "model": env.var("OPENROUTER_EMBEDDING_MODEL").map_err(|_| EmbeddingFailure::Dependency)?.to_string(),
-        "dimensions": 256, "input": input, "input_type": input_type,
-        "provider": {"zdr":true,"data_collection":"deny"}
-    });
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
@@ -998,7 +1025,7 @@ async fn embedding_exchange(
         .next()
         .ok_or(EmbeddingFailure::Malformed)?
         .embedding;
-    if values.len() != 256 || values.iter().any(|x| !x.is_finite()) {
+    if values.len() != EMBEDDING_DIMENSIONS || values.iter().any(|x| !x.is_finite()) {
         return Err(EmbeddingFailure::Malformed);
     }
     let norm = values.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -1171,6 +1198,32 @@ pub async fn send(env: &Env, draft: &Draft) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voyage_payload_preserves_retrieval_roles_and_privacy_policy() {
+        for (role, expected) in [("search_query", "query"), ("search_document", "document")] {
+            let payload = embedding_payload(EMBEDDING_MODEL, "synthetic text", role).unwrap();
+            assert_eq!(payload["model"], "voyageai/voyage-4");
+            assert_eq!(payload["dimensions"], 256);
+            assert_eq!(payload["encoding_format"], "float");
+            assert_eq!(payload["input_type"], expected);
+            assert_eq!(payload["input"], "synthetic text");
+            assert_eq!(payload["provider"]["zdr"], true);
+            assert_eq!(payload["provider"]["data_collection"], "deny");
+        }
+    }
+
+    #[test]
+    fn voyage_payload_refuses_unreviewed_models_and_roles() {
+        assert_eq!(
+            embedding_payload("qwen/qwen3-embedding-8b", "synthetic", "search_query"),
+            Err(EmbeddingFailure::Dependency)
+        );
+        assert_eq!(
+            embedding_payload(EMBEDDING_MODEL, "synthetic", "classification"),
+            Err(EmbeddingFailure::InvalidInput)
+        );
+    }
 
     /// One shared allowance counts failure attempts and refuses excess work.
     #[test]

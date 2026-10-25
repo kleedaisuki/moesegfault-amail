@@ -48,6 +48,8 @@ pub enum Operation {
     MessagesList,
     MessagesSearch,
     SearchPoll,
+    SemanticStatus,
+    SemanticChange,
     MessagesSend,
     MessagesGet,
     MessagesArchive,
@@ -358,6 +360,8 @@ impl Event {
                 | Operation::MessagesList
                 | Operation::MessagesSearch
                 | Operation::SearchPoll
+                | Operation::SemanticStatus
+                | Operation::SemanticChange
                 | Operation::MessagesSend
                 | Operation::MessagesGet
                 | Operation::MessagesArchive
@@ -633,6 +637,19 @@ mod tests {
             "trace_id":"0123456789abcdef0123456789abcdef","outcome":"server_error",
             "http_status_class":0,"duration_ms_bucket":0,"response_bytes_bucket":0});
         assert!(Event::from_value(value).is_some());
+    }
+
+    /// Consent operations carry only fixed operation names, never setting values.
+    #[test]
+    fn semantic_client_operations_are_closed_and_accepted() {
+        for operation in ["semantic_status", "semantic_change"] {
+            let value = json!({"schema_version":1,"event_id":"00000000-0000-4000-8000-000000000002",
+                "service":"mail_cli","operation":operation,"phase":"operation_exit",
+                "trace_id":"0123456789abcdef0123456789abcdef","outcome":"success",
+                "http_status_class":2,"duration_ms_bucket":0,"response_bytes_bucket":0});
+            assert!(Event::from_value(value).is_some());
+        }
+        assert!(serde_json::from_str::<Operation>("\"semantic_change/private\"").is_err());
     }
 
     /// Only the fixed standalone maintenance pairs may report resource deferral.

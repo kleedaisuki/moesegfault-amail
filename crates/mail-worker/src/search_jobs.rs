@@ -389,6 +389,9 @@ pub(super) async fn search(
         return Err(AppError::bad("search_request_too_large"));
     }
     let database = db(env)?;
+    if input.semantic.is_some() {
+        semantic::require_enabled(&database, user).await?;
+    }
     let epoch = generation(&database, user).await?;
     let hash = query_hash(&input, user)?;
     let cursor = decode_cursor(&input, &hash, epoch)?;
@@ -519,9 +522,13 @@ pub(super) async fn search(
             reserve_quota(&database, "semantic_queries_global", &global, 1, 50_000)
                 .await
                 .map_err(|error| if error.status == 429 { AppError { status:503, code:"search_capacity_exhausted" } } else { error })?;
+            let consent = semantic::require_enabled(&database, user).await?;
+            if generation(&database, user).await? != epoch { return Err(stale()); }
             state.query_vector = Some(platform::embed(env, term, "search_query").await.map_err(|_| AppError {
                 status:503, code:"semantic_unavailable"
             })?);
+            if semantic::require_enabled(&database, user).await? != consent
+                || generation(&database, user).await? != epoch { return Err(stale()); }
             state.query_model = Some(env.var("OPENROUTER_EMBEDDING_MODEL")
                 .map_err(|_| AppError { status:503, code:"semantic_unavailable" })?.to_string());
             let commitment = vector_commitment(
@@ -532,8 +539,8 @@ pub(super) async fn search(
             check_vector(cursor.as_ref(), &commitment)?;
             state.vector_commitment = Some(commitment);
             let serialized = serde_json::to_string(&state).map_err(|_| AppError::bad("invalid_search"))?;
-            let changed = database.prepare("UPDATE search_jobs SET state='running',state_json=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='preparing'")
-                .bind(&[bind_str(&serialized),bind_str(&id),bind_str(&user.iss),bind_str(&user.sub)])?
+            let changed = database.prepare("UPDATE search_jobs SET state='running',state_json=?1 WHERE id=?2 AND owner_iss=?3 AND owner_sub=?4 AND state='preparing' AND COALESCE((SELECT generation FROM search_generations WHERE owner_iss=?3 AND owner_sub=?4),0)=?5 AND EXISTS (SELECT 1 FROM semantic_preferences p WHERE p.owner_iss=?3 AND p.owner_sub=?4 AND p.enabled=1 AND p.generation=?6)")
+                .bind(&[bind_str(&serialized),bind_str(&id),bind_str(&user.iss),bind_str(&user.sub),bind_num(epoch),bind_num(consent)])?
                 .run().await?.meta()?.and_then(|meta|meta.changes).unwrap_or(0);
             if changed != 1 {
                 return Err(AppError { status:503, code:"search_job_prepare_unknown" });
@@ -650,6 +657,7 @@ fn terminal_job_error(code: &str) -> bool {
             | "search_cursor_stale"
             | "search_cursor_expired"
             | "search_cursor_vector_changed"
+            | "semantic_disabled"
     )
 }
 
@@ -696,6 +704,9 @@ async fn advance(
     };
     if row.state == "done" {
         let input: SearchRequest = serde_json::from_str(&row.request_json).map_err(|_| stale())?;
+        if input.semantic.is_some() {
+            semantic::require_enabled(&database, user).await?;
+        }
         let state: SearchState = serde_json::from_str(&row.state_json).map_err(|_| stale())?;
         let hash = query_hash(&input, user)?;
         let cursor = decode_cursor(&input, &hash, state.generation)?;
@@ -734,6 +745,9 @@ async fn advance_claimed(
     request_id: &str,
 ) -> AppResult<(Response, bool, bool)> {
     let input: SearchRequest = serde_json::from_str(&row.request_json).map_err(|_| stale())?;
+    if input.semantic.is_some() {
+        semantic::require_enabled(database, user).await?;
+    }
     let mut state: SearchState = serde_json::from_str(&row.state_json).map_err(|_| stale())?;
     let hash = query_hash(&input, user)?;
     let cursor = decode_cursor(&input, &hash, state.generation)?;

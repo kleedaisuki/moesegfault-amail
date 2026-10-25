@@ -14,7 +14,7 @@ CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"
 MAIL_DOMAIN = "mail.moesegfault.dev"
 MAIL_TMP_DOMAIN = "tmpaddr.moesegfault.dev"
 EMAIL_INGRESS_WORKER_NAME = "amail-inbound"
-OPENROUTER_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
+OPENROUTER_EMBEDDING_MODEL = "voyageai/voyage-4"
 BILLING_BASE_URL = "https://billing.moesegfault.dev"
 BILLING_SUBSCRIBE_ORIGIN = "https://subscribe.moesegfault.dev"
 BILLING_RETURN_URL = "https://amail.moesegfault.dev/billing/return"
@@ -84,7 +84,7 @@ CF_ZONE_ID = "6edff81c6ed02f412e70868076411a5e"
 MAIL_DOMAIN = "mail-staging.moesegfault.dev"
 MAIL_TMP_DOMAIN = "tmpaddr-staging.moesegfault.dev"
 EMAIL_INGRESS_WORKER_NAME = "amail-inbound-staging"
-OPENROUTER_EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
+OPENROUTER_EMBEDDING_MODEL = "voyageai/voyage-4"
 
 # Explicit realm binding: contact adoption and health never cross into production.
 [[env.staging.d1_databases]]
