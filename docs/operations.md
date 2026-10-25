@@ -45,7 +45,10 @@ The active candidate branch is `codex/v0.3.1-semantic-consent`. Use the existing
 `checks` target for credential-free native/Wasm/daemon checks, `staging-inspect`
 with `INSPECT_STAGING_V031` for read-only fixed-graph admission, and `staging`
 with `RUN_STAGING_V031` for the serialized staging writer. Same-run checked
-artifacts precede every provider mutation. No source check or candidate site
+artifacts precede mutations by default. The explicitly reviewed promotion path
+can instead consume the original successful producer artifacts plus an unchanged
+runtime closure and a separate successful real-user acceptance receipt; see
+[artifact admission](deployment-artifact-foundation.md). No source check or candidate site
 establishes that the new semantic contract is deployed.
 
 This upgrade is a privacy cutover, not an ordinary model-name replacement:
@@ -81,6 +84,22 @@ journey. The dedicated semantic confirmation is supplied by that guarded workflo
 not permission to index production customer mail. Hosted acceptance is recorded
 only after completion in [validation](validation.md).
 
+Run `40188956353` passed its native, Worker/Wasm, 144 boundary cases, provider and
+candidate-assembly source gates, but the writer failed during full-schema
+verification before maintenance activation. Do not dispatch the full writer again
+or relabel that run successful. The named `staging-semantic-inspect` /
+`INSPECT_STAGING_SEMANTIC_V031` target admits only this owned partial transition;
+after diagnosis, `staging-semantic-recovery` /
+`RUN_STAGING_SEMANTIC_RECOVERY_V031` continues only remaining verified work with
+`source_run=40188956353`. It preserves the already deployed API/sink, applied 0018
+and completed scheduled witness rather than replaying them; only maintenance is
+activated after exact schema admission, with no site/adapters replay. Next use
+`staging-semantic-e2e` / `RUN_STAGING_SEMANTIC_V031`, the same `source_run`, and
+`staging_resume_run` equal to the successful recovery run. This narrow journey
+uses one new owned SMTP fixture for semantic consent/indexing rather than repeating
+the already green full native/SMTP/profile regression. Actual narrow acceptance
+must still succeed before production promotion.
+
 The owner authorized production publication after successful staging acceptance,
 followed by all local CLI entrypoints and the global amail Skill. Production must
 use `production-inspect` / `INSPECT_PRODUCTION_V031`, then `production` /
@@ -90,6 +109,10 @@ attempt. The separate v0.3.1 controller pins the current v0.3.0 receipt, not a
 frozen v0.3.0/v0.2 writer replay. Prepared source does not establish a successful
 production rollout; the ordered cutover and receipt contract are in
 [the v0.3.1 delivery note](v0.3.1/production-delivery.md).
+Promotion uses two explicit coordinates: `source_run` for the immutable checked
+producer and `staging_acceptance_run` for its successful narrow deployed journey.
+Tooling-only or merge deltas run affected checks and verify the accepted runtime
+closure rather than repeating already green native/Wasm/provider suites.
 
 ### Historical v0.3.0 multi-tenant lane
 

@@ -61,8 +61,17 @@ first attempt and the existing shared production-graph writer lock:
 Inspection is read-only and verifies exact serving versions, retained graph,
 current policy, schema through migration 0017 and a supported old scheduled usage
 model. The writer additionally requires all current source gates plus restored,
-reverified same-run `mail_api` and `trace_sink` artifacts before mutation. Its
-order is:
+reverified `mail_api` and `trace_sink` artifacts before mutation. The default is
+same-run admission; the reviewed promotion path instead requires both
+`source_run` (the original successful build/check producer) and
+`staging_acceptance_run` (a separately successful real semantic journey). Its
+`accepted-staging-artifact/v1` chain keeps the original manifest/compiler/source/
+run identities intact and checks complete runtime closure against the current
+trusted main checkout. A failed deployment with green source gates remains a
+failed deployment, not real-user acceptance. See
+[artifact promotion](../deployment-artifact-foundation.md).
+
+The provider order is:
 
 1. Replace the backward-compatible private trace sink; retain exact queues and
    producer ownership, ingress, lifecycle consumer and subscriptions.
@@ -104,7 +113,10 @@ reviewed predecessor; a future writer must explicitly advance the pinned epoch.
 
 Formal five-platform CLI/Skill publication requires matching production health,
 the existing outbound attestations, native profile journeys, checksums,
-attestations and published-byte verification. Public-site replacement follows the
+attestations and published-byte verification. Reviewed release promotion reuses
+the original three already-tested native executables with embedded provenance,
+and builds/tests only the two missing targets; it neither reruns green native
+suites nor calls reused binaries a new build. Public-site replacement follows the
 verified public assets. Local replacement follows matching archive/Skill source
 verification, daemon stop and private backups; credentials and YOLO preferences
 must not be reset. Success receipts will be added only after actual readback.

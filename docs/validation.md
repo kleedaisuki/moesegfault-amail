@@ -4,6 +4,41 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
+## v0.3.1 semantic consent — source accepted, staging continuation pending
+
+Source `f262e8e433ffeabb7d67d0fc26c363be7e4133f8` in
+[40188956353](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40188956353)
+passed all three native CLI jobs, Worker/Wasm acceptance including **144 boundary
+cases**, the approved synthetic Voyage provider contract and native-candidate
+assembly. These successful producer jobs remain reusable evidence for unchanged
+runtime inputs; they are **not** a successful staging deployment.
+
+The overall writer failed during full-schema verification **before maintenance
+activation**, after installing the new API and sink, applying migration 0018 and
+completing the 31-minute scheduled-cohort witness. Its retained partial graph is:
+
+| Role | Captured staging version |
+| --- | --- |
+| API | `d592cd2a-95a3-4c89-859a-18a191bd641a` |
+| Paused maintenance | `e42df778-c8a8-4975-abdd-83cb73dad372` |
+| Trace sink | `5e556087-9a75-40db-9eb5-869a4b56372e` |
+
+Original witness artifact `12597862883` belongs to that producer and partial
+transition; it is not a newly executed wait or proof of active maintenance.
+
+Read-only diagnosis and a named exact-owned continuation are being prepared; no
+full-schema recovery or real semantic user-journey success is claimed here.
+The continuation must not replay API/sink submissions, reapply 0018 or repeat the
+completed wait. Its subsequent named semantic-only journey must bind the successful
+recovery run and use one new owned SMTP fixture, not repeat unrelated accepted
+regressions. Production promotion requires a separate successful narrow
+semantic acceptance receipt tied to this original producer and the same complete
+runtime closure, not reinterpretation of the failed writer. This distinction also
+allows incremental tooling checks instead of repeating green native/Wasm/provider
+suites. See [artifact promotion](deployment-artifact-foundation.md) and
+[the v0.3.1 cutover](v0.3.1/production-delivery.md). Production remains on its
+separately accepted v0.3.0 epoch until actual promotion is recorded.
+
 ## v0.3.0 production release — delivered
 
 The owner authorized production promotion on 2026-10-25. After the legacy
