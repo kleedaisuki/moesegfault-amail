@@ -47,6 +47,10 @@ and clients are distinct. HTTP health does not establish message delivery.
 
 ### Missing-only semantic resumption — backend correction
 
+Staging has schema 0019 and the corrected API/maintenance installed; real-user
+acceptance `40271435401` passed. Production promotion remains pending in
+[the current ledger](validation.md).
+
 The 2026-10-25 backend correction keeps version/protocol `0.3.1` and does not
 create a new CLI Release. Forward migration `0019_incremental_embeddings.sql`
 preserves consent choices and stored vectors. Re-enabling reuses unchanged,

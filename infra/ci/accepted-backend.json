@@ -1,6 +1,6 @@
 {
   "schema": "amail-accepted-backend/v1",
-  "source_run": null,
-  "source_sha": null,
-  "acceptance_run": null
+  "source_run": "40203420616",
+  "source_sha": "f3f13e4776871b7ab4232e113bc62a592b63d0f3",
+  "acceptance_run": "40271435401"
 }
