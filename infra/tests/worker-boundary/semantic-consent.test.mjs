@@ -25,7 +25,7 @@ function token() {
   return `${input}.${sign("RSA-SHA256", Buffer.from(input), privateKey).toString("base64url")}`;
 }
 
-async function fixture(run, { legacy = false } = {}) {
+async function fixture(run, { legacy = false, through } = {}) {
   const jwk = publicKey.export({ format: "jwk" });
   const calls = [];
   let providerHook;
@@ -61,7 +61,7 @@ async function fixture(run, { legacy = false } = {}) {
   ] });
   try {
     const db = await mf.getD1Database("MAIL_DB", "consent-api");
-    await applyMigrations(db, path.join(worker, "migrations"), legacy ? { through: 17 } : {});
+    await applyMigrations(db, path.join(worker, "migrations"), legacy ? { through: 17 } : { through });
     await seedResourceAccount(db, issuer, "owner");
     await db.prepare("INSERT INTO addresses(address,local_part,owner_iss,owner_sub,slot,state,created_at) VALUES(?1,'consent',?2,'owner',0,'active',0)")
       .bind(address, issuer).run();
@@ -142,7 +142,7 @@ test("semantic default-off is enforced before query or background provider calls
   assert.equal(calls.length, 2, "approval backfills both historical inbound and sent mail");
 }));
 
-test("disable retains vectors and blocks subsequent egress; re-enable rebuilds every live message once", async () => fixture(async ({ request, activate, message, tick, setting, vectors, calls }) => {
+test("re-enable reuses retained Voyage vectors and indexes only mail received while disabled", async () => fixture(async ({ request, activate, message, tick, setting, vectors, calls }) => {
   const user = await activate("user");
   await message("first");
   await message("second", "outbound");
@@ -169,12 +169,92 @@ test("disable retains vectors and blocks subsequent egress; re-enable rebuilds e
   assert.equal(calls.length, 2, "paused account sends neither new mail nor queries");
   const resumed = await setting(user, true);
   assert.ok(resumed.body.generation > disabled.body.generation);
-  assert.deepEqual((await vectors()).slice(0, 2), before, "retained vectors survive until replacement, not enable-time purge");
+  assert.deepEqual((await vectors()).slice(0, 2), before, "re-enable neither removes nor relabels retained compatible vectors");
+  assert.equal(resumed.body.pending_messages, 1, "only the message received while disabled needs indexing");
+  assert.equal(resumed.body.indexed_messages, 2, "prior consent generations do not invalidate compatible vectors");
   await tick();
-  assert.equal(calls.length, 5, "re-enable re-sends the complete live corpus, including already indexed mail");
-  assert.ok((await vectors()).every((row) => row.embedding_consent_generation === resumed.body.generation));
+  assert.equal(calls.length, 3, "only previously unindexed mail is sent to Voyage");
+  assert.deepEqual((await vectors()).slice(0, 2), before, "successful catch-up preserves previous vector bytes and metadata");
+  const acquired = await request("POST", "/v1/leases/acquire", user, { address, mode: "read" });
+  assert.equal(acquired.status, 200);
+  const queried = await request("POST", "/v1/messages/search", user, { semantic: "synthetic query" });
+  assert.equal(queried.status, 200, "retained vectors remain searchable after the consent generation changes");
+  assert.deepEqual(new Set(queried.body.messages.map((row) => row.id)), new Set(["first", "second", "third"]));
+  assert.equal(calls.filter((call) => call.input_type === "document").length, 3);
+  assert.equal(calls.filter((call) => call.input_type === "query").length, 1);
+  assert.equal((await setting(user, false)).status, 200);
+  const reused = await setting(user, true);
+  assert.equal(reused.body.pending_messages, 0);
+  assert.equal(reused.body.indexed_messages, 3);
+  const completed = await vectors();
   await tick();
-  assert.equal(calls.length, 5, "completed generation has no duplicate background provider requests");
+  assert.equal(calls.length, 4, "another off/on cycle sends no document or query by itself");
+  assert.deepEqual(await vectors(), completed);
+}));
+
+test("0019 preserves approved settings and compatible vectors while converting Qwen only once", async () => fixture(async ({ db, request, activate, message, tick, setting, vectors, calls }) => {
+  const user = await activate("user");
+  for (const id of ["voyage", "qwen", "missing"]) await message(id);
+  await db.prepare("INSERT INTO semantic_preferences(owner_iss,owner_sub,enabled,generation) VALUES(?1,'owner',1,1)")
+    .bind(issuer).run();
+  const enabledGeneration = 1;
+  const vector = JSON.stringify([1, ...Array(255).fill(0)]);
+  await db.prepare("UPDATE messages SET embedding_json=?1,embedding_model=?2,embedding_dimensions=256,embedding_input_version=1,embedding_truncated=0,embedding_consent_generation=?3 WHERE id='voyage'")
+    .bind(vector, model, enabledGeneration).run();
+  await db.prepare("UPDATE messages SET embedding_json=?1,embedding_model='qwen/qwen3-embedding-8b',embedding_dimensions=256,embedding_input_version=1,embedding_truncated=0,embedding_consent_generation=0 WHERE id='qwen'")
+    .bind(vector).run();
+  await db.prepare("INSERT INTO embedding_work(message_id,owner_iss,owner_sub,received_at,consent_generation) VALUES('voyage',?1,'owner',?2,?3)")
+    .bind(issuer, Date.now(), enabledGeneration).run();
+  const preferences = await db.prepare("SELECT enabled,generation FROM semantic_preferences WHERE owner_iss=?1 AND owner_sub='owner'").bind(issuer).first();
+  const before = await vectors();
+  await applyMigrations(db, path.join(worker, "migrations"), { from: 19 });
+  assert.deepEqual(await vectors(), before, "the migration preserves all stored vector bytes and metadata");
+  assert.deepEqual(await db.prepare("SELECT enabled,generation FROM semantic_preferences WHERE owner_iss=?1 AND owner_sub='owner'").bind(issuer).first(), preferences,
+    "a backend-only upgrade must not grant, revoke, or replace existing consent");
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM embedding_work WHERE message_id='voyage'").first()).n, 0);
+  await db.prepare("INSERT INTO embedding_work(message_id,owner_iss,owner_sub,received_at,consent_generation) VALUES('voyage',?1,'owner',?2,?3)")
+    .bind(issuer, Date.now(), enabledGeneration).run();
+  const oldClaim = await db.prepare("UPDATE embedding_work SET lease_until=?1,lease_token='old-v031',consent_lease_token='old-v031' WHERE message_id='voyage' AND state='pending'")
+    .bind(Date.now() + 60_000).run();
+  assert.equal(oldClaim.meta.changes, 0, "the shipped v0.3.1 claim cannot re-admit a retained compatible vector");
+  const off = await setting(user, false);
+  assert.equal(off.status, 200);
+  const resumed = await setting(user, true);
+  assert.equal(resumed.body.pending_messages, 2, "only missing and incompatible old-model projections remain work");
+  assert.equal(resumed.body.indexed_messages, 1);
+  await tick();
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every((call) => call.input_type === "document"));
+  const converted = await vectors();
+  assert.ok(converted.every((row) => row.embedding_model === model && row.embedding_json !== null));
+  assert.deepEqual(converted.find((row) => row.id === "voyage"), before.find((row) => row.id === "voyage"));
+  assert.equal((await setting(user, false)).status, 200);
+  assert.equal((await setting(user, true)).body.pending_messages, 0);
+  await tick();
+  assert.equal(calls.length, 2, "a successfully migrated Qwen vector is never retransmitted by later toggles");
+  assert.deepEqual(await vectors(), converted);
+}, { through: 18 }));
+
+test("re-enable preserves backoff and quarantine instead of resetting supplier retry state", async () => fixture(async ({ db, activate, message, tick, setting, calls }) => {
+  const user = await activate("user");
+  await message("backoff");
+  await message("quarantined");
+  assert.equal((await setting(user, true)).status, 200);
+  const future = Date.now() + 3_600_000;
+  await db.prepare("UPDATE embedding_work SET attempts=2,next_attempt_at=?1,last_error_code='provider_transient' WHERE message_id='backoff'")
+    .bind(future).run();
+  await db.prepare("UPDATE embedding_work SET state='quarantined',attempts=3,next_attempt_at=?1,last_error_code='provider_malformed' WHERE message_id='quarantined'")
+    .bind(future).run();
+  const ledger = async () => (await db.prepare("SELECT message_id,state,attempts,next_attempt_at,last_error_code FROM embedding_work ORDER BY message_id").all()).results;
+  const before = await ledger();
+  assert.equal((await setting(user, false)).status, 200);
+  const resumed = await setting(user, true);
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.body.pending_messages, 2);
+  assert.deepEqual(await ledger(), before, "consent changes cannot evade backoff or erase quarantine evidence");
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM embedding_work WHERE consent_generation=?1 AND lease_token IS NULL AND consent_lease_token IS NULL").bind(resumed.body.generation).first()).n, 2);
+  await tick();
+  assert.equal(calls.length, 0, "neither future retry work nor quarantined input is submitted early");
 }));
 
 test("disable during provider await cannot publish an old generation or process the next document", async () => fixture(async ({ db, activate, message, tick, setting, vectors, calls, hook }) => {

@@ -11,12 +11,12 @@ in [validation](validation.md), not established by this contract.
 | State or transition | Content processing | Stored document embeddings |
 | --- | --- | --- |
 | Default / disabled | No new document or query requests to the embedding provider | Existing embeddings remain stored, but cannot enable semantic search |
-| Enable, after approval | Background work indexes all eligible retained mail, then subsequent eligible mail | A fresh indexing generation replaces old vectors only after successful publication |
+| Enable, after approval | Background work fills eligible mail without a usable Voyage vector, then subsequent missing mail | Compatible retained Voyage vectors are reused; legacy Qwen migrates once |
 | Disable, after approval | Stops admitting new provider requests; in-flight transmitted bytes cannot be recalled | Old vectors are not deleted merely because indexing is disabled |
-| Re-enable, after approval | Re-indexes the complete eligible retained corpus, including already indexed mail | Never treats a retained old vector as proof that the new generation is complete |
+| Re-enable, after approval | Sends only mail still missing a usable Voyage vector | Reuses existing compatible vectors without retransmitting their mail text |
 
 Use `amail semantic status`, `amail semantic enable` or `amail semantic disable`.
-An already-enabled enable is not a new full-index request. A switch approval is
+An already-enabled enable is not a new indexing request. A switch approval is
 bound to the observed generation: a concurrent change requires fresh review, not
 blind replay. An agent profile cannot change this account-wide setting.
 
@@ -27,21 +27,29 @@ other-account material. An enabled semantic search also sends its query text.
 Ordinary literal search needs no embedding-provider query and remains available
 with semantic indexing disabled.
 
-Retaining an embedding is not a remote retransmission: on re-enable the service
-re-sends the **mail text** to compute a fresh embedding, rather than uploading an
-old vector as if it could be converted into another model's embedding space.
-The dedicated forward migration preserves existing vectors while disabling
-processing. Model identity, dimensions, input version and consent/indexing
-generation prevent old Qwen and new Voyage projections from being mixed.
+Re-enablement does not retransmit unchanged mail that already has a usable Voyage
+embedding. Its original publication consent generation does not make it stale;
+current consent still gates search, new provider requests and publication of work.
+Mail received while disabled is filled in when consent returns. The forward-only
+0019 backend correction preserves stored vectors and outstanding retry state;
+switching does not reset backoff or quarantine.
+
+The approved Qwen-to-Voyage migration remains one-time work: incompatible old
+vectors cannot be compared with Voyage queries, so their mail text is processed
+once after user enablement. The successful Voyage vector is then reused across
+later switches. Model identity, dimensions, input version and content projection
+prevent mixed spaces without treating every consent switch as a model change.
 
 The route is [`voyageai/voyage-4`](https://openrouter.ai/voyageai/voyage-4),
 requesting 256 dimensions supported by
 [Voyage's model contract](https://www.mongodb.com/docs/voyageai/models/text-embeddings/).
 Matryoshka representation learning ([MRL](https://arxiv.org/abs/2205.13147))
 motivates flexible output sizes, not a claim that this workload has measured
-256-dimensional quality equivalent to larger vectors. Explicit model/generation
+256-dimensional quality equivalent to larger vectors. Explicit model/projection
 identity follows the practical requirement to
 [re-index rather than mix model spaces](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/semantic-text-setup-configuration).
+Keeping the same inference model permits
+[retaining embeddings without rerunning inference](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/semantic-text-search-retrieval).
 
 ## Approved Voyage retention policy
 

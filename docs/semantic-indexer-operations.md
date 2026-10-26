@@ -10,9 +10,10 @@ See [privacy](semantic-indexing-privacy-decision.md) and [validation](validation
 
 ## State ownership and transitions
 
-`messages` owns the mail and its retained document vector. The consent/indexing
-generation owns whether that vector is current; retaining a value never grants
-permission to use it. `embedding_work` is a durable queue, not a second copy of
+`messages` owns the mail and its retained document vector. Vector validity follows
+the unchanged content projection, model, dimensions and input version, not the
+current consent generation. Consent gates use and new processing; it does not
+expire an otherwise compatible stored vector. `embedding_work` is a durable queue, not a second copy of
 mail. It holds opaque message/owner identities, arrival time, generation,
 retry/lease state and fixed error codes, never subjects, bodies, addresses or
 provider responses. `embedding_owner_schedule` tracks bounded fair service;
@@ -21,15 +22,18 @@ provider responses. `embedding_owner_schedule` tracks bounded fair service;
 | Transition | Durable effect | Provider effect |
 | --- | --- | --- |
 | Forward migration 0018 | Preserve legacy embeddings; absent preferences mean consent off; revoke old work/lease eligibility | No mail re-send |
-| Disabled to enabled | Advance generation and enqueue every eligible retained message, even if a vector exists | Full background indexing starts on later bounded maintenance passes |
+| Backend correction 0019 | Preserve preferences and vectors; reconcile work with usable Voyage projections | No retransmission or implicit enablement |
+| Disabled to enabled | Advance consent generation and admit only eligible mail without a usable Voyage vector | Background work fills missing vectors; legacy Qwen is migrated once |
 | Enabled to disabled | Revoke new work and stale publication eligibility; keep document vectors | No newly admitted document/query requests |
-| Same desired state | No state transition or full-index restart | No extra provider work |
-| Re-enable | New generation and another complete eligible corpus pass | Mail text is sent again to compute fresh vectors |
+| Same desired state | No state transition or work restart | No extra provider work |
+| Re-enable | Reuse compatible retained vectors; resume outstanding work under the new consent generation | No document call for already indexed, unchanged Voyage mail |
 
 Switches use the caller's observed generation as a compare-and-swap condition.
 A conflicting concurrent opposite-state switch requires a fresh status/approval decision rather
 than silently replaying consent. Index state and consent are separate: enabled
 with a pending corpus is not ready, and disabled with stored vectors is not enabled.
+Toggling is not a retry-reset API: existing backoff, attempt counts and quarantine
+remain in force. Mail received while disabled is filled in after enablement.
 
 Each provider admission requires current enabled consent and generation as well
 as a live eligible message. Publication requires that same consent generation and
@@ -40,9 +44,15 @@ recalled by a concurrent disable. Never describe this as distributed erasure.
 `semantic_preferences` stores the account switch and monotone `generation`.
 `embedding_work.consent_generation` and its mirrored consent lease token fence
 claims, including claims attempted by an overlapping old Worker;
-`messages.embedding_consent_generation` identifies a successfully published
-projection. The additive `0018_semantic_consent.sql` migration invalidates legacy
-semantic continuation generations without deleting retained document vectors.
+`messages.embedding_consent_generation` records the consent under which a vector
+was published; equality with the latest consent generation is not a freshness
+requirement. Migration 0018 introduced consent and preserved legacy vectors.
+The forward-only `0019_incremental_embeddings.sql` correction separates stored-vector reuse from lease/query
+revocation. Never edit the already deployed 0018 migration to change that contract.
+`semantic_compatible_embeddings` centralizes usable-vector membership. Status
+`indexed_messages` counts compatible active vectors even while disabled;
+`pending_messages` describes outstanding work, not a request to regenerate
+already compatible vectors.
 
 ## Bounded processing and model migration
 
@@ -69,9 +79,11 @@ The exact route is `voyageai/voyage-4`, requesting 256 dimensions; see
 [Voyage's dimension/task contract](https://www.mongodb.com/docs/voyageai/models/text-embeddings/).
 The dedicated forward migration does not transform Qwen coordinates into Voyage
 coordinates: the spaces are incompatible even when dimensions match. A successful
-fresh result replaces the corresponding retained vector and records model,
-dimensions, input version and active generation. Semantic queries only score
-current-generation vectors with exactly matching metadata; incomplete or
+fresh result replaces an incompatible legacy vector and records model,
+dimensions, input version and the publication's consent generation. Once a Qwen
+projection has become a valid Voyage projection, later disable/enable cycles do
+not resend that mail. Semantic queries score compatible vectors regardless of
+the consent generation that produced them; incomplete or
 quarantined rows produce typed incomplete, never a silent partial ranking.
 Ordinary literal search remains independent.
 
@@ -87,9 +99,10 @@ the row. Fixed codes, not provider bodies or mail, belong in diagnostics.
 
 Use aggregate SELECT-only diagnostics in the intended realm. Do not retrieve
 subjects, bodies, vectors or raw provider errors for health checks. Separate
-**disabled retained vectors**, **enabled current vectors**, **pending work** and
+**disabled retained vectors**, **enabled compatible vectors**, **pending work** and
 **quarantined work**: counting only NULL vectors is no longer a correct backlog
-measure because a retained old vector may await re-indexing.
+measure because an incompatible retained Qwen vector may await its one-time
+Voyage migration. Compatible Voyage vectors are not backlog after re-enablement.
 
 ```sql
 SELECT state,
@@ -113,9 +126,10 @@ Deploy from reviewed same-run artifacts with the old background sender fenced
 before migration; changing a model name alone is not a migration. Historical
 migrations 0007/0010 remain immutable. Search jobs/cursors are invalidated across
 a consent/model generation change instead of reusing incompatible query vectors.
-Hosted boundary tests and a synthetic end-to-end journey must exercise default
-zero egress, user approval, full indexing, disable during a provider call,
-retained vectors and full re-enable. Use no customer mail as a canary.
+The affected hosted checks exercise retained Voyage reuse, missing-only admission,
+one-time Qwen migration, retry-state preservation and disable/re-enable fences.
+Reuse established default-off/user-authority evidence rather than repeating
+unrelated suites; use no customer mail as a canary.
 
 References: [D1 SQL](https://developers.cloudflare.com/d1/sql-api/sql-statements/),
 [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/),

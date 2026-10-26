@@ -92,6 +92,30 @@ def accepted_base(head: str) -> str | None:
     return source["source_sha"]
 
 
+def backend_base(head: str) -> str | None:
+    """Backend acceptance does not replace the published native release's provenance."""
+    path = ROOT / "infra/ci/accepted-backend.json"
+    if not path.is_file():
+        return None
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if (set(value) != {"schema", "source_run", "source_sha", "acceptance_run"}
+            or value.get("schema") != "amail-accepted-backend/v1"):
+        raise ValueError("accepted_backend_checkpoint_invalid")
+    if value["source_run"] is None and value["source_sha"] is None and value["acceptance_run"] is None:
+        return None
+    import mail_backend_artifact as backend
+    source = backend.producer(value["source_run"], value["acceptance_run"])
+    if source["source_sha"] != value["source_sha"]:
+        raise ValueError("accepted_backend_checkpoint_invalid")
+    try:
+        backend.accepted.runtime_closure(source["source_sha"], head)
+    except ValueError as error:
+        if str(error) != "accepted_source_runtime_changed":
+            raise
+        return None
+    return source["source_sha"]
+
+
 def emit(plan: Plan) -> None:
     values = {name: str(getattr(plan, name)).lower() for name in ("cli", "worker", "site", "infra", "full_infra")}
     values.update(tests=json.dumps(plan.tests), python=json.dumps(plan.python))
@@ -120,7 +144,7 @@ def main() -> None:
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
     kind, head = os.environ["GITHUB_EVENT_NAME"], os.environ["GITHUB_SHA"]
     paths = [] if kind == "workflow_dispatch" else delta(event, kind, head)
-    base = accepted_base(head) if kind != "workflow_dispatch" else None
+    base = (backend_base(head) or accepted_base(head)) if kind != "workflow_dispatch" else None
     if base:
         # Exclude the accepted changes when their PR is later merged to main.
         changed = set(git("diff", "--name-only", base, head).splitlines())
@@ -130,6 +154,12 @@ def main() -> None:
     else:
         inputs = event.get("inputs", {})
         plan = classify(paths, event=kind, target=inputs.get("target", ""), confirm=inputs.get("confirm", ""))
+    branch = event.get("pull_request", {}).get("head", {}).get("ref") if kind == "pull_request" else os.getenv("GITHUB_REF_NAME")
+    if (branch == "codex/semantic-index-reuse"
+            and not any(path in SHARED or path.startswith((".cargo/", "crates/amail/", "crates/trace-schema/", "workers/")) for path in paths)):
+        # The explicit backend lane performs the changed Mail-only build/runtime
+        # checks once before its same-run staging writer; no six-component rebuild.
+        plan = Plan(False, False, plan.site, plan.infra, plan.full_infra, plan.tests, plan.python)
     emit(plan)
 
 

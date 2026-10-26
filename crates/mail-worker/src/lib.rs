@@ -1033,7 +1033,9 @@ async fn claim_embedding<'a>(
                AND next_attempt_at<=?4 AND lease_until<=?4
                AND EXISTS (SELECT 1 FROM semantic_preferences p WHERE p.owner_iss=embedding_work.owner_iss AND p.owner_sub=embedding_work.owner_sub AND p.enabled=1 AND p.generation=embedding_work.consent_generation)
                AND EXISTS (SELECT 1 FROM messages
-                           WHERE id=?3 AND deleted_at IS NULL AND {} AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted'))",
+                           WHERE id=?3 AND deleted_at IS NULL
+                             AND NOT EXISTS (SELECT 1 FROM semantic_compatible_embeddings c WHERE c.message_id=messages.id)
+                             AND {} AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=messages.id AND s.owner_iss=messages.owner_iss AND s.owner_sub=messages.owner_sub AND s.state='accepted'))",
             tmpaddr::message_filter("messages"),
         ))
         .bind(&[
@@ -1071,6 +1073,7 @@ async fn read_leased_embedding(
             "SELECT m.subject,m.body_text,w.attempts
              FROM messages m JOIN embedding_work w ON w.message_id=m.id
              WHERE m.id=?1 AND m.deleted_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM semantic_compatible_embeddings c WHERE c.message_id=m.id)
                AND EXISTS (SELECT 1 FROM semantic_preferences p WHERE p.owner_iss=w.owner_iss AND p.owner_sub=w.owner_sub AND p.enabled=1 AND p.generation=w.consent_generation)
                AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=m.id AND s.owner_iss=m.owner_iss AND s.owner_sub=m.owner_sub AND s.state='accepted')
                AND w.lease_token=?2 AND w.consent_lease_token=?2 AND w.lease_until>?3 AND {}",
@@ -1124,7 +1127,7 @@ async fn process_embedding(
     }
 }
 
-/// Replace a retained projection only under the current live consent and lease.
+/// Fill a missing projection only under the current live consent and lease.
 async fn persist_embedding_success(
     env: &Env,
     database: &Database,
@@ -1142,6 +1145,7 @@ async fn persist_embedding_success(
                  embedding_input_version=1,embedding_truncated=?3,
                  embedding_consent_generation=(SELECT consent_generation FROM embedding_work WHERE message_id=?4 AND lease_token=?5)
              WHERE id=?4 AND deleted_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM semantic_compatible_embeddings c WHERE c.message_id=messages.id)
                AND EXISTS (SELECT 1 FROM embedding_work
                            WHERE message_id=?4 AND lease_token=?5 AND consent_lease_token=?5 AND lease_until>?6
                              AND EXISTS (SELECT 1 FROM semantic_preferences p WHERE p.owner_iss=embedding_work.owner_iss AND p.owner_sub=embedding_work.owner_sub AND p.enabled=1 AND p.generation=embedding_work.consent_generation)) AND {}",
@@ -1231,6 +1235,7 @@ const EMBEDDING_DUE_SQL: &str = "SELECT message_id FROM (
        LEFT JOIN embedding_owner_schedule o
          ON o.owner_iss=w.owner_iss AND o.owner_sub=w.owner_sub
        WHERE w.state='pending' AND w.next_attempt_at<=?1 AND w.lease_until<=?1
+         AND NOT EXISTS (SELECT 1 FROM semantic_compatible_embeddings c WHERE c.message_id=w.message_id)
          AND NOT EXISTS (SELECT 1 FROM send_requests s WHERE s.message_id=w.message_id
                          AND s.owner_iss=w.owner_iss AND s.owner_sub=w.owner_sub AND s.state='accepted')
      ) WHERE owner_rank<=4
@@ -2557,7 +2562,7 @@ fn search_projection(input: &SearchRequest) -> String {
         "'{}' AS metadata_json"
     };
     let vector = if input.semantic.is_some() {
-        "embedding_json,embedding_model,embedding_dimensions,CASE WHEN embedding_consent_generation=(SELECT generation FROM semantic_preferences p WHERE p.owner_iss=messages.owner_iss AND p.owner_sub=messages.owner_sub AND p.enabled=1) THEN embedding_input_version ELSE NULL END AS embedding_input_version"
+        "embedding_json,embedding_model,embedding_dimensions,embedding_input_version"
     } else {
         "NULL AS embedding_json"
     };
@@ -3753,6 +3758,9 @@ mod tests {
         // The consent migration itself has independent full-schema tests.
         db.execute_batch("ALTER TABLE embedding_work ADD COLUMN consent_generation INTEGER NOT NULL DEFAULT 0;
             CREATE TABLE semantic_preferences(owner_iss TEXT,owner_sub TEXT,enabled INTEGER,generation INTEGER,PRIMARY KEY(owner_iss,owner_sub));
+            CREATE VIEW semantic_compatible_embeddings AS SELECT id AS message_id FROM messages
+                WHERE embedding_json IS NOT NULL AND embedding_model='voyageai/voyage-4'
+                AND embedding_dimensions=256 AND embedding_input_version=1;
             INSERT INTO semantic_preferences VALUES('i','a',1,0),('i','b',1,0);").unwrap();
         db.execute("INSERT INTO messages(id,address,owner_iss,owner_sub,direction,sender,recipients_json,subject,body_text,metadata_json,received_at,has_html,has_text,attachment_count,r2_key,size_bytes) VALUES('new','a','i','b','inbound','s','[]','subject','body','{}',100,0,1,0,'k',1)",[]).unwrap();
         let due = db
@@ -4197,10 +4205,10 @@ mod tests {
             ..Default::default()
         });
         assert!(detailed.contains("body_text,metadata_json"));
-        assert!(detailed.contains("embedding_json,embedding_model,embedding_dimensions,CASE WHEN embedding_consent_generation="));
         assert!(detailed.contains(
-            "p.enabled=1) THEN embedding_input_version ELSE NULL END AS embedding_input_version"
+            "embedding_json,embedding_model,embedding_dimensions,embedding_input_version"
         ));
+        assert!(!detailed.contains("embedding_consent_generation"));
         assert!(search_summary_projection().contains("substr(subject,1,2048)"));
     }
 

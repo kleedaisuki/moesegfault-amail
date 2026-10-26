@@ -72,10 +72,13 @@ See the [multi-tenant architecture](docs/v0.3.0/architecture.md) and
 Semantic indexing is account-wide and **off by default**, including after upgrade.
 `amail semantic status|enable|disable` exposes the setting. Only `user` may change
 it, with browser approval unless the human explicitly configured YOLO. Enabling
-indexes all eligible retained and subsequent mail through OpenRouter / Voyage 4;
-disabling preserves old document embeddings but admits no new model requests.
-Re-enabling starts a full fresh index. The dedicated forward migration preserves
-legacy vectors without mixing Qwen and Voyage spaces or silently granting consent.
+fills missing compatible embeddings through OpenRouter / Voyage 4; disabling
+preserves existing vectors but admits no new model requests. Re-enabling reuses
+valid Voyage vectors and sends only missing mail. Legacy Qwen vectors still need
+the approved one-time migration, then the resulting Voyage vectors are reused.
+The forward migration preserves stored vectors and retry state without granting
+consent. This backend correction keeps v0.3.1 clients compatible; it is not a new
+CLI release.
 The fixed VoyageAI route denies training and disables response caching, but the
 upstream may retain inputs; it is not zero-data-retention.
 See [v0.3.1 notes](docs/releases/v0.3.1.md) and

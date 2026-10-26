@@ -33,7 +33,9 @@ class AuxiliarySchemaTests(unittest.TestCase):
 
     def test_default_production_contract_stays_mail_only(self) -> None:
         contract = schema.expected_schema()
-        self.assertEqual(len(contract.objects), 133)
+        self.assertIn("semantic_compatible_embeddings", contract.objects)
+        self.assertFalse(any(name.startswith(("staging_acceptance_", "staging_d1_probe_"))
+                             for name in contract.objects))
         schema.verify_schema(self.read, contract)
         self.add_auxiliary()
         with self.assertRaisesRegex(ValueError, "schema_objects_unverified"):
@@ -42,8 +44,10 @@ class AuxiliarySchemaTests(unittest.TestCase):
     def test_staging_validates_both_exact_historical_namespaces(self) -> None:
         self.add_auxiliary()
         contract = schema.expected_schema(staging_auxiliary=True)
-        self.assertEqual(len(contract.objects), 163)
-        self.assertEqual(len(contract.migrations), 18)
+        self.assertIn("staging_acceptance_escrows", contract.objects)
+        self.assertIn("staging_d1_probe_escrows", contract.objects)
+        self.assertEqual(len(contract.objects) - len(schema.expected_schema().objects), 30)
+        self.assertEqual(contract.migrations, schema.expected_schema().migrations)
         schema.verify_schema(self.read, contract)
 
     def test_mutated_auxiliary_trigger_is_not_admitted(self) -> None:

@@ -42,8 +42,9 @@ class RecoveryTests(unittest.TestCase):
         facts = recovery.schema_facts(database)
         self.assertTrue(facts["verified"])
         self.assertEqual(facts["reason"], "verified")
-        self.assertEqual(facts["expected_migration_count"], 18)
-        self.assertEqual(facts["expected_object_count"], 163)
+        contract = recovery.schema.expected_schema(staging_auxiliary=True)
+        self.assertEqual(facts["expected_migration_count"], len(contract.migrations))
+        self.assertEqual(facts["expected_object_count"], len(contract.objects))
         for call in database.query.call_args_list:
             self.assertNotIn("SELECT * FROM messages", call.args[0])
 

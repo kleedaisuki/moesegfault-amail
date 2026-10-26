@@ -4,6 +4,43 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
+## Missing-only semantic resumption — staging accepted, production pending
+
+Progress recorded on 2026-10-26 (Asia/Singapore). This is a backend-only
+correction compatible with existing v0.3.1 clients, not a new version or Release.
+Enable/re-enable reuses valid retained Voyage vectors and admits only missing
+usable embeddings; legacy Qwen projections still undergo the approved one-time
+migration. Consent generations continue to fence stale work and query results.
+
+The original producer
+[40203420616](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40203420616),
+source `f3f13e4776871b7ab4232e113bc62a592b63d0f3`, passed its affected Mail Worker
+build/tests, but the overall run **FAILED**. Its successful producer evidence is
+reused for unchanged backend inputs; it is not relabelled as successful real-user
+acceptance.
+
+Migration `0019_incremental_embeddings.sql` is applied in staging. Current staging
+API is `fb03a457-f771-41fe-a041-86b2491d1a6a` and maintenance is
+`0ee61a70-4040-40fe-a117-48d41c92f2de`; the existing five-minute Cron was retained.
+The narrow real-user semantic acceptance
+[40271435401](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40271435401)
+completed **SUCCESS**, source `78b5aba1cb7e0e63c7bf999e26179f6f5318b570`.
+The same-run staging receipt is artifact `12628947050`; final acceptance is
+`12629056663`, emitted only after the one-SMTP-fixture journey, successful reuse
+and semantic query, final disable and cleanup. The managed synthetic baseline
+address and route remain for reuse; only this run's known message was removed.
+Production promotion remains **pending**. No new CLI package, public Release or
+local binary upgrade is claimed.
+A live setup exposed an existing published-client defect: `mailbox acquire` rejects
+permanent mailboxes because `Store::set_lease` requires a nonempty generation,
+whereas permanent addresses intentionally use an empty generation. The semantic
+fixture uses the supported existing-active `address add` path instead; it calls the
+same non-preemptible server claim without registering another address or changing
+its route. This backend correction does not claim to fix or re-release that CLI.
+
+The completed production epoch below remains the last accepted production state
+until an actual promotion receipt is recorded.
+
 ## v0.3.1 production release and local upgrade — delivered
 
 Read-only production inspection

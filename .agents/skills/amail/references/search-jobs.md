@@ -19,8 +19,9 @@ use `--semantic` only when meaning-based search helps and its query transfer is
 appropriate, including the approved non-ZDR provider's possible retention of
 mail/query inputs and outputs for an unspecified period. Disabling does not
 guarantee upstream erasure. Semantic indexing is off by default; `amail semantic enable` requires
-the `user` profile and browser approval unless the human explicitly configured YOLO. Enabling schedules the entire eligible
-retained corpus, not only the current query. Ordinary search works with it
+the `user` profile and browser approval unless the human explicitly configured YOLO.
+Enabling fills eligible missing embeddings, not only the current query. Re-enable
+reuses valid Voyage vectors; old Qwen projections migrate only once. Ordinary search works with it
 disabled; while enabled it does not stop [background indexing](privacy.md).
 Search results are compact metadata, not bodies, and do not mark mail read.
 Semantic searches have no per-plan fee or request-count quota in v0.3.1; normal

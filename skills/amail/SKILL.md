@@ -21,15 +21,18 @@ different terminal. See [profiles](references/profiles.md) for lifecycle details
 ## Essential boundaries
 
 **Semantic indexing is off by default.** Before requesting enablement, disclose
-that it sends eligible retained and future received/sent mail subjects and body
-excerpts through OpenRouter to Voyage 4, not just the search query. The approved
+that mail missing a usable Voyage embedding sends its subject and body excerpts
+through OpenRouter to Voyage 4, not just the search query. This includes eligible
+historical mail and new mail, but not compatible retained Voyage vectors. The approved
 route does not train on inputs but is **not zero retention**: upstream may retain
 inputs/outputs for an unspecified period, and disabling cannot guarantee erasure. Both enabling
 and disabling require the `user` profile and human browser approval unless the
 human explicitly configured YOLO. The setting affects every account profile.
 Never approve or change this setting on the human's behalf.
-Disabling stops new provider work but retains old embeddings; re-enabling
-re-indexes all eligible retained mail. `AMAIL_TELEMETRY=off` is independent. Read
+Disabling stops new provider work but retains embeddings. Re-enabling reuses
+valid Voyage vectors and fills only missing embeddings; old Qwen vectors still
+undergo the approved one-time migration. Toggling does not reset retry backoff or
+quarantine. `AMAIL_TELEMETRY=off` is independent. Read
 [privacy details](references/privacy.md) when deciding whether mail is suitable,
 answering privacy questions or changing diagnostic settings.
 
@@ -54,7 +57,8 @@ telemetry or public diagnostics.
 
 ## Start small, explore as needed
 
-These instructions describe installed v0.3.1 capabilities, not publication status,
+These instructions describe v0.3.1-compatible commands and the backend-only
+missing-embedding correction, not publication status,
 remote health or current sending permission. Once an owner enrolls in profiles,
 requests without a valid profile session cannot bypass mailbox ownership; upgrade
 the matching CLI/Skill rather than bypassing the gate.

@@ -33,7 +33,7 @@ operations were performed for this review.
 * Semantic indexing is an account-wide opt-in privacy boundary in v0.3.1, not
   telemetry. It is off by default, including on upgrade. Only `user` may change
   it, using normal browser approval or an existing explicit YOLO choice; agent
-  profiles cannot enable it. Re-enable indexes all eligible retained mail.
+  profiles cannot enable it. Re-enable reuses valid Voyage vectors and fills only missing embeddings; legacy Qwen migrates once.
 
 ## v0.1.2: Progressive disclosure is the interface, not missing capability
 
@@ -334,7 +334,7 @@ increment rather than becoming a new documentation project:
 | No MCP server | CLI + skill is sufficient for shell-capable runtimes. | A valuable target runtime cannot execute the CLI or needs tool-schema discovery. |
 | No mailbox watch/webhook | Not a defect for bounded, user-initiated tasks. Runtime scheduling can be external. | Reply-triggered unattended workflows become a primary promise. Start with one bounded wait/since primitive or documented runtime recipe, not both a scheduler and webhook platform. |
 | Account-wide authorization | Reasonable for a trusted local agent; not isolation between independent agents. | Multiple differently trusted agents/teams share one account. Add narrow capabilities then. |
-| Default-off semantic indexing with account consent | v0.3.1 implements explicit user enable/disable, independent of telemetry. | Preserve old document vectors on disable; gate fresh transfer and publication by consent generation, and re-index the complete eligible corpus on re-enable. |
+| Default-off semantic indexing with account consent | v0.3.1 implements explicit user enable/disable, independent of telemetry. | Preserve document vectors on disable; gate fresh transfer/publication by consent generation, reuse compatible Voyage vectors on re-enable, and process only missing embeddings or the one-time Qwen migration. |
 | No draft-init/reply helper or schema export | Useful conveniences, not proof that current design is non-agent-first. | Task traces show recurring header/template/schema mistakes. |
 
 ## Lightweight product probe, not another audit framework
