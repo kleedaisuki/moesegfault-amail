@@ -20,14 +20,17 @@ Production API and maintenance share response-owned fresh Mail D1
 `moesegfault-mail-production-708b6d6c734779d657f5abb3`, and R2
 `moesegfault-mail-raw-production-708b6d6c734779d657f5abb3`.
 Current checked-in configurations are authoritative for bindings.
-The current completed production backend epoch is v0.3.1 read-only completion
-`40199972693`, source `4bd01f1fc3234aed49117923bcb6080a332f03cf`, receipt
-`12601077928`, following original writer `40196627612`. The writer remains failed
-only at its old string-versus-integer health check; all mutations were admitted
-through its ten-phase journal and freshly verified without replay. Eleven live
-address records remain and the allowed policy/external graph fingerprints match
-the original inspection. Exact versions and proof boundaries are in
-[completed v0.3.1 delivery](v0.3.1/production-delivery.md). Formal release
+The current completed production backend epoch is missing-only semantic reuse
+`40272801666`, source `06e88adde0731ffbf0e807a66bbdf2abef8bed91`, receipt
+`12629131055`, following partial writer `40272159207`. Schema 0019 is applied;
+API is `28bc6307-2c85-4a23-8b2c-77563197729a` and maintenance is
+`57c4d494-ef44-4ee4-ba1a-400e2a29a65b`. API Cron stays empty, maintenance stays
+five-minute scheduled, and sink/policy/retained infrastructure are unchanged.
+The original writer remains failed at a Queue-catalog readback omission; the
+completion verified its API/schema read-only and deployed only maintenance,
+without migration/API replay. Exact evidence is in [validation](validation.md).
+The prior v0.3.1 backend epoch `40199972693` and
+[original delivery](v0.3.1/production-delivery.md) are historical. Formal release
 `40200242942` also completed, followed by verified public assets/site and both local
 CLI entrypoints plus the global Skill. Original binary provenance is preserved
 separately from current release packaging; credentials/configuration/YOLO remain
@@ -48,8 +51,8 @@ and clients are distinct. HTTP health does not establish message delivery.
 ### Missing-only semantic resumption — backend correction
 
 Staging has schema 0019 and the corrected API/maintenance installed; real-user
-acceptance `40271435401` passed. Production promotion remains pending in
-[the current ledger](validation.md).
+acceptance `40271435401` passed and production completion `40272801666` passed.
+Exact serving pins and provenance are in [the current ledger](validation.md).
 
 The 2026-10-25 backend correction keeps version/protocol `0.3.1` and does not
 create a new CLI Release. Forward migration `0019_incremental_embeddings.sql`
