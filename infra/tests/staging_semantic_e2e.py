@@ -241,6 +241,31 @@ def baseline_acquire_failure(stderr: bytes) -> str:
     suffix: str = "_http_" + str(status) if type(status) is int and 400 <= status <= 599 else ""
     return prefix + code + suffix
 
+
+def baseline_acquire_plain_failure(stderr: bytes) -> str:
+    """Classify exact CLI-owned prose without exporting any captured text."""
+    prefix: str = "semantic_baseline_acquire_"
+    if len(stderr) > 65_536:
+        return prefix + "output_invalid"
+    line: bytes = stderr.rstrip(b"\r\n")
+    fixed: dict[bytes, str] = {
+        b"amail: invalid cloud profile response": "invalid_cloud_profile_response",
+        b"amail: cloud lease missing capability": "cloud_lease_missing_capability",
+        b"amail: cloud lease missing generation": "cloud_lease_missing_generation",
+        b"amail: cloud lease missing mode": "cloud_lease_missing_mode",
+        b"amail: no active daemon profile": "no_active_daemon_profile",
+        b"amail: invalid cloud lease": "invalid_cloud_lease",
+        b"amail: invalid mailbox lease": "invalid_mailbox_lease",
+    }
+    if line in fixed:
+        return prefix + fixed[line]
+    codes: tuple[str, ...] = ("profile_not_registered", "profile_in_use", "profile_session_expired",
+        "profile_exists_or_limit", "mailbox_in_use", "mailbox_lease_expired", "profile_request_failed")
+    for code in codes:
+        if line == ("amail: cloud request rejected: " + code).encode("ascii"):
+            return code if code == "mailbox_in_use" else prefix + code
+    return prefix + "plain_unknown"
+
 def acquire_stable_alias(binary: Path, environment: dict[str, str], baseline_local: str | None = None) -> str:
     inventory: list[dict[str, Any]] = mail.amail(binary, environment, "address", "list",
         failure="semantic_baseline_alias_list_failed")
@@ -250,7 +275,7 @@ def acquire_stable_alias(binary: Path, environment: dict[str, str], baseline_loc
     for address in candidates:
         try:
             result: subprocess.CompletedProcess[bytes] = subprocess.run(
-                [str(binary), "--machine", "mailbox", "acquire", address, "--mode", "write"],
+                [str(binary), "mailbox", "acquire", address, "--mode", "write"],
                 env=environment, capture_output=True, timeout=90, check=False)
         except subprocess.TimeoutExpired:
             raise mail.ProbeFailure("semantic_baseline_acquire_process_timeout") from None
@@ -268,7 +293,7 @@ def acquire_stable_alias(binary: Path, environment: dict[str, str], baseline_loc
                        "semantic_baseline_acquire_output_invalid")
             return address
         mail.check(not result.stdout, "semantic_baseline_acquire_output_invalid")
-        reason: str = baseline_acquire_failure(result.stderr)
+        reason: str = baseline_acquire_plain_failure(result.stderr)
         mail.check(reason == "mailbox_in_use", reason)
     raise mail.ProbeFailure("semantic_baseline_alias_busy")
 
