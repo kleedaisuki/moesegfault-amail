@@ -215,6 +215,32 @@ def bootstrap_managed_alias(binary: Path, environment: dict[str, str], local: st
     return address
 
 
+
+def baseline_acquire_failure(stderr: bytes) -> str:
+    """Export only fixed machine categories and a validated HTTP status."""
+    prefix: str = "semantic_baseline_acquire_"
+    try:
+        records: list[Any] = [json.loads(line) for line in stderr.splitlines() if line.strip()]
+    except (ValueError, UnicodeDecodeError):
+        return prefix + "non_json"
+    errors: list[dict[str, Any]] = [row for row in records if isinstance(row, dict)
+        and row.get("schema") == "amail.machine.v1" and row.get("event") == "error"]
+    if len(errors) != 1 or not isinstance(errors[0].get("data"), dict):
+        return prefix + "machine_shape"
+    data: dict[str, Any] = errors[0]["data"]
+    code: Any = data.get("code")
+    allowed: frozenset[str] = frozenset({"profile_not_registered", "profile_in_use",
+        "profile_session_expired", "profile_exists_or_limit", "mailbox_in_use",
+        "mailbox_lease_expired", "profile_request_failed", "profile_transport_unknown", "local_error"})
+    if not isinstance(code, str) or code not in allowed:
+        return prefix + "unknown_code"
+    if code == "mailbox_in_use":
+        return code
+    details: Any = data.get("details")
+    status: Any = details.get("status") if isinstance(details, dict) else data.get("http_status")
+    suffix: str = "_http_" + str(status) if type(status) is int and 400 <= status <= 599 else ""
+    return prefix + code + suffix
+
 def acquire_stable_alias(binary: Path, environment: dict[str, str], baseline_local: str | None = None) -> str:
     inventory: list[dict[str, Any]] = mail.amail(binary, environment, "address", "list",
         failure="semantic_baseline_alias_list_failed")
@@ -226,8 +252,10 @@ def acquire_stable_alias(binary: Path, environment: dict[str, str], baseline_loc
             result: subprocess.CompletedProcess[bytes] = subprocess.run(
                 [str(binary), "--machine", "mailbox", "acquire", address, "--mode", "write"],
                 env=environment, capture_output=True, timeout=90, check=False)
-        except (OSError, subprocess.TimeoutExpired):
-            raise mail.ProbeFailure("semantic_baseline_acquire_unknown") from None
+        except subprocess.TimeoutExpired:
+            raise mail.ProbeFailure("semantic_baseline_acquire_process_timeout") from None
+        except OSError:
+            raise mail.ProbeFailure("semantic_baseline_acquire_process_error") from None
         mail.check(len(result.stdout) <= 65_536 and len(result.stderr) <= 65_536,
                    "semantic_baseline_acquire_output_invalid")
         if result.returncode == 0:
@@ -239,15 +267,9 @@ def acquire_stable_alias(binary: Path, environment: dict[str, str], baseline_loc
                        and values[0].get("address") == address and values[0].get("mode") == "write",
                        "semantic_baseline_acquire_output_invalid")
             return address
-        try:
-            records: list[Any] = [json.loads(line) for line in result.stderr.splitlines() if line.strip()]
-        except (ValueError, UnicodeDecodeError):
-            raise mail.ProbeFailure("semantic_baseline_acquire_unknown") from None
-        errors: list[dict[str, Any]] = [row for row in records if isinstance(row, dict)
-            and row.get("schema") == "amail.machine.v1" and row.get("event") == "error"]
-        mail.check(not result.stdout and len(errors) == 1 and isinstance(errors[0].get("data"), dict)
-                   and errors[0]["data"].get("code") == "mailbox_in_use",
-                   "semantic_baseline_acquire_unknown")
+        mail.check(not result.stdout, "semantic_baseline_acquire_output_invalid")
+        reason: str = baseline_acquire_failure(result.stderr)
+        mail.check(reason == "mailbox_in_use", reason)
     raise mail.ProbeFailure("semantic_baseline_alias_busy")
 
 
