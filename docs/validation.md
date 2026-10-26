@@ -4,7 +4,7 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
-## Missing-only semantic resumption — staging accepted, production pending
+## Missing-only semantic resumption — production delivered
 
 Progress recorded on 2026-10-26 (Asia/Singapore). This is a backend-only
 correction compatible with existing v0.3.1 clients, not a new version or Release.
@@ -15,7 +15,8 @@ migration. Consent generations continue to fence stale work and query results.
 The original producer
 [40203420616](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40203420616),
 source `f3f13e4776871b7ab4232e113bc62a592b63d0f3`, passed its affected Mail Worker
-build/tests, but the overall run **FAILED**. Its successful producer evidence is
+build, five targeted Rust checks and nine semantic Workerd checks, but the overall
+run **FAILED**. Its successful producer evidence is
 reused for unchanged backend inputs; it is not relabelled as successful real-user
 acceptance.
 
@@ -29,8 +30,31 @@ The same-run staging receipt is artifact `12628947050`; final acceptance is
 `12629056663`, emitted only after the one-SMTP-fixture journey, successful reuse
 and semantic query, final disable and cleanup. The managed synthetic baseline
 address and route remain for reuse; only this run's known message was removed.
-Production promotion remains **pending**. No new CLI package, public Release or
-local binary upgrade is claimed.
+
+Production completion
+[40272801666](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40272801666)
+completed **SUCCESS** on 2026-10-26 at 13:12:10 Asia/Singapore (05:12:10 UTC),
+source `06e88adde0731ffbf0e807a66bbdf2abef8bed91`. Receipt
+[12629131055](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40272801666/artifacts/12629131055)
+records schema 0019, API `28bc6307-2c85-4a23-8b2c-77563197729a`, maintenance
+`57c4d494-ef44-4ee4-ba1a-400e2a29a65b`, and unchanged sink
+`2bc63288-c987-49f9-bee6-8bc25b35a8be`. API Cron remains empty and maintenance
+Cron remains `*/5 * * * *`; policy and retained external-graph fingerprints match
+the admitted predecessor. Production public health passed. Runtime bytes retain
+original producer artifact `12602781602`, not a new compilation identity.
+
+Original production writer
+[40272159207](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40272159207)
+remains **FAILED**. It applied 0019 and deployed the API before its new capture
+reader lacked an observed Queue catalog. Its exact four-entry journal and
+predecessor are retained in artifact `12628788658`. The completion admitted that
+fixed boundary and freshly verified API/schema/policy/retained graph read-only;
+only remaining maintenance was deployed. Queue identity normalization now first
+loads the existing bounded same-account catalog on the same provider, retaining
+strict binding checks. Migration, API deployment and scheduled waits were not
+replayed. No new CLI package, public Release, site deployment or local binary
+upgrade was performed; established green suites were not repeated.
+
 A live setup exposed an existing published-client defect: `mailbox acquire` rejects
 permanent mailboxes because `Store::set_lease` requires a nonempty generation,
 whereas permanent addresses intentionally use an empty generation. The semantic
@@ -38,8 +62,8 @@ fixture uses the supported existing-active `address add` path instead; it calls 
 same non-preemptible server claim without registering another address or changing
 its route. This backend correction does not claim to fix or re-release that CLI.
 
-The completed production epoch below remains the last accepted production state
-until an actual promotion receipt is recorded.
+The original v0.3.1 release and local installation below remain historical package
+evidence; the backend epoch above supersedes their serving API/maintenance pins.
 
 ## v0.3.1 production release and local upgrade — delivered
 
