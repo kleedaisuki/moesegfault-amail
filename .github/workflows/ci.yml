@@ -321,7 +321,7 @@ jobs:
 
   semantic-reuse-production:
     name: Deploy semantic reuse production backend
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'semantic-reuse-production' && inputs.confirm == 'RUN_SEMANTIC_REUSE_PRODUCTION' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'semantic-reuse-production' && inputs.confirm == 'RUN_SEMANTIC_REUSE_PRODUCTION' && github.ref == 'refs/heads/main' && github.run_attempt == 1 && (inputs.production_completion_run == '' || inputs.production_completion_run == '40272159207')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
@@ -332,6 +332,7 @@ jobs:
       AMAIL_BACKEND_HOTFIX: production
       AMAIL_BACKEND_CONFIRM: ${{ inputs.confirm }}
       AMAIL_PRODUCTION_GRAPH_FREEZE: ${{ inputs.production_graph_freeze }}
+      AMAIL_PRODUCTION_COMPLETED_RUN: ${{ inputs.production_completion_run }}
       GH_TOKEN: ${{ github.token }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -367,13 +368,22 @@ jobs:
           merge-multiple: true
       - name: Verify and restore the original tested Mail backend
         run: python infra/ci/mail_backend_artifact.py restore
+      - name: Read only the fixed owned migration and API partial boundary
+        if: inputs.production_completion_run == '40272159207'
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 40272159207
+          artifact-ids: 12628788658
+          path: .temp/ci/semantic-reuse-production-partial
+          merge-multiple: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Install the existing pinned deployment tool
         run: npm install --global wrangler@4.142.0
       - name: Replace only API and maintenance after additive migration
-        run: python infra/deploy/semantic_reuse_backend.py production
+        run: python infra/deploy/semantic_reuse_backend.py production ${{ inputs.production_completion_run == '40272159207' && '--resume' || '' }}
       - name: Retain completed production and original byte provenance
         uses: actions/upload-artifact@v4
         with:

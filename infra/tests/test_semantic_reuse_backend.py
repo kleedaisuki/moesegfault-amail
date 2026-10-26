@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+import io
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,96 @@ import semantic_reuse_backend as deploy
 
 
 class SemanticReuseDeploymentTests(unittest.TestCase):
+    def test_production_capture_loads_catalog_on_the_same_provider(self) -> None:
+        provider = deploy.previous.FreshProvider("a" * 32, "synthetic")
+        version: str = "11111111-1111-4111-8111-111111111111"
+        body: dict[str, object] = {"success": True, "result": {"id": version, "resources": {"bindings": [
+            {"name": "TRACE_EVENTS", "type": "queue", "queue_name": "amail-trace-events"}]}}}
+        response = io.BytesIO(json.dumps(body).encode())
+        response.status, response.headers = 200, {}  # type: ignore[attr-defined]
+
+        def catalog(actual: object, path: str, key: str, limit: int) -> list[dict[str, str]]:
+            self.assertIs(actual, provider)
+            self.assertEqual((path, key, limit), (f"accounts/{provider.account}/queues", "queue_id", 100))
+            rows: list[dict[str, str]] = [{"queue_name": "amail-trace-events", "queue_id": deploy.QUEUES["production"][0]}]
+            provider.queue_catalog = rows
+            return rows
+
+        def capture(actual: object, script: str, captured: str, **kwargs: object) -> None:
+            self.assertIs(actual, provider)
+            value = provider.get(f"accounts/{provider.account}/workers/scripts/{script}/versions/{captured}")
+            self.assertEqual(value["resources"]["bindings"][0]["queue_id"], deploy.QUEUES["production"][0])
+
+        with patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "synthetic"}), \
+             patch.object(deploy.previous, "FreshProvider", return_value=provider), \
+             patch.object(provider.opener, "open", return_value=response), \
+             patch.object(deploy.previous.prior.readback, "complete", side_effect=catalog) as inventory, \
+             patch.object(deploy.previous.prior.readback, "capture_off", side_effect=capture) as check:
+            deploy.capture_production("api", version)
+            inventory.assert_called_once()
+            check.assert_called_once()
+
+    def test_production_partial_rejects_unreviewed_or_advanced_journal(self) -> None:
+        with patch.dict(os.environ, {"AMAIL_PRODUCTION_COMPLETED_RUN": "different"}):
+            with self.assertRaisesRegex(ValueError, "semantic_reuse_partial_unreviewed"):
+                deploy.production_partial()
+        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder, ExitStack() as stack:
+            root: Path = Path(folder)
+            path: Path = root / ".temp/ci/semantic-reuse-production-partial"
+            path.mkdir(parents=True)
+            checkpoint: dict[str, object] = {"realm": "production", "pins": deploy.PRODUCTION,
+                "run_id": deploy.PRODUCTION_PARTIAL_RUN, "source_sha": deploy.PRODUCTION_PARTIAL_SOURCE}
+            (path / "semantic-reuse-predecessor.json").write_text(json.dumps(checkpoint), encoding="utf-8")
+            identity: dict[str, object] = {"schema": "production-upgrade-partial/v1", "source_sha": deploy.PRODUCTION_PARTIAL_SOURCE,
+                "run_id": deploy.PRODUCTION_PARTIAL_RUN, "run_attempt": 1}
+            rows: list[dict[str, object]] = [{**identity, "phase": "migration", "state": "intent"},
+                {**identity, "phase": "migration", "state": "observed"},
+                {**identity, "phase": "api", "state": "intent"},
+                {**identity, "phase": "api", "state": "version_captured", "version": deploy.PRODUCTION_PARTIAL_API}]
+            journal: Path = path / "production-upgrade-partial.jsonl"
+            journal.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+            metadata: dict[str, object] = {"id": int(deploy.PRODUCTION_PARTIAL_RUN), "head_sha": deploy.PRODUCTION_PARTIAL_SOURCE,
+                "status": "completed", "conclusion": "failure", "event": "workflow_dispatch", "head_branch": "main",
+                "path": ".github/workflows/ci.yml", "run_attempt": 1, "repository": {"full_name": artifact.accepted.REPO}}
+            stack.enter_context(patch.object(deploy, "ROOT", root))
+            stack.enter_context(patch.dict(os.environ, {"AMAIL_PRODUCTION_COMPLETED_RUN": deploy.PRODUCTION_PARTIAL_RUN,
+                "GITHUB_SHA": "a" * 40}))
+            stack.enter_context(patch.object(artifact.accepted, "github", return_value=metadata))
+            stack.enter_context(patch.object(artifact.accepted, "runtime_closure"))
+            self.assertEqual(deploy.production_partial(), checkpoint)
+            journal.write_text("\n".join(json.dumps(row) for row in rows + [{**identity, "phase": "maintenance", "state": "intent"}]), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "semantic_reuse_partial_unreviewed"):
+                deploy.production_partial()
+
+    def test_production_resume_runs_only_remaining_maintenance_after_read_only_api_check(self) -> None:
+        events: list[str] = []
+        retained: dict[str, object] = {}
+        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder, ExitStack() as stack:
+            root: Path = Path(folder)
+            (root / ".temp").mkdir()
+            stack.enter_context(patch.object(deploy, "ROOT", root))
+            stack.enter_context(patch.dict(os.environ, {"CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": "x",
+                "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "125"}))
+            stack.enter_context(patch.object(artifact, "context"))
+            stack.enter_context(patch.object(artifact, "ADMISSION", Mock(is_file=Mock(return_value=True))))
+            stack.enter_context(patch.object(deploy, "require_artifact"))
+            stack.enter_context(patch.object(deploy, "production_partial", return_value={
+                "policy_fingerprint": deploy.previous.prior.digest({}),
+                "retained_fingerprint": deploy.previous.prior.digest(retained)}))
+            observe = stack.enter_context(patch.object(deploy, "observe", return_value=({"retained": retained, "graph": {}}, {})))
+            stack.enter_context(patch.object(deploy, "DatabaseClient"))
+            stack.enter_context(patch.object(deploy.previous.prior, "journal"))
+            stack.enter_context(patch.object(deploy.previous, "health_ready"))
+            stack.enter_context(patch.object(deploy, "schema", side_effect=lambda _db, _realm, count: events.append(f"schema{count}")))
+            migration = stack.enter_context(patch.object(deploy.subprocess, "run"))
+            stack.enter_context(patch.object(deploy, "replace", side_effect=lambda _realm, role: events.append(role) or role))
+            deploy.run("production", resume=True)
+            self.assertEqual(events, ["schema19", "maintenance"])
+            migration.assert_not_called()
+            self.assertEqual(observe.call_args_list[0].args[1]["amail-mail"], deploy.PRODUCTION_PARTIAL_API)
+            value: dict[str, object] = json.loads((root / ".temp/semantic-reuse-production.json").read_text())
+            self.assertEqual(value["original_partial_run"], deploy.PRODUCTION_PARTIAL_RUN)
+
     def test_ingress_only_deploy_inherits_all_other_secrets(self) -> None:
         submitted: list[dict[str, str]] = []
         def submit(command: list[str], *args: object, **kwargs: object) -> str:
