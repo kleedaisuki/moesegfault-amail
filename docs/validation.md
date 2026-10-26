@@ -4,6 +4,42 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
+## v0.3.2 permanent mailbox acquire — published and installed
+
+Formal [v0.3.2](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.3.2)
+completed **SUCCESS** in the single tagged run
+[40274291110](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40274291110),
+source `145d83340653d03a52b8ba0f588d798811583ce8`, published on 2026-10-26 at
+13:34:11 Asia/Singapore (05:34:11 UTC). The client now saves the server's opaque
+lease generation unchanged, including the established empty permanent-mailbox
+value. Capability/address/mode validation and session-owned storage are retained;
+server reader/writer arbitration and temporary lifetimes did not change.
+
+All five newly built native platforms passed exactly the **two new lease tests**;
+the previous 121 CLI tests were filtered out. No backend/semantic suite, provider
+probe, SMTP fixture, new address, database migration or backend deployment ran.
+The same-run Windows executable passed actual existing-baseline native
+`read -> read -> write -> release -> read -> release`, checking empty generation,
+capability redaction and persisted release. Acceptance artifact `12629134465`
+was emitted only after successful cleanup; the baseline address/route remain.
+The full verified release bundle is `12629637957`. All six public archive assets,
+checksums, attestations and the versioned published-site build/check/smoke passed.
+The compatible production backend remains the v0.3.1 epoch below.
+
+Both local CLI entrypoints now report `amail 0.3.2` and match the exact executable
+used by staging, SHA-256
+`b6cc1b4279e0a319745af08b2ae50cc5a3b7021dc7fda78ba35da6329f9e1056`.
+Public Windows ZIP SHA-256 is
+`dd926d4de44730704cf411e71c0c8f2e6caa34d36c13b9db8124562655908768`;
+Skill ZIP is `df8ac3288570e2f7f0ddb8aab39cce65dcadaa022fba48ccbbbf897c4e461de0`.
+Both matched the public manifest and GitHub attestations restricted to this tag,
+source and release workflow. All eleven global Skill files match both the verified
+release ZIP and exact-tag helper-installed source. Old binaries, Skill and
+installation metadata were backed up under `~/.amail/backups`; credentials,
+configuration, YOLO and user mail were untouched. No daemon was running during
+replacement; local validation used offline version calls only. Installation
+metadata records the same tagged source for build, acceptance and publication.
+
 ## Missing-only semantic resumption — production delivered
 
 Progress recorded on 2026-10-26 (Asia/Singapore). This is a backend-only
@@ -60,7 +96,8 @@ permanent mailboxes because `Store::set_lease` requires a nonempty generation,
 whereas permanent addresses intentionally use an empty generation. The semantic
 fixture uses the supported existing-active `address add` path instead; it calls the
 same non-preemptible server claim without registering another address or changing
-its route. This backend correction does not claim to fix or re-release that CLI.
+its route. That backend correction did not change the CLI; the subsequent v0.3.2
+release above fixes and verifies the explicit native acquire path.
 
 The original v0.3.1 release and local installation below remain historical package
 evidence; the backend epoch above supersedes their serving API/maintenance pins.
