@@ -419,6 +419,7 @@ jobs:
       full_infra: ${{ steps.plan.outputs.full_infra }}
       tests: ${{ steps.plan.outputs.tests }}
       python: ${{ steps.plan.outputs.python }}
+      native_static: ${{ steps.plan.outputs.native_static }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -599,6 +600,19 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 30
+
+  native-static:
+    name: Native patch source formatting
+    needs: changes
+    if: needs.changes.outputs.native_static == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check the focused native patch formatting without compiling
+        run: cargo fmt -p amail -- --check
 
   cli:
     name: CLI (${{ matrix.os }})

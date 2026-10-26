@@ -212,12 +212,12 @@ impl Store {
         generation: &str,
         mode: &str,
     ) -> Result<()> {
+        // The server's generation is opaque; permanent mailboxes use an empty string.
         ensure!(
             !address.is_empty()
                 && address.len() <= 254
                 && address.is_ascii()
                 && !lease_token.is_empty()
-                && !generation.is_empty()
                 && matches!(mode, "read" | "write"),
             "invalid mailbox lease"
         );
@@ -801,6 +801,69 @@ mod tests {
         store.deactivate_at("a", 1902).unwrap();
         store.release_at("a", "user", 1903).unwrap();
         store.activate_at("b", "user", 1904).unwrap();
+    }
+
+    #[test]
+    fn permanent_mailbox_lease_preserves_opaque_generation_and_session_lifetime() {
+        for (address, generation) in [
+            ("permanent@custom.example", ""),
+            ("temporary@custom.example", "temporary-generation"),
+        ] {
+            let mut store = store();
+            let user = store.activate_at("a", "user", 100).unwrap();
+            assert!(store
+                .set_lease(&user.id, address, "lease-a", generation, "read")
+                .is_err());
+            store
+                .set_cloud_session(&user.id, "cloud-a", "session-a", 1900)
+                .unwrap();
+            for mode in ["read", "write"] {
+                store
+                    .set_lease(&user.id, address, "lease-a", generation, mode)
+                    .unwrap();
+                store
+                    .set_lease(&user.id, address, "lease-a", generation, mode)
+                    .unwrap();
+                assert_eq!(store.conn.changes(), 0);
+                let lease = store.lease(&user.id, address).unwrap().unwrap();
+                assert_eq!(lease["generation"], generation);
+                assert_eq!(lease["mode"], mode);
+                assert_eq!(lease["lease_token"], "lease-a");
+                assert!(store.lease("another-profile", address).unwrap().is_none());
+            }
+            store.remove_lease(&user.id, address).unwrap();
+            assert!(store.lease(&user.id, address).unwrap().is_none());
+            store
+                .set_lease(&user.id, address, "lease-b", generation, "write")
+                .unwrap();
+            store
+                .set_cloud_session(&user.id, "cloud-a", "session-b", 2000)
+                .unwrap();
+            assert!(store.lease(&user.id, address).unwrap().is_none());
+            store
+                .set_lease(&user.id, address, "lease-c", generation, "write")
+                .unwrap();
+            store.release_at("a", "user", 101).unwrap();
+            assert!(store.lease(&user.id, address).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn permanent_mailbox_lease_rejects_invalid_capability_without_mutating_lease() {
+        let mut store = store();
+        let user = store.activate_at("a", "user", 100).unwrap();
+        let address = "permanent@custom.example";
+        store
+            .set_cloud_session(&user.id, "cloud-a", "session-a", 1900)
+            .unwrap();
+        store
+            .set_lease(&user.id, address, "lease-a", "", "read")
+            .unwrap();
+        let original = store.lease(&user.id, address).unwrap();
+        for (token, mode) in [("", "write"), ("lease-b", "invalid"), ("", "")] {
+            assert!(store.set_lease(&user.id, address, token, "", mode).is_err());
+            assert_eq!(store.lease(&user.id, address).unwrap(), original);
+        }
     }
 
     #[test]

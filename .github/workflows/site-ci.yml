@@ -35,6 +35,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The reviewed native-only patch verifies its versioned public output
+          # once in the tagged release, not in repeated candidate site builds.
+          if [[ "$WORKFLOW_REF" == */.github/workflows/site-ci.yml@* ]] &&
+             { [ "$EVENT" = push ] || [ "$EVENT" = pull_request ]; } && python - <<'PY'
+          import os
+          import sys
+          sys.path.insert(0, 'infra/release')
+          import native_patch
+          try:
+              matched = native_patch.applies(os.environ['GITHUB_SHA'])
+          except ValueError:
+              matched = False
+          raise SystemExit(0 if matched else 1)
+          PY
+          then
+            echo 'site=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Reusable calls use their caller's github context and must produce
           # fresh acceptance, including when that caller is a PR workflow.
           if [[ "$WORKFLOW_REF" != */.github/workflows/site-ci.yml@* ]] ||

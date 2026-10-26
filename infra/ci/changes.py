@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tomllib
 from typing import Any
 
@@ -28,6 +29,7 @@ class Plan:
     full_infra: bool = False
     tests: tuple[str, ...] = ()
     python: tuple[str, ...] = ()
+    native_static: bool = False
 
 
 def classify(paths: list[str], *, event: str, target: str = "", confirm: str = "") -> Plan:
@@ -78,8 +80,10 @@ def accepted_base(head: str) -> str | None:
         return None
     value = json.loads(record.read_text(encoding="utf-8"))
     version = tomllib.loads((ROOT / "crates/amail/Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
-    if value.get("schema") != "amail-accepted-candidate/v1" or value.get("version") != version:
+    if value.get("schema") != "amail-accepted-candidate/v1":
         raise ValueError("accepted_checkpoint_invalid")
+    if value.get("version") != version:
+        return None
     source = accepted.producer(value["source_run"])
     if source["source_sha"] != value.get("source_sha"):
         raise ValueError("accepted_checkpoint_invalid")
@@ -117,7 +121,7 @@ def backend_base(head: str) -> str | None:
 
 
 def emit(plan: Plan) -> None:
-    values = {name: str(getattr(plan, name)).lower() for name in ("cli", "worker", "site", "infra", "full_infra")}
+    values = {name: str(getattr(plan, name)).lower() for name in ("cli", "worker", "site", "infra", "full_infra", "native_static")}
     values.update(tests=json.dumps(plan.tests), python=json.dumps(plan.python))
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write("".join(f"{key}={value}\n" for key, value in values.items()))
@@ -134,6 +138,17 @@ def focused() -> None:
         subprocess.run(["python", "-m", "unittest", *modules, "-v"], cwd=ROOT, check=True)
 
 
+def native_scope(head: str) -> bool:
+    sys.path.insert(0, str(ROOT / "infra/release"))
+    import native_patch
+    try:
+        return native_patch.applies(head)
+    except ValueError:
+        # Later source work at the same package version gets normal coverage,
+        # never an error or a waiver from the historical focused release profile.
+        return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "test"))
@@ -144,8 +159,14 @@ def main() -> None:
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
     kind, head = os.environ["GITHUB_EVENT_NAME"], os.environ["GITHUB_SHA"]
     paths = [] if kind == "workflow_dispatch" else delta(event, kind, head)
-    base = (backend_base(head) or accepted_base(head)) if kind != "workflow_dispatch" else None
-    if base:
+    focused_native: bool = kind != "workflow_dispatch" and native_scope(head)
+    base = (backend_base(head) or accepted_base(head)) if kind != "workflow_dispatch" and not focused_native else None
+    if focused_native:
+        affected: Plan = classify(paths, event=kind)
+        # The tagged workflow builds all five changed binaries once, runs only
+        # the reviewed lease tests, then gates publication on its native journey.
+        plan = Plan(False, False, False, affected.infra, False, affected.tests, affected.python, True)
+    elif base:
         # Exclude the accepted changes when their PR is later merged to main.
         changed = set(git("diff", "--name-only", base, head).splitlines())
         paths = [path for path in paths if path in changed]
