@@ -30,6 +30,8 @@ jobs:
       source_sha: ${{ steps.version.outputs.source_sha }}
       reuse_candidate: ${{ steps.candidate.outputs.reuse_candidate }}
       build_matrix: ${{ steps.candidate.outputs.build_matrix }}
+      focused_native: ${{ steps.patch.outputs.focused_native }}
+      runtime_tag: ${{ steps.patch.outputs.runtime_tag }}
     permissions:
       contents: read
       actions: read
@@ -73,6 +75,9 @@ jobs:
           esac
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           printf 'recover=%s\npublish=%s\nsource_sha=%s\n' "$recover" "$publish" "$source_sha" >> "$GITHUB_OUTPUT"
+      - name: Admit the reviewed native-only patch and compatible deployed runtime
+        id: patch
+        run: python infra/release/native_patch.py
       - name: Select accepted native reuse and only previously unbuilt platforms
         id: candidate
         if: steps.version.outputs.recover != 'true'
@@ -107,13 +112,16 @@ jobs:
           cache-workspace-crates: false
           cache-on-failure: true
       - name: Test CLI on release platform
-        if: needs.preflight.outputs.reuse_candidate != 'true'
+        if: needs.preflight.outputs.reuse_candidate != 'true' && needs.preflight.outputs.focused_native != 'true'
         run: cargo test -p amail --locked --all-targets
+      - name: Test only the changed permanent mailbox lease contract
+        if: needs.preflight.outputs.focused_native == 'true'
+        run: cargo test -p amail --locked --release --bin amail profiles::tests::permanent_mailbox_lease_
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Exercise the native daemon/profile journey on the release platform
-        if: needs.preflight.outputs.reuse_candidate != 'true'
+        if: needs.preflight.outputs.reuse_candidate != 'true' && needs.preflight.outputs.focused_native != 'true'
         shell: bash
         run: python scripts/v030_profile_journey.py --binary "target/debug/amail${{ runner.os == 'Windows' && '.exe' || '' }}"
       - name: Build release binary
@@ -147,6 +155,59 @@ jobs:
           path: amail-${{ needs.preflight.outputs.tag }}-${{ matrix.target }}.*
           if-no-files-found: error
           retention-days: 14
+
+  permanent-acquire:
+    name: Verify permanent mailbox acquire on staging
+    needs: [preflight, build]
+    if: >-
+      always() && !cancelled() && needs.preflight.result == 'success' &&
+      needs.preflight.outputs.focused_native == 'true' &&
+      needs.preflight.outputs.publish == 'true' &&
+      needs.preflight.outputs.recover != 'true' && needs.build.result == 'success'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    environment: staging
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Download only this run's newly built Windows executable archive
+        uses: actions/download-artifact@v4
+        with:
+          name: amail-x86_64-pc-windows-msvc
+          path: .temp/staging-cli
+      - name: Select the same-run candidate and bind its executable hash
+        run: |
+          $archive = Join-Path $env:GITHUB_WORKSPACE '.temp/staging-cli/amail-v0.3.2-x86_64-pc-windows-msvc.zip'
+          Expand-Archive -LiteralPath $archive -DestinationPath .temp/staging-cli
+          $binary = Join-Path $env:GITHUB_WORKSPACE '.temp/staging-cli/amail.exe'
+          "AMAIL_STAGING_TEST_BINARY=$binary" >> $env:GITHUB_ENV
+          "AMAIL_STAGING_TEST_BINARY_SHA256=$((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant())" >> $env:GITHUB_ENV
+      - name: Install only the existing native browser credential adapters
+        run: python -m pip install pywin32==312 websocket-client==1.9.2
+      - name: Exercise native acquire repeat upgrade release and reacquire only
+        env:
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          AMAIL_STAGING_PERMANENT_ACQUIRE_CONFIRM: RUN_STAGING_PERMANENT_ACQUIRE
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python infra/tests/staging_permanent_acquire_e2e.py
+      - name: Retain acceptance only after the native journey and cleanup succeed
+        uses: actions/upload-artifact@v4
+        with:
+          name: permanent-acquire-acceptance-${{ github.run_id }}
+          path: .temp/permanent-acquire-acceptance.json
+          if-no-files-found: error
+          retention-days: 30
 
   reuse-candidate:
     name: Package the three already-tested native executables
@@ -295,7 +356,7 @@ jobs:
     timeout-minutes: 10
     environment: production
     env:
-      AMAIL_RELEASE_VERSION: ${{ needs.preflight.outputs.tag }}
+      AMAIL_RELEASE_VERSION: ${{ needs.preflight.outputs.runtime_tag }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PYTHONDONTWRITEBYTECODE: '1'
@@ -309,8 +370,8 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    if: always() && !cancelled() && needs.preflight.outputs.publish == 'true' && needs.preflight.result == 'success' && needs.send-release-gate.result == 'success' && (needs.assemble.result == 'success' || needs.recover-bundle.result == 'success')
-    needs: [preflight, assemble, recover-bundle, send-release-gate]
+    if: always() && !cancelled() && needs.preflight.outputs.publish == 'true' && needs.preflight.result == 'success' && needs.send-release-gate.result == 'success' && (needs.assemble.result == 'success' || needs.recover-bundle.result == 'success') && (needs.preflight.outputs.focused_native != 'true' || needs.permanent-acquire.result == 'success' || needs.recover-bundle.result == 'success')
+    needs: [preflight, assemble, recover-bundle, send-release-gate, permanent-acquire]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
