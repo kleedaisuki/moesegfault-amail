@@ -44,6 +44,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ "$EVENT" = pull_request ] && PYTHONPATH=infra/ci python -c 'import os, changes; raise SystemExit(0 if changes.native_scope(os.environ["GITHUB_SHA"]) else 1)'; then
+            # The scoped native patch changes release coordinates, not layout.
+            # Its published output is checked once by the tagged release.
+            echo 'browser=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$EVENT" != pull_request ] || [ "$ACTION" != synchronize ] || ! [[ "$BEFORE" =~ ^[0-9a-f]{40}$ ]]; then
             echo 'browser=true' >> "$GITHUB_OUTPUT"
             exit 0
