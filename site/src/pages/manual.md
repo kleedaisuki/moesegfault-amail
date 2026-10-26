@@ -22,7 +22,7 @@ amail 是一个面向 AI Agent 的命令行邮件客户端。你在浏览器里�
 
 ## 订阅与用量
 
-v0.3.1 沿用 Free、Lite、Plus 三档；同一账户的所有 Profile、普通地址与临时地址共享发信和存储资源池，临时地址有独立且更高的数量额度。收信不按封计费，不设置普通邮箱留存邮件条数上限，语义搜索不按次数收费。超额按实际用量结算，必须先由用户在网页授权并设置预算；Agent 不能自行提高预算。临时邮箱仍受六小时的绝对存续上限约束，付费不延长它。
+v0.3.2 沿用 Free、Lite、Plus 三档；同一账户的所有 Profile、普通地址与临时地址共享发信和存储资源池，临时地址有独立且更高的数量额度。收信不按封计费，不设置普通邮箱留存邮件条数上限，语义搜索不按次数收费。超额按实际用量结算，必须先由用户在网页授权并设置预算；Agent 不能自行提高预算。临时邮箱仍受六小时的绝对存续上限约束，付费不延长它。
 
 社区固定美元价格：Free $0、Lite $1.50／月、Plus $4.50／月；超额发信 $0.001／收件人、储存 $0.15／GB·月、地址 $0.50／个·月。储存按十进制 GB，储存和地址超额按实际占用时间累计。金额使用整数微美元（USD micros，1 美元 = 1,000,000 微美元），不是实时汇率换算。历史人民币账目保留原币种，与新美元账目分开；旧人民币预算不能授权美元支出，需要重新在网页确认。
 
@@ -34,7 +34,7 @@ Agent 可发起订阅授权并打开网页，但必须让你本人完成确认�
 
 ## 从小入口探索完整工作流
 
-以下工作流在 v0.3.1 中继续适用。页面顶部的发布状态、实际安装版本与服务端策略分别决定安装来源、命令可用性和操作授权；文档本身不开放发送。先检查 `amail --version` 和命令帮助，再用 `amail discover` 探索当前版本支持的工作流。
+以下工作流在 v0.3.2 中继续适用。页面顶部的发布状态、实际安装版本与服务端策略分别决定安装来源、命令可用性和操作授权；文档本身不开放发送。先检查 `amail --version` 和命令帮助，再用 `amail discover` 探索当前版本支持的工作流。
 
 渐进式披露（Progressive Disclosure）不是删掉复杂能力，而是让 Agent 按任务逐步进入可查询的空间：
 
@@ -87,11 +87,11 @@ amail events --kind bounced --since 2026-10-03T00:00:00Z --limit 20
 
 | 你的设备 | 选择的安装包 |
 | --- | --- |
-| Linux，Intel／AMD 64 位（x86-64） | `amail-v0.3.1-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux，ARM 64 位（AArch64） | `amail-v0.3.1-aarch64-unknown-linux-gnu.tar.gz` |
-| Windows，Intel／AMD 64 位（x86-64） | `amail-v0.3.1-x86_64-pc-windows-msvc.zip` |
-| macOS，Apple 芯片（M 系列） | `amail-v0.3.1-aarch64-apple-darwin.tar.gz` |
-| macOS，Intel 芯片 | `amail-v0.3.1-x86_64-apple-darwin.tar.gz` |
+| Linux，Intel／AMD 64 位（x86-64） | `amail-v0.3.2-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux，ARM 64 位（AArch64） | `amail-v0.3.2-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows，Intel／AMD 64 位（x86-64） | `amail-v0.3.2-x86_64-pc-windows-msvc.zip` |
+| macOS，Apple 芯片（M 系列） | `amail-v0.3.2-aarch64-apple-darwin.tar.gz` |
+| macOS，Intel 芯片 | `amail-v0.3.2-x86_64-apple-darwin.tar.gz` |
 
 这些是**原生**安装包；目前没有 Windows ARM 原生包，也没有 Linux musl 包。Linux 包使用 GNU libc。若不确定 CPU 类型，Linux/macOS 可运行 `uname -m`（`x86_64` 或 `aarch64`／`arm64`）；Windows 在“设置 → 系统 → 系统信息”查看系统类型。安装包和校验文件必须来自**同一个** GitHub Release，不要从聊天消息复制别人提供的散列值。
 
@@ -100,7 +100,7 @@ amail events --kind bounced --since 2026-10-03T00:00:00Z --limit 20
 在下载目录的终端运行；若是 ARM 64 位，将第一行换成表中的 ARM 文件名：
 
 ```sh
-archive=amail-v0.3.1-x86_64-unknown-linux-gnu.tar.gz
+archive=amail-v0.3.2-x86_64-unknown-linux-gnu.tar.gz
 awk -v file="$archive" '$2 == file { print }' SHA256SUMS | sha256sum --check -
 ```
 
@@ -120,7 +120,7 @@ amail --version
 Apple 芯片使用下列文件名；Intel Mac 将第一行换成表中的 Intel 文件名：
 
 ```sh
-archive=amail-v0.3.1-aarch64-apple-darwin.tar.gz
+archive=amail-v0.3.2-aarch64-apple-darwin.tar.gz
 awk -v file="$archive" '$2 == file { print }' SHA256SUMS | shasum -a 256 --check -
 ```
 
@@ -141,7 +141,7 @@ amail --version
 
 ```powershell
 & {
-$archive = 'amail-v0.3.1-x86_64-pc-windows-msvc.zip'
+$archive = 'amail-v0.3.2-x86_64-pc-windows-msvc.zip'
 $checksumLines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith("  $archive", [StringComparison]::Ordinal) })
 if ($checksumLines.Count -ne 1) { throw 'SHA256SUMS 中没有唯一的安装包记录' }
 $expected = ($checksumLines[0] -split '\s+')[0]
@@ -160,7 +160,7 @@ amail --version
 
 上面的 SHA-256 校验不通过时，`throw` 会中止该段，不要继续解压。用户 `PATH` 修改会对新开的终端生效；当前终端也已临时加入路径。若 PowerShell 受设备策略限制，请让设备管理员协助，而不是关闭安全策略。
 
-Agent Skill 的文件名为 `amail-agent-skill-v0.3.1.zip`；它应与 CLI 安装包来自同一个 GitHub Release。解压前，按上面的系统校验步骤，将文件名换成 Skill ZIP，核对 `SHA256SUMS` 中对应的唯一记录。Agent 若支持安装 Skill，可将 ZIP 中的 `amail/` 文件夹及其引用文档一并放入其 Skill 目录；具体目录以该 Agent 的安装说明为准。这不是 CLI 的运行依赖，也不要用它替代 CLI 安装包校验。准备好之后，让 Agent **在你的设备上**启动登录：
+Agent Skill 的文件名为 `amail-agent-skill-v0.3.2.zip`；它应与 CLI 安装包来自同一个 GitHub Release。解压前，按上面的系统校验步骤，将文件名换成 Skill ZIP，核对 `SHA256SUMS` 中对应的唯一记录。Agent 若支持安装 Skill，可将 ZIP 中的 `amail/` 文件夹及其引用文档一并放入其 Skill 目录；具体目录以该 Agent 的安装说明为准。这不是 CLI 的运行依赖，也不要用它替代 CLI 安装包校验。准备好之后，让 Agent **在你的设备上**启动登录：
 
 ```sh
 amail login
@@ -177,7 +177,7 @@ amail auth logout
 
 ## 守护进程与终端 Profile
 
-v0.3.1 的 CLI 是薄客户端：未发现本机守护进程（daemon）时会自动启动一个，由它集中处理网络请求、邮件计算与并发资源。同一终端先后启动的多个 `amail` 进程共享当前 Profile，不需要每条命令重新登录。
+v0.3.2 的 CLI 是薄客户端：未发现本机守护进程（daemon）时会自动启动一个，由它集中处理网络请求、邮件计算与并发资源。同一终端先后启动的多个 `amail` 进程共享当前 Profile，不需要每条命令重新登录。
 
 默认配置与 SQLite 数据库位于 `~/.amail`，Windows 为 `%USERPROFILE%\.amail`；安装包中的二进制放在其 `bin` 子目录。可用 `AMAIL_HOME` 显式选择另一个应用目录；不同目录不是绕过云端占用的办法。`config.toml` 只需填写要覆盖的设置，例如下面列出的安全默认值：
 
@@ -387,7 +387,7 @@ amail --human search --title "release"
 
 ## 隐私与边界
 
-语义检索与诊断遥测是独立的数据流。v0.3.1 默认关闭语义检索，升级也不会替用户保留旧版的自动处理授权。只有 `user` Profile 可启用或关闭；默认都需要人类网页批准，显式配置的 YOLO 可跳过普通操作确认。此开关影响账户内所有 Profile，Agent 不应自行修改 YOLO。
+语义检索与诊断遥测是独立的数据流。v0.3.2 默认关闭语义检索，升级也不会替用户保留旧版的自动处理授权。只有 `user` Profile 可启用或关闭；默认都需要人类网页批准，显式配置的 YOLO 可跳过普通操作确认。此开关影响账户内所有 Profile，Agent 不应自行修改 YOLO。
 
 启用后，后台将全部符合条件的保留邮件及后续新邮件的主题与正文提取文本拼接，取开头**最多 12,000 个 UTF-8 字节**经 OpenRouter 交给 Voyage 4，生成邮件嵌入向量（embeddings）。原始 ZIP 和附件文件不作为这次请求的输入；使用 `--semantic` 时，检索词也会发送给该服务。若该语义检索有后续页面，服务端会把检索词和第一页查询向量保存在本账号专属任务中，最长 **24 小时**；后续页面复用向量，不再请求服务商。没有后续页面的快速检索不为游标保留这一副本。
 
