@@ -35,6 +35,9 @@ STAGING_EPOCHS = {
     "40210732820": {"source": "2ade1c0ce8d994acd4e8401828a75a41e22f69a1", "conclusion": "failure",
         "job": "Semantic reuse staging admission", "api": "fb03a457-f771-41fe-a041-86b2491d1a6a"},
 }
+PRODUCTION_PARTIAL_RUN = "40272159207"
+PRODUCTION_PARTIAL_SOURCE = "9109b803e17719f940e1fc5404478411ee53aa22"
+PRODUCTION_PARTIAL_API = "28bc6307-2c85-4a23-8b2c-77563197729a"
 FAILURES = frozenset({"semantic_reuse_policy_changed", "semantic_reuse_adapter_unverified",
     "semantic_reuse_migration_unreviewed", "semantic_reuse_migration_unverified",
     "semantic_reuse_retained_graph_changed", "semantic_reuse_secrets_missing",
@@ -85,6 +88,19 @@ def schema(database: DatabaseClient, realm: str, count: int) -> None:
     verify_schema(lambda sql: database.query(sql)["results"], contract)
 
 
+def capture_production(role: str, version: str) -> None:
+    """Retain observed queue identities when normalizing immutable bindings."""
+    filename = "wrangler.toml" if role == "api" else "wrangler-maintenance.toml"
+    reviewed = tomllib.loads((ROOT / "crates/mail-worker" / filename).read_text(encoding="utf-8"))
+    bindings = (expected_bindings("queue-api", QUEUES["production"][0], realm="production") if role == "api"
+                else previous.prior.retained.maintenance.expected_bindings("production", QUEUES["production"][0], active=True))
+    provider = previous.FreshProvider(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"])
+    previous.prior.readback.complete(provider, f"accounts/{provider.account}/queues", "queue_id", 100)
+    previous.prior.readback.capture_off(provider, "amail-mail" + ("-maintenance" if role == "maintenance" else ""), version,
+        expected_bindings=bindings, reviewed=reviewed["observability"],
+        record=lambda state, **facts: previous.prior.journal(role + "_capture", state, **facts))
+
+
 def replace(realm: str, role: str, *, ingress_only: bool = False) -> str:
     require_artifact("mail_api")
     filename = "wrangler.toml" if role == "api" else "wrangler-maintenance.toml"
@@ -119,16 +135,43 @@ def replace(realm: str, role: str, *, ingress_only: bool = False) -> str:
         else:
             previous.prior.retained.maintenance.verify(realm, "active", account, token, version, QUEUES[realm][0])
         return version
-    data = tomllib.loads(config.read_text(encoding="utf-8"))
-    reviewed = data if realm == "production" else data["env"]["staging"]
-    bindings = (expected_bindings("queue-api", QUEUES[realm][0], realm=realm) if role == "api"
-                else previous.prior.retained.maintenance.expected_bindings(realm, QUEUES[realm][0], active=True))
-    provider = previous.FreshProvider(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"])
-    previous.prior.readback.capture_off(provider, "amail-mail" + ("-maintenance" if role == "maintenance" else "")
-                                       + ("-staging" if realm == "staging" else ""), version,
-        expected_bindings=bindings, reviewed=reviewed["observability"],
-        record=lambda state, **facts: previous.prior.journal(role + "_capture", state, **facts))
+    capture_production(role, version)
     return version
+
+
+def production_partial() -> dict[str, Any]:
+    """Admit the fixed owned migration/API boundary, never an arbitrary replay."""
+    import sys
+    sys.path.insert(0, str(ROOT / "infra/ci"))
+    import mail_backend_artifact as artifact
+    if os.getenv("AMAIL_PRODUCTION_COMPLETED_RUN") != PRODUCTION_PARTIAL_RUN:
+        raise ValueError("semantic_reuse_partial_unreviewed")
+    metadata = artifact.accepted.github(f"runs/{PRODUCTION_PARTIAL_RUN}")
+    expected = {"id": int(PRODUCTION_PARTIAL_RUN), "head_sha": PRODUCTION_PARTIAL_SOURCE,
+        "status": "completed", "conclusion": "failure", "event": "workflow_dispatch",
+        "head_branch": "main", "path": ".github/workflows/ci.yml", "run_attempt": 1}
+    if (any(metadata.get(key) != value for key, value in expected.items())
+            or metadata.get("repository", {}).get("full_name") != artifact.accepted.REPO):
+        raise ValueError("semantic_reuse_partial_unreviewed")
+    artifact.accepted.runtime_closure(PRODUCTION_PARTIAL_SOURCE, os.environ["GITHUB_SHA"])
+    folder = ROOT / ".temp/ci/semantic-reuse-production-partial"
+    checkpoint = artifact.metadata(folder / "semantic-reuse-predecessor.json")
+    if (checkpoint.get("realm") != "production" or checkpoint.get("pins") != PRODUCTION
+            or checkpoint.get("run_id") != PRODUCTION_PARTIAL_RUN
+            or checkpoint.get("source_sha") != PRODUCTION_PARTIAL_SOURCE):
+        raise ValueError("semantic_reuse_partial_unreviewed")
+    path = folder / "production-upgrade-partial.jsonl"
+    if path.is_symlink() or path.stat().st_size > 8192:
+        raise ValueError("semantic_reuse_partial_unreviewed")
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    identity = {"schema": "production-upgrade-partial/v1", "source_sha": PRODUCTION_PARTIAL_SOURCE,
+                "run_id": PRODUCTION_PARTIAL_RUN, "run_attempt": 1}
+    if rows != [{**identity, "phase": "migration", "state": "intent"},
+                {**identity, "phase": "migration", "state": "observed"},
+                {**identity, "phase": "api", "state": "intent"},
+                {**identity, "phase": "api", "state": "version_captured", "version": PRODUCTION_PARTIAL_API}]:
+        raise ValueError("semantic_reuse_partial_unreviewed")
+    return checkpoint
 
 
 def run(realm: str, *, resume: bool = False) -> None:
@@ -138,13 +181,24 @@ def run(realm: str, *, resume: bool = False) -> None:
     mail_backend_artifact.context(realm)
     require_artifact("mail_api")
     pins = dict(STAGING if realm == "staging" else PRODUCTION)
+    partial: dict[str, Any] | None = None
     if resume:
-        if realm != "staging" or not mail_backend_artifact.ADMISSION.is_file():
+        if not mail_backend_artifact.ADMISSION.is_file():
             raise ValueError("semantic_reuse_partial_unreviewed")
-        pins["amail-mail-staging"] = "75bbcb55-e6f5-42e3-b65b-acb6dbc990c9"
+        if realm == "production":
+            partial = production_partial()
+            pins["amail-mail"] = PRODUCTION_PARTIAL_API
+        else:
+            pins["amail-mail-staging"] = "75bbcb55-e6f5-42e3-b65b-acb6dbc990c9"
     before, policy = observe(realm, pins)
+    if partial is not None and (previous.prior.digest(policy) != partial.get("policy_fingerprint")
+            or previous.prior.digest(before["retained"]) != partial.get("retained_fingerprint")):
+        raise ValueError("semantic_reuse_retained_graph_changed")
     database = DatabaseClient(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"], realm)
     schema(database, realm, 19 if resume else 18)
+    if partial is not None:
+        # observe() already checked immutable/effective API capture read-only.
+        previous.prior.journal("api_capture", "read_only_verified", version=PRODUCTION_PARTIAL_API)
     checkpoint = {"realm": realm, "source_sha": os.environ["GITHUB_SHA"],
                   "run_id": os.environ["GITHUB_RUN_ID"], "pins": pins,
                   "policy_fingerprint": previous.prior.digest(policy),
@@ -183,7 +237,7 @@ def run(realm: str, *, resume: bool = False) -> None:
              "graph": actual["graph"], "cron_changed": False,
              "vectors": "retained; compatible Voyage vectors reused independently of consent generation"}
     if resume:
-        value.update(original_partial_run=mail_backend_artifact.PARTIAL_RUN,
+        value.update(original_partial_run=PRODUCTION_PARTIAL_RUN if realm == "production" else mail_backend_artifact.PARTIAL_RUN,
                      original_build_source=mail_backend_artifact.PARTIAL_SOURCE)
     with (ROOT / f".temp/semantic-reuse-{realm}.json").open("x", encoding="utf-8") as file:
         json.dump(value, file, sort_keys=True)
