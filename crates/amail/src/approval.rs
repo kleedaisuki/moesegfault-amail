@@ -326,7 +326,9 @@ fn respond(status: StatusCode, body: String) -> Response {
             ("Pragma", "no-cache"),
             ("X-Content-Type-Options", "nosniff"),
             ("X-Frame-Options", "DENY"),
-            ("Referrer-Policy", "no-referrer"),
+            // Native form POSTs under no-referrer send Origin: null, which
+            // contradicts the exact-origin check. Still suppress cross-origin referrers.
+            ("Referrer-Policy", "same-origin"),
             (
                 "Content-Security-Policy",
                 "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
@@ -399,6 +401,8 @@ mod tests {
     fn only_exact_action_nonce_and_same_origin_allow_a_decision() {
         let mut req = request("POST", "nonce=action-nonce&decision=approve");
         assert_eq!(evaluate(&req, &challenge()), Action::Approve);
+        req.origin = Some("null".to_owned());
+        assert_eq!(evaluate(&req, &challenge()), Action::Reject);
         req.origin = Some("http://127.0.0.1:43210.attacker.example".to_owned());
         assert_eq!(evaluate(&req, &challenge()), Action::Reject);
         req.origin = None;
@@ -495,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_journey_views_then_denies_without_running_the_operation() {
+    fn http_journey_views_then_denies_without_running_the_operation() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -529,6 +533,9 @@ mod tests {
         assert!(response
             .to_ascii_lowercase()
             .contains("cache-control: no-store"));
+        assert!(response
+            .to_ascii_lowercase()
+            .contains("referrer-policy: same-origin"));
         assert!(receiver.try_recv().is_err());
         let body = "nonce=action-nonce&decision=deny";
         let response = exchange(&format!(
