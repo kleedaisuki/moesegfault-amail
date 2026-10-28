@@ -4,7 +4,46 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
-## v0.3.2 permanent mailbox acquire — published and installed
+## v0.3.3 native browser approval — published and installed
+
+Formal [v0.3.3](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.3.3)
+completed **SUCCESS** in tagged run
+[40658507490](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/40658507490),
+source `cf70964a907cde48902a4c262a70e143fefe4519`, published on 2026-10-28 at
+16:49:07 Asia/Singapore (08:49:07 UTC). Release source
+[PR #119](https://github.com/kleedaisuki/moesegfault-amail/pull/119) passed
+formatting, harness syntax, workflow validation and eleven focused infrastructure
+tests. The response-header correction preserves exact loopback Origin on native
+forms without allowing null/cross-origin requests or changing per-operation consent.
+
+All five newly built native platforms passed exactly the **seven approval tests**;
+the other 116 CLI tests were filtered out. No backend deployment, migration,
+Identity login, mail fixture, semantic indexing or provider test ran. The existing
+read-only production release gate passed against the unchanged v0.3.1 backend.
+The same-run Windows binary passed actual Chromium native-form Approve and Deny,
+GET-without-execution, null/cross-origin rejection without consuming the decision,
+denied-deactivation state preservation and isolated-daemon cleanup. The synthetic
+home used no credentials, YOLO off, telemetry off and `.example.test` service
+origins. Acceptance receipt/screenshots are artifact `12803551120`; its executable
+hash matches the published archive. Verified release bundle is `12802648325`.
+Public asset verification and the versioned site build/check/smoke also passed.
+
+Both local CLI entrypoints now report `amail 0.3.3`, SHA-256
+`93a27544455628a7710a81ac8794ee34ef3e94cf3967a80514fb358a837abe55`.
+Public Windows ZIP SHA-256 is
+`19766180162b06a1c1991364945505f01ae77c21ea2f6b96b30d0d17ea8f5097`;
+Skill ZIP is `4ab16f319af6ffc3a332cae5e229089ca9870d90028c2ce7484ed5bbbca79b5a`.
+Both archives matched the public manifest and GitHub attestations restricted to
+this tag, source and release workflow, with hosted-runner enforcement. All eleven
+installed global Skill files already matched this release and were left unchanged.
+The old daemon stopped gracefully; both old executables and installation metadata
+were backed up under `~/.amail/backups` before replacement. Offline installed-version
+checks passed, and credentials, profiles, telemetry database and configuration
+were byte-for-byte unchanged. Installation metadata records the same tagged
+build/acceptance/publication run. The next normal invocation starts the new daemon;
+no real-account authorization or mail operation was automated for installation.
+
+## v0.3.2 permanent mailbox acquire — previous delivery
 
 Formal [v0.3.2](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.3.2)
 completed **SUCCESS** in the single tagged run
@@ -26,7 +65,7 @@ The full verified release bundle is `12629637957`. All six public archive assets
 checksums, attestations and the versioned published-site build/check/smoke passed.
 The compatible production backend remains the v0.3.1 epoch below.
 
-Both local CLI entrypoints now report `amail 0.3.2` and match the exact executable
+At that delivery, both local CLI entrypoints reported `amail 0.3.2` and matched the exact executable
 used by staging, SHA-256
 `b6cc1b4279e0a319745af08b2ae50cc5a3b7021dc7fda78ba35da6329f9e1056`.
 Public Windows ZIP SHA-256 is

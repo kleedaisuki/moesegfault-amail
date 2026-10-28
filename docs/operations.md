@@ -31,13 +31,17 @@ completion verified its API/schema read-only and deployed only maintenance,
 without migration/API replay. Exact evidence is in [validation](validation.md).
 The prior v0.3.1 backend epoch `40199972693` and
 [original delivery](v0.3.1/production-delivery.md) are historical. Current CLI
-release **v0.3.2**, run `40274291110`, fixes permanent-mailbox acquisition without
-changing this backend. Five newly built platforms passed only the two new lease
-tests; same-run Windows native acquire/release and published assets/site passed.
-Both local CLI entrypoints and the eleven-file global Skill are upgraded from
-verified public assets, with previous files backed up privately. Exact source,
-receipts and hashes are in [validation](validation.md). Credentials/configuration/
-YOLO remain untouched. These promotion/completion controllers
+release **v0.3.3**, run `40658507490`, fixes native browser operation approval
+without changing this backend or the v0.3.2 permanent-mailbox correction. Five
+newly built platforms passed only the seven approval tests; the same-run Windows
+executable passed actual browser Approve/Deny and null/cross-origin rejection.
+Published assets/site passed. Both local CLI entrypoints are upgraded from
+attested public assets and match the browser-tested executable. The eleven global
+Skill files already match the v0.3.3 bundle and remain unchanged. The old daemon
+stopped gracefully; old executables/metadata were backed up privately, and the
+next normal invocation starts the new daemon. Exact source, receipts and hashes
+are in [validation](validation.md). Credentials/configuration/profiles/YOLO remain
+untouched. These promotion/completion controllers
 are now historical: future writers must explicitly admit the new epoch rather
 than replay old pins. Names or stale snapshots do not establish ownership.
 Original production D1 `ad06f7f3-8897-4150-b9a9-7a46a8e55b30` and R2

@@ -24,18 +24,20 @@ The local operation-approval form uses `Referrer-Policy: same-origin`, not
 Standard](https://fetch.spec.whatwg.org/#append-a-request-origin-header)). This
 caused normal Approve/Deny clicks to receive `Invalid authorization request.`
 in v0.3.2. Cross-origin referrers remain suppressed; null/cross-origin requests,
-wrong Host/path and wrong action nonces remain rejected. The source correction
-must ship in the CLI/daemon binary; changing Identity or the website cannot fix
-an installed binary. HTTP tests with a hand-written Origin do not establish
-real-browser form compatibility.
+wrong Host/path and wrong action nonces remain rejected. The correction ships in
+the v0.3.3 CLI/daemon binary; changing Identity or the website cannot fix an old
+installed binary. HTTP tests with a hand-written Origin do not establish
+real-browser form compatibility. The same-run Windows executable passed actual
+Chromium form Approve/Deny and origin-rejection acceptance before publication;
+see [validation](validation.md) for its source, artifact and installation identity.
 
 Diagnosis on 2026-10-28 used the installed Windows v0.3.2 binary with an isolated
 repository `.temp` home, telemetry off and synthetic `.example.test` service
 origins. Its live approval listener returned GET 200 with `no-referrer`, POST
 400 for `Origin: null`, then POST 200/Denied for the exact loopback Origin; the
 CLI reported `the amail operation was denied`. No operation was approved or
-cloud account accessed. Source formatting/diff checks passed; the added Rust
-regressions and a real-browser click journey remain pending hosted verification.
+cloud account accessed. The seven approval Rust tests subsequently passed on all
+five release platforms, without repeating unrelated native or mail suites.
 
 `amail` is a native public OIDC client. A full access/refresh/ID-token set may exceed the Windows Credential Manager 2,560 UTF-16-character password attribute limit. The OS keyring therefore stores only `amail:v2:<base64url 32-byte random key>` (52 ASCII characters). It never stores a serialized token set in new sessions.
 
