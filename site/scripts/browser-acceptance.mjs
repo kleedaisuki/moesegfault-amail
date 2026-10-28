@@ -216,11 +216,11 @@ try {
         assert.equal(await page.locator('main#main').count(), 1);
         const text = await page.locator('main').innerText();
         const state = published
-          ? { '/': 'v0.3.2 已发布', '/manual/': 'v0.3.2 已发布', '/changelog/': 'v0.3.2 已正式发布' }
-          : { '/': 'v0.3.2 尚未发布', '/manual/': 'v0.3.2 尚未开放下载', '/changelog/': 'v0.3.2 仍在验收' };
+          ? { '/': 'v0.3.3 已发布', '/manual/': 'v0.3.3 已发布', '/changelog/': 'v0.3.3 已正式发布' }
+          : { '/': 'v0.3.3 尚未发布', '/manual/': 'v0.3.3 尚未开放下载', '/changelog/': 'v0.3.3 仍在验收' };
         assert.ok(text.includes(state[route]), 'route-local publication status missing');
         if (published) {
-          assert.doesNotMatch(text, /staging 候选|v0\.3\.2 尚未|v0\.3\.2 仍在验收|候选记录日期/);
+          assert.doesNotMatch(text, /staging 候选|v0\.3\.3 尚未|v0\.3\.3 仍在验收|候选记录日期/);
           assert.ok(await page.locator(`a[href="${releaseTagUrl}"]`).count() > 0);
           if (route === '/manual/') {
             for (const asset of releaseDownloads) {
@@ -229,7 +229,7 @@ try {
             }
           }
         } else {
-          assert.ok(text.includes('这是 v0.3.2 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。'));
+          assert.ok(text.includes('这是 v0.3.3 staging 候选版本说明，尚未发布，不表示邮件服务或发送已开放。'));
           for (const asset of releaseDownloads) assert.equal(await page.locator(`a[href="${asset.href}"]`).count(), 0);
         }
         if (route === '/manual/') {
@@ -238,8 +238,10 @@ try {
           }
         }
         if (route === '/changelog/') {
-          assert.equal(await page.locator('h2[id="v0.3.2"]').count(), 1,
+          assert.equal(await page.locator('h2[id="v0.3.3"]').count(), 1,
             'candidate changelog entry must exist independently of page status');
+          assert.equal(await page.locator('.toc a[href="#v0.3.3"]').count(), 1);
+          assert.equal(await page.locator('h2[id="v0.3.2"]').count(), 1);
           assert.equal(await page.locator('.toc a[href="#v0.3.2"]').count(), 1);
           assert.equal(await page.locator('h2[id="v0.3.1"]').count(), 1);
           assert.equal(await page.locator('.toc a[href="#v0.3.1"]').count(), 1);
