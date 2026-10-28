@@ -613,6 +613,8 @@ jobs:
           persist-credentials: false
       - name: Check the focused native patch formatting without compiling
         run: cargo fmt -p amail -- --check
+      - name: Check the native browser harness syntax without launching a browser
+        run: node --check scripts/approval_journey.mjs
 
   cli:
     name: CLI (${{ matrix.os }})
