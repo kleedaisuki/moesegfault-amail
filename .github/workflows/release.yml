@@ -32,6 +32,8 @@ jobs:
       build_matrix: ${{ steps.candidate.outputs.build_matrix }}
       focused_native: ${{ steps.patch.outputs.focused_native }}
       runtime_tag: ${{ steps.patch.outputs.runtime_tag }}
+      focused_test_filter: ${{ steps.patch.outputs.focused_test_filter }}
+      acceptance_kind: ${{ steps.patch.outputs.acceptance_kind }}
     permissions:
       contents: read
       actions: read
@@ -114,9 +116,14 @@ jobs:
       - name: Test CLI on release platform
         if: needs.preflight.outputs.reuse_candidate != 'true' && needs.preflight.outputs.focused_native != 'true'
         run: cargo test -p amail --locked --all-targets
-      - name: Test only the changed permanent mailbox lease contract
+      - name: Test only the reviewed native patch contract
         if: needs.preflight.outputs.focused_native == 'true'
-        run: cargo test -p amail --locked --release --bin amail profiles::tests::permanent_mailbox_lease_
+        shell: bash
+        env:
+          AMAIL_NATIVE_TEST_FILTER: ${{ needs.preflight.outputs.focused_test_filter }}
+        run: |
+          test -n "$AMAIL_NATIVE_TEST_FILTER"
+          cargo test -p amail --locked --release --bin amail "$AMAIL_NATIVE_TEST_FILTER"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -162,6 +169,7 @@ jobs:
     if: >-
       always() && !cancelled() && needs.preflight.result == 'success' &&
       needs.preflight.outputs.focused_native == 'true' &&
+      needs.preflight.outputs.acceptance_kind == 'permanent-acquire' &&
       needs.preflight.outputs.publish == 'true' &&
       needs.preflight.outputs.recover != 'true' && needs.build.result == 'success'
     runs-on: windows-latest
@@ -206,6 +214,58 @@ jobs:
         with:
           name: permanent-acquire-acceptance-${{ github.run_id }}
           path: .temp/permanent-acquire-acceptance.json
+          if-no-files-found: error
+          retention-days: 30
+
+  approval-browser:
+    name: Verify native approval in a real browser
+    needs: [preflight, build]
+    if: >-
+      always() && !cancelled() && needs.preflight.result == 'success' &&
+      needs.preflight.outputs.focused_native == 'true' &&
+      needs.preflight.outputs.acceptance_kind == 'approval' &&
+      needs.preflight.outputs.publish == 'true' &&
+      needs.preflight.outputs.recover != 'true' && needs.build.result == 'success'
+    runs-on: windows-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download the same-run Windows release archive
+        uses: actions/download-artifact@v4
+        with:
+          name: amail-x86_64-pc-windows-msvc
+          path: .temp/approval-cli
+      - name: Restore the newly built executable without rebuilding
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          $archive = Join-Path $env:GITHUB_WORKSPACE ".temp/approval-cli/amail-$($env:RELEASE_TAG)-x86_64-pc-windows-msvc.zip"
+          Expand-Archive -LiteralPath $archive -DestinationPath .temp/approval-cli
+      - name: Install an isolated pinned Chromium harness
+        shell: bash
+        run: |
+          npm install --prefix .temp/approval-browser-tools --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.51.1
+          node .temp/approval-browser-tools/node_modules/playwright/cli.js install chromium
+      - name: Click actual approval forms with isolated state and no cloud credentials
+        shell: bash
+        run: >-
+          node scripts/approval_journey.mjs
+          --binary .temp/approval-cli/amail.exe
+          --browser-module .temp/approval-browser-tools/node_modules/playwright/index.mjs
+          --output .temp/approval-browser-evidence
+      - name: Retain successful browser acceptance and review screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: approval-browser-acceptance-${{ github.run_id }}
+          path: .temp/approval-browser-evidence/
           if-no-files-found: error
           retention-days: 30
 
@@ -370,8 +430,15 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    if: always() && !cancelled() && needs.preflight.outputs.publish == 'true' && needs.preflight.result == 'success' && needs.send-release-gate.result == 'success' && (needs.assemble.result == 'success' || needs.recover-bundle.result == 'success') && (needs.preflight.outputs.focused_native != 'true' || needs.permanent-acquire.result == 'success' || needs.recover-bundle.result == 'success')
-    needs: [preflight, assemble, recover-bundle, send-release-gate, permanent-acquire]
+    if: >-
+      always() && !cancelled() && needs.preflight.outputs.publish == 'true' &&
+      needs.preflight.result == 'success' && needs.send-release-gate.result == 'success' &&
+      (needs.assemble.result == 'success' || needs.recover-bundle.result == 'success') &&
+      (needs.preflight.outputs.focused_native != 'true' ||
+       (needs.preflight.outputs.acceptance_kind == 'permanent-acquire' && needs.permanent-acquire.result == 'success') ||
+       (needs.preflight.outputs.acceptance_kind == 'approval' && needs.approval-browser.result == 'success') ||
+       needs.recover-bundle.result == 'success')
+    needs: [preflight, assemble, recover-bundle, send-release-gate, permanent-acquire, approval-browser]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -459,7 +526,10 @@ jobs:
           AMAIL_RELEASE_STATE: published
         run: pnpm build
       - name: Verify published site copy before launch
-        run: pnpm check:release-state published
+        run: |
+          pnpm check
+          node --test scripts/check-release-state.test.mjs
+          pnpm check:release-state published
       - name: Pin published responses to the tested source without provider injection
         working-directory: .
         run: python infra/release/published_site.py prepare "${{ needs.preflight.outputs.source_sha }}" "${{ needs.preflight.outputs.tag }}"

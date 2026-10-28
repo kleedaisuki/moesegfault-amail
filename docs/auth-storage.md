@@ -18,6 +18,25 @@ lease tokens are separate capabilities, stored in the private profile database,
 not in telemetry. See [the multi-tenant contract](v0.3.0/architecture.md) for
 terminal exclusivity, expiry, enrollment and compatibility boundaries.
 
+The local operation-approval form uses `Referrer-Policy: same-origin`, not
+`no-referrer`: browsers send `Origin: null` on native form POSTs under
+`no-referrer`, conflicting with the exact loopback-origin check ([Fetch
+Standard](https://fetch.spec.whatwg.org/#append-a-request-origin-header)). This
+caused normal Approve/Deny clicks to receive `Invalid authorization request.`
+in v0.3.2. Cross-origin referrers remain suppressed; null/cross-origin requests,
+wrong Host/path and wrong action nonces remain rejected. The source correction
+must ship in the CLI/daemon binary; changing Identity or the website cannot fix
+an installed binary. HTTP tests with a hand-written Origin do not establish
+real-browser form compatibility.
+
+Diagnosis on 2026-10-28 used the installed Windows v0.3.2 binary with an isolated
+repository `.temp` home, telemetry off and synthetic `.example.test` service
+origins. Its live approval listener returned GET 200 with `no-referrer`, POST
+400 for `Origin: null`, then POST 200/Denied for the exact loopback Origin; the
+CLI reported `the amail operation was denied`. No operation was approved or
+cloud account accessed. Source formatting/diff checks passed; the added Rust
+regressions and a real-browser click journey remain pending hosted verification.
+
 `amail` is a native public OIDC client. A full access/refresh/ID-token set may exceed the Windows Credential Manager 2,560 UTF-16-character password attribute limit. The OS keyring therefore stores only `amail:v2:<base64url 32-byte random key>` (52 ASCII characters). It never stores a serialized token set in new sessions.
 
 The complete token set is encrypted with ChaCha20-Poly1305 and stored in `AMAIL_HOME/auth.sqlite3`. A fresh 96-bit nonce is generated for every write. AEAD associated data binds the ciphertext to the exact configured issuer and OAuth client ID. The SQLite table stores nonce, ciphertext, and a session key; it stores no plaintext token or mail content. The operating system protects the small random key. On Unix, the database mode is set to `0600`, and the application directory is `0700`. The database is deliberately separate from `telemetry.sqlite3` so diagnostics cannot accidentally include credentials.

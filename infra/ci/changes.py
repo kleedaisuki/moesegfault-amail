@@ -164,7 +164,7 @@ def main() -> None:
     if focused_native:
         affected: Plan = classify(paths, event=kind)
         # The tagged workflow builds all five changed binaries once, runs only
-        # the reviewed lease tests, then gates publication on its native journey.
+        # the reviewed patch tests, then gates publication on its native journey.
         plan = Plan(False, False, False, affected.infra, False, affected.tests, affected.python, True)
     elif base:
         # Exclude the accepted changes when their PR is later merged to main.

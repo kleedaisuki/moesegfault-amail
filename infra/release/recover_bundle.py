@@ -28,6 +28,8 @@ def validate(run: dict, jobs: list[dict], artifacts: list[dict], repository: str
     required = {"Verify release source", "Assemble and verify release bundle"} | {f"Build {target}" for target, _ in TARGETS}
     if tag == "v0.3.2":
         required.add("Verify permanent mailbox acquire on staging")
+    if tag == "v0.3.3":
+        required.add("Verify native approval in a real browser")
     for name in required:
         matches = [job for job in jobs if job.get("name") == name]
         if len(matches) != 1 or matches[0].get("status") != "completed" or matches[0].get("conclusion") != "success":
