@@ -488,6 +488,7 @@ jobs:
       AMAIL_RELEASE_VERSION: ${{ needs.preflight.outputs.runtime_tag }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       PYTHONDONTWRITEBYTECODE: '1'
     steps:

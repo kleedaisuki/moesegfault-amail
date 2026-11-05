@@ -6,14 +6,43 @@ on:
       source_run:
         type: string
         default: ""
+      inspect_only:
+        type: boolean
+        default: false
+      acceptance_run:
+        type: string
+        default: ""
 
 permissions:
   contents: read
   actions: read
 
 jobs:
+  inspect:
+    if: inputs.inspect_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    concurrency:
+      group: amail-production-graph-writer
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
+      AMAIL_DEVICE_CONFIRM: INSPECT_DEVICE_BACKEND_PRODUCTION
+      AMAIL_PRODUCTION_GRAPH_FREEZE: FREEZE_PRODUCTION_GRAPH_WRITERS
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect production graph and schema without mutation
+        run: python infra/deploy/device_backend.py inspect-production
+
   build:
-    if: inputs.source_run == ''
+    if: inputs.source_run == '' && !inputs.inspect_only
     runs-on: ubuntu-latest
     timeout-minutes: 35
     outputs:
@@ -61,7 +90,7 @@ jobs:
           retention-days: 30
 
   reuse:
-    if: inputs.source_run == '42070608438'
+    if: inputs.source_run == '42070608438' && !inputs.inspect_only
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: staging
@@ -77,6 +106,7 @@ jobs:
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       AMAIL_DEVICE_CONFIRM: RUN_DEVICE_BACKEND_STAGING
       AMAIL_DEVICE_SOURCE_RUN: ${{ inputs.source_run }}
+      AMAIL_DEVICE_ACCEPTANCE_RUN: ${{ inputs.acceptance_run }}
       AMAIL_DEVICE_ARTIFACT_ID: '13435962042'
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -114,7 +144,7 @@ jobs:
           retention-days: 30
 
   staging:
-    if: inputs.source_run == ''
+    if: inputs.source_run == '' && !inputs.inspect_only
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -129,6 +159,7 @@ jobs:
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       AMAIL_DEVICE_CONFIRM: RUN_DEVICE_BACKEND_STAGING
       AMAIL_DEVICE_SOURCE_RUN: ${{ inputs.source_run }}
+      AMAIL_DEVICE_ACCEPTANCE_RUN: ${{ inputs.acceptance_run }}
       AMAIL_DEVICE_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -164,7 +195,7 @@ jobs:
 
   journey:
     needs: [build, reuse, staging]
-    if: ${{ always() && !cancelled() && (needs.staging.result == 'success' || needs.reuse.result == 'success') }}
+    if: ${{ always() && !cancelled() && inputs.acceptance_run == '' && (needs.staging.result == 'success' || needs.reuse.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: staging
@@ -173,6 +204,7 @@ jobs:
       cancel-in-progress: false
     env:
       AMAIL_DEVICE_SOURCE_RUN: ${{ inputs.source_run }}
+      AMAIL_DEVICE_ACCEPTANCE_RUN: ${{ inputs.acceptance_run }}
       AMAIL_DEVICE_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id || needs.reuse.outputs.artifact_id }}
       XDG_DATA_HOME: ${{ github.workspace }}/.temp/device-keyring
     steps:
@@ -236,7 +268,7 @@ jobs:
 
   production:
     needs: [build, reuse, journey]
-    if: ${{ always() && !cancelled() && needs.journey.result == 'success' }}
+    if: ${{ always() && !cancelled() && (needs.journey.result == 'success' || (needs.reuse.result == 'success' && inputs.acceptance_run == '42073709631')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
@@ -247,10 +279,12 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_EMAIL_ROUTING_TOKEN: ${{ secrets.CF_EMAIL_ROUTING_TOKEN }}
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       AMAIL_DEVICE_CONFIRM: RUN_DEVICE_BACKEND_PRODUCTION
       AMAIL_PRODUCTION_GRAPH_FREEZE: FREEZE_PRODUCTION_GRAPH_WRITERS
       AMAIL_DEVICE_SOURCE_RUN: ${{ inputs.source_run }}
+      AMAIL_DEVICE_ACCEPTANCE_RUN: ${{ inputs.acceptance_run }}
       AMAIL_DEVICE_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id || needs.reuse.outputs.artifact_id }}
       AMAIL_DEVICE_STAGING_ACCEPTANCE: ${{ github.workspace }}/.temp/device-staging-acceptance/acceptance.json
       PYTHONDONTWRITEBYTECODE: '1'
@@ -277,7 +311,9 @@ jobs:
           path: .temp
       - uses: actions/download-artifact@v4
         with:
-          name: device-staging-acceptance-${{ github.run_id }}
+          name: device-staging-acceptance-${{ inputs.acceptance_run || github.run_id }}
+          run-id: ${{ inputs.acceptance_run || github.run_id }}
+          github-token: ${{ github.token }}
           path: .temp/device-staging-acceptance
       - name: Restore the same checked bytes, migrate 0020 and replace only production API
         run: |
