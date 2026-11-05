@@ -20,15 +20,20 @@ Production API and maintenance share response-owned fresh Mail D1
 `moesegfault-mail-production-708b6d6c734779d657f5abb3`, and R2
 `moesegfault-mail-raw-production-708b6d6c734779d657f5abb3`.
 Current checked-in configurations are authoritative for bindings.
-The current completed production backend epoch is missing-only semantic reuse
-`40272801666`, source `06e88adde0731ffbf0e807a66bbdf2abef8bed91`, receipt
-`12629131055`, following partial writer `40272159207`. Schema 0019 is applied;
-API is `28bc6307-2c85-4a23-8b2c-77563197729a` and maintenance is
-`57c4d494-ef44-4ee4-ba1a-400e2a29a65b`. API Cron stays empty, maintenance stays
-five-minute scheduled, and sink/policy/retained infrastructure are unchanged.
-The original writer remains failed at a Queue-catalog readback omission; the
-completion verified its API/schema read-only and deployed only maintenance,
-without migration/API replay. Exact evidence is in [validation](validation.md).
+The current completed production backend epoch is device-code rollout
+`42075873075`, source `239a8579b9d46fe3293a2079e1b08b36f9594bff`.
+Schema 0020 is applied; API is `282a8781-ecbb-4ed9-a62c-23cd4bbb87a0`, while
+maintenance remains `57c4d494-ef44-4ee4-ba1a-400e2a29a65b` and the sink remains
+`2bc63288-c987-49f9-bee6-8bc25b35a8be`. API Cron stays empty, maintenance stays
+five-minute scheduled, and secrets/policy/retained infrastructure are unchanged.
+This API uses original tested producer `42070608438` / artifact `13435962042`;
+real staging native acceptance is `42073709631`. Production receipt is artifact
+`13438731472`. Earlier failed runs keep their failed conclusions; staging writes
+and completed journeys were not replayed. See [validation](validation.md).
+The former semantic-reuse epoch `40272801666` is historical. Do not rerun completed
+`device-backend` or completion writers: their schema/version preconditions no
+longer describe an unapplied transition. `infra/release/device-backend.json`
+binds the current read-only native-release check to its successful deployment.
 The prior v0.3.1 backend epoch `40199972693` and
 [original delivery](v0.3.1/production-delivery.md) are historical. Current CLI
 release **v0.3.3**, run `40658507490`, fixes native browser operation approval

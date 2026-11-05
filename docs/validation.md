@@ -4,7 +4,51 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
-## Device login and subscription short codes — source accepted, not published
+## Device-code backend — production delivered
+
+On 2026-11-06 (Asia/Singapore), [Identity PR33](https://github.com/kleedaisuki/moesegfault-indentity/pull/33)
+enabled the existing native clients through registration-only migration0013:
+[staging42069250867](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/42069250867)
+and [production42069515222](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/42069515222).
+Pairwise mapping, scopes and callbacks are unchanged; no Identity service was redeployed.
+
+Mail producer [42070608438](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/42070608438),
+source `43c14c9d7fe966957665e67a2e1b87cb256b37e3`, built/checked the API once and
+retained original manifest/artifact `13435962042`. Its staging writer applied
+migration0020 and deployed API `1dba790f-5564-4b3a-aafd-2b4f8d9b83c5`;
+maintenance `0ee61a70-4040-40fe-a117-48d41c92f2de` was not replaced.
+The run remains **FAILED** at a test-cleanup namespace mismatch, after device
+approval/denial, subscription cancellation and cloud profile release passed.
+
+[42073709631](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/42073709631)
+restored the original bytes and verified staging read-only. Its actual Linux
+CLI/daemon → deployed Identity → Subscribe journey passed completely, including
+manual codes, explicit approval, denial, pending-only billing navigation, cancel
+with unchanged plan/budget, cloud/local profile release, refresh revocation,
+local credential deletion and browser-session revocation204. Acceptance artifact
+`13436979065` binds source `2979c52a55306f9859ba30cec66248481ddac137`, original
+API/artifact and native hash from the source acceptance below. That overall run
+remains **FAILED**: production stopped before any write because the existing
+forwarding readback lacked its routing credential. Phase/code/source diagnostics
+and the missing credential binding were corrected; keys were not rotated.
+
+[Production completion42075873075](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/42075873075)
+completed **SUCCESS**, source `239a8579b9d46fe3293a2079e1b08b36f9594bff`.
+It did not rebuild or replay staging migration/API or the passed journey. It
+verified staging read-only, admitted the original producer and successful journey,
+applied0020 to production and deployed API `282a8781-ecbb-4ed9-a62c-23cd4bbb87a0`.
+Original maintenance `57c4d494-ef44-4ee4-ba1a-400e2a29a65b` and sink
+`2bc63288-c987-49f9-bee6-8bc25b35a8be` remain. Exact serving graph, schema20,
+empty API Cron, five-minute maintenance cadence, queue/adapters/contact policy,
+stored mail/vectors and secret preservation passed readback. The public short-code
+page and health passed. Production receipt artifact `13438731472` retains separate
+original producer, successful acceptance and current orchestration identities;
+`infra/release/device-backend.json` pins it for native publication.
+
+At this backend checkpoint CLI v0.3.3 and the published site remain unchanged;
+the v0.4.0 tagged release supplies its separate five-platform/new-binary acceptance.
+
+## Device login and subscription short codes — original source acceptance
 
 The `codex/device-code-login` feature adds opt-in `login --device-code` and
 `billing subscribe/manage --device-code`, preserving default PKCE and the existing
@@ -46,9 +90,9 @@ repeated. Runtime source, dependency lock and toolchain inputs are byte-identica
 between these two runs; only the harness/workflow changed. Both manual lanes are
 acceptance tools, not new PR quality gates.
 
-This is synthetic integration acceptance, not a deployed Identity/account/payment
-journey or cross-platform release. Neither Identity client opt-in SQL nor Mail
-migration `0020` was applied remotely. No production Worker, published CLI/site,
+This original checkpoint was synthetic integration acceptance, not a deployed
+Identity/account/payment journey or cross-platform release. At that time neither
+Identity client opt-in SQL nor Mail migration `0020` had been applied remotely. No production Worker, published CLI/site,
 installed binary, account credentials or mail state was changed. The deployed
 and installed versions below remain authoritative.
 
