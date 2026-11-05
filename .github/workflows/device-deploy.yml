@@ -2,6 +2,10 @@ name: Deploy device-code Mail integration
 
 on:
   workflow_call:
+    inputs:
+      source_run:
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -9,6 +13,7 @@ permissions:
 
 jobs:
   build:
+    if: inputs.source_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 35
     outputs:
@@ -17,6 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -54,7 +60,61 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  reuse:
+    if: inputs.source_run == '42070608438'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    concurrency:
+      group: amail-staging-graph-writer
+      cancel-in-progress: false
+    outputs:
+      artifact_id: ${{ steps.admit.outputs.artifact_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      AMAIL_DEVICE_CONFIRM: RUN_DEVICE_BACKEND_STAGING
+      AMAIL_DEVICE_SOURCE_RUN: ${{ inputs.source_run }}
+      AMAIL_DEVICE_ARTIFACT_ID: '13435962042'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Admit the original successful producer
+        id: admit
+        run: python infra/deploy/device_backend.py source-admit
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '13437177224'
+          run-id: '42070608438'
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: .temp
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '13435962042'
+          run-id: '42070608438'
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: .temp/ci/device-backend
+      - name: Restore original tested bytes and inspect staging without mutation
+        run: |
+          python infra/deploy/device_backend.py artifact-restore
+          python infra/deploy/device_backend.py verify-staging
+      - uses: actions/upload-artifact@v4
+        with:
+          name: device-backend-staging-${{ github.run_id }}
+          path: .temp/device-backend-staging*.json*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
   staging:
+    if: inputs.source_run == ''
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -63,16 +123,19 @@ jobs:
       group: amail-staging-graph-writer
       cancel-in-progress: false
     env:
+      GH_TOKEN: ${{ github.token }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       AMAIL_DEVICE_CONFIRM: RUN_DEVICE_BACKEND_STAGING
+      AMAIL_DEVICE_SOURCE_RUN: ${{ inputs.source_run }}
       AMAIL_DEVICE_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -81,6 +144,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          run-id: ${{ inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
           merge-multiple: true
           path: .temp/ci/device-backend
       - name: Restore checked bytes, migrate 0020 and replace only staging API
@@ -98,7 +163,8 @@ jobs:
           retention-days: 30
 
   journey:
-    needs: [build, staging]
+    needs: [build, reuse, staging]
+    if: ${{ always() && !cancelled() && (needs.staging.result == 'success' || needs.reuse.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: staging
@@ -106,7 +172,8 @@ jobs:
       group: staging-native-mail-acceptance
       cancel-in-progress: false
     env:
-      AMAIL_DEVICE_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+      AMAIL_DEVICE_SOURCE_RUN: ${{ inputs.source_run }}
+      AMAIL_DEVICE_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id || needs.reuse.outputs.artifact_id }}
       XDG_DATA_HOME: ${{ github.workspace }}/.temp/device-keyring
     steps:
       - uses: actions/checkout@v4
@@ -168,7 +235,8 @@ jobs:
           retention-days: 7
 
   production:
-    needs: [build, journey]
+    needs: [build, reuse, journey]
+    if: ${{ always() && !cancelled() && needs.journey.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
@@ -176,18 +244,21 @@ jobs:
       group: amail-production-graph-writer
       cancel-in-progress: false
     env:
+      GH_TOKEN: ${{ github.token }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       AMAIL_DEVICE_CONFIRM: RUN_DEVICE_BACKEND_PRODUCTION
       AMAIL_PRODUCTION_GRAPH_FREEZE: FREEZE_PRODUCTION_GRAPH_WRITERS
-      AMAIL_DEVICE_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+      AMAIL_DEVICE_SOURCE_RUN: ${{ inputs.source_run }}
+      AMAIL_DEVICE_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id || needs.reuse.outputs.artifact_id }}
       AMAIL_DEVICE_STAGING_ACCEPTANCE: ${{ github.workspace }}/.temp/device-staging-acceptance/acceptance.json
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -195,7 +266,9 @@ jobs:
         run: npm install --prefix .temp/device-provider --ignore-scripts --no-audit --no-fund --package-lock=false wrangler@4.142.0
       - uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          artifact-ids: ${{ needs.build.outputs.artifact_id || needs.reuse.outputs.artifact_id }}
+          run-id: ${{ inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
           merge-multiple: true
           path: .temp/ci/device-backend
       - uses: actions/download-artifact@v4

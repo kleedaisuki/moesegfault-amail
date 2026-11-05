@@ -61,7 +61,9 @@ function launch(home, args, terminalSuffix = '') {
     AMAIL_TELEMETRY: 'off', AMAIL_API_BASE: apiOrigin, AMAIL_ISSUER: issuer,
     AMAIL_CLIENT_ID: clientId, AMAIL_REDIRECT_URI: '' });
   const child = spawn(binary, ['--machine', ...args], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
-  const state = { child, stdout: '', stderr: '', rows: [], settled: false };
+  const state = { child, stdout: '', stderr: '', rows: [], settled: false,
+    operation: args.slice(0, 2).join(' '), fixture_home: path.basename(home),
+    terminal: terminalSuffix ? 'cleanup' : 'original' };
   children.add(state);
   state.done = new Promise((resolve, reject) => {
     child.on('error', reject);
@@ -166,13 +168,16 @@ function machineErrors(state) {
     } catch { return []; }
   }) ?? [];
 }
+function cliContext(state) {
+  return state && { operation: state.operation, fixture_home: state.fixture_home, terminal: state.terminal };
+}
 async function cleanupStep(stage, action) {
   try { await action(); }
   catch (error) {
     failure ??= error;
     failedCli ??= lastCli;
     cleanupFailures.push({ stage, error: error instanceof Error ? error.message : 'cleanup_failed',
-      machine_errors: machineErrors(lastCli) });
+      cli_context: cliContext(lastCli), machine_errors: machineErrors(lastCli) });
   }
 }
 async function billing(home) {
@@ -271,9 +276,18 @@ try {
       // Release leaves the original terminal inactive. A new fixture-only terminal
       // can perform local logout without prepare_activity reclaiming cloud occupancy.
       assert.equal((await command(savedHome, ['auth', 'logout'], '-cleanup')).at(-1).authenticated, false);
-      assert.equal((await command(savedHome, ['auth', 'status'], '-cleanup')).at(-1).authenticated, false);
       loggedOut = true;
-      pass('native_refresh_revoked_and_local_session_removed');
+      pass('native_refresh_revoked');
+    });
+    if (loggedOut) await cleanupStep('verify_local_logout_in_original_unbound_realm', async () => {
+      // Logout switches back to the pre-login realm. Its user reservation still
+      // belongs to the original terminal, not the account-bound cleanup terminal.
+      assert.equal((await command(savedHome, ['auth', 'status'])).at(-1).authenticated, false);
+      pass('local_session_removed');
+    });
+    if (loggedOut) await cleanupStep('release_original_unbound_local_profile', async () => {
+      assert.equal((await command(savedHome, ['profile', 'release'])).at(-1).released, true);
+      pass('original_prelogin_local_profile_released');
     });
   }
   await cleanupStep('revoke_owned_browser_session', cleanupBrowserSession);
@@ -284,7 +298,8 @@ try {
 }
 if (failure) {
   let detail = JSON.stringify({ phase, checks, requests,
-    error: failure instanceof Error ? failure.message : 'journey_failed', machine_errors: machineErrors(failedCli),
+    error: failure instanceof Error ? failure.message : 'journey_failed',
+    cli_context: cliContext(failedCli), machine_errors: machineErrors(failedCli),
     cleanup_failures: cleanupFailures,
     ...(cleanupFailures.length && { retained_private_workspace: workspace }) }, null, 2);
   for (const value of privateValues) detail = detail.replaceAll(value, '[private]');
