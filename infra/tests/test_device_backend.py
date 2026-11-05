@@ -31,6 +31,10 @@ ENV = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "kleedaisuki/moesegfault-a
 
 
 class DeviceBackendTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls: type["DeviceBackendTests"]) -> None:
+        (ROOT / ".temp").mkdir(exist_ok=True)
+
     def test_same_run_artifact_restores_only_generated_bytes_and_detects_changes(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder, ExitStack() as stack:
             root = Path(folder)
