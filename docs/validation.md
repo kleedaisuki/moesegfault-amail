@@ -4,6 +4,44 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
+## v0.4.0 device login — published
+
+Formal [v0.4.0](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.4.0)
+completed **SUCCESS** in [tagged run42077398389](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/42077398389),
+source `9d5b4952ee557ebc4070198f189b98b719c48570`. The Release was published on
+2026-11-06 at **01:55:23 Asia/Singapore** (2026-11-05 17:55:23 UTC).
+Five newly built native platforms each passed only the six device/handoff tests;
+unrelated native/mail/semantic suites were not repeated. Production send-state
+and source-bound device backend readback passed before publication.
+
+The same-run **Windows release executable**, not the earlier debug fixture,
+passed actual deployed staging Identity manual-code sign-in, explicit approval,
+denial without stored credentials, subscription manual-code navigation and cancel
+with unchanged plan/budget, both profile-domain releases, native refresh
+revocation, credential deletion and browser-session revocation204. Its acceptance
+is artifact `13439093601`; executable SHA-256 is
+`0f0f69da31fd7e6f5dcea3d4cab681793108a7eec59da3a3ece8dcc7b019b956`.
+An independent download of the published Windows ZIP produced that exact hash.
+
+Verified release bundle is artifact `13438339797`. All five archive assets and the
+Skill ZIP were attested and public bytes matched the same-run trusted checksum
+manifest. Windows ZIP SHA-256:
+`a7cc9e388c8b9410abd5936fcb78893f74932bd3ca5e5f7f8aee390b4db7001f`;
+Skill ZIP:
+`0a11739ecb7284aa9f90c67d9ac1dc757c1ecebed1030faea088981dbd74cb9e`.
+The website build, release-state checks, deployment and source/tag-bound public
+home/manual/changelog smoke all passed. Independent public probes confirmed all
+three pages advertise v0.4.0 and the production `amail-cli` device authorization
+request returns200 with valid verification metadata; no account was authorized,
+no token set was issued and the pending device secret was not persisted.
+
+The production backend and original/acceptance/orchestration coordinates are
+recorded below. PKCE remains the default; device login is opt-in. Billing short
+codes only navigate to Subscribe's actual human consent. No customer mail,
+spending choice, semantic preference, installed local CLI or global Skill was
+modified by this cloud release. Existing local-installation evidence below is
+historical: users must install/update to v0.4.0 to use the new flags.
+
 ## Device-code backend — production delivered
 
 On 2026-11-06 (Asia/Singapore), [Identity PR33](https://github.com/kleedaisuki/moesegfault-indentity/pull/33)
