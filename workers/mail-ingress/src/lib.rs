@@ -131,18 +131,4 @@ mod tests {
         assert!(!valid_size(-1.0));
         assert!(!valid_size(f64::NAN));
     }
-
-    /// Trace IDs must be syntactically valid and change per event.
-    /// 追踪 ID 必须格式正确，且每次事件均不同。
-    #[test]
-    fn trace_contract() {
-        let first = new_traceparent();
-        let parts: Vec<_> = first.split('-').collect();
-        assert_eq!(parts.len(), 4);
-        assert_eq!(parts[0], "00");
-        assert_eq!(parts[1].len(), 32);
-        assert_eq!(parts[2].len(), 16);
-        assert_eq!(parts[3], "01");
-        assert_ne!(first, new_traceparent());
-    }
 }

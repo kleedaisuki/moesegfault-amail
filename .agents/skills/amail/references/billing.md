@@ -79,6 +79,37 @@ manual human handoff; never add a token/code/query parameter to it. Never put
 activation codes, credentials or authorization URLs in telemetry or public logs.
 No agent-side budget/approval endpoint exists.
 
+### Short-code handoff from a remote terminal
+
+When the installed CLI help advertises the option, request the same financial
+session with a device-style handoff:
+
+```sh
+amail billing subscribe plus --device-code --no-browser --idempotency-key SAVED_UUID
+amail billing manage --device-code --no-browser --idempotency-key ANOTHER_SAVED_UUID
+```
+
+The response adds `user_code`, `verification_uri`, `verification_uri_complete`,
+`expires_in` and `interval`, while retaining the existing session UUID and state.
+Give the human the verification address and code. They may visit the address on
+another device and enter the code, or open its pre-filled complete link. Without
+`--no-browser`, the CLI opens that complete link in the system browser.
+
+The Mail verification page resolves the code to the existing hosted Subscribe
+session. Navigation or code entry does not approve a subscription: the human
+still reviews and decides the actual plan, activation grant and spending limits
+on Subscribe. The agent must not perform either code entry or financial approval
+for the human. Identity device login and Billing short-code handoff are separate
+flows; an OAuth login approval is never financial consent. No OAuth token is
+issued by the Billing handoff.
+
+This mode preserves the original creation UUID, owner-scoped session polling and
+terminal states below. After an uncertain create, retry the identical action with
+the same `--device-code` setting and idempotency key. Resume the original session
+after interruption, not a new financial request. Treat the human code and complete
+verification link as private navigation data; keep them out of telemetry and
+public logs. Existing invocations without `--device-code` retain URL handoff.
+
 ```sh
 amail billing session SESSION_UUID --wait-seconds 30
 ```

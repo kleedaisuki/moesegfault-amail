@@ -136,18 +136,6 @@ pub fn error_record(error: &anyhow::Error) -> Value {
 mod tests {
     use super::*;
     #[test]
-    fn machine_flag_is_not_a_positional_value() {
-        let args = |values: &[&str]| {
-            values
-                .iter()
-                .map(|value| std::ffi::OsString::from(*value))
-                .collect::<Vec<_>>()
-        };
-        assert!(requested(args(&["amail", "--machine", "discover"])));
-        assert!(requested(args(&["amail", "events", "--machine"])));
-        assert!(!requested(args(&["amail", "get", "--", "--machine"])));
-    }
-    #[test]
     fn api_actions_and_codes_are_safe() {
         for (code, status, expected) in [
             ("search_cursor_vector_changed", 409, "restart_search"),

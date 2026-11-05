@@ -27,8 +27,32 @@ mail request does not justify switching realms or bypassing validation.
 
 `amail auth logout` removes the local credential when the platform permits it and
 attempts refresh-token revocation. It does not promise logout from the browser's
-Identity single sign-on session. Login uses an ephemeral `127.0.0.1` callback and
+Identity single sign-on session. Default login uses an ephemeral `127.0.0.1` callback and
 checks the configured issuer; do not weaken that check to resolve an error.
+
+### Login from a remote terminal
+
+When the installed CLI's help includes device login, run:
+
+```sh
+amail login --device-code --no-browser
+```
+
+`amail auth login --device-code` is equivalent; omit `--no-browser` to also launch
+the available system browser. The initiating CLI displays a verification address
+and human code and waits. The human uses their browser, checks the application
+name and code against this exact terminal, and explicitly approves or denies.
+The agent may hand off this requested login's address/code but never operate the
+consent page or approve someone else's code. Keep codes and complete verification
+links out of telemetry and public logs. Do not request the private device secret.
+
+The code expires on the issuer's deadline. Denial or expiry ends this attempt;
+start a fresh attempt only when the human wants to continue. Browser approval is
+not yet successful local login: wait for the CLI to confirm validated, protected
+credential persistence, then check `amail auth status`. Refresh and logout remain
+the same as callback login. A provider/client that has not enabled device grants
+needs its normal registration update, not relaxed validation or a different realm.
+`--no-browser` alone still uses the callback flow.
 
 ## Own address operations
 

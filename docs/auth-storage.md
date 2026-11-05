@@ -12,8 +12,11 @@ credentials or unresolved send history. Close older CLI processes before migrati
 
 Profiles are passwordless workflow isolation within a trusted OS account, not an
 OS security sandbox. The daemon requires one explicit browser decision per `user`
-operation unless `config.toml` explicitly sets `yolo = true`; this does not replace
-Identity login or authorize Billing spending. Cloud profile sessions and mailbox
+operation unless `config.toml` explicitly sets `yolo = true`, except device login
+and Billing navigation/status: those use their hosted human confirmation rather
+than requiring an inaccessible loopback page. Device login also permits initial
+local `user` profile activation; it cannot execute another operation. Billing
+navigation never authorizes spending. Cloud profile sessions and mailbox
 lease tokens are separate capabilities, stored in the private profile database,
 not in telemetry. See [the multi-tenant contract](v0.3.0/architecture.md) for
 terminal exclusivity, expiry, enrollment and compatibility boundaries.
@@ -46,6 +49,16 @@ The complete token set is encrypted with ChaCha20-Poly1305 and stored in `AMAIL_
 An OS file lock serializes login, refresh and logout. The existing durable refresh-in-progress marker remains in `telemetry.sqlite3`: it contains only `(issuer, client_id, boolean)`, never tokens. The marker is committed before a rotating refresh call; any ambiguous outcome clears the local session rather than replaying a potentially consumed predecessor. Ciphertext replacement is a transaction **in the separate auth database**, not an atomic transaction with the telemetry marker. If a process crashes after ciphertext replacement but before clearing the marker, the next invocation conservatively discards the session, even if the new refresh token may have been valid. For legacy sessions whose keyring entry still contains JSON, a successful refresh writes encrypted SQLite first, then replaces the keyring JSON with the bounded v2 key; a crash before keyring replacement leaves the legacy session readable. Logout attempts to remove **both** the OS key and ciphertext even if either operation fails; deleting either half makes the remaining half unusable.
 
 The browser loopback callback is acknowledged **only after** token exchange, ID-token validation, encrypted persistence, and refresh-marker reset. A failure receives a generic static page with no token, code, state, or detailed exception. The CLI remains the diagnostic channel. Response headers prohibit caching, framing, and outgoing referrers, and a restrictive CSP blocks all network resources. This corrects the earlier false-success page that could appear before Windows rejected an oversized keyring value.
+
+Device login uses the same persistence boundary without a callback. Pending codes
+remain in request-local memory; polling stops when the initiating CLI disconnects,
+and the daemon checks that connection again before saving the validated tokens.
+Cancelling a pending login does not silently complete a session in the background.
+The Identity/Mail HTTP clients accept an explicitly configured `SSL_CERT_FILE` PEM
+CA bundle in addition to built-in roots, retaining ordinary certificate/hostname
+verification. This supports enterprise trust stores and isolated HTTPS integration
+fixtures without an insecure-TLS bypass. Restart the daemon after changing its
+process-level CA configuration.
 
 Focused tests exercise a token set larger than the Windows limit, bounded keyring payload, encryption/decryption, wrong-key, wrong-issuer, tampered-ciphertext rejection, and fragmented/oversized loopback request lines. Cross-platform compilation and tests run in GitHub Actions; live login must be re-exercised with a CI-built Windows binary after deployment.
 

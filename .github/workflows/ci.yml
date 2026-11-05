@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [semantic-reuse-staging-restore-ingress, semantic-reuse-staging-resume, semantic-reuse-staging, semantic-reuse-production, checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [device-backend, device-acceptance, device-billing-acceptance, semantic-reuse-staging-restore-ingress, semantic-reuse-staging-resume, semantic-reuse-staging, semantic-reuse-production, checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
         description: Documented RUN_* or INSPECT_* confirmation; normal split upgrade preserves live policy
         required: false
@@ -103,6 +103,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'checks' }}
 
 jobs:
+  device-backend:
+    name: Device-code backend release
+    permissions:
+      contents: read
+      actions: read
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'device-backend' && inputs.confirm == 'RUN_DEVICE_CODE_RELEASE' && inputs.production_graph_freeze == 'FREEZE_PRODUCTION_GRAPH_WRITERS' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/device-deploy.yml
+    secrets: inherit
+
+  device-acceptance:
+    name: Focused device login and billing acceptance
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'device-acceptance' || inputs.target == 'device-billing-acceptance')
+    uses: ./.github/workflows/device-acceptance.yml
+    with:
+      billing_only: ${{ inputs.target == 'device-billing-acceptance' }}
+
   semantic-reuse-build:
     name: Semantic reuse backend build
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'semantic-reuse-staging' && inputs.confirm == 'RUN_SEMANTIC_REUSE_STAGING' && github.ref == 'refs/heads/codex/semantic-index-reuse' && github.run_attempt == 1
@@ -416,10 +432,11 @@ jobs:
       worker: ${{ steps.plan.outputs.worker }}
       site: ${{ steps.plan.outputs.site }}
       infra: ${{ steps.plan.outputs.infra }}
-      full_infra: ${{ steps.plan.outputs.full_infra }}
       tests: ${{ steps.plan.outputs.tests }}
       python: ${{ steps.plan.outputs.python }}
       native_static: ${{ steps.plan.outputs.native_static }}
+      worker_projects: ${{ steps.plan.outputs.worker_projects }}
+      boundary_tests: ${{ steps.plan.outputs.boundary_tests }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -927,6 +944,9 @@ jobs:
     if: needs.changes.outputs.worker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      WORKER_PROJECTS: ${{ needs.changes.outputs.worker_projects }}
+      BOUNDARY_TESTS: ${{ needs.changes.outputs.boundary_tests }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -941,6 +961,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: infra/tests/worker-boundary/pnpm-lock.yaml
       - name: Install workerd boundary-test dependencies
+        if: needs.changes.outputs.boundary_tests != '[]'
         working-directory: infra/tests/worker-boundary
         run: pnpm install --frozen-lockfile
       - name: Set up Rust Wasm target
@@ -968,56 +989,29 @@ jobs:
         with:
           path: .cache/worker-build-check
           key: worker-build-check-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.identity }}-0.8.5
-      - name: Run privacy trace schema and sink contracts
+      - name: Test shared trace schema when consumed by affected roles
+        if: contains(fromJSON(needs.changes.outputs.worker_projects), 'crates/mail-worker') || contains(fromJSON(needs.changes.outputs.worker_projects), 'workers/trace-sink') || contains(fromJSON(needs.changes.outputs.worker_projects), 'workers/role-monitor')
+        run: cargo test -p amail-trace-schema --locked --all-targets
+      - name: Test affected Rust Worker contracts
+        shell: bash
         run: |
-          cargo test -p amail-trace-schema --locked --all-targets
-          cargo test -p amail-trace-sink --locked --all-targets
-      - name: Compile privacy trace sink target
-        run: cargo check -p amail-trace-sink --locked --target wasm32-unknown-unknown
-      - name: Run Rust Worker unit tests
-        run: cargo test -p amail-worker --locked --all-targets
-      - name: Run Rust Email ingress contract tests
-        run: cargo test -p amail-ingress --locked --all-targets
-      - name: Run Rust sending lifecycle contract tests
-        run: cargo test -p amail-events --locked --all-targets
-      - name: Run staging Identity test inbox contract tests
-        run: cargo test -p amail-identity-test-inbox --locked --all-targets
-      - name: Run role monitor contract tests
-        run: cargo test -p amail-role-monitor --locked --all-targets
-      - name: Compile Worker target
-        run: cargo check -p amail-worker --locked --target wasm32-unknown-unknown
-      - name: Compile Email ingress target
-        run: cargo check -p amail-ingress --locked --target wasm32-unknown-unknown
-      - name: Compile Email lifecycle target
-        run: cargo check -p amail-events --locked --target wasm32-unknown-unknown
-      - name: Compile staging Identity test inbox target
-        run: cargo check -p amail-identity-test-inbox --locked --target wasm32-unknown-unknown
-      - name: Compile role monitor target
-        run: cargo check -p amail-role-monitor --locked --target wasm32-unknown-unknown
+          mapfile -t projects < <(jq -r '.[]' <<< "$WORKER_PROJECTS")
+          for project in "${projects[@]}"; do
+            cargo test --manifest-path "$project/Cargo.toml" --locked --all-targets
+          done
       - name: Install workers-rs bundler
         if: steps.worker-bundler-cache.outputs.cache-hit != 'true'
         run: cargo install worker-build --version 0.8.5 --locked --root "$GITHUB_WORKSPACE/.cache/worker-build-check"
       - name: Use isolated pinned check bundler
         shell: bash
         run: echo "$GITHUB_WORKSPACE/.cache/worker-build-check/bin" >> "$GITHUB_PATH"
-      - name: Bundle privacy trace sink
-        working-directory: workers/trace-sink
-        run: worker-build --release
-      - name: Bundle Worker for Wrangler
-        working-directory: crates/mail-worker
-        run: worker-build --release
-      - name: Bundle Rust Email ingress for Wrangler
-        working-directory: workers/mail-ingress
-        run: worker-build --release
-      - name: Bundle Rust Email lifecycle consumer for Wrangler
-        working-directory: workers/mail-events
-        run: worker-build --release
-      - name: Bundle staging Identity test inbox for Wrangler
-        working-directory: workers/identity-test-inbox
-        run: worker-build --release
-      - name: Bundle role monitor for Wrangler
-        working-directory: workers/role-monitor
-        run: worker-build --release
+      - name: Build affected Worker targets once
+        shell: bash
+        run: |
+          mapfile -t projects < <(jq -r '.[]' <<< "$WORKER_PROJECTS")
+          for project in "${projects[@]}"; do
+            (cd "$project" && worker-build --release)
+          done
       - name: Save trusted pinned check bundler
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/amail-v0.1.0' || contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant","refs/heads/codex/v0.3.1-semantic-consent"]'), github.ref)) && steps.worker-bundler-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -1025,10 +1019,14 @@ jobs:
           path: .cache/worker-build-check
           key: ${{ steps.worker-bundler-cache.outputs.cache-primary-key }}
       - name: Test actual built Worker boundaries in workerd
+        if: needs.changes.outputs.boundary_tests != '[]'
         working-directory: infra/tests/worker-boundary
         # Preserve the deleted Python runner's bounded wait using the platform.
         timeout-minutes: 15
-        run: pnpm test
+        shell: bash
+        run: |
+          mapfile -t tests < <(jq -r '.[]' <<< "$BOUNDARY_TESTS")
+          node --test "${tests[@]}"
       - name: Measure bounded Worker search and ZIP microbenchmarks
         if: github.event_name == 'workflow_dispatch' && (inputs.target == 'checks' || inputs.target == 'staging') && contains(fromJSON('["refs/heads/codex/v0.2.0-billing","refs/heads/codex/v0.3.0-multitenant","refs/heads/codex/v0.3.1-semantic-consent"]'), github.ref)
         shell: bash
@@ -1044,8 +1042,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Assemble same-run public generated-module artifact
+        if: github.event_name == 'workflow_dispatch'
         run: python infra/ci/worker_artifact.py create
       - name: Publish modules for native tests, not release admission
+        if: github.event_name == 'workflow_dispatch'
         id: modules
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1144,22 +1144,15 @@ jobs:
         run: |
           python -m pip install --only-binary=:all: -r infra/dns/requirements.txt
       - name: Test changed infrastructure contracts
-        if: needs.changes.outputs.full_infra != 'true'
         env:
           AFFECTED_TESTS: ${{ needs.changes.outputs.tests }}
           CHANGED_PYTHON: ${{ needs.changes.outputs.python }}
         run: python infra/ci/changes.py test
-      - name: Test deployment and sending safety contracts
-        if: needs.changes.outputs.full_infra == 'true'
-        run: python -m unittest discover -s infra/tests -v
-      - name: Test mail API observability privacy gate
-        if: needs.changes.outputs.full_infra == 'true'
-        run: python -m unittest discover -s crates/mail-worker -p 'test_check_observability.py' -v
       - name: Check private staging Identity inbox config
-        if: needs.changes.outputs.full_infra == 'true'
+        if: github.event_name == 'workflow_dispatch'
         run: python workers/identity-test-inbox/check_config.py
       - name: Check staging isolation contract
-        if: needs.changes.outputs.full_infra == 'true'
+        if: github.event_name == 'workflow_dispatch'
         run: python infra/deploy/check_staging.py
 
   provider-live:

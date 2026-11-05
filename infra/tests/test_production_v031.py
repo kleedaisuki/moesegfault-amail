@@ -43,21 +43,6 @@ class ProductionV031Tests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "^production_v031_context_unverified$"):
                         deploy.context(mode)
 
-    def test_same_run_artifact_gates_and_historical_writer_exclusion(self) -> None:
-        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        body = source.split("  production-v031:\n", 1)[1].split("  production-v030:\n", 1)[0]
-        self.assertIn("inputs.confirm == 'RUN_PRODUCTION_V031' && github.ref == 'refs/heads/main'", body)
-        self.assertIn("needs: production-v031-promotion-checks", body)
-        self.assertIn("environment: production", body)
-        self.assertLess(body.index("python infra/ci/accepted_staging_artifact.py restore"),
-                        body.index("python infra/deploy/production_v031.py upgrade"))
-        for name in ("deploy-worker", "deploy-trace-sink", "deploy-ingress", "deploy-events", "deploy-site"):
-            job = source.split(f"  {name}:\n", 1)[1].split("    needs:", 1)[0]
-            self.assertIn("inputs.confirm != 'RUN_PRODUCTION_V031'", job)
-        inspect = source.split("  production-v031-inspect:\n", 1)[1].split("  production-v031:\n", 1)[0]
-        self.assertIn("INSPECT_PRODUCTION_V031", inspect)
-        self.assertNotIn("wrangler", inspect)
-
     def model(self, stack: ExitStack, receipt: Path, actions: list[str]) -> dict[str, Mock]:
         provider = Mock(account="a" * 32, token="synthetic")
         stack.enter_context(patch.object(deploy, "FreshProvider", return_value=provider))

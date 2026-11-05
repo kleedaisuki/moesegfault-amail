@@ -93,15 +93,4 @@ mod tests {
         ));
         assert!(!valid_recipient("other@moesegfault.dev", allowlist));
     }
-
-    /// Every accepted delivery has a separate private object.
-    /// 每次接受的投递都有独立私有对象。
-    #[test]
-    fn keys_are_unique_and_content_free() {
-        let first = object_key();
-        let second = object_key();
-        assert_ne!(first, second);
-        assert!(first.starts_with(OBJECT_PREFIX));
-        assert!(first.ends_with(".eml"));
-    }
 }

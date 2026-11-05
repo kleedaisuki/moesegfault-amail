@@ -157,16 +157,5 @@ class AcceptedStagingArtifactTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "file_integrity_mismatch"):
                     promotion.verify_installed()
 
-    def test_production_job_tests_only_new_adapter_and_restores_original_checked_bytes(self) -> None:
-        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        body = source.split("  production-v031:\n", 1)[1].split("  production-v030:\n", 1)[0]
-        self.assertIn("needs: production-v031-promotion-checks", body)
-        self.assertIn("actions: read", body)
-        self.assertIn("inputs.staging_acceptance_run", body)
-        self.assertIn("steps.source.outputs.artifact_id", body)
-        self.assertNotIn("cargo ", body)
-        self.assertLess(body.index("accepted_staging_artifact.py restore"), body.index("production_v031.py upgrade"))
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -88,5 +88,34 @@ class ApprovalPatchTests(unittest.TestCase):
             patch.validate(predecessor, self.after, set(self.after))
 
 
+class DeviceFeatureReleaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.before: dict[str, str] = {
+            patch.MANIFEST: '[package]\nname="amail"\nversion="0.3.3"\n',
+            "Cargo.lock": 'version=4\n[[package]]\nname="amail"\nversion="0.3.3"\n',
+        }
+        self.after: dict[str, str] = {name: text.replace('"0.3.3"', '"0.4.0"')
+                                      for name, text in self.before.items()}
+
+    def test_version_only_packaging_preserves_the_accepted_runtime(self) -> None:
+        patch.validate_feature(self.before, self.after, set(self.after), "0.4.0")
+        selected: patch.Feature = patch.FEATURES["0.4.0"]
+        self.assertEqual(selected.base, "52d9db3be04a05d7a872cca89b3ef3814908e459")
+        self.assertEqual(selected.test_filter, "device_")
+        self.assertEqual(selected.acceptance_kind, "device-code")
+
+    def test_runtime_dependency_and_wrong_version_changes_need_new_acceptance(self) -> None:
+        with self.assertRaisesRegex(ValueError, "feature_runtime_closure_changed"):
+            patch.validate_feature(self.before, self.after, set(self.after) | {"crates/mail-worker/src/billing.rs"}, "0.4.0")
+        dependency: dict[str, str] = deepcopy(self.after)
+        dependency["Cargo.lock"] += '\n[[package]]\nname="new-dependency"\nversion="1.0.0"\n'
+        with self.assertRaisesRegex(ValueError, "feature_dependencies_changed"):
+            patch.validate_feature(self.before, dependency, set(dependency), "0.4.0")
+        wrong: dict[str, str] = deepcopy(self.after)
+        wrong[patch.MANIFEST] = wrong[patch.MANIFEST].replace('"0.4.0"', '"0.4.1"')
+        with self.assertRaisesRegex(ValueError, "feature_version_unverified"):
+            patch.validate_feature(self.before, wrong, set(wrong), "0.4.0")
+
+
 if __name__ == "__main__":
     unittest.main()

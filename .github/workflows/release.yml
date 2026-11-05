@@ -269,6 +269,72 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  device-staging:
+    name: Verify new native device login on staging
+    needs: [preflight, build]
+    if: >-
+      always() && !cancelled() && needs.preflight.result == 'success' &&
+      needs.preflight.outputs.acceptance_kind == 'device-code' &&
+      needs.preflight.outputs.publish == 'true' &&
+      needs.preflight.outputs.recover != 'true' && needs.build.result == 'success'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    environment: staging
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download only this run's new Windows release archive
+        uses: actions/download-artifact@v4
+        with:
+          name: amail-x86_64-pc-windows-msvc
+          path: .temp/device-cli
+      - name: Restore the exact release executable without rebuilding
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+        run: |
+          $archive = Join-Path $env:GITHUB_WORKSPACE ".temp/device-cli/amail-$($env:RELEASE_TAG)-x86_64-pc-windows-msvc.zip"
+          Expand-Archive -LiteralPath $archive -DestinationPath .temp/device-cli
+      - name: Install only the isolated browser adapter
+        shell: bash
+        run: |
+          npm install --prefix .temp/device-browser --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.51.1
+          node .temp/device-browser/node_modules/playwright/cli.js install chromium
+      - name: Sign in and deny with the real paired staging Identity
+        shell: bash
+        env:
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+        run: >-
+          node scripts/staging_device_journey.mjs
+          --binary .temp/device-cli/amail.exe
+          --browser-module .temp/device-browser/node_modules/playwright/index.mjs
+          --output .temp/device-release-evidence
+      - name: Retain actual release-binary acceptance after successful cleanup
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-staging-acceptance-${{ github.run_id }}
+          path: .temp/device-release-evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain redacted staging failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-staging-diagnostic-${{ github.run_id }}
+          path: .temp/device-release-evidence/failure.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
   reuse-candidate:
     name: Package the three already-tested native executables
     needs: preflight
@@ -415,18 +481,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: production
+    permissions:
+      contents: read
+      actions: read
     env:
       AMAIL_RELEASE_VERSION: ${{ needs.preflight.outputs.runtime_tag }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Check production health and read-only D1 send release state
         run: python infra/release/check_send_gate.py
+      - name: Bind device release to the deployed backend receipt and migration
+        if: needs.preflight.outputs.acceptance_kind == 'device-code'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python infra/release/check_device_backend.py
 
   publish:
     name: Publish GitHub Release
@@ -437,8 +515,9 @@ jobs:
       (needs.preflight.outputs.focused_native != 'true' ||
        (needs.preflight.outputs.acceptance_kind == 'permanent-acquire' && needs.permanent-acquire.result == 'success') ||
        (needs.preflight.outputs.acceptance_kind == 'approval' && needs.approval-browser.result == 'success') ||
+       (needs.preflight.outputs.acceptance_kind == 'device-code' && needs.device-staging.result == 'success') ||
        needs.recover-bundle.result == 'success')
-    needs: [preflight, assemble, recover-bundle, send-release-gate, permanent-acquire, approval-browser]
+    needs: [preflight, assemble, recover-bundle, send-release-gate, permanent-acquire, approval-browser, device-staging]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

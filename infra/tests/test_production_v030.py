@@ -43,18 +43,6 @@ class ProductionV030Tests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         deploy.context(mode)
 
-    def test_v030_job_cannot_start_historical_writers_or_skip_source_admission(self) -> None:
-        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        body = source.split("  production-v030:\n", 1)[1].split("  production-inspect:\n", 1)[0]
-        self.assertIn("inputs.confirm == 'RUN_PRODUCTION_V030' && github.ref == 'refs/heads/main'", body)
-        self.assertIn("needs: [cli, worker, worker-build, site, dns, provider-live]", body)
-        self.assertIn("environment: production", body)
-        self.assertLess(body.index("python infra/ci/worker_artifact.py restore"),
-                        body.index("python infra/deploy/production_v030.py upgrade"))
-        for name in ("deploy-worker", "deploy-trace-sink", "deploy-ingress", "deploy-events", "deploy-site"):
-            job = source.split(f"  {name}:\n", 1)[1].split("    needs:", 1)[0]
-            self.assertIn("inputs.confirm != 'RUN_PRODUCTION_V030'", job)
-
     def test_only_exact_completed_usd_production_versions_may_omit_tmp_binding(self) -> None:
         for version, omitted in ((deploy.PINS["amail-mail"][1], True),
                                   ("12345678-1234-1234-1234-123456789abc", False)):

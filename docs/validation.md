@@ -4,6 +4,54 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
+## Device login and subscription short codes — source accepted, not published
+
+The `codex/device-code-login` feature adds opt-in `login --device-code` and
+`billing subscribe/manage --device-code`, preserving default PKCE and the existing
+Subscribe financial-consent boundary. Runtime implementation is `37337af`;
+the accepted native producer below includes its unchanged runtime sources.
+Integration, registration and rollout order are in
+[Identity onboarding](identity-onboarding.md).
+
+[Focused hosted run 42048951171](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/42048951171),
+source `8e5b9a9`, passed the Linux native job: six focused device/handoff tests,
+two public billing CLI tests, and an actual CLI/daemon plus Chromium journey with
+YOLO off and synthetic HTTPS Identity/Mail endpoints. It exercised explicit
+approval, denial, local/server expiry, terminal cancellation, first-poll delay,
+persistent `slow_down`, nonce-free RS256 validation, wrong-audience rejection,
+encrypted persistence, rotating refresh and revocation of the rotated token.
+The two handoff unit tests were also redundantly selected by a second filter;
+that duplicate invocation is removed from the workflow. Artifact
+`13426021821` (`native-device-acceptance-42048951171`) retains the sanitized receipt,
+confirmation screenshot and exact debug executable, SHA-256
+`4d4d54088a4c942c201f1ae94837a5cfe58bce5f5c749dadb4a98497318399d3`.
+The downloaded executable matches its receipt.
+
+That run also passed five affected Billing Rust tests, the real Mail Wasm build,
+and eight Workerd billing journeys, including code replay, owner isolation,
+pending-only navigation, expiry/denial and authoritative-receipt-only entitlement
+changes. Its **overall conclusion remains FAILED**: the final Chromium test used
+Playwright routing, which did not intercept the redirected top-level request.
+The browser reached the real staging Subscribe shell using only a synthetic
+navigation handle, then blocked its assets. No account, credentials or financial
+decision was involved. CDP Fetch interception now handles every redirect hop and
+blocks unexpected requests instead of letting the fixture reach real services.
+
+[Narrow browser acceptance 42050464517](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/42050464517)
+passed on source `544e24b`. It rebuilt the unchanged Mail Worker and ran **only**
+the remaining Chromium manual-code form journey: native POST, paired-origin CSP,
+303 to the synthetic Subscribe review page, and unchanged Free/zero-budget
+entitlements. Native, Rust and the eight already-green Worker journeys were not
+repeated. Runtime source, dependency lock and toolchain inputs are byte-identical
+between these two runs; only the harness/workflow changed. Both manual lanes are
+acceptance tools, not new PR quality gates.
+
+This is synthetic integration acceptance, not a deployed Identity/account/payment
+journey or cross-platform release. Neither Identity client opt-in SQL nor Mail
+migration `0020` was applied remotely. No production Worker, published CLI/site,
+installed binary, account credentials or mail state was changed. The deployed
+and installed versions below remain authoritative.
+
 ## v0.3.3 native browser approval — published and installed
 
 Formal [v0.3.3](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.3.3)
@@ -819,7 +867,49 @@ report, incident workflow or test of a test merely to inspect its spelling.
 Repeat real mail only for a changed delivery boundary or new failure, using
 authorized owned synthetic accounts and exact cleanup. Reuse successful evidence.
 
-For this simplification, local static validation found no imports of deleted Python
+### Validation ownership and reduced scope
+
+The 2026-11-05 simplification removes the obsolete pre-v0.1.0 production candidate
+writer, its dedicated site CI and `check_candidate_site_gate.py`. The gate already
+refused published v0.1.0 tags/releases, so it cannot serve the current released
+product. `ci.yml` owns automatic candidate/published source checks;
+`site-browser-acceptance.yml` retains real browser journeys. Existing staging
+candidate preparation and release-backed publication remain supported.
+
+Native-patch acceptance narrows only CLI checks, not independent site or Worker
+boundary-test changes. Worker source checks select the affected projects and their
+shared dependencies. Mail journeys build Mail; the existing queue journey builds
+its sink/ingress/lifecycle group; role-monitor and Identity inbox changes no longer
+build Mail or run its boundary suite. Workspace/compiler/lockfile changes and
+manual source/deployment lanes retain the complete six-tree build. Only those
+manual lanes publish the complete artifact expected by existing deployment readers;
+automatic partial checks never masquerade as deployment artifacts. The separate
+Wasm `cargo check` pass is removed because the release bundler compiles that target.
+Workflow lint runs only for workflow changes.
+Manual source/deployment dispatch no longer rediscovers every infrastructure unit
+test or reruns the observability gate's unit suite. Changed Python contracts remain
+incremental; manual lanes retain their actual configuration/isolation checks.
+
+Unit coverage is not retained merely because it exists. Removed tests include
+help-text phrase snapshots, framework argument parsing, default-value snapshots,
+UUID-generation checks, duplicated API code mappings/resource projections and
+telemetry enum/literal/diagnostic-count checks. Real HTTP/workerd/browser/native
+journeys, ownership and consent fencing, persisted-state recovery, billing and
+mail-delivery invariants remain. Nine workflow-string tests and the source-spelling
+wrapper test are also removed rather than replaced with a testing framework.
+
+The empty permanent-lease generation and string-valued health `api_version`
+incidents above illustrate why validators must follow the actual protocol rather
+than invent restrictions. Preserve their focused behavioral coverage. The same
+principle applies to test maintenance:
+[Google's change-detector guidance](https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html)
+explains implementation-coupled tests;
+[Predictive Test Selection (ICSE 2019)](https://arxiv.org/abs/1810.05286)
+studies selecting regression tests by change. This repository uses a small
+explicit dependency map, not a predictive model. Local selection/syntax checks do
+not constitute new hosted runtime acceptance or deployment evidence.
+
+For the earlier simplification, local static validation found no imports of deleted Python
 modules; actionlint v1.7.11 accepted retained workflows (local shellcheck/pyflakes
 disabled; normal hosted checks remain). The 52 focused infrastructure safety tests
 and 22 Mail API privacy tests passed. A separate synthetic ZIP probe accepted

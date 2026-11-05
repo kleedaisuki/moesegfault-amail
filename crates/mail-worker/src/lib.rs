@@ -1254,6 +1254,9 @@ async fn dispatch(
             &serde_json::json!({"status":"ok","request_id":request_id,"version":env!("CARGO_PKG_VERSION"),"api_version":"2"}),
         )?);
     }
+    if path == "/billing/device" && matches!(req.method(), Method::Get | Method::Post) {
+        return billing::device_navigation(&mut req, &env).await;
+    }
     if path == "/internal/inbound" && req.method() == Method::Post {
         return inbound(&mut req, &env, request_id, trace).await;
     }
