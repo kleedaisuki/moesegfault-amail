@@ -40,6 +40,7 @@ const children = new Set();
 const checks = [];
 const requests = [];
 const privateValues = new Set([username, password]);
+const cleanupFailures = [];
 let browser;
 let context;
 let phase = 'setup';
@@ -54,9 +55,9 @@ function pass(check) {
   checks.push(check);
   console.log(`PASS: ${check}`);
 }
-function launch(home, args) {
+function launch(home, args, terminalSuffix = '') {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('AMAIL_')));
-  Object.assign(env, { AMAIL_HOME: home, AMAIL_TERMINAL_ID: `staging-device-${path.basename(home)}`,
+  Object.assign(env, { AMAIL_HOME: home, AMAIL_TERMINAL_ID: `staging-device-${path.basename(home)}${terminalSuffix}`,
     AMAIL_TELEMETRY: 'off', AMAIL_API_BASE: apiOrigin, AMAIL_ISSUER: issuer,
     AMAIL_CLIENT_ID: clientId, AMAIL_REDIRECT_URI: '' });
   const child = spawn(binary, ['--machine', ...args], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -90,8 +91,8 @@ async function finish(state, expected = 0) {
   assert.ok(!state.stdout.includes(password) && !state.stderr.includes(password), 'Credential appeared in native output');
   return state.rows;
 }
-async function command(home, args) {
-  const state = launch(home, args);
+async function command(home, args, terminalSuffix = '') {
+  const state = launch(home, args, terminalSuffix);
   await until(() => state.settled || /http:\/\/127\.0\.0\.1:\d+\/authorize\/[0-9a-f-]+/.test(state.stderr), 'native_operation_start_timeout');
   const localApproval = state.stderr.match(/http:\/\/127\.0\.0\.1:\d+\/authorize\/[0-9a-f-]+/)?.[0];
   if (localApproval) {
@@ -156,6 +157,23 @@ async function cleanupBrowserSession() {
   await apiJson(await context.request.delete(`${issuer}/v1/principals/self/sessions/${own.session_id}`, {
     headers: { origin: loginOrigin, 'x-moesegfault-csrf': current.csrf_token, 'idempotency-key': randomUUID() },
   }), 204);
+}
+function machineErrors(state) {
+  return state?.stderr.split('\n').flatMap((line) => {
+    try {
+      const value = JSON.parse(line);
+      return value.schema === 'amail.machine.v1' && value.event === 'error' ? [value] : [];
+    } catch { return []; }
+  }) ?? [];
+}
+async function cleanupStep(stage, action) {
+  try { await action(); }
+  catch (error) {
+    failure ??= error;
+    failedCli ??= lastCli;
+    cleanupFailures.push({ stage, error: error instanceof Error ? error.message : 'cleanup_failed',
+      machine_errors: machineErrors(lastCli) });
+  }
 }
 async function billing(home) {
   const before = (await command(home, ['billing', 'status'])).at(-1);
@@ -242,28 +260,33 @@ try {
 } finally {
   for (const state of children) state.child.kill();
   await Promise.all([...children].map((state) => state.done.catch(() => {})));
-  try {
-    if (savedHome) {
-      assert.equal((await command(savedHome, ['auth', 'logout'])).at(-1).authenticated, false);
-      assert.equal((await command(savedHome, ['auth', 'status'])).at(-1).authenticated, false);
+  if (savedHome) {
+    let released = false;
+    await cleanupStep('release_owned_cloud_and_local_profile', async () => {
+      assert.equal((await command(savedHome, ['profile', 'release'])).at(-1).released, true);
+      released = true;
+      pass('owned_cloud_and_local_profile_released');
+    });
+    if (released) await cleanupStep('revoke_native_refresh_without_reclaiming_cloud_profile', async () => {
+      // Release leaves the original terminal inactive. A new fixture-only terminal
+      // can perform local logout without prepare_activity reclaiming cloud occupancy.
+      assert.equal((await command(savedHome, ['auth', 'logout'], '-cleanup')).at(-1).authenticated, false);
+      assert.equal((await command(savedHome, ['auth', 'status'], '-cleanup')).at(-1).authenticated, false);
       loggedOut = true;
-    }
-    await cleanupBrowserSession();
-    for (const directory of homes) await command(directory, ['daemon', 'stop']);
-  } catch (error) { failure ??= error; phase = `${phase}_cleanup`; }
-  await context?.close();
-  await browser?.close();
-  await rm(workspace, { recursive: true, force: true });
+      pass('native_refresh_revoked_and_local_session_removed');
+    });
+  }
+  await cleanupStep('revoke_owned_browser_session', cleanupBrowserSession);
+  for (const directory of homes) await cleanupStep('stop_isolated_daemon', () => command(directory, ['daemon', 'stop']));
+  await cleanupStep('close_isolated_browser_context', async () => context?.close());
+  await cleanupStep('close_isolated_browser', async () => browser?.close());
+  if (!cleanupFailures.length) await rm(workspace, { recursive: true, force: true });
 }
 if (failure) {
-  const machineErrors = failedCli?.stderr.split('\n').flatMap((line) => {
-    try {
-      const value = JSON.parse(line);
-      return value.schema === 'amail.machine.v1' && value.event === 'error' ? [value] : [];
-    } catch { return []; }
-  }) ?? [];
   let detail = JSON.stringify({ phase, checks, requests,
-    error: failure instanceof Error ? failure.message : 'journey_failed', machine_errors: machineErrors }, null, 2);
+    error: failure instanceof Error ? failure.message : 'journey_failed', machine_errors: machineErrors(failedCli),
+    cleanup_failures: cleanupFailures,
+    ...(cleanupFailures.length && { retained_private_workspace: workspace }) }, null, 2);
   for (const value of privateValues) detail = detail.replaceAll(value, '[private]');
   await writeFile(path.join(output, 'failure.json'), detail, { mode: 0o600 });
   throw new Error(`Staging native device journey failed at ${phase}; see private failure.json`);
