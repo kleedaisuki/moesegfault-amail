@@ -1,0 +1,221 @@
+name: Deploy device-code Mail integration
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    outputs:
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: worker-dependencies-v1
+          cache-bin: false
+          cache-workspace-crates: false
+      - uses: actions/cache@v4
+        id: bundler
+        with:
+          path: .cache/worker-build-check
+          key: device-worker-build-${{ runner.os }}-1.98.1-0.8.5
+      - if: steps.bundler.outputs.cache-hit != 'true'
+        run: cargo install worker-build --version 0.8.5 --locked --root "$GITHUB_WORKSPACE/.cache/worker-build-check"
+      - name: Build the Mail Worker once
+        working-directory: crates/mail-worker
+        run: ../../.cache/worker-build-check/bin/worker-build --release
+      - name: Check the actual device-code Worker bytes
+        working-directory: infra/tests/worker-boundary
+        run: |
+          pnpm install --frozen-lockfile
+          node --test --test-name-pattern='billing device (handoff|denial)' billing-human-loop.test.mjs
+      - name: Bind the tested bytes to this source and run
+        run: python infra/deploy/device_backend.py artifact-create
+      - uses: actions/upload-artifact@v4
+        id: artifact
+        with:
+          name: device-backend-${{ github.sha }}
+          path: .temp/ci/device-backend/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  staging:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    concurrency:
+      group: amail-staging-graph-writer
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      AMAIL_DEVICE_CONFIRM: RUN_DEVICE_BACKEND_STAGING
+      AMAIL_DEVICE_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the existing provider client
+        run: npm install --prefix .temp/device-provider --ignore-scripts --no-audit --no-fund --package-lock=false wrangler@4.142.0
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
+          path: .temp/ci/device-backend
+      - name: Restore checked bytes, migrate 0020 and replace only staging API
+        run: |
+          export PATH="$GITHUB_WORKSPACE/.temp/device-provider/node_modules/.bin:$PATH"
+          python infra/deploy/device_backend.py artifact-restore
+          python infra/deploy/device_backend.py deploy staging
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: device-backend-staging-${{ github.run_id }}
+          path: .temp/device-backend-staging*.json*
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
+
+  journey:
+    needs: [build, staging]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+    concurrency:
+      group: staging-native-mail-acceptance
+      cancel-in-progress: false
+    env:
+      AMAIL_DEVICE_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+      XDG_DATA_HOME: ${{ github.workspace }}/.temp/device-keyring
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: device-backend-staging-${{ github.run_id }}
+          path: .temp
+      - name: Download the already checked native producer
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '13426021821'
+          merge-multiple: true
+          run-id: '42048951171'
+          github-token: ${{ github.token }}
+          path: .temp/device-native
+      - name: Check native provenance and bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python infra/release/check_device_native.py
+      - name: Prepare browser and isolated OS credential service
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gnome-keyring dbus-x11
+          mkdir -p "$XDG_DATA_HOME"
+          npm install --prefix .temp/device-browser --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.51.1
+          node .temp/device-browser/node_modules/playwright/cli.js install --with-deps chromium
+          chmod +x .temp/device-native/target/debug/amail
+      - name: Complete real staging remote-login and subscription handoff
+        env:
+          STAGING_E2E_USERNAME: ${{ secrets.STAGING_E2E_USERNAME }}
+          STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+        run: |
+          dbus-run-session -- bash -euo pipefail -c '
+            printf "\n" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+            node scripts/staging_device_journey.mjs --binary .temp/device-native/target/debug/amail \
+              --browser-module .temp/device-browser/node_modules/playwright/index.mjs \
+              --output .temp/device-staging-acceptance
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: device-staging-acceptance-${{ github.run_id }}
+          path: .temp/device-staging-acceptance/acceptance.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: device-staging-diagnostic-${{ github.run_id }}
+          path: .temp/device-staging-acceptance/failure.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  production:
+    needs: [build, journey]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: amail-production-graph-writer
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      ROLE_FORWARD_DESTINATION: ${{ secrets.ROLE_FORWARD_DESTINATION }}
+      AMAIL_DEVICE_CONFIRM: RUN_DEVICE_BACKEND_PRODUCTION
+      AMAIL_PRODUCTION_GRAPH_FREEZE: FREEZE_PRODUCTION_GRAPH_WRITERS
+      AMAIL_DEVICE_ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+      AMAIL_DEVICE_STAGING_ACCEPTANCE: ${{ github.workspace }}/.temp/device-staging-acceptance/acceptance.json
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the existing provider client
+        run: npm install --prefix .temp/device-provider --ignore-scripts --no-audit --no-fund --package-lock=false wrangler@4.142.0
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
+          path: .temp/ci/device-backend
+      - uses: actions/download-artifact@v4
+        with:
+          name: device-backend-staging-${{ github.run_id }}
+          path: .temp
+      - uses: actions/download-artifact@v4
+        with:
+          name: device-staging-acceptance-${{ github.run_id }}
+          path: .temp/device-staging-acceptance
+      - name: Restore the same checked bytes, migrate 0020 and replace only production API
+        run: |
+          export PATH="$GITHUB_WORKSPACE/.temp/device-provider/node_modules/.bin:$PATH"
+          python infra/deploy/device_backend.py artifact-restore
+          python infra/deploy/device_backend.py deploy production
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: device-backend-production-${{ github.run_id }}
+          path: .temp/device-backend-production*.json*
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30

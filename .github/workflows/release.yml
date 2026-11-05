@@ -325,6 +325,15 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+      - name: Retain redacted staging failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-staging-diagnostic-${{ github.run_id }}
+          path: .temp/device-release-evidence/failure.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
   reuse-candidate:
     name: Package the three already-tested native executables
