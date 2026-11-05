@@ -182,6 +182,13 @@ def native_scope(head: str) -> bool:
         return False
 
 
+def reuses_worker_runtime() -> bool:
+    """Only a successfully admitted feature profile also reuses its Worker closure."""
+    sys.path.insert(0, str(ROOT / "infra/release"))
+    import native_patch
+    return native_patch.reuses_worker_runtime()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "test"))
@@ -199,6 +206,8 @@ def main() -> None:
         # The tagged workflow builds all five changed binaries once, runs only
         # the reviewed patch tests, then gates publication on its native journey.
         plan = replace(affected, cli=False, native_static=True)
+        if reuses_worker_runtime():
+            plan = replace(plan, worker=False, worker_projects=())
     elif base:
         # Exclude the accepted changes when their PR is later merged to main.
         changed = set(git("diff", "--name-only", base, head).splitlines())

@@ -1,4 +1,4 @@
-"""Admit exact reviewed native-only patches without repeating unrelated suites."""
+"""Admit exact reviewed native patches or accepted feature runtime closures."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -38,6 +38,23 @@ PATCHES: dict[str, Patch] = {
 }
 
 
+@dataclass(frozen=True)
+class Feature:
+    base: str
+    previous_version: str
+    test_filter: str
+    acceptance_kind: str
+    runtime_tag: str
+
+
+# This complete runtime passed the focused native/Worker journeys in docs/validation.md.
+# Only packaging its new version is admitted here; new implementation needs a new review.
+FEATURES: dict[str, Feature] = {
+    "0.4.0": Feature("52d9db3be04a05d7a872cca89b3ef3814908e459", "0.3.3",
+                     "device_", "device-code", "v0.3.1"),
+}
+
+
 def git(*args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=ROOT, text=True, timeout=30).strip()
 
@@ -72,16 +89,39 @@ def validate(before: dict[str, str], after: dict[str, str], changed: set[str]) -
         raise ValueError("native_patch_implementation_changed")
 
 
+def validate_feature(before: dict[str, str], after: dict[str, str], changed: set[str], version: str) -> None:
+    feature: Feature = FEATURES[version]
+    if changed != {MANIFEST, "Cargo.lock"}:
+        raise ValueError("feature_runtime_closure_changed")
+    for name in (MANIFEST, "Cargo.lock"):
+        old: dict[str, Any] = tomllib.loads(before[name])
+        new: dict[str, Any] = tomllib.loads(after[name])
+        old_package: dict[str, Any] = old["package"] if name == MANIFEST else next(row for row in old["package"] if row["name"] == "amail")
+        new_package: dict[str, Any] = new["package"] if name == MANIFEST else next(row for row in new["package"] if row["name"] == "amail")
+        if old_package.pop("version") != feature.previous_version or new_package.pop("version") != version:
+            raise ValueError("feature_version_unverified")
+        if old != new:
+            raise ValueError("feature_dependencies_changed")
+
+
+def reuses_worker_runtime() -> bool:
+    version: str = tomllib.loads((ROOT / MANIFEST).read_text(encoding="utf-8"))["package"]["version"]
+    return version in FEATURES
+
+
 def applies(head: str) -> bool:
     version: str = tomllib.loads((ROOT / MANIFEST).read_text(encoding="utf-8"))["package"]["version"]
-    patch: Patch | None = PATCHES.get(version)
-    if patch is None:
+    selected: Patch | Feature | None = FEATURES.get(version) or PATCHES.get(version)
+    if selected is None:
         return False
-    git("merge-base", "--is-ancestor", patch.base, head)
-    changed: set[str] = set(git("diff", "--name-only", patch.base, head, "--", *RUNTIME).splitlines())
-    before: dict[str, str] = {name: git("show", f"{patch.base}:{name}") + "\n" for name in changed}
+    git("merge-base", "--is-ancestor", selected.base, head)
+    changed: set[str] = set(git("diff", "--name-only", selected.base, head, "--", *RUNTIME).splitlines())
+    before: dict[str, str] = {name: git("show", f"{selected.base}:{name}") + "\n" for name in changed}
     after: dict[str, str] = {name: (ROOT / name).read_text(encoding="utf-8") for name in changed}
-    validate(before, after, changed)
+    if isinstance(selected, Feature):
+        validate_feature(before, after, changed, version)
+    else:
+        validate(before, after, changed)
     return True
 
 
@@ -90,8 +130,10 @@ def main() -> None:
     version: str = tomllib.loads((ROOT / MANIFEST).read_text(encoding="utf-8"))["package"]["version"]
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
         output.write(f"focused_native={str(focused).lower()}\n")
-        output.write(f"runtime_tag=v{'0.3.1' if focused else version}\n")
-        patch: Patch | None = PATCHES.get(version) if focused else None
+        feature: Feature | None = FEATURES.get(version) if focused else None
+        runtime_tag: str = feature.runtime_tag if feature else f"v{'0.3.1' if focused else version}"
+        output.write(f"runtime_tag={runtime_tag}\n")
+        patch: Patch | Feature | None = (feature or PATCHES.get(version)) if focused else None
         output.write(f"focused_test_filter={patch.test_filter if patch else ''}\n")
         output.write(f"acceptance_kind={patch.acceptance_kind if patch else ''}\n")
 

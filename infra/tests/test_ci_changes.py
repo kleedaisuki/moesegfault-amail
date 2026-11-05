@@ -65,6 +65,7 @@ class ChangesTests(unittest.TestCase):
                        "GITHUB_EVENT_NAME": "pull_request", "GITHUB_SHA": "a" * 40}
         with patch.dict(os.environ, environment), patch.object(sys, "argv", ["changes.py", "plan"]), \
              patch.object(changes, "native_scope", return_value=True), \
+             patch.object(changes, "reuses_worker_runtime", return_value=False), \
              patch.object(changes, "delta", return_value=["site/src/pages/index.astro",
                  "infra/tests/worker-boundary/semantic-consent.test.mjs"]):
             changes.main()
@@ -73,6 +74,30 @@ class ChangesTests(unittest.TestCase):
         self.assertEqual(values["site"], "true")
         self.assertEqual(values["worker"], "true")
         self.assertEqual(json.loads(values["worker_projects"]), ["crates/mail-worker"])
+
+    def test_accepted_device_runtime_reuses_worker_after_version_only_packaging(self) -> None:
+        event = ROOT / ".temp/test-device-selection-event.json"
+        output = ROOT / ".temp/test-device-selection-output.txt"
+        (ROOT / ".temp").mkdir(exist_ok=True)
+        event.write_text("{}", encoding="utf-8")
+        output.write_text("", encoding="utf-8")
+        self.addCleanup(event.unlink)
+        self.addCleanup(output.unlink)
+        environment: dict[str, str] = {"GITHUB_EVENT_PATH": str(event), "GITHUB_OUTPUT": str(output),
+                                      "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": "a" * 40}
+        with patch.dict(os.environ, environment), patch.object(sys, "argv", ["changes.py", "plan"]), \
+             patch.object(changes, "native_scope", return_value=True), \
+             patch.object(changes, "reuses_worker_runtime", return_value=True), \
+             patch.object(changes, "delta", return_value=["Cargo.lock", "crates/amail/Cargo.toml",
+                 "site/src/pages/manual.md", "infra/tests/test_native_patch.py"]):
+            changes.main()
+        values: dict[str, str] = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        self.assertEqual(values["cli"], "false")
+        self.assertEqual(values["worker"], "false")
+        self.assertEqual(values["worker_projects"], "[]")
+        self.assertEqual(values["native_static"], "true")
+        self.assertEqual(values["site"], "true")
+        self.assertIn("infra.tests.test_native_patch", json.loads(values["tests"]))
 
     def test_named_test_delta_is_focused_not_discovery(self) -> None:
         plan = changes.classify(["infra/tests/test_ci_changes.py"], event="push")

@@ -25,7 +25,7 @@ semantic matching. The default CLI output is compact, pipe-friendly text;
 
 ## Install
 
-Download the matching `v0.3.1` archive for your platform from
+Download the matching `v0.4.0` archive for your platform from
 [GitHub Releases](https://github.com/kleedaisuki/moesegfault-amail/releases).
 Check its digest against `SHA256SUMS` in the same release. Each CLI archive
 contains the `amail` binary and license. Source builds use `cargo build -p amail
@@ -66,6 +66,19 @@ automation must use the matching new CLI/Skill. For a headless launcher without
 an OS terminal, reuse one stable `AMAIL_TERMINAL_ID` for the logical workflow.
 See the [multi-tenant architecture](docs/v0.3.0/architecture.md) and
 [profile upgrade notes](docs/releases/v0.3.0.md).
+
+## Remote login and subscription confirmation (v0.4.0)
+
+Use `amail login --device-code --no-browser` on a remote terminal. Open the
+verification page on your own device, compare its application and code, then
+approve. Default `amail login` retains browser PKCE. Tokens remain in the existing
+protected local session; Ctrl+C stops a pending device login.
+
+`amail billing subscribe plus --device-code --no-browser` and
+`amail billing manage --device-code --no-browser` return an expiring short code.
+The code opens the hosted Subscribe review page; it does not approve a plan,
+payment or spending budget. Preserve the creation key/session ID for retry and
+resume. See [the v0.4.0 notes](docs/releases/v0.4.0.md).
 
 ## Semantic indexing (v0.3.1)
 
