@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import traceback
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener
@@ -39,6 +40,11 @@ SOURCE_SHA = "43c14c9d7fe966957665e67a2e1b87cb256b37e3"
 SOURCE_ARTIFACT = 13435962042
 SOURCE_STAGING_RECEIPT = 13437177224
 SOURCE_STAGING_API = "1dba790f-5564-4b3a-aafd-2b4f8d9b83c5"
+ACCEPTANCE_RUN = "42073709631"
+ACCEPTANCE_SHA = "2979c52a55306f9859ba30cec66248481ddac137"
+ACCEPTANCE_STAGE_ARTIFACT = 13437945110
+ACCEPTANCE_ARTIFACT = 13436979065
+PHASE = "arguments"
 FOLDER = ROOT / ".temp/ci/device-backend"
 TREES = ("crates/mail-worker/build",)
 ENTRIES = ("crates/mail-worker/entry/api.mjs", "crates/mail-worker/entry/maintenance.mjs",
@@ -61,7 +67,8 @@ FAILURES = frozenset({"device_backend_context_unverified", "device_backend_artif
     "device_backend_recovery_stage_read_only", "device_backend_recovery_stage_unverified",
     "accepted_source_required_gate_failed", "accepted_source_runtime_changed",
     "accepted_source_inventory_incomplete", "accepted_source_metadata_unavailable",
-    "accepted_source_metadata_invalid", "accepted_source_revision_invalid"}) | retained.FAILURES
+    "accepted_source_metadata_invalid", "accepted_source_revision_invalid",
+    "device_backend_acceptance_source_unverified"}) | retained.FAILURES
 
 
 def orchestration_identity() -> dict[str, Any]:
@@ -104,6 +111,79 @@ def source_admit() -> None:
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write(f"artifact_id={SOURCE_ARTIFACT}\nstaging_receipt_id={SOURCE_STAGING_RECEIPT}\n"
                      f"source_run_id={source['run_id']}\nsource_sha={source['source_sha']}\n")
+
+
+def acceptance_identity() -> dict[str, Any]:
+    current = orchestration_identity()
+    selected = os.getenv("AMAIL_DEVICE_ACCEPTANCE_RUN", "")
+    if not selected:
+        return {"source_sha": current["source_sha"], "run_id": current["run_id"], "run_attempt": 1}
+    if selected != ACCEPTANCE_RUN or os.getenv("AMAIL_DEVICE_SOURCE_RUN") != SOURCE_RUN:
+        raise ValueError("device_backend_acceptance_source_unverified")
+    run = accepted.github(f"runs/{ACCEPTANCE_RUN}")
+    expected = {"id": int(ACCEPTANCE_RUN), "head_sha": ACCEPTANCE_SHA, "status": "completed",
+        "conclusion": "failure", "event": "workflow_dispatch", "head_branch": "main",
+        "path": ".github/workflows/ci.yml", "run_attempt": 1}
+    if (any(type(run.get(key)) is not type(value) or run.get(key) != value for key, value in expected.items())
+            or run.get("repository", {}).get("full_name") != accepted.REPO):
+        raise ValueError("device_backend_acceptance_source_unverified")
+    accepted.successful_jobs(ACCEPTANCE_RUN, frozenset({"Device-code backend release / reuse", "Device-code backend release / journey"}))
+    inventory = accepted.rows(accepted.github(f"runs/{ACCEPTANCE_RUN}/artifacts?per_page=100"), "artifacts")
+    for name, identifier in ((f"device-backend-staging-{ACCEPTANCE_RUN}", ACCEPTANCE_STAGE_ARTIFACT),
+                             (f"device-staging-acceptance-{ACCEPTANCE_RUN}", ACCEPTANCE_ARTIFACT)):
+        found = [row for row in inventory if row.get("name") == name]
+        if (len(found) != 1 or found[0].get("id") != identifier or found[0].get("expired") is not False
+                or found[0].get("workflow_run", {}).get("head_sha") != ACCEPTANCE_SHA):
+            raise ValueError("device_backend_acceptance_source_unverified")
+    accepted.runtime_closure(ACCEPTANCE_SHA, current["source_sha"])
+    return {"source_sha": ACCEPTANCE_SHA, "run_id": ACCEPTANCE_RUN, "run_attempt": 1,
+            "artifact_id": ACCEPTANCE_ARTIFACT, "staging_artifact_id": ACCEPTANCE_STAGE_ARTIFACT}
+
+
+def mark_phase(name: str) -> None:
+    global PHASE
+    PHASE = name
+
+
+def failure_diagnostic(error: Exception) -> dict[str, Any]:
+    """Keep machine codes and source locations, never exception prose or locals."""
+    reason = str(error) if isinstance(error, ValueError) and re.fullmatch(r"[a-z][a-z0-9_]{0,127}", str(error)) else "unknown"
+    result: dict[str, Any] = {"schema": "device-backend-diagnostic/v1", "reason": reason,
+        "class": type(error).__name__, "phase": PHASE}
+    for frame in traceback.extract_tb(error.__traceback__):
+        path = Path(frame.filename).resolve()
+        if path.is_relative_to(ROOT / "infra"):
+            result["location"] = {"file": path.relative_to(ROOT).as_posix(), "function": frame.name, "line": frame.lineno}
+    return result
+
+
+def inspect_production() -> None:
+    """Observe the production predecessor without artifacts or staging authority."""
+    mark_phase("production_inspection_context")
+    expected = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": accepted.REPO,
+        "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_REF": "refs/heads/main",
+        "AMAIL_DEVICE_CONFIRM": "INSPECT_DEVICE_BACKEND_PRODUCTION",
+        "AMAIL_PRODUCTION_GRAPH_FREEZE": "FREEZE_PRODUCTION_GRAPH_WRITERS"}
+    if any(os.getenv(key) != value for key, value in expected.items()):
+        raise ValueError("device_backend_context_unverified")
+    current = orchestration_identity()
+    pins = dict(PINS["production"])
+    mark_phase("production_graph_preflight")
+    before, policy = retained.observe("production", pins)
+    mark_phase("production_schema_preflight")
+    schema(DatabaseClient(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"], "production"), "production", 19)
+    mark_phase("production_graph_final_readback")
+    final, _ = retained.observe("production", pins, policy)
+    if final != before:
+        raise ValueError("device_backend_retained_graph_changed")
+    value = {"schema": "device-backend-production-inspection/v1", "source_sha": current["source_sha"],
+        "run_id": current["run_id"], "run_attempt": 1, "migration": 19, "pins": pins, "graph": final["graph"],
+        "policy_fingerprint": retained.previous.prior.digest(policy),
+        "retained_fingerprint": retained.previous.prior.digest(final["retained"]), "writes": False}
+    path = ROOT / ".temp/device-backend-production-inspection.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as file:
+        json.dump(value, file, sort_keys=True)
 
 
 def hashes(base: Path) -> dict[str, str]:
@@ -286,12 +366,12 @@ def verify_staging() -> None:
         json.dump(staging_verification(receipt), file, sort_keys=True)
 
 
-def staging_accepted() -> None:
+def staging_accepted() -> dict[str, Any]:
     receipt = staging_receipt()
     acceptance = metadata(Path(os.getenv("AMAIL_DEVICE_STAGING_ACCEPTANCE", str(ROOT / ".temp/device-staging-acceptance.json"))))
-    current = orchestration_identity()
-    checks = {"schema": "device-staging-acceptance/v1", "source_sha": current["source_sha"],
-              "run_id": current["run_id"], "run_attempt": "1", "backend_artifact_id": receipt["artifact_id"],
+    authority = acceptance_identity()
+    checks = {"schema": "device-staging-acceptance/v1", "source_sha": authority["source_sha"],
+              "run_id": authority["run_id"], "run_attempt": "1", "backend_artifact_id": receipt["artifact_id"],
               "api_version": receipt["api_version"], "issuer": "https://identity-staging.moesegfault.dev",
               "client_id": "amail-cli-staging", "login": "persisted",
               "billing": "pending_handoff_then_cancelled", "cleanup": "complete"}
@@ -301,6 +381,7 @@ def staging_accepted() -> None:
         observed = metadata(ROOT / ".temp/device-backend-staging-verified.json")
         if observed != staging_verification(receipt):
             raise ValueError("device_backend_recovery_stage_unverified")
+    return authority
 
 
 
@@ -358,14 +439,20 @@ def replace_api(realm: str) -> str:
 
 
 def deploy(realm: str) -> None:
+    mark_phase(realm + "_deployment_context")
     context(realm)
     if realm == "staging" and os.getenv("AMAIL_DEVICE_SOURCE_RUN"):
         raise ValueError("device_backend_recovery_stage_read_only")
+    mark_phase(realm + "_artifact_preflight")
     require_artifact()
+    authority = None
     if realm == "production":
-        staging_accepted()
+        mark_phase("production_staging_acceptance")
+        authority = staging_accepted()
     pins = dict(PINS[realm])
+    mark_phase(realm + "_graph_preflight")
     before, policy = retained.observe(realm, pins)
+    mark_phase(realm + "_schema_preflight")
     database = DatabaseClient(os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"], realm)
     schema(database, realm, 19)
     checkpoint = {"realm": realm, "source_sha": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
@@ -374,15 +461,21 @@ def deploy(realm: str) -> None:
                   "retained_fingerprint": retained.previous.prior.digest(before["retained"])}
     with (ROOT / f".temp/device-backend-{realm}-predecessor.json").open("x", encoding="utf-8") as file:
         json.dump(checkpoint, file, sort_keys=True)
+    mark_phase(realm + "_migration")
     migrate(realm, database)
     suffix = "-staging" if realm == "staging" else ""
+    mark_phase(realm + "_api_submit")
     pins["amail-mail" + suffix] = replace_api(realm)
+    mark_phase(realm + "_graph_after_submit")
     after, _ = retained.observe(realm, pins, policy)
     if after["retained"] != before["retained"]:
         raise ValueError("device_backend_retained_graph_changed")
+    mark_phase(realm + "_schema_after_submit")
     schema(database, realm, 20)
+    mark_phase(realm + "_public_readback")
     public_ready(realm)
     # Bracket the public request with the same exact serving/retained graph.
+    mark_phase(realm + "_graph_final_readback")
     final, _ = retained.observe(realm, pins, policy)
     if final != after:
         raise ValueError("device_backend_retained_graph_changed")
@@ -394,6 +487,8 @@ def deploy(realm: str) -> None:
              "retained_fingerprint": retained.previous.prior.digest(final["retained"]),
              "graph": final["graph"], "cron_changed": False, "secrets_changed": False,
              "producer": {**identity(), "artifact_id": os.environ["AMAIL_DEVICE_ARTIFACT_ID"]}}
+    if authority is not None:
+        value["staging_acceptance"] = authority
     with (ROOT / f".temp/device-backend-{realm}.json").open("x", encoding="utf-8") as file:
         json.dump(value, file, sort_keys=True)
     journal(realm, "complete", "verified", api_version=value["api_version"])
@@ -401,9 +496,10 @@ def deploy(realm: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("artifact-create", "artifact-restore", "source-admit", "verify-staging", "deploy"))
+    parser.add_argument("mode", choices=("artifact-create", "artifact-restore", "source-admit", "verify-staging", "inspect-production", "deploy"))
     parser.add_argument("realm", nargs="?", choices=("staging", "production"))
     args = parser.parse_args()
+    mark_phase(args.mode.replace("-", "_"))
     try:
         if args.mode == "deploy":
             if args.realm is None:
@@ -411,10 +507,15 @@ def main() -> int:
             deploy(args.realm)
         else:
             {"artifact-create": artifact_create, "artifact-restore": artifact_restore,
-             "source-admit": source_admit, "verify-staging": verify_staging}[args.mode]()
+             "source-admit": source_admit, "verify-staging": verify_staging,
+             "inspect-production": inspect_production}[args.mode]()
     except Exception as error:
-        reason = str(error) if isinstance(error, ValueError) and str(error) in FAILURES else "unknown"
-        print(f"device_backend=unverified reason={reason} class={type(error).__name__}")
+        diagnostic = failure_diagnostic(error)
+        realm = args.realm or ("production" if args.mode == "inspect-production" else "artifact")
+        path = ROOT / f".temp/device-backend-{realm}-diagnostic.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(diagnostic, sort_keys=True), encoding="utf-8")
+        print(json.dumps({"event": "device_backend_unverified", **diagnostic}, sort_keys=True))
         return 1
     print("device_backend=verified")
     return 0
