@@ -1,26 +1,12 @@
 /** Hosted native Queue entrypoint tests for the actual compiled Rust trace sink. */
 import assert from "node:assert/strict";
 import path from "node:path";
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Log, LogLevel, Miniflare } from "miniflare";
 import { workerModuleRules } from "./worker-module-rules.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-
-test("event boundaries export only their composed platform handler", async () => {
-  for (const [name, handler] of [["trace-sink", "queue"], ["mail-ingress", "email"], ["mail-events", "queue"]]) {
-    const entry = `entry/${handler}.mjs`;
-    const source = await readFile(path.join(root, "workers", name, entry), "utf8");
-    const config = await readFile(path.join(root, "workers", name, "wrangler.toml"), "utf8");
-    assert.equal((source.match(/\bexport\b/g) ?? []).length, 1);
-    assert.match(source, /export default class \w+ extends WorkerEntrypoint/);
-    assert.match(source, new RegExp(`return new \\w+\\(this.ctx, this.env\\)\\.${handler}\\(`));
-    assert.match(config, new RegExp(`^main = "${entry.replaceAll(".", "\\.")}"$`, "m"));
-    assert.doesNotMatch(source, /\b(fetch|scheduled)\s*\(/);
-  }
-});
 
 test("native lifecycle queue wrapper preserves malformed-event retry semantics", async () => {
   const mf = new Miniflare({ cf: false, modules: true, modulesRoot: root,

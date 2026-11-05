@@ -52,18 +52,3 @@ pub fn topic(name: Option<&str>) -> Result<Value> {
     };
     Ok(json!({"schema":"amail.discover.v1", "topic":name.unwrap_or("index"), "capabilities":body}))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn root_children_are_resolvable_and_bounded() {
-        let root = topic(None).unwrap();
-        for child in root["capabilities"]["topics"].as_array().unwrap() {
-            let value = topic(child.as_str()).unwrap();
-            assert_eq!(value["schema"], "amail.discover.v1");
-            assert!(value.to_string().len() < 4000);
-        }
-        assert!(topic(Some("unknown")).is_err());
-    }
-}

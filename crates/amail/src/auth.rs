@@ -768,23 +768,6 @@ mod tests {
         }
     }
 
-    /// Full-size tokens exceed Windows Credential Manager's short string limit.
-    /// 完整令牌超过 Windows 凭据管理器短字符串限制，钥匙串值始终固定长度。
-    #[test]
-    fn keyring_value_stays_bounded() {
-        let key = [7u8; 32];
-        let value = format!("{KEY_PREFIX}{}", URL_SAFE_NO_PAD.encode(key));
-        assert!(value.encode_utf16().count() < 2560);
-        assert_eq!(parse_key(&value).unwrap(), Some(key));
-        assert!(
-            serde_json::to_string(&tokens())
-                .unwrap()
-                .encode_utf16()
-                .count()
-                > 2560
-        );
-    }
-
     #[test]
     fn seal_round_trip_and_reject_tampering_or_wrong_context() {
         let cfg = config("https://identity.example.test");

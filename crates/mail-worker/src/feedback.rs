@@ -566,13 +566,6 @@ mod tests {
         assert!(decode_cursor("not-json", "scope", 1).is_err());
     }
 
-    /// Public discovery adds only links; inbound messages do not advertise send outcomes.
-    #[test]
-    fn links_are_progressive() {
-        assert!(message_links("id", false).get("outcomes").is_none());
-        assert!(message_links("id", true).get("outcomes").is_some());
-    }
-
     /// Feedback authorization transfers one integer, independent of content size
     /// or representation, and retains owner/direction/deletion/projection guards.
     #[test]

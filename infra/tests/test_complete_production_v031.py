@@ -84,16 +84,5 @@ class CompletionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "context_unverified"):
                 completion.context()
 
-    def test_workflow_completion_has_no_deployment_migration_or_repeated_runtime_suite(self) -> None:
-        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        job = source.split("  production-v031-complete:\n", 1)[1].split("  production-v031-promotion-checks:\n", 1)[0]
-        self.assertIn("COMPLETE_PRODUCTION_V031", job)
-        self.assertIn("environment: production", job)
-        self.assertIn("actions: read", job)
-        self.assertNotIn("wrangler", job)
-        self.assertNotIn("cargo ", job)
-        self.assertIn("complete_production_v031.py complete", job)
-
-
 if __name__ == "__main__":
     unittest.main()

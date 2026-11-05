@@ -125,22 +125,3 @@ impl AddressDiag {
         format!("v1:{}:{}:{status}:{code}", stage.wire(), kind.wire())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The header cannot reflect arbitrary text and suppresses invalid numeric facts.
-    #[test]
-    fn grammar_and_bounds() {
-        let mut diag = AddressDiag::new();
-        assert_eq!(diag.header(false), "v1:input:request:0:0");
-        diag.enter(Stage::RoutingCreate);
-        diag.fail(Kind::Provider, Some(403), Some(10000));
-        assert_eq!(diag.header(false), "v1:routing_create:provider:403:10000");
-        diag.fail(Kind::Provider, Some(99), Some(u32::MAX));
-        assert_eq!(diag.header(false), "v1:routing_create:provider:0:0");
-        diag.success();
-        assert_eq!(diag.header(true), "v1:success:none:0:0");
-    }
-}

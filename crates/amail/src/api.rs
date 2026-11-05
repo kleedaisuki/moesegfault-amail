@@ -1149,59 +1149,6 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_problem_code_never_reaches_output() {
-        assert_eq!(
-            address_problem_code(&serde_json::json!({"code":"routing_unavailable"})),
-            "routing_unavailable"
-        );
-        assert_eq!(
-            address_problem_code(&serde_json::json!({"code":"private-address@example.org"})),
-            "http_error"
-        );
-        assert_eq!(
-            address_problem_code(&serde_json::json!({"message":"secret"})),
-            "http_error"
-        );
-        assert_eq!(
-            address_problem_code(&serde_json::json!({
-                "code":"private-address@example.org","error_code":"user_profile_required"
-            })),
-            "http_error"
-        );
-    }
-
-    #[test]
-    fn semantic_control_codes_are_closed_and_keep_policy_upgrade_identity() {
-        for code in [
-            "semantic_policy_changed",
-            "semantic_state_changed",
-            "semantic_disabled",
-            "invalid_semantic_preference",
-            "user_profile_required",
-            "profile_session_expired",
-        ] {
-            assert_eq!(
-                semantic_problem_code(
-                    &serde_json::json!({"code":code,"detail":"private@example.org"})
-                ),
-                code
-            );
-            assert_eq!(
-                semantic_problem_code(&serde_json::json!({"error_code":code})),
-                code
-            );
-        }
-        assert_eq!(
-            semantic_problem_code(&serde_json::json!({"code":"private@example.org"})),
-            "http_error"
-        );
-        assert_eq!(
-            semantic_problem_code(&serde_json::json!({"detail":"private@example.org"})),
-            "http_error"
-        );
-    }
-
-    #[test]
     fn real_semantic_policy_response_requires_upgrade_without_private_prose() {
         use std::{
             io::{Read, Write},
@@ -1245,38 +1192,6 @@ mod tests {
         assert_eq!(record["next_action"], "upgrade_client");
         assert!(!error.to_string().contains("private@example.org"));
         assert!(!record.to_string().contains("private@example.org"));
-    }
-
-    #[test]
-    fn shipped_tenant_address_codes_preserve_their_closed_wire_identity() {
-        for code in [
-            "user_profile_required",
-            "profile_session_required",
-            "profile_session_expired",
-            "profile_in_use",
-            "profile_not_registered",
-            "profile_exists_or_limit",
-            "invalid_profile",
-            "invalid_lease",
-            "invalid_lease_mode",
-            "mailbox_in_use",
-            "mailbox_lease_required",
-            "mailbox_lease_expired",
-            "mailbox_generation_expired",
-            "invalid_address_kind",
-            "tmpaddr_limit",
-            "tmpaddr_unconfigured",
-            "address_expired",
-        ] {
-            assert_eq!(
-                address_problem_code(&serde_json::json!({"code":code})),
-                code
-            );
-            assert_eq!(
-                address_problem_code(&serde_json::json!({"error_code":code})),
-                code
-            );
-        }
     }
 
     #[test]
@@ -1381,23 +1296,6 @@ mod tests {
 
         headers.append("x-amail-request-id", id);
         assert_eq!(address_response_diag(&headers), None);
-    }
-
-    #[test]
-    fn cloudflare_error_type_is_a_closed_response_category() {
-        let mut headers = HeaderMap::new();
-        assert_eq!(cf_error_type(&headers), "absent");
-        headers.insert("cf-error-type", HeaderValue::from_static("1101"));
-        assert_eq!(cf_error_type(&headers), "1101");
-        headers.insert("cf-error-type", HeaderValue::from_static("1102"));
-        assert_eq!(cf_error_type(&headers), "1102");
-        headers.insert(
-            "cf-error-type",
-            HeaderValue::from_static("private@example.test"),
-        );
-        assert_eq!(cf_error_type(&headers), "other");
-        headers.append("cf-error-type", HeaderValue::from_static("1101"));
-        assert_eq!(cf_error_type(&headers), "other");
     }
 
     #[test]

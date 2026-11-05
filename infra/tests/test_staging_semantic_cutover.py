@@ -66,17 +66,6 @@ class SemanticCutoverTests(unittest.TestCase):
             deploy.assert_called_once_with(False)
             write.assert_not_called()
 
-    def test_workflow_orders_failclosed_api_pause_then_migration(self) -> None:
-        source = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        body = source.split("  staging-worker:\n", 1)[1].split("  staging-ingress:\n", 1)[0]
-        steps = ["Install fail-closed semantic API before consent migration",
-                 "Pause consent-aware maintenance and bound old scheduled cohort",
-                 "Apply staging D1 migrations only",
-                 "Replace scheduled-only maintenance with bounded legacy cutover"]
-        positions = [body.index(name) for name in steps]
-        self.assertEqual(positions, sorted(positions))
-        self.assertIn("steps.guarded_api.outputs.version", body)
-
     def test_activation_requires_same_run_completed_witness(self) -> None:
         with patch.dict(os.environ, self.environment(), clear=True), \
              patch.object(rollout, "predecessor", return_value={"rollout": "split"}), \

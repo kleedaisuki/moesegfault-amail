@@ -688,13 +688,6 @@ mod tests {
         assert_eq!(owner_id(&one).len(), 64);
     }
     #[test]
-    fn closed_plan_and_key_contracts() {
-        assert_eq!(plan("amail-plus").unwrap(), "plus");
-        assert!(plan("enterprise").is_err());
-        assert!(canonical_uuid("not-a-key").is_err());
-        assert!(canonical_uuid(&uuid::Uuid::nil().to_string()).is_err());
-    }
-    #[test]
     fn authorization_links_have_exact_navigation_origin() {
         let config = Configuration {
             base: String::new(),

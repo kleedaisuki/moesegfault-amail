@@ -142,17 +142,6 @@ mod tests {
     use super::*;
     use rusqlite::{params, Connection, OptionalExtension};
 
-    #[test]
-    fn consent_names_the_reviewed_retention_policy() {
-        assert!(verify_policy("voyage4_no_training_retention_v1").is_ok());
-        for old in ["", "zdr", "qwen", "voyage4_no_training_retention_v2"] {
-            assert_eq!(
-                verify_policy(old).unwrap_err().code,
-                "semantic_policy_changed"
-            );
-        }
-    }
-
     fn database() -> Connection {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch(

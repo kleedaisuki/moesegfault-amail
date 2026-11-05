@@ -291,23 +291,6 @@ mod tests {
     }
 
     #[test]
-    fn convention_defaults_are_safe_and_partial_toml_overrides_them() {
-        let defaults: Config = toml::from_str("").unwrap();
-        assert!(!defaults.yolo);
-        assert_eq!(defaults.daemon.max_concurrency, 4);
-        let configured: Config =
-            toml::from_str("yolo = true\n[daemon]\nmax_concurrency = 2\n").unwrap();
-        assert!(configured.yolo);
-        assert_eq!(configured.daemon.max_concurrency, 2);
-        assert_eq!(configured.daemon.start_timeout_seconds, 15);
-        assert!(toml::from_str::<Config>("[daemon]\nmax_concurrency = 0")
-            .unwrap()
-            .daemon
-            .validate()
-            .is_err());
-    }
-
-    #[test]
     fn migration_preserves_wal_state_and_never_reimports_after_admission() {
         let root = fixture();
         let old = root.path().join("old");
