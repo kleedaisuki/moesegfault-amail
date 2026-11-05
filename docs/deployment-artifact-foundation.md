@@ -195,3 +195,17 @@ submit/version and capture readback coordinates remain in the corresponding
 triggers automatic migration or deployment replay; inspect the owned boundary
 and implement a named continuation if needed. A second ordinary invocation cannot
 adopt an already advanced schema/API as its old predecessor.
+
+The named device completion admits only producer run `42070608438`, source
+`43c14c9d7fe966957665e67a2e1b87cb256b37e3`, build artifact `13435962042`, and
+successful staging receipt `13437177224`. Its build and staging jobs succeeded;
+the overall run remains failed because the native journey's logout cleanup did
+not complete. `AMAIL_DEVICE_SOURCE_RUN=42070608438` enables `source-admit`, which
+checks those immutable identities, successful jobs, and the unchanged complete
+runtime closure. It never rewrites the original build manifest or rebuilds bytes.
+`verify-staging` reads the already installed API/schema 0020 and writes a separate
+current-orchestration verification receipt; `deploy staging` is forbidden in this
+mode. Production requires that read-only witness and a newly successful native
+journey, preserving the old staging deployment identity and new acceptance
+identity separately. Its production receipt names the current orchestrator and
+original producer independently; this is not a general older-artifact bypass.

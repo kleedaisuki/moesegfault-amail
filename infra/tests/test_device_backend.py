@@ -182,5 +182,137 @@ class DeviceBackendTests(unittest.TestCase):
                     deploy.staging_accepted()
 
 
+    def test_fixed_recovery_admits_only_original_successful_build_and_stage(self) -> None:
+        run: dict[str, Any] = {"id": int(deploy.SOURCE_RUN), "head_sha": deploy.SOURCE_SHA,
+            "status": "completed", "conclusion": "failure", "event": "workflow_dispatch",
+            "head_branch": "main", "path": ".github/workflows/ci.yml", "run_attempt": 1,
+            "repository": {"full_name": "kleedaisuki/moesegfault-amail"}}
+        artifacts: dict[str, Any] = {"total_count": 2, "artifacts": [
+            {"id": deploy.SOURCE_ARTIFACT, "name": f"device-backend-{deploy.SOURCE_SHA}",
+             "expired": False, "workflow_run": {"head_sha": deploy.SOURCE_SHA}},
+            {"id": deploy.SOURCE_STAGING_RECEIPT, "name": f"device-backend-staging-{deploy.SOURCE_RUN}",
+             "expired": False, "workflow_run": {"head_sha": deploy.SOURCE_SHA}}]}
+
+        def github(path: str) -> dict[str, Any]:
+            return artifacts if "artifacts?" in path else run
+
+        env = {**ENV, "AMAIL_DEVICE_SOURCE_RUN": deploy.SOURCE_RUN, "AMAIL_DEVICE_ARTIFACT_ID": str(deploy.SOURCE_ARTIFACT)}
+        with patch.dict(os.environ, env, clear=True), patch.object(deploy.artifact, "context", return_value=IDENTITY), \
+             patch.object(deploy.accepted, "github", side_effect=github), \
+             patch.object(deploy.accepted, "successful_jobs") as jobs, patch.object(deploy.accepted, "runtime_closure") as closure:
+            result = deploy.identity()
+            self.assertEqual((result["source_sha"], result["run_id"]), (deploy.SOURCE_SHA, deploy.SOURCE_RUN))
+            jobs.assert_called_once_with(deploy.SOURCE_RUN, frozenset({"Device-code backend release / build", "Device-code backend release / staging"}))
+            closure.assert_called_once_with(deploy.SOURCE_SHA, SOURCE)
+            for change in ({"AMAIL_DEVICE_SOURCE_RUN": "42070608439"}, {"AMAIL_DEVICE_ARTIFACT_ID": "other"}):
+                with patch.dict(os.environ, change):
+                    with self.assertRaisesRegex(ValueError, "device_backend_recovery_unreviewed"):
+                        deploy.identity()
+            with self.assertRaisesRegex(ValueError, "device_backend_recovery_unreviewed"):
+                deploy.artifact_create()
+            run["conclusion"] = "success"
+            with self.assertRaisesRegex(ValueError, "device_backend_recovery_source_unverified"):
+                deploy.identity()
+
+    def test_recovery_restores_original_manifest_without_rewriting_identity(self) -> None:
+        original = {**IDENTITY, "source_sha": deploy.SOURCE_SHA, "run_id": deploy.SOURCE_RUN}
+        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder, ExitStack() as stack:
+            root = Path(folder)
+            package = root / ".temp/ci/device-backend"
+            stack.enter_context(patch.object(deploy, "ROOT", root))
+            stack.enter_context(patch.object(deploy, "FOLDER", package))
+            compiler = stack.enter_context(patch.object(deploy.artifact, "context", return_value=original))
+            stack.enter_context(patch.dict(os.environ, ENV, clear=True))
+            for name in (*deploy.ENTRIES, "crates/mail-worker/build/index.js", "crates/mail-worker/build/worker/shim.mjs"):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("original checked bytes", encoding="utf-8")
+            deploy.artifact_create()
+            manifest = (package / "manifest.json").read_bytes()
+            shutil.rmtree(root / deploy.TREES[0])
+            compiler.return_value = IDENTITY
+            with patch.dict(os.environ, {"AMAIL_DEVICE_SOURCE_RUN": deploy.SOURCE_RUN}), \
+                 patch.object(deploy, "recovery_source", return_value={**original, "schema": "device-backend-artifact/v1"}):
+                deploy.artifact_restore()
+                self.assertEqual((package / "manifest.json").read_bytes(), manifest)
+                deploy.require_artifact()
+                self.assertEqual((root / "crates/mail-worker/build/index.js").read_text(), "original checked bytes")
+
+    def test_recovery_staging_verifies_only_existing_graph_and_current_journey(self) -> None:
+        original = {**IDENTITY, "schema": "device-backend-artifact/v1", "source_sha": deploy.SOURCE_SHA, "run_id": deploy.SOURCE_RUN}
+        env = {**ENV, "AMAIL_DEVICE_SOURCE_RUN": deploy.SOURCE_RUN, "AMAIL_DEVICE_ARTIFACT_ID": str(deploy.SOURCE_ARTIFACT)}
+        observed: dict[str, Any] = {"retained": {"adapters": "unchanged"},
+            "graph": {"pins": {"amail-mail-staging": ("original-deployment", deploy.SOURCE_STAGING_API)}}}
+        digest = deploy.retained.previous.prior.digest
+        receipt: dict[str, Any] = {"schema": "device-backend/v1", "realm": "staging", "migration": 20,
+            "source_sha": deploy.SOURCE_SHA, "run_id": deploy.SOURCE_RUN, "run_attempt": 1,
+            "artifact_id": str(deploy.SOURCE_ARTIFACT), "api_version": deploy.SOURCE_STAGING_API,
+            "maintenance_version": deploy.PINS["staging"]["amail-mail-maintenance-staging"],
+            "sink_version": deploy.PINS["staging"]["amail-trace-sink-staging"], "cron_changed": False, "secrets_changed": False,
+            "retained_fingerprint": digest(observed["retained"]), "policy_fingerprint": digest({}), "graph": observed["graph"]}
+        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder, ExitStack() as stack:
+            root = Path(folder)
+            (root / ".temp").mkdir()
+            (root / ".temp/device-backend-staging.json").write_text(json.dumps(receipt))
+            stack.enter_context(patch.object(deploy, "ROOT", root))
+            stack.enter_context(patch.dict(os.environ, env, clear=True))
+            stack.enter_context(patch.object(deploy.artifact, "context", return_value=IDENTITY))
+            stack.enter_context(patch.object(deploy, "recovery_source", return_value=original))
+            stack.enter_context(patch.object(deploy, "require_artifact"))
+            stack.enter_context(patch.object(deploy, "DatabaseClient"))
+            schema = stack.enter_context(patch.object(deploy, "schema"))
+            stack.enter_context(patch.object(deploy, "public_ready"))
+            observe = stack.enter_context(patch.object(deploy.retained, "observe", return_value=(observed, {})))
+            migrate = stack.enter_context(patch.object(deploy, "migrate"))
+            submit = stack.enter_context(patch.object(deploy, "submit"))
+            deploy.verify_staging()
+            schema.assert_called_once()
+            self.assertEqual(schema.call_args.args[1:], ("staging", 20))
+            self.assertEqual(observe.call_args.args[1]["amail-mail-staging"], deploy.SOURCE_STAGING_API)
+            verified = json.loads((root / ".temp/device-backend-staging-verified.json").read_text())
+            self.assertEqual((verified["source_sha"], verified["producer_source_sha"]), (SOURCE, deploy.SOURCE_SHA))
+            acceptance = {"schema": "device-staging-acceptance/v1", "source_sha": SOURCE, "run_id": "123", "run_attempt": "1",
+                "backend_artifact_id": str(deploy.SOURCE_ARTIFACT), "api_version": deploy.SOURCE_STAGING_API,
+                "issuer": "https://identity-staging.moesegfault.dev", "client_id": "amail-cli-staging",
+                "login": "persisted", "billing": "pending_handoff_then_cancelled", "cleanup": "complete"}
+            (root / ".temp/device-staging-acceptance.json").write_text(json.dumps(acceptance))
+            deploy.staging_accepted()
+            with self.assertRaisesRegex(ValueError, "device_backend_recovery_stage_read_only"):
+                deploy.deploy("staging")
+            migrate.assert_not_called()
+            submit.assert_not_called()
+            verified["run_id"] = "previous orchestration"
+            (root / ".temp/device-backend-staging-verified.json").write_text(json.dumps(verified))
+            with self.assertRaisesRegex(ValueError, "device_backend_recovery_stage_unverified"):
+                deploy.staging_accepted()
+
+    def test_recovery_production_receipt_separates_original_producer_and_current_orchestrator(self) -> None:
+        original = {**IDENTITY, "schema": "device-backend-artifact/v1", "source_sha": deploy.SOURCE_SHA, "run_id": deploy.SOURCE_RUN}
+        env = {**ENV, "AMAIL_DEVICE_SOURCE_RUN": deploy.SOURCE_RUN, "AMAIL_DEVICE_ARTIFACT_ID": str(deploy.SOURCE_ARTIFACT),
+               "AMAIL_DEVICE_CONFIRM": "RUN_DEVICE_BACKEND_PRODUCTION", "AMAIL_PRODUCTION_GRAPH_FREEZE": "FREEZE_PRODUCTION_GRAPH_WRITERS"}
+        with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder, ExitStack() as stack:
+            root = Path(folder)
+            (root / ".temp").mkdir()
+            stack.enter_context(patch.object(deploy, "ROOT", root))
+            stack.enter_context(patch.dict(os.environ, env, clear=True))
+            stack.enter_context(patch.object(deploy.artifact, "context", return_value=IDENTITY))
+            stack.enter_context(patch.object(deploy, "recovery_source", return_value=original))
+            stack.enter_context(patch.object(deploy, "require_artifact"))
+            stage = stack.enter_context(patch.object(deploy, "staging_accepted"))
+            stack.enter_context(patch.object(deploy, "DatabaseClient"))
+            stack.enter_context(patch.object(deploy, "schema"))
+            stack.enter_context(patch.object(deploy, "migrate"))
+            stack.enter_context(patch.object(deploy, "replace_api", return_value=VERSION))
+            stack.enter_context(patch.object(deploy, "public_ready"))
+            observe = stack.enter_context(patch.object(deploy.retained, "observe", return_value=({"retained": {}, "graph": {}}, {})))
+            deploy.deploy("production")
+            stage.assert_called_once()
+            self.assertTrue(all(call.args[0] == "production" for call in observe.call_args_list))
+            receipt = json.loads((root / ".temp/device-backend-production.json").read_text())
+            self.assertEqual((receipt["source_sha"], receipt["run_id"]), (SOURCE, "123"))
+            self.assertEqual((receipt["producer"]["source_sha"], receipt["producer"]["run_id"], receipt["producer"]["artifact_id"]),
+                             (deploy.SOURCE_SHA, deploy.SOURCE_RUN, str(deploy.SOURCE_ARTIFACT)))
+
+
 if __name__ == "__main__":
     unittest.main()
