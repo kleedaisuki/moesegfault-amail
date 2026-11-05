@@ -37,10 +37,23 @@ jobs:
           npm install --prefix .temp/device-browser --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.51.1
           node .temp/device-browser/node_modules/playwright/cli.js install --with-deps chromium
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-            -keyout .temp/device-tls/key.pem -out .temp/device-tls/certificate.pem \
-            -subj /CN=localhost -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
-            -addext 'basicConstraints=critical,CA:TRUE' 2>/dev/null
-          chmod 600 .temp/device-tls/key.pem
+            -keyout .temp/device-tls/ca-key.pem -out .temp/device-tls/ca.pem \
+            -subj /CN=amail-device-fixture-root \
+            -addext 'basicConstraints=critical,CA:TRUE' \
+            -addext 'keyUsage=critical,keyCertSign,cRLSign' 2>/dev/null
+          openssl req -new -newkey rsa:2048 -nodes \
+            -keyout .temp/device-tls/key.pem -out .temp/device-tls/request.csr \
+            -subj /CN=localhost 2>/dev/null
+          printf '%s\n' \
+            'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+            'basicConstraints=critical,CA:FALSE' \
+            'keyUsage=critical,digitalSignature,keyEncipherment' \
+            'extendedKeyUsage=serverAuth' > .temp/device-tls/leaf.ext
+          openssl x509 -req -in .temp/device-tls/request.csr \
+            -CA .temp/device-tls/ca.pem -CAkey .temp/device-tls/ca-key.pem -CAcreateserial \
+            -out .temp/device-tls/certificate.pem -days 1 -extfile .temp/device-tls/leaf.ext
+          openssl verify -CAfile .temp/device-tls/ca.pem .temp/device-tls/certificate.pem
+          chmod 600 .temp/device-tls/key.pem .temp/device-tls/ca-key.pem
       - name: Check affected formatting, polling contracts and public CLI grammar
         run: |
           cargo fmt -p amail -p amail-worker -- --check
@@ -58,6 +71,7 @@ jobs:
               --binary target/debug/amail \
               --browser-module .temp/device-browser/node_modules/playwright/index.mjs \
               --certificate .temp/device-tls/certificate.pem \
+              --ca-certificate .temp/device-tls/ca.pem \
               --private-key .temp/device-tls/key.pem \
               --output .temp/device-evidence
           '

@@ -13,9 +13,9 @@ import { parseArgs } from 'node:util';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { values } = parseArgs({ options: {
   binary: { type: 'string' }, 'browser-module': { type: 'string' }, output: { type: 'string' },
-  certificate: { type: 'string' }, 'private-key': { type: 'string' },
+  certificate: { type: 'string' }, 'ca-certificate': { type: 'string' }, 'private-key': { type: 'string' },
 } });
-for (const name of ['binary', 'browser-module', 'output', 'certificate', 'private-key']) {
+for (const name of ['binary', 'browser-module', 'output', 'certificate', 'ca-certificate', 'private-key']) {
   assert.ok(values[name], `Missing --${name}`);
 }
 const binary = await realpath(values.binary);
@@ -26,6 +26,7 @@ await mkdir(output, { recursive: true });
 await rm(path.join(output, 'acceptance.json'), { force: true });
 const workspace = await mkdtemp(path.join(scratch, 'device-journey-'));
 const certificate = await realpath(values.certificate);
+const caCertificate = await realpath(values['ca-certificate']);
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'synthetic-device-key', alg: 'RS256', use: 'sig' };
 const grants = new Map();
@@ -168,7 +169,7 @@ function launch(home, mode, args) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('AMAIL_')));
   Object.assign(env, { AMAIL_HOME: home, AMAIL_TERMINAL_ID: `device-${path.basename(home)}`,
     AMAIL_TELEMETRY: 'off', AMAIL_API_BASE: issuer, AMAIL_ISSUER: issuer,
-    AMAIL_CLIENT_ID: `amail-device-test-${mode}`, AMAIL_REDIRECT_URI: '', SSL_CERT_FILE: certificate,
+    AMAIL_CLIENT_ID: `amail-device-test-${mode}`, AMAIL_REDIRECT_URI: '', SSL_CERT_FILE: caCertificate,
     NO_PROXY: 'localhost,127.0.0.1', no_proxy: 'localhost,127.0.0.1' });
   const child = spawn(binary, ['--machine', ...args], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const state = { child, stdout: '', stderr: '', lines: [], settled: false, env };
