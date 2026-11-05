@@ -10,7 +10,7 @@ Use only for Login/Account registration verification, account contact management
 4. Submit the eight-digit code to `completeContactVerification` at `/v1/me/contacts/{contact_id}/verification-transactions/{transaction_id}/completion`, with the same session/security headers and JSON `{ "code": "12345678" }`. The code here is an example shape, never a test or production value. A successful `200` returns the verified contact.
 5. For a resend, start a new transaction when allowed and replace the active `transaction_id`; the old challenge is cancelled. Never retry account registration to resend mail.
 
-The documented endpoint contract is [`../../../openapi/identity.yaml`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/openapi/identity.yaml), operation IDs `listMyContacts`, `createContactVerification`, and `completeContactVerification`. The state-machine rationale is [`../../../docs/adr/0004-email-verification.md`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/docs/adr/0004-email-verification.md); registration presentation is [`../../../docs/adr/0005-registration-email-avatar-and-anonymous-account.md`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/docs/adr/0005-registration-email-avatar-and-anonymous-account.md).
+The documented endpoint contract is [`openapi/identity.yaml`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/openapi/identity.yaml), operation IDs `listMyContacts`, `createContactVerification`, and `completeContactVerification`. The state-machine rationale is [`docs/adr/0004-email-verification.md`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/docs/adr/0004-email-verification.md); registration presentation is [`docs/adr/0005-registration-email-avatar-and-anonymous-account.md`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/docs/adr/0005-registration-email-avatar-and-anonymous-account.md).
 
 ## Diagnose `Contact was not found`
 
@@ -25,7 +25,7 @@ The start handler returns this 404 before generating a code or queuing mail when
 | 503 on mobile | Mobile verification delivery is not implemented | Do not present an SMS completion flow |
 | Invalid/expired/wrong code | Check active transaction ID, expiry, last resend, and error code without logging the code | Keep the form, allow bounded resend when eligible |
 
-The start handler's ownership query is in [`../../../crates/identity-worker/src/account.rs`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/crates/identity-worker/src/account.rs) (`start_contact_verification`). Completion also scopes the transaction by contact and principal. Do not turn a contact-not-found error into a generic provider failure, and do not expose whether another user's contact exists.
+The start handler's ownership query is in [`crates/identity-worker/src/account.rs`](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/crates/identity-worker/src/account.rs) (`start_contact_verification`). Completion also scopes the transaction by contact and principal. Do not turn a contact-not-found error into a generic provider failure, and do not expose whether another user's contact exists.
 
 ## Invariants and tests
 
@@ -34,3 +34,23 @@ The start handler's ownership query is in [`../../../crates/identity-worker/src/
 - A new logical start or completion gets a new idempotency key. Retry an uncertain result only with the same key and same payload; never create a fresh challenge merely because the response was lost.
 - Two principals may hold the same unverified address; the first successful verification claims uniqueness. Do not infer account identity from unverified email.
 - Test the real client sequence with the returned contact ID and transaction ID, plus stale ID, wrong principal, changed/deleted contact, resend, `429`, wrong/expired code, and accepted-but-delayed delivery. Assert no secret code appears in URLs or logs.
+
+## Notification center delivery boundary
+
+Both pre-account registration and authenticated contact verification hand off to
+`NOTIFICATIONS`, the environment-matched notification center's private
+`NotificationsApi` service-binding entrypoint. Identity never sends directly to
+Cloudflare Email Service or owns email HTML. It submits the `verification` template
+with `service="identity"`, `sender="identity"`, recipient, code, and the original
+absolute expiry. The notification center creates/reuses `identity@moesegfault.dev`.
+
+The Identity encrypted outbox ID is the center's idempotency key. A validated
+`202` (`queued` or `sent`) transfers durable responsibility and clears Identity's
+ciphertext; its legacy `delivered` state means handoff, not inbox delivery. Failed
+handoffs retain local encrypted retry state. Center provider retries must respect
+expiry. Diagnose the two boundaries separately using correlation ID, outbox ID,
+and center message ID; do not log verification codes or recipient payloads.
+
+Official platform contract: [HTTP service bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/http/).
+The named entrypoint is a deployment capability; do not replace it with a public
+URL or accept arbitrary browser-driven sends.
