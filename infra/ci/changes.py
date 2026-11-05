@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -18,6 +18,9 @@ SOURCE_TARGETS = frozenset({"checks", "staging", "staging-maintenance-repair", "
                             "production-api-only-maintenance", "production-fresh-bootstrap",
                             "production-fresh-online"})
 SHARED = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/")
+WORKER_PROJECTS = ("crates/mail-worker", "workers/trace-sink", "workers/mail-ingress",
+                   "workers/mail-events", "workers/identity-test-inbox", "workers/role-monitor")
+QUEUE_PROJECTS = frozenset({"workers/trace-sink", "workers/mail-ingress", "workers/mail-events"})
 
 
 @dataclass(frozen=True)
@@ -26,10 +29,37 @@ class Plan:
     worker: bool = False
     site: bool = False
     infra: bool = False
-    full_infra: bool = False
     tests: tuple[str, ...] = ()
     python: tuple[str, ...] = ()
     native_static: bool = False
+    worker_projects: tuple[str, ...] = ()
+
+
+def worker_projects(paths: list[str]) -> tuple[str, ...]:
+    if any(path in SHARED or path.startswith(".cargo/") for path in paths):
+        return WORKER_PROJECTS
+    selected = {project for project in WORKER_PROJECTS
+                if any(path.startswith(project + "/") for path in paths)}
+    if any(path.startswith("crates/trace-schema/") for path in paths):
+        selected.update(("crates/mail-worker", "workers/trace-sink", "workers/role-monitor"))
+    for path in paths:
+        if not path.startswith("infra/tests/worker-boundary/"):
+            continue
+        if not path.endswith(".test.mjs") or Path(path).name == "trace-sink.test.mjs":
+            selected.update(QUEUE_PROJECTS)
+        if Path(path).name != "trace-sink.test.mjs":
+            selected.add("crates/mail-worker")
+    # The existing queue journey exercises the sink and lifecycle consumer together.
+    if selected & QUEUE_PROJECTS:
+        selected.update(QUEUE_PROJECTS)
+    return tuple(project for project in WORKER_PROJECTS if project in selected)
+
+
+def boundary_tests(projects: tuple[str, ...]) -> tuple[str, ...]:
+    folder = ROOT / "infra/tests/worker-boundary"
+    return tuple(path.name for path in sorted(folder.glob("*.test.mjs"))
+                 if (path.name == "trace-sink.test.mjs" and bool(set(projects) & QUEUE_PROJECTS))
+                 or (path.name != "trace-sink.test.mjs" and "crates/mail-worker" in projects))
 
 
 def classify(paths: list[str], *, event: str, target: str = "", confirm: str = "") -> Plan:
@@ -37,11 +67,11 @@ def classify(paths: list[str], *, event: str, target: str = "", confirm: str = "
     if event == "workflow_dispatch":
         full = target in SOURCE_TARGETS and confirm != "RUN_PRODUCTION_V031"
         native_site = full and target != "staging-maintenance-repair"
-        return Plan(native_site, full, native_site, full, full)
+        return Plan(cli=native_site, worker=full, site=native_site, infra=full,
+                    worker_projects=WORKER_PROJECTS if full else ())
     shared = any(path in SHARED or path.startswith(".cargo/") for path in paths)
     cli = shared or any(path.startswith(("crates/amail/", "crates/trace-schema/")) for path in paths)
-    worker = shared or any(path.startswith(("crates/mail-worker/", "crates/trace-schema/", "workers/",
-                                          "infra/tests/worker-boundary/")) for path in paths)
+    projects = worker_projects(paths)
     site = any(path.startswith("site/") and path != "site/scripts/browser-acceptance.mjs" for path in paths)
     python = tuple(path for path in paths if path.endswith(".py") and (ROOT / path).is_file())
     tests = {path[:-3].replace("/", ".") for path in python
@@ -52,7 +82,8 @@ def classify(paths: list[str], *, event: str, target: str = "", confirm: str = "
             tests.add("infra.tests." + candidate.stem)
     if ".github/workflows/ci.yml" in paths or "infra/ci/changes.py" in paths:
         tests.add("infra.tests.test_ci_changes")
-    return Plan(cli, worker, site, bool(python or tests), False, tuple(sorted(tests)), python)
+    return Plan(cli=cli, worker=bool(projects), site=site, infra=bool(python or tests),
+                tests=tuple(sorted(tests)), python=python, worker_projects=projects)
 
 
 def git(*args: str) -> str:
@@ -121,8 +152,10 @@ def backend_base(head: str) -> str | None:
 
 
 def emit(plan: Plan) -> None:
-    values = {name: str(getattr(plan, name)).lower() for name in ("cli", "worker", "site", "infra", "full_infra", "native_static")}
+    values = {name: str(getattr(plan, name)).lower() for name in ("cli", "worker", "site", "infra", "native_static")}
     values.update(tests=json.dumps(plan.tests), python=json.dumps(plan.python))
+    values.update(worker_projects=json.dumps(plan.worker_projects),
+                  boundary_tests=json.dumps(boundary_tests(plan.worker_projects)))
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write("".join(f"{key}={value}\n" for key, value in values.items()))
     print("affected_checks=" + ",".join(name for name in ("cli", "worker", "site", "infra") if getattr(plan, name)))
@@ -165,22 +198,16 @@ def main() -> None:
         affected: Plan = classify(paths, event=kind)
         # The tagged workflow builds all five changed binaries once, runs only
         # the reviewed patch tests, then gates publication on its native journey.
-        plan = Plan(False, False, False, affected.infra, False, affected.tests, affected.python, True)
+        plan = replace(affected, cli=False, native_static=True)
     elif base:
         # Exclude the accepted changes when their PR is later merged to main.
         changed = set(git("diff", "--name-only", base, head).splitlines())
         paths = [path for path in paths if path in changed]
         plan = classify(paths, event=kind)
-        plan = Plan(False, False, plan.site, plan.infra, plan.full_infra, plan.tests, plan.python)
+        plan = replace(plan, cli=False)
     else:
         inputs = event.get("inputs", {})
         plan = classify(paths, event=kind, target=inputs.get("target", ""), confirm=inputs.get("confirm", ""))
-    branch = event.get("pull_request", {}).get("head", {}).get("ref") if kind == "pull_request" else os.getenv("GITHUB_REF_NAME")
-    if (branch == "codex/semantic-index-reuse"
-            and not any(path in SHARED or path.startswith((".cargo/", "crates/amail/", "crates/trace-schema/", "workers/")) for path in paths)):
-        # The explicit backend lane performs the changed Mail-only build/runtime
-        # checks once before its same-run staging writer; no six-component rebuild.
-        plan = Plan(False, False, plan.site, plan.infra, plan.full_infra, plan.tests, plan.python)
     emit(plan)
 
 

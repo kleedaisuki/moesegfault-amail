@@ -819,7 +819,49 @@ report, incident workflow or test of a test merely to inspect its spelling.
 Repeat real mail only for a changed delivery boundary or new failure, using
 authorized owned synthetic accounts and exact cleanup. Reuse successful evidence.
 
-For this simplification, local static validation found no imports of deleted Python
+### Validation ownership and reduced scope
+
+The 2026-11-05 simplification removes the obsolete pre-v0.1.0 production candidate
+writer, its dedicated site CI and `check_candidate_site_gate.py`. The gate already
+refused published v0.1.0 tags/releases, so it cannot serve the current released
+product. `ci.yml` owns automatic candidate/published source checks;
+`site-browser-acceptance.yml` retains real browser journeys. Existing staging
+candidate preparation and release-backed publication remain supported.
+
+Native-patch acceptance narrows only CLI checks, not independent site or Worker
+boundary-test changes. Worker source checks select the affected projects and their
+shared dependencies. Mail journeys build Mail; the existing queue journey builds
+its sink/ingress/lifecycle group; role-monitor and Identity inbox changes no longer
+build Mail or run its boundary suite. Workspace/compiler/lockfile changes and
+manual source/deployment lanes retain the complete six-tree build. Only those
+manual lanes publish the complete artifact expected by existing deployment readers;
+automatic partial checks never masquerade as deployment artifacts. The separate
+Wasm `cargo check` pass is removed because the release bundler compiles that target.
+Workflow lint runs only for workflow changes.
+Manual source/deployment dispatch no longer rediscovers every infrastructure unit
+test or reruns the observability gate's unit suite. Changed Python contracts remain
+incremental; manual lanes retain their actual configuration/isolation checks.
+
+Unit coverage is not retained merely because it exists. Removed tests include
+help-text phrase snapshots, framework argument parsing, default-value snapshots,
+UUID-generation checks, duplicated API code mappings/resource projections and
+telemetry enum/literal/diagnostic-count checks. Real HTTP/workerd/browser/native
+journeys, ownership and consent fencing, persisted-state recovery, billing and
+mail-delivery invariants remain. Nine workflow-string tests and the source-spelling
+wrapper test are also removed rather than replaced with a testing framework.
+
+The empty permanent-lease generation and string-valued health `api_version`
+incidents above illustrate why validators must follow the actual protocol rather
+than invent restrictions. Preserve their focused behavioral coverage. The same
+principle applies to test maintenance:
+[Google's change-detector guidance](https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html)
+explains implementation-coupled tests;
+[Predictive Test Selection (ICSE 2019)](https://arxiv.org/abs/1810.05286)
+studies selecting regression tests by change. This repository uses a small
+explicit dependency map, not a predictive model. Local selection/syntax checks do
+not constitute new hosted runtime acceptance or deployment evidence.
+
+For the earlier simplification, local static validation found no imports of deleted Python
 modules; actionlint v1.7.11 accepted retained workflows (local shellcheck/pyflakes
 disabled; normal hosted checks remain). The 52 focused infrastructure safety tests
 and 22 Mail API privacy tests passed. A separate synthetic ZIP probe accepted

@@ -1,8 +1,9 @@
-# Candidate site compatibility lane
+# Site state and deployment
 
 v0.1.0 is now published; [validation](validation.md) records the real release/site
-outcome. Candidate deployment remains a narrowly scoped compatibility operation,
-not the normal published-site path and not Mail/send authorization.
+outcome. The obsolete pre-release production candidate workflow, duplicate site
+CI and publication-absence gate are removed. Production uses the release-backed
+site workflow; staging candidate builds remain separate from publication.
 
 The v0.1.2 staging candidate uses the existing CI staging target, not this
 production compatibility writer. It remains explicitly unpublished while public
@@ -14,10 +15,10 @@ HTTP 200 alone cannot admit stale candidate bytes. The browser workflow's bounde
 `live-staging` target checks the same source pin and captures owner-review evidence.
 Neither target is permission to publish a Release or test production mail.
 
-A reviewed main-only manual candidate-site workflow may deploy truthful candidate
-copy without claiming a Release exists. Exact source CI, explicit owner approval,
-no conflicting site/tag writer and appropriate release-state checks remain required.
-Never replace published pages with candidate copy as an incidental maintenance step.
+Automatic candidate/published source builds belong to `ci.yml`; actual browser
+acceptance belongs to `site-browser-acceptance.yml`. Native CLI acceptance reuse
+never suppresses an independent site change. Never replace published pages with
+candidate copy as an incidental maintenance step.
 
 AMAIL_RELEASE_STATE is fail-closed: candidate/unset renders prerelease copy;
 published requires the real nondraft Release and expected assets. Unknown fails build.

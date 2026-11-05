@@ -14,14 +14,10 @@ assert publication. Historical v0.1.0 records remain in the changelog.
 
 ## Hosted checks and guarded deployment
 
-Tests/builds for this workstream run in GitHub Actions, not on the developer
-machine. `.github/workflows/site-ci.yml` (Candidate site CI) has one successful
-job identity, `Astro candidate site source checks`, used by the deployment gate.
-It runs digest-pinned actionlint on both site workflows, synthetic regressions,
-locked pnpm install, Astro checks and both
-candidate/published-state build fixtures. It never deploys or receives provider
-credentials. Node 22 and pnpm 12.4.1 are pinned by workflow; site package versions
-and lockfile remain those imported from reviewed source.
+`.github/workflows/ci.yml` owns automatic Astro source checks and builds both
+candidate and published states once. `site-browser-acceptance.yml` checks actual
+browser navigation, layout, focus and loading. Node 22 and pnpm 12.4.1 are pinned
+by workflow. Source checks do not deploy or receive provider credentials.
 
 `AMAIL_RELEASE_STATE` is typed and fail-closed: unset or `candidate` renders
 pre-release copy; `published` renders public-release copy and the seven exact
@@ -30,20 +26,11 @@ changelog entries; candidate headers and global copy remain state-specific. Unkn
 states without deploying. The tag release workflow deploys published state only
 after the existing production gate, Release publication and published-byte check.
 
-`Production candidate site` is manual-only, defaults to checks, reuses same-commit
-source workflow without inheriting provider secrets, and can deploy only from
-main after default-branch registration, independent review, exact-source site
-CI, explicit confirmation and an external site/tag/Release publication freeze.
-Its GitHub gate rejects public v0.1.0 tags and published Releases; read-only token
-visibility is not inventory of internal untagged drafts. See [operator contract](../docs/site-production-candidate-lane.md).
-
-The build yields `dist/`; Wrangler config targets `amail-release-site` and its
-production Custom Domain. Staging config remains isolated as imported, but
-**this bootstrap adds no staging deployment workflow**. Only the guarded
-candidate workflow uses `pnpm run deploy`; explicit script invocation avoids
-pnpm's distinct built-in `deploy` command. Do not bypass review/gates with raw
-deploy commands. First Custom Domain deployment may provision DNS/certificates;
-do not add placeholders.
+The obsolete pre-v0.1.0 production candidate workflow and its separate CI/gate
+have been removed. Production uses release-backed publication; staging candidate
+builds use the existing main CI staging lane. The build yields `dist/`; Wrangler
+config targets `amail-release-site` and its production Custom Domain. See the
+[site state contract](../docs/site-production-candidate-lane.md).
 
 Source `public/_headers` targets staging only. Candidate preparation modifies
 only generated `dist/_headers`, adding production-host-only noindex/nofollow
@@ -75,7 +62,7 @@ Append one Markdown file under `src/content/releases/` per version. The collecti
 validates versions and orders entries newest-first. Release dates, claims, five
 platform filenames, Agent Skill and checksums must match that version's public
 assets; record dates are not publication dates. Do not bypass the release workflow
-by setting published mode in the candidate deployment lane.
+by setting published mode outside the release workflow.
 
 ## MoeSegfault Style integration
 
