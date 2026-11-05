@@ -288,6 +288,7 @@ class DeviceBackendTests(unittest.TestCase):
 
     def test_recovery_production_receipt_separates_original_producer_and_current_orchestrator(self) -> None:
         original = {**IDENTITY, "schema": "device-backend-artifact/v1", "source_sha": deploy.SOURCE_SHA, "run_id": deploy.SOURCE_RUN}
+        authority = {"source_sha": SOURCE, "run_id": "123", "run_attempt": 1}
         env = {**ENV, "AMAIL_DEVICE_SOURCE_RUN": deploy.SOURCE_RUN, "AMAIL_DEVICE_ARTIFACT_ID": str(deploy.SOURCE_ARTIFACT),
                "AMAIL_DEVICE_CONFIRM": "RUN_DEVICE_BACKEND_PRODUCTION", "AMAIL_PRODUCTION_GRAPH_FREEZE": "FREEZE_PRODUCTION_GRAPH_WRITERS"}
         with tempfile.TemporaryDirectory(dir=ROOT / ".temp") as folder, ExitStack() as stack:
@@ -298,7 +299,7 @@ class DeviceBackendTests(unittest.TestCase):
             stack.enter_context(patch.object(deploy.artifact, "context", return_value=IDENTITY))
             stack.enter_context(patch.object(deploy, "recovery_source", return_value=original))
             stack.enter_context(patch.object(deploy, "require_artifact"))
-            stage = stack.enter_context(patch.object(deploy, "staging_accepted"))
+            stage = stack.enter_context(patch.object(deploy, "staging_accepted", return_value=authority))
             stack.enter_context(patch.object(deploy, "DatabaseClient"))
             stack.enter_context(patch.object(deploy, "schema"))
             stack.enter_context(patch.object(deploy, "migrate"))
@@ -310,6 +311,7 @@ class DeviceBackendTests(unittest.TestCase):
             self.assertTrue(all(call.args[0] == "production" for call in observe.call_args_list))
             receipt = json.loads((root / ".temp/device-backend-production.json").read_text())
             self.assertEqual((receipt["source_sha"], receipt["run_id"]), (SOURCE, "123"))
+            self.assertEqual(receipt["staging_acceptance"], authority)
             self.assertEqual((receipt["producer"]["source_sha"], receipt["producer"]["run_id"], receipt["producer"]["artifact_id"]),
                              (deploy.SOURCE_SHA, deploy.SOURCE_RUN, str(deploy.SOURCE_ARTIFACT)))
 
