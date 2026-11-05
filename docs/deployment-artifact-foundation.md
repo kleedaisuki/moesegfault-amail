@@ -209,3 +209,20 @@ mode. Production requires that read-only witness and a newly successful native
 journey, preserving the old staging deployment identity and new acceptance
 identity separately. Its production receipt names the current orchestrator and
 original producer independently; this is not a general older-artifact bypass.
+
+`AMAIL_DEVICE_ACCEPTANCE_RUN=42073709631` separately admits only the successful
+reuse and native/browser journey jobs at source
+`2979c52a55306f9859ba30cec66248481ddac137`, staging artifact `13437945110`, and
+acceptance artifact `13436979065`. That run's production preflight failed; it is
+not relabeled successful. A production-only continuation reuses its completed
+journey while still requiring a fresh current-run staging graph witness and
+unchanged runtime closure. Production receipts retain this acceptance identity
+alongside the original build and current orchestration identities.
+
+`inspect-production` reads only the pinned production predecessor and schema 0019,
+without requiring build or staging receipts. Production graph readback needs
+`CF_EMAIL_ROUTING_TOKEN` for the existing direct-forward audit, even though API
+replacement does not re-upload any application secret. Failure diagnostics retain
+snake-case machine codes, the controller phase and repository function/line; they
+never include exception prose, provider bodies or local variables. Preflight
+failures therefore remain diagnosable before any writer checkpoint exists.

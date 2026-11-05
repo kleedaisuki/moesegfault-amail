@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [device-backend-complete, device-backend, device-acceptance, device-billing-acceptance, semantic-reuse-staging-restore-ingress, semantic-reuse-staging-resume, semantic-reuse-staging, semantic-reuse-production, checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [device-production-inspect, device-production-complete, device-backend-complete, device-backend, device-acceptance, device-billing-acceptance, semantic-reuse-staging-restore-ingress, semantic-reuse-staging-resume, semantic-reuse-staging, semantic-reuse-production, checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
         description: Documented RUN_* or INSPECT_* confirmation; normal split upgrade preserves live policy
         required: false
@@ -108,10 +108,12 @@ jobs:
     permissions:
       contents: read
       actions: read
-    if: github.event_name == 'workflow_dispatch' && ((inputs.target == 'device-backend' && inputs.confirm == 'RUN_DEVICE_CODE_RELEASE') || (inputs.target == 'device-backend-complete' && inputs.confirm == 'RUN_DEVICE_CODE_COMPLETE' && inputs.source_run == '42070608438')) && inputs.production_graph_freeze == 'FREEZE_PRODUCTION_GRAPH_WRITERS' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && ((inputs.target == 'device-backend' && inputs.confirm == 'RUN_DEVICE_CODE_RELEASE') || (inputs.target == 'device-backend-complete' && inputs.confirm == 'RUN_DEVICE_CODE_COMPLETE' && inputs.source_run == '42070608438') || (inputs.target == 'device-production-inspect' && inputs.confirm == 'INSPECT_DEVICE_PRODUCTION') || (inputs.target == 'device-production-complete' && inputs.confirm == 'RUN_DEVICE_PRODUCTION_COMPLETE' && inputs.source_run == '42070608438' && inputs.staging_acceptance_run == '42073709631')) && inputs.production_graph_freeze == 'FREEZE_PRODUCTION_GRAPH_WRITERS' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/device-deploy.yml
     with:
       source_run: ${{ inputs.source_run }}
+      inspect_only: ${{ inputs.target == 'device-production-inspect' }}
+      acceptance_run: ${{ inputs.staging_acceptance_run }}
     secrets: inherit
 
   device-acceptance:
