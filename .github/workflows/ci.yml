@@ -18,7 +18,7 @@ on:
         description: Run non-deploying checks, deploy staging, or promote production after review
         required: true
         type: choice
-        options: [device-acceptance, semantic-reuse-staging-restore-ingress, semantic-reuse-staging-resume, semantic-reuse-staging, semantic-reuse-production, checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
+        options: [device-acceptance, device-billing-acceptance, semantic-reuse-staging-restore-ingress, semantic-reuse-staging-resume, semantic-reuse-staging, semantic-reuse-production, checks, staging-inspect, staging, staging-e2e, staging-semantic-inspect, staging-semantic-recovery, staging-semantic-e2e, staging-semantic-diagnose, staging-billing-diagnose, staging-maintenance-repair, production-inspect, production, production-complete, production-api-only-maintenance, production-fresh-bootstrap, production-fresh-online]
       confirm:
         description: Documented RUN_* or INSPECT_* confirmation; normal split upgrade preserves live policy
         required: false
@@ -105,8 +105,10 @@ concurrency:
 jobs:
   device-acceptance:
     name: Focused device login and billing acceptance
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'device-acceptance'
+    if: github.event_name == 'workflow_dispatch' && (inputs.target == 'device-acceptance' || inputs.target == 'device-billing-acceptance')
     uses: ./.github/workflows/device-acceptance.yml
+    with:
+      billing_only: ${{ inputs.target == 'device-billing-acceptance' }}
 
   semantic-reuse-build:
     name: Semantic reuse backend build

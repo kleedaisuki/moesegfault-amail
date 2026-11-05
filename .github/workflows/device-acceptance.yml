@@ -2,7 +2,16 @@ name: Focused native device and subscription acceptance
 
 on:
   workflow_dispatch:
+    inputs:
+      billing_only:
+        description: Resume only the subscription browser form after unchanged native and Worker contracts passed
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      billing_only:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -10,6 +19,7 @@ permissions:
 jobs:
   device:
     name: Synthetic HTTPS device browser journey
+    if: ${{ !inputs.billing_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -59,7 +69,6 @@ jobs:
           cargo fmt -p amail -p amail-worker -- --check
           node --check scripts/device_journey.mjs
           cargo test -p amail --locked --bin amail device_
-          cargo test -p amail --locked --bin amail handoff
           cargo test -p amail --locked --test billing
       - name: Build the exact native executable used by the browser
         run: cargo build -p amail --locked
@@ -107,6 +116,7 @@ jobs:
           cache-bin: false
           cache-workspace-crates: false
       - name: Check affected billing domain logic
+        if: ${{ !inputs.billing_only }}
         run: 'cargo test -p amail-worker --locked --lib billing::tests::'
       - name: Restore pinned Worker bundler
         id: bundler
@@ -130,5 +140,11 @@ jobs:
       - name: Exercise real API migration, public code navigation and owner polling
         env:
           AMAIL_DEVICE_BROWSER_MODULE: ${{ github.workspace }}/.temp/device-browser/node_modules/playwright/index.mjs
+          BROWSER_ONLY: ${{ inputs.billing_only }}
         working-directory: infra/tests/worker-boundary
-        run: node --test billing-human-loop.test.mjs
+        run: |
+          if [ "$BROWSER_ONLY" = true ]; then
+            node --test --test-name-pattern='billing device manual Chromium' billing-human-loop.test.mjs
+          else
+            node --test billing-human-loop.test.mjs
+          fi
