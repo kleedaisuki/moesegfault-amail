@@ -162,3 +162,36 @@ The mapping uses Cloudflare's [Queue consumer schema](https://developers.cloudfl
 Focused source/mocked-provider contracts run with
 `python -m unittest discover -s infra/tests -p test_staging_adapters.py`;
 `python infra/deploy/check_staging_adapters.py --source-only` needs no credentials.
+
+## Device-code backend rollout
+
+`infra/deploy/device_backend.py` is the API-only successor to the completed schema
+0019 epoch. Its workflow builds the Mail Worker once, checks the actual workerd
+billing-code paths, packages with `artifact-create`, and restores those exact
+same-run bytes with `artifact-restore` before each realm writer. The manifest
+includes the generated Mail tree, both event wrappers, both reviewed Worker
+configurations, and migration 0020; tracked inputs are checked, never overwritten
+by restoration. The workflow chooses the immutable producer artifact ID.
+
+`deploy staging|production` admits only the current source/run's first trusted
+main invocation and its explicit `RUN_DEVICE_BACKEND_STAGING|PRODUCTION`
+confirmation. It reads the exact completed predecessor graph and full schema 0019,
+applies the sole pending additive 0020 migration, and submits the API once.
+Maintenance, its Cron, sink, queues, adapters, mail data and sending policy remain
+unchanged. Public health and the code-entry page are bracketed by exact serving
+and retained-graph readbacks. Application secrets are inherited rather than
+re-uploaded: [Wrangler deploy preserves existing secrets](https://developers.cloudflare.com/workers/wrangler/commands/workers/#deploy),
+while plain variables continue to come from the reviewed configuration.
+
+Production additionally consumes this same run's staging deployment receipt and
+successful real native/browser acceptance, bound to the same source, producer
+artifact and staging API version. Staging credentials are not borrowed by the
+production job. The workflow owns the existing per-realm graph writer lock and
+orders build → staging → native/browser acceptance → optional production.
+
+Successful receipts are `.temp/device-backend-{realm}.json`. Intent, migration,
+submit/version and capture readback coordinates remain in the corresponding
+`-partial.jsonl` journal even if a later phase fails. An unknown result never
+triggers automatic migration or deployment replay; inspect the owned boundary
+and implement a named continuation if needed. A second ordinary invocation cannot
+adopt an already advanced schema/API as its old predecessor.
