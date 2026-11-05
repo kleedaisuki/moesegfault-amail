@@ -35,20 +35,18 @@ The former semantic-reuse epoch `40272801666` is historical. Do not rerun comple
 longer describe an unapplied transition. `infra/release/device-backend.json`
 binds the current read-only native-release check to its successful deployment.
 The prior v0.3.1 backend epoch `40199972693` and
-[original delivery](v0.3.1/production-delivery.md) are historical. Current CLI
-release **v0.3.3**, run `40658507490`, fixes native browser operation approval
-without changing this backend or the v0.3.2 permanent-mailbox correction. Five
-newly built platforms passed only the seven approval tests; the same-run Windows
-executable passed actual browser Approve/Deny and null/cross-origin rejection.
-Published assets/site passed. Both local CLI entrypoints are upgraded from
-attested public assets and match the browser-tested executable. The eleven global
-Skill files already match the v0.3.3 bundle and remain unchanged. The old daemon
-stopped gracefully; old executables/metadata were backed up privately, and the
-next normal invocation starts the new daemon. Exact source, receipts and hashes
-are in [validation](validation.md). Credentials/configuration/profiles/YOLO remain
-untouched. These promotion/completion controllers
-are now historical: future writers must explicitly admit the new epoch rather
-than replay old pins. Names or stale snapshots do not establish ownership.
+[original delivery](v0.3.1/production-delivery.md) are historical. Current public
+CLI release is **v0.4.0**, source `9d5b4952ee557ebc4070198f189b98b719c48570`,
+[tagged run42077398389](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/42077398389).
+Five newly built platforms passed the focused device contract; its same-run
+Windows executable passed real staging Identity/Billing authorization and cleanup.
+Published archives, attestations/checksums and public site were verified. The
+published Skill contains device login and subscription-code guidance. This cloud
+release did not replace user-local binaries or global Skills; the v0.3.3 local
+installation receipt in validation is historical, not proof of a v0.4.0 install.
+Credentials, user configuration, profiles, YOLO, sending policy and semantic choices
+remain untouched. Completed promotion/recovery writers are historical: future
+writers must admit their actual predecessor rather than replaying old pins.
 Original production D1 `ad06f7f3-8897-4150-b9a9-7a46a8e55b30` and R2
 `moesegfault-mail-raw-production` were retained, not silently migrated/deleted.
 Staging uses separate D1 `74f35f95-42ce-482c-86e6-dffbdd35cbbe` and R2
