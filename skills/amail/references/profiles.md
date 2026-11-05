@@ -53,6 +53,12 @@ human's behalf. YOLO is the human's explicit removal of that protection, not
 permission to spend money, send unrelated mail or bypass server policy. Profiles
 are not a security sandbox against arbitrary code running as the same OS user.
 
+Clients supporting device login use hosted Identity confirmation for
+`login --device-code`, including initial local `user` activation. Billing
+navigation/status/continuation also avoid a loopback prompt: the human's actual
+subscription and budget decisions remain on Subscribe. These exceptions do not
+remove approval for mail, profile-management or semantic-consent operations.
+
 ## Mailbox ownership
 
 An account mailbox permits either several reading profiles or one writing

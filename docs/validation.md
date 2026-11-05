@@ -4,6 +4,54 @@ This is the single current acceptance ledger. Historical reviews/experiments are
 in Git history, not competing current-state documents. Evidence recorded on
 2026-10-02 is not a fresh inventory or permission to repeat production actions.
 
+## Device login and subscription short codes — source accepted, not published
+
+The `codex/device-code-login` feature adds opt-in `login --device-code` and
+`billing subscribe/manage --device-code`, preserving default PKCE and the existing
+Subscribe financial-consent boundary. Runtime implementation is `37337af`;
+the accepted native producer below includes its unchanged runtime sources.
+Integration, registration and rollout order are in
+[Identity onboarding](identity-onboarding.md).
+
+[Focused hosted run 42048951171](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/42048951171),
+source `8e5b9a9`, passed the Linux native job: six focused device/handoff tests,
+two public billing CLI tests, and an actual CLI/daemon plus Chromium journey with
+YOLO off and synthetic HTTPS Identity/Mail endpoints. It exercised explicit
+approval, denial, local/server expiry, terminal cancellation, first-poll delay,
+persistent `slow_down`, nonce-free RS256 validation, wrong-audience rejection,
+encrypted persistence, rotating refresh and revocation of the rotated token.
+The two handoff unit tests were also redundantly selected by a second filter;
+that duplicate invocation is removed from the workflow. Artifact
+`13426021821` (`native-device-acceptance-42048951171`) retains the sanitized receipt,
+confirmation screenshot and exact debug executable, SHA-256
+`4d4d54088a4c942c201f1ae94837a5cfe58bce5f5c749dadb4a98497318399d3`.
+The downloaded executable matches its receipt.
+
+That run also passed five affected Billing Rust tests, the real Mail Wasm build,
+and eight Workerd billing journeys, including code replay, owner isolation,
+pending-only navigation, expiry/denial and authoritative-receipt-only entitlement
+changes. Its **overall conclusion remains FAILED**: the final Chromium test used
+Playwright routing, which did not intercept the redirected top-level request.
+The browser reached the real staging Subscribe shell using only a synthetic
+navigation handle, then blocked its assets. No account, credentials or financial
+decision was involved. CDP Fetch interception now handles every redirect hop and
+blocks unexpected requests instead of letting the fixture reach real services.
+
+[Narrow browser acceptance 42050464517](https://github.com/kleedaisuki/moesegfault-amail/actions/runs/42050464517)
+passed on source `544e24b`. It rebuilt the unchanged Mail Worker and ran **only**
+the remaining Chromium manual-code form journey: native POST, paired-origin CSP,
+303 to the synthetic Subscribe review page, and unchanged Free/zero-budget
+entitlements. Native, Rust and the eight already-green Worker journeys were not
+repeated. Runtime source, dependency lock and toolchain inputs are byte-identical
+between these two runs; only the harness/workflow changed. Both manual lanes are
+acceptance tools, not new PR quality gates.
+
+This is synthetic integration acceptance, not a deployed Identity/account/payment
+journey or cross-platform release. Neither Identity client opt-in SQL nor Mail
+migration `0020` was applied remotely. No production Worker, published CLI/site,
+installed binary, account credentials or mail state was changed. The deployed
+and installed versions below remain authoritative.
+
 ## v0.3.3 native browser approval — published and installed
 
 Formal [v0.3.3](https://github.com/kleedaisuki/moesegfault-amail/releases/tag/v0.3.3)
