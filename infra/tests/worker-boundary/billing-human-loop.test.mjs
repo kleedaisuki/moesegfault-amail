@@ -304,37 +304,59 @@ test("billing device manual Chromium form follows paired Subscribe redirect with
   const chromiumBrowser = await chromium.launch({ headless: true });
   try {
     const context = await chromiumBrowser.newContext();
-    await context.route("**/*", async route => {
-      const incoming = route.request();
-      if (new URL(incoming.url()).origin === origin) {
-        const response = await dispatch(new URL(incoming.url()).pathname + new URL(incoming.url()).search, {
-          method: incoming.method(),
-          ...(incoming.method() === "POST" ? { code: new URLSearchParams(incoming.postData()).get("user_code") } : {}),
+    const page = await context.newPage();
+    const transport = await context.newCDPSession(page);
+    let hostedPageResponses = 0;
+    const browserResponses = [];
+    // Playwright routes only the first URL in a redirect chain. CDP Fetch pauses
+    // every hop, so the 303 destination cannot escape to the real Subscribe site.
+    await transport.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] });
+    transport.on("Fetch.requestPaused", async ({ requestId, request: incoming }) => {
+      const fulfill = async (status, headers, body) => {
+        const url = new URL(incoming.url);
+        browserResponses.push({ method: incoming.method, url: `${url.origin}${url.pathname}`, status });
+        return transport.send("Fetch.fulfillRequest", {
+          requestId, responseCode: status,
+          responseHeaders: Object.entries(headers).filter(([name]) => !["content-length", "transfer-encoding"].includes(name.toLowerCase())).map(([name, value]) => ({ name, value })),
+          body: Buffer.from(body).toString("base64"),
         });
-        await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
+      };
+      if (new URL(incoming.url).origin === origin) {
+        const response = await dispatch(new URL(incoming.url).pathname + new URL(incoming.url).search, {
+          method: incoming.method,
+          ...(incoming.method === "POST" ? { code: new URLSearchParams(incoming.postData).get("user_code") } : {}),
+        });
+        await fulfill(response.status, Object.fromEntries(response.headers), await response.arrayBuffer());
         return;
       }
-      if (incoming.url() !== authorizationUrl) {
-        await route.abort();
+      if (incoming.url !== authorizationUrl) {
+        const url = new URL(incoming.url);
+        browserResponses.push({ method: incoming.method, url: `${url.origin}${url.pathname}`, status: "blocked" });
+        await transport.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" });
         return;
       }
-      await route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><h1>Subscribe: review your billing choice</h1><p>No authorization has been submitted.</p>" });
+      hostedPageResponses += 1;
+      await fulfill(200, { "Content-Type": "text/html" }, "<!doctype html><h1>Subscribe: review your billing choice</h1><p>No authorization has been submitted.</p>");
     });
     const response = await request("/v1/billing/sessions", { method: "POST", body: { action: "subscribe", plan: "lite", device_code: true } });
     assert.equal(response.status, 200);
     const intent = await response.json();
     const count = calls.length;
-    const page = await context.newPage();
     const consoleErrors = [];
     page.on("console", message => { if (message.type() === "error") consoleErrors.push(message.text()); });
-    await page.goto(intent.verification_uri);
-    await page.locator("input[name=user_code]").fill(intent.user_code);
-    await Promise.all([
-      page.waitForURL(authorizationUrl),
-      page.getByRole("button", { name: "Continue to Subscribe" }).click(),
-    ]);
-    assert.match(await page.locator("h1").innerText(), /review your billing choice/);
-    assert.ok(!consoleErrors.some(message => /Content Security Policy|form-action/.test(message)), "the actual browser form redirect must pass CSP");
+    try {
+      await page.goto(intent.verification_uri);
+      await page.locator("input[name=user_code]").fill(intent.user_code);
+      await Promise.all([
+        page.waitForURL(authorizationUrl),
+        page.getByRole("button", { name: "Continue to Subscribe" }).click(),
+      ]);
+      assert.equal(hostedPageResponses, 1, "the redirected page must be served by the closed synthetic transport");
+      assert.match(await page.locator("h1").innerText(), /review your billing choice/);
+      assert.ok(!consoleErrors.some(message => /Content Security Policy|form-action/.test(message)), "the actual browser form redirect must pass CSP");
+    } catch (error) {
+      throw new Error(`Synthetic billing browser failed: ${JSON.stringify({ url: page.url(), responses: browserResponses, consoleErrors })}`, { cause: error });
+    }
     assert.equal(calls.length, count, "opening the hosted choice page is not a Billing API decision");
     assert.deepEqual(await account(), { plan: "free", overage_budget_micros: 0 });
     await context.close();
