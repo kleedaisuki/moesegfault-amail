@@ -1,0 +1,120 @@
+name: Focused native device and subscription acceptance
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  device:
+    name: Synthetic HTTPS device browser journey
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      XDG_DATA_HOME: ${{ github.workspace }}/.temp/device-keyring
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: cli-dependencies-v1
+          cache-bin: false
+          cache-workspace-crates: false
+      - name: Prepare an isolated Linux credential service and Chromium
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gnome-keyring dbus-x11 libdbus-1-dev
+          mkdir -p .temp/device-tls "$XDG_DATA_HOME"
+          npm install --prefix .temp/device-browser --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.51.1
+          node .temp/device-browser/node_modules/playwright/cli.js install --with-deps chromium
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout .temp/device-tls/key.pem -out .temp/device-tls/certificate.pem \
+            -subj /CN=localhost -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+            -addext 'basicConstraints=critical,CA:TRUE' 2>/dev/null
+          chmod 600 .temp/device-tls/key.pem
+      - name: Check affected formatting, polling contracts and public CLI grammar
+        run: |
+          cargo fmt -p amail -p amail-worker -- --check
+          node --check scripts/device_journey.mjs
+          cargo test -p amail --locked --bin amail device_
+          cargo test -p amail --locked --bin amail handoff
+          cargo test -p amail --locked --test billing
+      - name: Build the exact native executable used by the browser
+        run: cargo build -p amail --locked
+      - name: Exercise actual daemon, browser, encrypted session, rotation and failures
+        run: |
+          dbus-run-session -- bash -euo pipefail -c '
+            printf "\n" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+            node scripts/device_journey.mjs \
+              --binary target/debug/amail \
+              --browser-module .temp/device-browser/node_modules/playwright/index.mjs \
+              --certificate .temp/device-tls/certificate.pem \
+              --private-key .temp/device-tls/key.pem \
+              --output .temp/device-evidence
+          '
+      - name: Retain sanitized successful journey and executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-device-acceptance-${{ github.run_id }}
+          path: |
+            .temp/device-evidence/acceptance.json
+            .temp/device-evidence/synthetic-device-confirmation.png
+            target/debug/amail
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  billing:
+    name: Real Worker subscription short-code boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.6.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: worker-dependencies-v1
+          cache-bin: false
+          cache-workspace-crates: false
+      - name: Check affected billing domain logic
+        run: 'cargo test -p amail-worker --locked --lib billing::tests::'
+      - name: Restore pinned Worker bundler
+        id: bundler
+        uses: actions/cache@v4
+        with:
+          path: .cache/worker-build-check
+          key: device-worker-build-${{ runner.os }}-1.98.1-0.8.5
+      - name: Install the pinned public bundler on a cache miss
+        if: steps.bundler.outputs.cache-hit != 'true'
+        run: cargo install worker-build --version 0.8.5 --locked --root "$GITHUB_WORKSPACE/.cache/worker-build-check"
+      - name: Build only the Mail API Worker
+        working-directory: crates/mail-worker
+        run: ../../.cache/worker-build-check/bin/worker-build --release
+      - name: Install the existing workerd fixture
+        working-directory: infra/tests/worker-boundary
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium for the native subscription form
+        run: |
+          npm install --prefix .temp/device-browser --ignore-scripts --no-audit --no-fund --package-lock=false playwright@1.51.1
+          node .temp/device-browser/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Exercise real API migration, public code navigation and owner polling
+        env:
+          AMAIL_DEVICE_BROWSER_MODULE: ${{ github.workspace }}/.temp/device-browser/node_modules/playwright/index.mjs
+        working-directory: infra/tests/worker-boundary
+        run: node --test billing-human-loop.test.mjs

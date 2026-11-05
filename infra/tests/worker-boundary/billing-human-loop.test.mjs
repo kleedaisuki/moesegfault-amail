@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign, createHash } from "node:crypto";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
 import { applyMigrations } from "./migration-fixture.mjs";
@@ -116,6 +116,10 @@ async function fixture(run, { traceCapture = false } = {}) {
           "Content-Type": "application/json", "Idempotency-Key": idem,
           traceparent: `00-${traceId}-${cliSpan}-01` },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const browser = (pathname, { method = "GET", code } = {}) => mf.dispatchFetch(`${origin}${pathname}`, {
+      method, redirect: "manual",
+      ...(code === undefined ? {} : { headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ user_code: code }).toString() }),
+    });
     const create = () => request("/v1/billing/sessions", { method: "POST", body: { action: "subscribe", plan: "lite" } });
     const account = () => db.prepare("SELECT plan,overage_budget_micros FROM resource_accounts WHERE owner_iss=?1 AND owner_sub=?2")
       .bind(issuer, subject).first();
@@ -131,7 +135,7 @@ async function fixture(run, { traceCapture = false } = {}) {
       } finally { clearTimeout(timer); }
       return records;
     };
-    await run({ request, create, account, db, calls, traces,
+    await run({ request, create, browser, account, db, calls, traces,
       state: value => { remoteState = value; }, fail: value => { failure = value; },
       wrongOwner: value => { incorrectOwner = value; },
       legacyCurrency: value => { legacyCurrency = value; } });
@@ -226,4 +230,115 @@ test("legacy CNY authority preserves Lite access but requires fresh USD spending
   assert.equal(status.rates.outbound_micros, 1000);
   assert.equal(status.rates.storage_gb_month_micros, 150000);
   assert.equal(status.rates.address_month_micros, 500000);
+}));
+
+
+test("billing device handoff navigates without consent and keeps one owner-scoped intent", async () => fixture(async ({ request, browser, account, calls, state }) => {
+  const create = () => request("/v1/billing/sessions", { method: "POST", body: { action: "subscribe", plan: "lite", device_code: true } });
+  const response = await create();
+  assert.equal(response.status, 200);
+  const intent = await response.json();
+  assert.match(intent.user_code, /^[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$/);
+  assert.equal(intent.verification_uri, `${origin}/billing/device`);
+  assert.equal(intent.verification_uri_complete, `${intent.verification_uri}?user_code=${intent.user_code}`);
+  assert.ok(intent.expires_in > 0 && intent.expires_in <= 1800);
+  assert.equal(intent.interval, 2);
+  assert.equal((await (await create()).json()).user_code, intent.user_code, "creation replay keeps the original code");
+  assert.equal(calls.filter(call => call.method === "POST").length, 1);
+  assert.equal((await request(`/v1/billing/sessions/${key}`, { owner: "foreign-owner" })).status, 404);
+  const page = await browser("/billing/device");
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /name=user_code/);
+  assert.match(html, /This step does not approve/);
+  assert.equal(page.headers.get("Referrer-Policy"), "no-referrer");
+  assert.match(page.headers.get("Content-Security-Policy"), /form-action 'self' https:\/\/subscribe-staging\.moesegfault\.dev/);
+  const count = calls.length;
+  for (const navigation of [
+    await browser(`/billing/device?user_code=${intent.user_code}`),
+    await browser("/billing/device", { method: "POST", code: intent.user_code.toLowerCase().replace("-", " ") }),
+  ]) {
+    assert.equal(navigation.status, 303);
+    assert.equal(navigation.headers.get("Location"), authorizationUrl);
+    assert.equal(navigation.headers.get("Cache-Control"), "no-store");
+  }
+  assert.equal(calls.length, count, "navigation neither queries nor approves Billing");
+  assert.deepEqual(await account(), { plan: "free", overage_budget_micros: 0 });
+  assert.equal((await (await request(`/v1/billing/sessions/${key}`)).json()).state, "pending");
+  state("approved");
+  assert.equal((await (await request(`/v1/billing/sessions/${key}`)).json()).state, "completed");
+  assert.deepEqual(await account(), { plan: "lite", overage_budget_micros: 5_000_000 });
+  const used = await browser(`/billing/device?user_code=${intent.user_code}`);
+  assert.equal(used.status, 200);
+  assert.match(await used.text(), /unavailable or expired/);
+}));
+
+test("billing device denial, expiry and unknown code never navigate or grant entitlements", async () => {
+  for (const terminal of ["denied", "expired", "local-expiry"]) await fixture(async ({ request, browser, account, db, state, calls }) => {
+    const response = await request("/v1/billing/sessions", { method: "POST", body: { action: "manage", device_code: true } });
+    assert.equal(response.status, 200);
+    const intent = await response.json();
+    if (terminal === "local-expiry") {
+      await db.prepare("UPDATE billing_sessions SET expires_at=?1 WHERE id=?2").bind(Math.floor(Date.now() / 1000), key).run();
+    } else {
+      state(terminal);
+      assert.equal((await (await request(`/v1/billing/sessions/${key}`)).json()).state, terminal === "denied" ? "cancelled" : "expired");
+    }
+    const count = calls.length;
+    for (const code of [intent.user_code, "00000-00000"]) {
+      const unavailable = await browser(`/billing/device?user_code=${code}`);
+      assert.equal(unavailable.status, 200);
+      assert.equal(unavailable.headers.get("Location"), null);
+      assert.match(await unavailable.text(), /unavailable or expired/);
+    }
+    assert.equal(calls.length, count);
+    assert.deepEqual(await account(), { plan: "free", overage_budget_micros: 0 });
+  });
+});
+
+
+test("billing device manual Chromium form follows paired Subscribe redirect without consent", {
+  skip: !process.env.AMAIL_DEVICE_BROWSER_MODULE,
+}, async () => fixture(async ({ request, browser: dispatch, account, calls }) => {
+  const { chromium } = await import(pathToFileURL(process.env.AMAIL_DEVICE_BROWSER_MODULE).href);
+  const chromiumBrowser = await chromium.launch({ headless: true });
+  try {
+    const context = await chromiumBrowser.newContext();
+    await context.route("**/*", async route => {
+      const incoming = route.request();
+      if (new URL(incoming.url()).origin === origin) {
+        const response = await dispatch(new URL(incoming.url()).pathname + new URL(incoming.url()).search, {
+          method: incoming.method(),
+          ...(incoming.method() === "POST" ? { code: new URLSearchParams(incoming.postData()).get("user_code") } : {}),
+        });
+        await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
+        return;
+      }
+      if (incoming.url() !== authorizationUrl) {
+        await route.abort();
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><h1>Subscribe: review your billing choice</h1><p>No authorization has been submitted.</p>" });
+    });
+    const response = await request("/v1/billing/sessions", { method: "POST", body: { action: "subscribe", plan: "lite", device_code: true } });
+    assert.equal(response.status, 200);
+    const intent = await response.json();
+    const count = calls.length;
+    const page = await context.newPage();
+    const consoleErrors = [];
+    page.on("console", message => { if (message.type() === "error") consoleErrors.push(message.text()); });
+    await page.goto(intent.verification_uri);
+    await page.locator("input[name=user_code]").fill(intent.user_code);
+    await Promise.all([
+      page.waitForURL(authorizationUrl),
+      page.getByRole("button", { name: "Continue to Subscribe" }).click(),
+    ]);
+    assert.match(await page.locator("h1").innerText(), /review your billing choice/);
+    assert.ok(!consoleErrors.some(message => /Content Security Policy|form-action/.test(message)), "the actual browser form redirect must pass CSP");
+    assert.equal(calls.length, count, "opening the hosted choice page is not a Billing API decision");
+    assert.deepEqual(await account(), { plan: "free", overage_budget_micros: 0 });
+    await context.close();
+  } finally {
+    await chromiumBrowser.close();
+  }
 }));
