@@ -1,4 +1,4 @@
-//! Native OIDC login, protected credentials, and refresh / 原生 OIDC 登录、安全凭据与刷新。
+//! Native PKCE/device OIDC login, protected credentials, and rotating refresh.
 
 use crate::{
     command_journal::{self, Phase, Span},
@@ -17,7 +17,7 @@ use rand::RngCore;
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     io::{Read, Write},
@@ -33,6 +33,9 @@ struct Discovery {
     token_endpoint: String,
     jwks_uri: String,
     revocation_endpoint: Option<String>,
+    device_authorization_endpoint: Option<String>,
+    #[serde(default)]
+    grant_types_supported: Vec<String>,
     #[serde(default)]
     authorization_response_iss_parameter_supported: bool,
     #[serde(default)]
@@ -66,7 +69,8 @@ struct TokenReply {
 #[derive(Debug, Deserialize)]
 struct IdClaims {
     sub: String,
-    nonce: String,
+    nonce: Option<String>,
+    iat: u64,
     token_use: String,
 }
 
@@ -92,23 +96,12 @@ fn identity_json<T: serde::de::DeserializeOwned>(
     result
 }
 
-/// Fetch discovery and reject issuer drift or non-PKCE providers.
-/// 获取发现文档并拒绝签发者漂移或不支持 PKCE 的提供者。
+/// Fetch discovery and reject issuer drift or insecure endpoints.
 fn discover(cfg: &Runtime, http: &Client) -> Result<Discovery> {
     let uri = format!("{}/.well-known/openid-configuration", cfg.issuer);
     let d: Discovery = identity_json(cfg, Phase::Discovery, http.get(uri))
         .context("Identity discovery must return JSON, not a login page")?;
     ensure!(d.issuer == cfg.issuer, "Identity issuer mismatch");
-    ensure!(
-        d.code_challenge_methods_supported
-            .iter()
-            .any(|x| x == "S256"),
-        "Identity does not advertise S256 PKCE"
-    );
-    ensure!(
-        d.authorization_response_iss_parameter_supported,
-        "Identity must advertise authorization-response issuer"
-    );
     for endpoint in [&d.authorization_endpoint, &d.token_endpoint, &d.jwks_uri] {
         ensure!(
             url::Url::parse(endpoint)?.scheme() == "https",
@@ -135,7 +128,7 @@ fn now() -> u64 {
 /// 校验 RS256 ID 令牌的签名、签发者、受众、时间、种类和 nonce。
 fn validate_id(
     token: &str,
-    expected_nonce: &str,
+    expected_nonce: Option<&str>,
     cfg: &Runtime,
     d: &Discovery,
     http: &Client,
@@ -170,6 +163,7 @@ fn validate_id(
     let jwk: Jwk = serde_json::from_value(item.clone())?;
     let key = DecodingKey::from_jwk(&jwk)?;
     let mut validation = Validation::new(Algorithm::RS256);
+    validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
     validation.set_issuer(&[cfg.issuer.as_str()]);
     validation.set_audience(&[cfg.client_id.as_str()]);
     validation.leeway = 30;
@@ -178,7 +172,16 @@ fn validate_id(
         claims.token_use == "id",
         "access token supplied where ID token expected"
     );
-    ensure!(claims.nonce == expected_nonce, "OIDC nonce mismatch");
+    if let Some(nonce) = expected_nonce {
+        ensure!(
+            claims.nonce.as_deref() == Some(nonce),
+            "OIDC nonce mismatch"
+        );
+    }
+    ensure!(
+        claims.iat <= now().saturating_add(30),
+        "ID token issued in the future"
+    );
     ensure!(!claims.sub.is_empty(), "ID token missing subject");
     Ok(claims.sub)
 }
@@ -385,12 +388,275 @@ pub fn status(cfg: &Runtime) -> Result<Option<Tokens>> {
         .context("stored OAuth token set is invalid")
 }
 
+const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+
+#[derive(Deserialize)]
+struct DeviceAuthorization {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: Option<String>,
+    expires_in: u64,
+    #[serde(default = "default_poll_interval")]
+    interval: u64,
+}
+
+fn default_poll_interval() -> u64 {
+    5
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthError {
+    error: String,
+}
+
+struct OAuthFailure {
+    error: String,
+    status: u16,
+    correlation_id: Option<String>,
+}
+
+impl OAuthFailure {
+    fn into_error(self) -> anyhow::Error {
+        crate::machine::Failure {
+            code: "identity_oauth_error",
+            next_action: if self.error == "access_denied" {
+                "stop"
+            } else {
+                "login"
+            },
+            data: json!({"oauth_error": self.error, "http_status": self.status,
+                "correlation_id": self.correlation_id}),
+            message: format!(
+                "Identity OAuth error: {} (HTTP {}, correlation ID: {})",
+                self.error,
+                self.status,
+                self.correlation_id.as_deref().unwrap_or("unavailable")
+            ),
+        }
+        .into()
+    }
+}
+
+enum DeviceReply<T> {
+    Success(T),
+    OAuth(OAuthFailure),
+}
+
+/// OAuth pending and slow-down are protocol replies, not HTTP transport failures.
+fn device_request<T: serde::de::DeserializeOwned>(
+    cfg: &Runtime,
+    request: reqwest::blocking::RequestBuilder,
+) -> Result<DeviceReply<T>> {
+    let span = Span::start(Phase::TokenExchange);
+    let mut status = None;
+    let result = (|| -> Result<DeviceReply<T>> {
+        let response = request.send()?;
+        let http_status = response.status();
+        status = Some(http_status.as_u16());
+        let correlation_id = response
+            .headers()
+            .get("x-moesegfault-correlation-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        if http_status.is_success() {
+            return Ok(DeviceReply::Success(response.json().with_context(
+                || {
+                    format!(
+                        "Identity token response invalid (HTTP {}, correlation ID: {})",
+                        http_status.as_u16(),
+                        correlation_id.as_deref().unwrap_or("unavailable")
+                    )
+                },
+            )?));
+        }
+        let status = http_status.as_u16();
+        let failure: OAuthError = response.json().with_context(|| {
+            format!(
+                "Identity OAuth response invalid (HTTP {status}, correlation ID: {})",
+                correlation_id.as_deref().unwrap_or("unavailable")
+            )
+        })?;
+        Ok(DeviceReply::OAuth(OAuthFailure {
+            error: failure.error,
+            status,
+            correlation_id,
+        }))
+    })();
+    span.finish(
+        cfg,
+        matches!(&result, Ok(DeviceReply::Success(_))),
+        status,
+        result
+            .as_ref()
+            .err()
+            .and_then(|error| error.downcast_ref::<reqwest::Error>())
+            .map(command_journal::dependency_code)
+            .or_else(|| matches!(&result, Ok(DeviceReply::OAuth(_))).then_some("http_status")),
+    );
+    result
+}
+
+/// Perform delegated human login without a callback listener or browser-local state.
+pub fn login_device(cfg: &Runtime, no_browser: bool) -> Result<String> {
+    cfg.require_oauth()?;
+    let http = crate::http::client_builder()?
+        .timeout(Duration::from_secs(20))
+        .build()?;
+    let d = discover(cfg, &http)?;
+    ensure!(
+        d.grant_types_supported
+            .iter()
+            .any(|grant| grant == DEVICE_GRANT),
+        "Identity does not advertise device authorization"
+    );
+    let endpoint = d
+        .device_authorization_endpoint
+        .as_deref()
+        .context("Identity discovery missing device authorization endpoint")?;
+    ensure!(
+        url::Url::parse(endpoint)?.scheme() == "https",
+        "insecure device authorization endpoint"
+    );
+    let authorization: DeviceAuthorization = match device_request(
+        cfg,
+        http.post(endpoint).form(&[
+            ("client_id", cfg.client_id.as_str()),
+            ("scope", "openid profile offline_access"),
+        ]),
+    )? {
+        DeviceReply::Success(value) => value,
+        DeviceReply::OAuth(failure) => return Err(failure.into_error()),
+    };
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(authorization.expires_in))
+        .context("invalid device authorization expiry")?;
+    let verification_uri = url::Url::parse(&authorization.verification_uri)?;
+    ensure!(
+        verification_uri.scheme() == "https",
+        "insecure device verification URI"
+    );
+    let complete = authorization
+        .verification_uri_complete
+        .as_deref()
+        .map(url::Url::parse)
+        .transpose()?;
+    if let Some(complete) = &complete {
+        ensure!(
+            complete.scheme() == "https",
+            "insecure device verification URI"
+        );
+    }
+    println!(
+        "{}",
+        json!({"user_code": authorization.user_code,
+        "verification_uri": verification_uri.as_str(),
+        "verification_uri_complete": complete.as_ref().map(url::Url::as_str),
+        "expires_in": authorization.expires_in,
+        "interval": authorization.interval,
+        "instruction": "Compare the code and application name with this login attempt. Only approve a code from your own terminal; opening the link does not approve it.",
+        "next_action": "compare_code_and_application_then_approve_in_browser"})
+    );
+    if !crate::machine::enabled() {
+        eprintln!("Open the verification page and compare the code and application name with this login attempt. Only approve a code from your own terminal; opening the link does not approve it.");
+    }
+    if !no_browser {
+        let target = complete.as_ref().unwrap_or(&verification_uri);
+        if webbrowser::open(target.as_str()).is_err() {
+            if crate::machine::enabled() {
+                crate::machine::event(
+                    "device_browser_unavailable",
+                    json!({"next_action": "open_verification_uri_manually"}),
+                );
+            } else {
+                eprintln!(
+                    "System browser unavailable; open the verification URI on another device."
+                );
+            }
+        }
+    }
+    let reply = poll_device(cfg, &http, &d.token_endpoint, &authorization, deadline)?;
+    finish_login(cfg, &d, &http, reply, None)
+}
+
+fn wait_device(interval: Duration, deadline: Instant) -> Result<()> {
+    let next_poll = Instant::now()
+        .checked_add(interval)
+        .unwrap_or(deadline)
+        .min(deadline);
+    loop {
+        crate::output::ensure_connected()?;
+        let remaining = next_poll.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(250)));
+    }
+}
+
+fn poll_device(
+    cfg: &Runtime,
+    http: &Client,
+    endpoint: &str,
+    authorization: &DeviceAuthorization,
+    deadline: Instant,
+) -> Result<TokenReply> {
+    let mut interval = Duration::from_secs(authorization.interval);
+    loop {
+        wait_device(interval, deadline)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        ensure!(
+            !remaining.is_zero(),
+            "device login expired; start a new login attempt"
+        );
+        crate::output::ensure_connected()?;
+        let result = device_request(
+            cfg,
+            http.post(endpoint)
+                .timeout(remaining.min(Duration::from_secs(20)))
+                .form(&[
+                    ("client_id", cfg.client_id.as_str()),
+                    ("grant_type", DEVICE_GRANT),
+                    ("device_code", authorization.device_code.as_str()),
+                ]),
+        );
+        match result {
+            Ok(DeviceReply::Success(reply)) => return Ok(reply),
+            Ok(DeviceReply::OAuth(failure)) if failure.error == "authorization_pending" => {}
+            Ok(DeviceReply::OAuth(failure)) if failure.error == "slow_down" => {
+                interval = interval.saturating_add(Duration::from_secs(5));
+            }
+            Ok(DeviceReply::OAuth(failure)) => return Err(failure.into_error()),
+            Err(error)
+                if error
+                    .downcast_ref::<reqwest::Error>()
+                    .is_some_and(|error| error.is_timeout()) =>
+            {
+                interval = interval.max(Duration::from_secs(1)).saturating_mul(2);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Perform single-use browser PKCE login on the exact registered loopback URI.
 /// 在精确注册的回环 URI 上执行一次性浏览器 PKCE 登录。
 pub fn login(cfg: &Runtime, no_browser: bool) -> Result<String> {
-    cfg.require_oauth()?;
-    let http = Client::builder().timeout(Duration::from_secs(20)).build()?;
+    cfg.require_callback()?;
+    let http = crate::http::client_builder()?
+        .timeout(Duration::from_secs(20))
+        .build()?;
     let d = discover(cfg, &http)?;
+    ensure!(
+        d.code_challenge_methods_supported
+            .iter()
+            .any(|x| x == "S256"),
+        "Identity does not advertise S256 PKCE"
+    );
+    ensure!(
+        d.authorization_response_iss_parameter_supported,
+        "Identity must advertise authorization-response issuer"
+    );
     let mut redirect = url::Url::parse(&cfg.redirect_uri)?;
     let addr = format!("127.0.0.1:{}", redirect.port().unwrap_or(0));
     let listener = TcpListener::bind(&addr)
@@ -491,33 +757,51 @@ pub fn login(cfg: &Runtime, no_browser: bool) -> Result<String> {
                 ("code_verifier", verifier.as_str()),
             ]),
         )?;
-        ensure!(
-            reply.token_type.eq_ignore_ascii_case("Bearer"),
-            "unexpected token type"
-        );
-        let id = reply
-            .id_token
-            .as_deref()
-            .context("Identity did not return ID token")?;
-        let subject = validate_id(id, &nonce, cfg, &d, &http)?;
-        let tokens = Tokens {
-            access_token: reply.access_token,
-            refresh_token: reply.refresh_token,
-            id_token: reply.id_token,
-            expires_at: now().saturating_add(reply.expires_in),
-            subject: subject.clone(),
-        };
-        let _lock = token_lock(cfg)?;
-        let conn = local_store::open(cfg, Duration::from_secs(30))?;
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS refresh_state (session_key TEXT PRIMARY KEY, in_progress INTEGER NOT NULL)")?;
-        conn.execute("INSERT INTO refresh_state(session_key,in_progress) VALUES(?1,0) ON CONFLICT(session_key) DO UPDATE SET in_progress=0", [format!("{}|{}", cfg.issuer, cfg.client_id)])?;
-        // Persistence is the final fallible step before browser success.
-        // 持久化是浏览器显示成功前最后一个可能失败的步骤。
-        save(cfg, &tokens)?;
-        Ok(subject)
+        finish_login(cfg, &d, &http, reply, Some(&nonce))
     })();
     let _ = callback_page(&mut callback, result.is_ok());
     result
+}
+
+/// Both grants establish the same protected session and rotating refresh lifecycle.
+fn finish_login(
+    cfg: &Runtime,
+    d: &Discovery,
+    http: &Client,
+    reply: TokenReply,
+    nonce: Option<&str>,
+) -> Result<String> {
+    ensure!(
+        reply.token_type.eq_ignore_ascii_case("Bearer"),
+        "unexpected token type"
+    );
+    let id = reply
+        .id_token
+        .as_deref()
+        .context("Identity did not return ID token")?;
+    let subject = validate_id(id, nonce, cfg, d, http)?;
+    if nonce.is_none() {
+        crate::output::ensure_connected()?;
+    }
+    let tokens = Tokens {
+        access_token: reply.access_token,
+        refresh_token: reply.refresh_token,
+        id_token: reply.id_token,
+        expires_at: now().saturating_add(reply.expires_in),
+        subject: subject.clone(),
+    };
+    let _lock = token_lock(cfg)?;
+    let conn = local_store::open(cfg, Duration::from_secs(30))?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS refresh_state (session_key TEXT PRIMARY KEY, in_progress INTEGER NOT NULL)")?;
+    if nonce.is_none() {
+        crate::output::ensure_connected()?;
+    }
+    conn.execute("INSERT INTO refresh_state(session_key,in_progress) VALUES(?1,0) ON CONFLICT(session_key) DO UPDATE SET in_progress=0", [session_key(cfg)])?;
+    if nonce.is_none() {
+        crate::output::ensure_connected()?;
+    }
+    save(cfg, &tokens)?;
+    Ok(subject)
 }
 
 /// Render only a static no-store localhost result after persistence succeeds or fails.
@@ -579,7 +863,9 @@ fn acquire_access_token(cfg: &Runtime) -> Result<String> {
         .refresh_token
         .as_deref()
         .context("session expired; run `amail login`")?;
-    let http = Client::builder().timeout(Duration::from_secs(20)).build()?;
+    let http = crate::http::client_builder()?
+        .timeout(Duration::from_secs(20))
+        .build()?;
     let d = discover(cfg, &http)?;
     conn.execute(
         "UPDATE refresh_state SET in_progress=1 WHERE session_key=?1",
@@ -638,7 +924,12 @@ pub fn logout(cfg: &Runtime) -> Result<()> {
     // 撤销与本地删除相互独立；网络失败时仍优先保证本地安全。
     if let Ok(tokens) = load(cfg) {
         if let Some(refresh) = tokens.refresh_token {
-            if let Ok(http) = Client::builder().timeout(Duration::from_secs(8)).build() {
+            if let Ok(http) = crate::http::client_builder().and_then(|builder| {
+                builder
+                    .timeout(Duration::from_secs(8))
+                    .build()
+                    .map_err(Into::into)
+            }) {
                 if let Ok(d) = discover(cfg, &http) {
                     if let Some(endpoint) = d.revocation_endpoint {
                         let span = Span::start(Phase::Revocation);
@@ -766,6 +1057,135 @@ mod tests {
             expires_at: 42,
             subject: "private-subject".into(),
         }
+    }
+
+    fn device_server(replies: Vec<(u16, &'static str)>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/token", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for (status, body) in replies {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0];
+                while !request.ends_with(b"\r\n\r\n") {
+                    socket.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                let headers = String::from_utf8(request).unwrap();
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap();
+                let mut body_bytes = vec![0; length];
+                socket.read_exact(&mut body_bytes).unwrap();
+                let form: std::collections::HashMap<_, _> =
+                    url::form_urlencoded::parse(&body_bytes)
+                        .into_owned()
+                        .collect();
+                assert_eq!(form.get("grant_type").unwrap(), DEVICE_GRANT);
+                assert_eq!(form.get("device_code").unwrap(), "private-device-code");
+                assert!(!form.contains_key("redirect_uri"));
+                assert!(!form.contains_key("code_verifier"));
+                write!(socket, "HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nx-moesegfault-correlation-id: device-test-correlation\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        (endpoint, server)
+    }
+
+    fn device_authorization() -> DeviceAuthorization {
+        DeviceAuthorization {
+            device_code: "private-device-code".into(),
+            user_code: "ABCD-EFGH".into(),
+            verification_uri: "https://login.example.test/device".into(),
+            verification_uri_complete: None,
+            expires_in: 600,
+            interval: 1,
+        }
+    }
+
+    #[test]
+    fn device_wait_cancels_when_frontend_disconnects() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let frontend = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (daemon, _) = listener.accept().unwrap();
+        crate::output::install(daemon);
+        drop(frontend);
+        let started = Instant::now();
+        let result = wait_device(Duration::from_secs(30), started + Duration::from_secs(60));
+        let _ = crate::output::finish(0);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(
+            crate::machine::error_record(&result.unwrap_err())["code"],
+            "authorization_cancelled"
+        );
+    }
+
+    #[test]
+    fn device_poll_waits_before_first_request_and_accepts_pending_then_tokens() {
+        let (endpoint, server) = device_server(vec![
+            (400, r#"{"error":"authorization_pending"}"#),
+            (
+                200,
+                r#"{"access_token":"access","refresh_token":"refresh","id_token":"id","expires_in":300,"token_type":"Bearer"}"#,
+            ),
+        ]);
+        let cfg = config("https://identity.example.test");
+        let started = Instant::now();
+        let reply = poll_device(
+            &cfg,
+            &Client::new(),
+            &endpoint,
+            &device_authorization(),
+            started + Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        assert_eq!(reply.access_token, "access");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn device_poll_stops_on_denial_with_protocol_diagnostics() {
+        let (endpoint, server) = device_server(vec![(400, r#"{"error":"access_denied"}"#)]);
+        let error = poll_device(
+            &config("https://identity.example.test"),
+            &Client::new(),
+            &endpoint,
+            &device_authorization(),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap_err();
+        let record = crate::machine::error_record(&error);
+        assert_eq!(record["details"]["oauth_error"], "access_denied");
+        assert_eq!(record["details"]["http_status"], 400);
+        assert_eq!(
+            record["details"]["correlation_id"],
+            "device-test-correlation"
+        );
+        assert!(!record.to_string().contains("private-device-code"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn device_poll_slow_down_never_polls_again_before_its_longer_interval() {
+        let (endpoint, server) = device_server(vec![(400, r#"{"error":"slow_down"}"#)]);
+        let error = poll_device(
+            &config("https://identity.example.test"),
+            &Client::new(),
+            &endpoint,
+            &device_authorization(),
+            Instant::now() + Duration::from_secs(3),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("expired"));
+        server.join().unwrap();
     }
 
     #[test]

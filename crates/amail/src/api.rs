@@ -17,7 +17,7 @@ pub(crate) fn shared_http() -> Result<Client> {
     if let Some(client) = HTTP.get() {
         return Ok(client.clone());
     }
-    let client = Client::builder()
+    let client = crate::http::client_builder()?
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())

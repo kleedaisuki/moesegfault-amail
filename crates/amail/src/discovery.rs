@@ -6,14 +6,17 @@ use serde_json::{json, Value};
 pub fn topic(name: Option<&str>) -> Result<Value> {
     let topics = [
         "mail", "send", "events", "search", "semantic", "draft", "trust", "recipes", "machine",
-        "billing",
+        "billing", "auth",
     ];
     let body = match name {
         None => {
             json!({"topics": topics, "explore":"amail discover TOPIC", "principle":"Read summaries first; request archives, outcomes and event pages only when needed."})
         }
+        Some("auth") => {
+            json!({"commands":["login [--device-code] [--no-browser]", "auth login [--device-code] [--no-browser]", "auth status", "auth logout"],"contract":"Default login uses browser PKCE with a local callback. --device-code uses Identity RFC 8628 for remote terminals without a callback; --no-browser only suppresses browser launch. Compare the displayed human code and application name on your own device before approval. Device login requires client opt-in at the configured issuer; it never authorizes subscription changes. Tokens remain in protected local storage and use the existing refresh/logout lifecycle."})
+        }
         Some("billing") => {
-            json!({"commands":["billing status", "billing subscribe free|lite|plus [--idempotency-key UUID] [--no-browser] [--wait-seconds N]", "billing manage [--idempotency-key UUID] [--no-browser]", "billing session UUID [--wait-seconds N]"],"contract":"All financial consent and spending limits belong to the human browser. The agent only creates navigation sessions and reads state. Preserve the creation idempotency_key after uncertain responses; resume the same session ID after polling timeout. completed means authorization completed, not payment settled. Receive and semantic search are unmetered; storage and outbound recipients consume resources. Existing addresses survive Free migration.","currency":"Current prices use USD integer micros: 1 USD = 1000000 micros. Free $0, Lite $1.50/month, Plus $4.50/month; overage $0.001/recipient, $0.15/GB-month and $0.50/address-month. Historical CNY receipts retain CNY and never authorize USD spending. Accrued or unsettled is not charged."})
+            json!({"commands":["billing status", "billing subscribe free|lite|plus [--device-code] [--idempotency-key UUID] [--no-browser] [--wait-seconds N]", "billing manage [--device-code] [--idempotency-key UUID] [--no-browser]", "billing session UUID [--wait-seconds N]"],"contract":"All financial consent and spending limits belong to the human browser. --device-code hands a short code to another device, which opens the original Subscribe confirmation; entering a code is not consent or payment. The agent only creates navigation sessions and reads state. Billing navigation and polling do not require a local browser confirmation. Preserve the creation idempotency_key after uncertain responses; resume the same session ID after polling timeout. completed means authorization completed, not payment settled. Receive and semantic search are unmetered; storage and outbound recipients consume resources. Existing addresses survive Free migration.","currency":"Current prices use USD integer micros: 1 USD = 1000000 micros. Free $0, Lite $1.50/month, Plus $4.50/month; overage $0.001/recipient, $0.15/GB-month and $0.50/address-month. Historical CNY receipts retain CNY and never authorize USD spending. Accrued or unsettled is not charged."})
         }
         Some("mail") => {
             json!({"commands":["sync --limit N [--cursor CURSOR]", "get ID", "read ID --out PATH [--unpack]", "mark ID --read|--unread", "delete ID"],"children":["search","events"],"contract":"Reads do not mark mail read. Collect IDs before mutating a paginated result."})

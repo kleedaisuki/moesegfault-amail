@@ -69,6 +69,39 @@ pub(crate) fn err(args: fmt::Arguments<'_>) {
     line(STDERR, args);
 }
 
+/// Device login belongs to the initiating terminal, unlike accepted mail mutations.
+pub(crate) fn ensure_connected() -> Result<()> {
+    STREAM.with(|current| {
+        let current = current.borrow();
+        let Some(stream) = current.as_ref() else {
+            return Ok(());
+        };
+        stream.set_read_timeout(Some(std::time::Duration::from_millis(1)))?;
+        let mut byte = [0];
+        let result = stream.peek(&mut byte);
+        stream.set_read_timeout(None)?;
+        match result {
+            Ok(0) => Err(crate::machine::Failure {
+                code: "authorization_cancelled",
+                next_action: "stop",
+                data: serde_json::json!({}),
+                message: "device login cancelled: initiating terminal disconnected".into(),
+            }
+            .into()),
+            Ok(_) => Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error).context("checking initiating terminal connection"),
+        }
+    })
+}
+
 /// Stream bounded frames directly to the client's inherited output handles.
 pub(crate) fn consume(reader: &mut impl Read) -> Result<i32> {
     let mut buffer = [0_u8; CHUNK];

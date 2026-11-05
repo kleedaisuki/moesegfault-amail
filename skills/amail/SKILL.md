@@ -68,6 +68,19 @@ the human complete the browser flow. Never request passwords, tokens, browser
 sessions or a copied authorization code. `amail auth status` checks non-secret
 session state.
 
+For a remote terminal whose callback cannot reach the human's browser, use
+`amail login --device-code --no-browser` when the installed help advertises it.
+Give the human its verification address and human code; they compare the code and
+amail application name before approving on their own device. Never approve it for
+them or request the private device secret. `--no-browser` alone retains ordinary
+callback login. See [session login](references/session-addresses.md).
+
+For a requested subscription or billing change on a remote terminal, supporting
+clients offer `billing subscribe/manage --device-code --no-browser`; hand off the
+verification address and human code, then retain the original billing session
+UUID for polling. Only the human reviews and confirms on Subscribe; Identity
+login approval is not financial consent. See [billing](references/billing.md).
+
 Run `amail discover` for the offline topic index, then select only the relevant
 `amail discover TOPIC` and listed schema child. Prefer summaries before `get`,
 archives or feedback; indexed account events can reveal changes without a known

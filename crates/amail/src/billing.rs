@@ -43,6 +43,9 @@ pub enum Command {
         /// Print the safe authorization URL instead of opening the system browser.
         #[arg(long)]
         no_browser: bool,
+        /// Hand off a short code to a browser on another device.
+        #[arg(long)]
+        device_code: bool,
         /// Wait for human authorization, at most 900 seconds; default returns immediately.
         #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u64).range(0..=900))]
         wait_seconds: u64,
@@ -54,6 +57,9 @@ pub enum Command {
         idempotency_key: Option<uuid::Uuid>,
         #[arg(long)]
         no_browser: bool,
+        /// Hand off a short code to a browser on another device.
+        #[arg(long)]
+        device_code: bool,
         #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u64).range(0..=900))]
         wait_seconds: u64,
     },
@@ -103,6 +109,11 @@ struct Session {
     authorization_url: Option<String>,
     /// Server retry hint, bounded locally even if the response is faulty.
     retry_after_ms: Option<u64>,
+    user_code: Option<String>,
+    verification_uri: Option<String>,
+    verification_uri_complete: Option<String>,
+    expires_in: Option<u64>,
+    interval: Option<u64>,
 }
 
 /// Reject credentials, query strings, fragments, insecure schemes and cross-path tricks.
@@ -144,6 +155,14 @@ fn output(value: &Session, url: Option<&url::Url>, human: bool) -> Result<()> {
     if let Some(url) = url {
         body["authorization_url"] = json!(url.as_str());
     }
+    if let Some(code) = &value.user_code {
+        body["user_code"] = json!(code);
+        body["verification_uri"] = json!(value.verification_uri);
+        body["verification_uri_complete"] = json!(value.verification_uri_complete);
+        body["expires_in"] = json!(value.expires_in);
+        body["interval"] = json!(value.interval);
+        body["confirmation"] = json!("Open the verification URI on your own device and enter this code. Review and confirm the actual plan and spending limits on Subscribe.");
+    }
     emit(&body, human)
 }
 
@@ -163,12 +182,50 @@ fn poll(api: &Api<'_>, mut current: Session, wait_seconds: u64, human: bool) -> 
     output(&current, None, human)
 }
 
+fn device_navigation_url(current: &Session) -> Result<url::Url> {
+    let code = current
+        .user_code
+        .as_deref()
+        .context("billing device response missing user code")?;
+    ensure!(
+        current.expires_in.is_some() && current.interval.is_some(),
+        "billing device response missing timing"
+    );
+    let uri = authorization_url(
+        current
+            .verification_uri
+            .as_deref()
+            .context("billing device response missing verification URI")?,
+    )?;
+    let complete = url::Url::parse(
+        current
+            .verification_uri_complete
+            .as_deref()
+            .context("billing device response missing complete verification URI")?,
+    )?;
+    let fields: Vec<_> = complete.query_pairs().collect();
+    ensure!(
+        complete.scheme() == "https"
+            && complete.username().is_empty()
+            && complete.password().is_none()
+            && complete.fragment().is_none()
+            && complete.origin() == uri.origin()
+            && complete.path() == uri.path()
+            && fields.len() == 1
+            && fields[0].0 == "user_code"
+            && fields[0].1 == code,
+        "invalid billing device verification URI"
+    );
+    Ok(complete)
+}
+
 /// Print the stable creation key before the request so uncertain outcomes are recoverable.
 fn create(
     api: &Api<'_>,
     plan: Option<Plan>,
     key: Option<uuid::Uuid>,
     no_browser: bool,
+    device_code: bool,
     wait_seconds: u64,
     human: bool,
 ) -> Result<()> {
@@ -180,6 +237,9 @@ fn create(
     let mut body = json!({"action":if plan.is_some() {"subscribe"} else {"manage"}});
     if let Some(plan) = plan {
         body["plan"] = serde_json::to_value(plan)?;
+    }
+    if device_code {
+        body["device_code"] = json!(true);
     }
     let response = api.create_billing_session(&body, &key)?;
     let current = session(&response, None).map_err(|_| machine::Failure {
@@ -197,13 +257,18 @@ fn create(
         current.state != State::Pending || url.is_some(),
         "pending billing session missing authorization URL"
     );
+    let device_url = if device_code && current.state == State::Pending {
+        Some(device_navigation_url(&current)?)
+    } else {
+        None
+    };
     output(&current, url.as_ref(), human)?;
     machine::event(
         "billing_session",
         json!({"session_id":current.session_id,"state":current.state,"next_action":"human_authorize_or_resume_billing_session"}),
     );
     if !no_browser && current.state == State::Pending {
-        if webbrowser::open(url.as_ref().unwrap().as_str()).is_err() {
+        if webbrowser::open(device_url.as_ref().or(url.as_ref()).unwrap().as_str()).is_err() {
             machine::event(
                 "billing_browser_unavailable",
                 json!({"next_action":"open_authorization_url_manually"}),
@@ -224,20 +289,31 @@ pub fn run(api: &Api<'_>, command: Command, human: bool) -> Result<()> {
             plan,
             idempotency_key,
             no_browser,
+            device_code,
             wait_seconds,
         } => create(
             api,
             Some(plan),
             idempotency_key,
             no_browser,
+            device_code,
             wait_seconds,
             human,
         ),
         Command::Manage {
             idempotency_key,
             no_browser,
+            device_code,
             wait_seconds,
-        } => create(api, None, idempotency_key, no_browser, wait_seconds, human),
+        } => create(
+            api,
+            None,
+            idempotency_key,
+            no_browser,
+            device_code,
+            wait_seconds,
+            human,
+        ),
         Command::Session { id, wait_seconds } => {
             let current = session(&api.billing_session(&id)?, Some(id))?;
             poll(api, current, wait_seconds, human)
@@ -261,6 +337,25 @@ mod tests {
             assert!(authorization_url(value).is_err());
         }
     }
+    #[test]
+    fn device_handoff_binds_the_displayed_code_and_destination() {
+        let value = json!({"session_id":uuid::Uuid::new_v4().to_string(),"state":"pending",
+            "user_code":"ABCDE-FGHJK","verification_uri":"https://mail.example/billing/device",
+            "verification_uri_complete":"https://mail.example/billing/device?user_code=ABCDE-FGHJK",
+            "expires_in":600,"interval":2});
+        let handoff = session(&value, None).unwrap();
+        assert!(device_navigation_url(&handoff).is_ok());
+        for url in [
+            "https://evil.example/billing/device?user_code=ABCDE-FGHJK",
+            "https://mail.example/billing/device?user_code=OTHER-CODEX",
+            "https://mail.example/billing/device?user_code=ABCDE-FGHJK&extra=1",
+        ] {
+            let mut changed = value.clone();
+            changed["verification_uri_complete"] = json!(url);
+            assert!(device_navigation_url(&session(&changed, None).unwrap()).is_err());
+        }
+    }
+
     #[test]
     fn session_state_and_owner_handle_are_closed() {
         let id = uuid::Uuid::new_v4();

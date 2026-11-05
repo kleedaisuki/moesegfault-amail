@@ -11,6 +11,8 @@ topics and schema children remain the current command/field discovery surface.
    selection](session-addresses.md). Explain [default-off semantic indexing](privacy.md)
    before requesting enablement; do not enable account-wide processing merely to
    make an ordinary mail task work.
+   A remote terminal can use `amail login --device-code --no-browser` when its
+   installed help supports it; only the human confirms the displayed login code.
 2. Prepare the authorized report with the [native ZIP contract](archive.md).
 3. Persist a logical-send UUID **before** submission and use
    [send recovery](send-recovery.md) after any interruption.

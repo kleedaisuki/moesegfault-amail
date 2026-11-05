@@ -157,6 +157,8 @@ async fn call(
 struct Create {
     action: String,
     plan: Option<String>,
+    #[serde(default)]
+    device_code: bool,
 }
 
 /// Reject oversized financial navigation input before allocating an arbitrary body.
@@ -186,6 +188,7 @@ struct Session {
     authorization_url: Option<String>,
     state: String,
     expires_at: i64,
+    user_code: Option<String>,
 }
 
 /// Trusted receipt vocabulary is still validated before entitlement projection.
@@ -244,16 +247,131 @@ fn valid_remote_id(raw: &str) -> bool {
 }
 
 async fn session(database: &Database, user: &Principal, id: &str) -> AppResult<Session> {
-    database.prepare("SELECT id,action,requested_plan,remote_id,authorization_url,state,expires_at FROM billing_sessions WHERE owner_iss=?1 AND owner_sub=?2 AND id=?3")
+    database.prepare("SELECT id,action,requested_plan,remote_id,authorization_url,state,expires_at,user_code FROM billing_sessions WHERE owner_iss=?1 AND owner_sub=?2 AND id=?3")
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(id)])?
         .first::<Session>(None).await?.ok_or_else(AppError::not_found)
 }
 
-fn session_response(row: &Session) -> AppResult<Response> {
-    Ok(Response::from_json(
-        &json!({"session_id":row.id,"state":row.state,
-        "authorization_url":row.authorization_url,"expires_at":row.expires_at,"retry_after_ms":1500}),
-    )?)
+fn session_response(row: &Session, env: &Env) -> AppResult<Response> {
+    let mut body = json!({"session_id":row.id,"state":row.state,
+        "authorization_url":row.authorization_url,"expires_at":row.expires_at,"retry_after_ms":if row.user_code.is_some() {2000} else {1500}});
+    if let Some(code) = &row.user_code {
+        let uri = verification_uri(env)?;
+        body["user_code"] = json!(code);
+        body["verification_uri"] = json!(uri);
+        body["verification_uri_complete"] = json!(format!("{uri}?user_code={code}"));
+        body["expires_in"] = json!((row.expires_at - now() / 1000).max(0));
+        body["interval"] = json!(2);
+    }
+    Ok(Response::from_json(&body)?)
+}
+
+const CODE_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+fn new_user_code() -> String {
+    let random = uuid::Uuid::new_v4();
+    let bytes = random.as_bytes();
+    let mut code = String::with_capacity(11);
+    // These ten UUID bytes exclude version/variant bits; each contributes five
+    // independent random bits. The code only locates a financial navigation page.
+    for (index, byte) in [0, 1, 2, 3, 4, 5, 7, 9, 10, 11].iter().enumerate() {
+        if index == 5 {
+            code.push('-');
+        }
+        code.push(CODE_ALPHABET[(bytes[*byte] & 31) as usize] as char);
+    }
+    code
+}
+
+fn normalize_user_code(raw: &str) -> Option<String> {
+    let plain: String = raw
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace() && *ch != '-')
+        .map(|ch| ch.to_ascii_uppercase())
+        .collect();
+    if plain.len() != 10 || !plain.bytes().all(|byte| CODE_ALPHABET.contains(&byte)) {
+        return None;
+    }
+    Some(format!("{}-{}", &plain[..5], &plain[5..]))
+}
+
+fn verification_uri(env: &Env) -> AppResult<&'static str> {
+    match env.var("IDENTITY_ISSUER")?.to_string().as_str() {
+        "https://identity.moesegfault.dev" => Ok("https://mail.moesegfault.dev/billing/device"),
+        "https://identity-staging.moesegfault.dev" => {
+            Ok("https://mail-staging.moesegfault.dev/billing/device")
+        }
+        _ => Err(unavailable()),
+    }
+}
+
+fn navigation_page(env: &Env, message: &str) -> AppResult<Response> {
+    let subscribe = Configuration::load(env)?.subscribe;
+    let mut response = Response::from_html(format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>amail billing</title><main><h1>Open your amail billing request</h1><p>Enter the code from your own amail terminal. Continue only if you requested this billing session. This step does not approve a subscription or spending limit; review and confirm those on Subscribe.</p><p>{message}</p><form method=post action=/billing/device><label>Code <input name=user_code autocomplete=off required maxlength=32></label><button type=submit>Continue to Subscribe</button></form></main></html>"))?;
+    let headers = response.headers_mut();
+    headers.set("Cache-Control", "no-store")?;
+    headers.set("Referrer-Policy", "no-referrer")?;
+    headers.set("X-Content-Type-Options", "nosniff")?;
+    headers.set(
+        "Content-Security-Policy",
+        &format!("default-src 'none'; form-action 'self' {subscribe}; frame-ancestors 'none'; base-uri 'none'"),
+    )?;
+    Ok(response)
+}
+
+/// A public short code locates an existing navigation session; it never produces
+/// a receipt, changes a plan, or replaces Subscribe's authenticated human consent.
+pub(crate) async fn device_navigation(req: &mut Request, env: &Env) -> AppResult<Response> {
+    let fields = if req.method() == Method::Get {
+        req.url()?.query().unwrap_or_default().as_bytes().to_vec()
+    } else {
+        let mut stream = req.stream()?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if bytes.len() + chunk.len() > 256 {
+                return Err(AppError::bad("invalid_billing_user_code"));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        bytes
+    };
+    let fields: Vec<_> = url::form_urlencoded::parse(&fields).collect();
+    if fields.is_empty() {
+        return navigation_page(env, "");
+    }
+    let code = fields
+        .iter()
+        .find(|(key, _)| key == "user_code")
+        .and_then(|(_, value)| normalize_user_code(value));
+    let Some(code) = code else {
+        return navigation_page(env, "Check the code shown by your terminal.");
+    };
+    #[derive(Deserialize)]
+    struct Navigation {
+        authorization_url: String,
+    }
+    let navigation = db(env)?.prepare("SELECT authorization_url FROM billing_sessions WHERE user_code=?1 AND state='pending' AND expires_at>?2 AND authorization_url IS NOT NULL")
+        .bind(&[bind_str(&code),bind_num(now()/1000)])?
+        .first::<Navigation>(None).await?;
+    let Some(navigation) = navigation else {
+        return navigation_page(
+            env,
+            "This code is unavailable or expired. Check the original terminal session.",
+        );
+    };
+    if !Configuration::load(env)?.valid_authorization_url(&navigation.authorization_url) {
+        return Err(unavailable());
+    }
+    let mut response = Response::empty()?.with_status(303);
+    response
+        .headers_mut()
+        .set("Location", &navigation.authorization_url)?;
+    response
+        .headers_mut()
+        .set("Referrer-Policy", "no-referrer")?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    Ok(response)
 }
 
 /// Reserve an idempotent local intent before an external operation can succeed.
@@ -287,19 +405,21 @@ pub(crate) async fn create(
         plan(&account.plan)?
     };
     let timestamp = now() / 1000;
-    database.prepare("INSERT OR IGNORE INTO billing_sessions(id,owner_iss,owner_sub,action,requested_plan,created_at,expires_at,origin_traceparent) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")
-        .bind(&[bind_str(&key),bind_str(&user.iss),bind_str(&user.sub),bind_str(&body.action),bind_str(requested_plan),bind_num(timestamp),bind_num(timestamp+1800),bind_str(&trace.traceparent())])?.run().await?;
+    let user_code = body.device_code.then(new_user_code);
+    database.prepare("INSERT INTO billing_sessions(id,owner_iss,owner_sub,action,requested_plan,created_at,expires_at,origin_traceparent,user_code) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(owner_iss,owner_sub,id) DO NOTHING")
+        .bind(&[bind_str(&key),bind_str(&user.iss),bind_str(&user.sub),bind_str(&body.action),bind_str(requested_plan),bind_num(timestamp),bind_num(timestamp+1800),bind_str(&trace.traceparent()),user_code.as_deref().map(bind_str).unwrap_or(wasm_bindgen::JsValue::NULL)])?.run().await?;
     let row = session(&database, user, &key).await?;
-    if row.action != body.action
+    if row.user_code.is_some() != body.device_code
+        || row.action != body.action
         || (body.action == "subscribe" && row.requested_plan != requested_plan)
     {
         return Err(AppError::conflict("idempotency_conflict"));
     }
     if row.state != "pending" || row.remote_id.is_some() {
-        return session_response(&row);
+        return session_response(&row, env);
     }
     if row.expires_at <= timestamp {
-        return expire(&database, user, &key).await;
+        return expire(env, &database, user, &key).await;
     }
     let requested_plan = row.requested_plan.as_str();
     let config = Configuration::load(env)?;
@@ -340,13 +460,13 @@ pub(crate) async fn create(
     }
     database.prepare("UPDATE billing_sessions SET remote_id=?1,authorization_url=?2,expires_at=?3 WHERE owner_iss=?4 AND owner_sub=?5 AND id=?6 AND state='pending' AND remote_id IS NULL")
         .bind(&[bind_str(remote_id),bind_str(url),bind_num(expires_at),bind_str(&user.iss),bind_str(&user.sub),bind_str(&key)])?.run().await?;
-    session_response(&session(&database, user, &key).await?)
+    session_response(&session(&database, user, &key).await?, env)
 }
 
-async fn expire(database: &Database, user: &Principal, id: &str) -> AppResult<Response> {
+async fn expire(env: &Env, database: &Database, user: &Principal, id: &str) -> AppResult<Response> {
     database.prepare("UPDATE billing_sessions SET state='expired' WHERE owner_iss=?1 AND owner_sub=?2 AND id=?3 AND state='pending'")
         .bind(&[bind_str(&user.iss),bind_str(&user.sub),bind_str(id)])?.run().await?;
-    session_response(&session(database, user, id).await?)
+    session_response(&session(database, user, id).await?, env)
 }
 
 /// Project only service-authenticated, product-scoped, unexpired consent receipts.
@@ -412,13 +532,13 @@ pub(crate) async fn poll(
     let database = db(env)?;
     let row = session(&database, user, &id).await?;
     if row.state != "pending" {
-        return session_response(&row);
+        return session_response(&row, env);
     }
     let Some(remote_id) = row.remote_id.as_deref() else {
         if row.expires_at <= now() / 1000 {
-            return expire(&database, user, &id).await;
+            return expire(env, &database, user, &id).await;
         }
-        return session_response(&row);
+        return session_response(&row, env);
     };
     let receipt = call(
         env,
@@ -479,7 +599,7 @@ pub(crate) async fn poll(
     };
     database.prepare("UPDATE billing_sessions SET state=?1 WHERE owner_iss=?2 AND owner_sub=?3 AND id=?4 AND state='pending'")
         .bind(&[bind_str(state),bind_str(&user.iss),bind_str(&user.sub),bind_str(&id)])?.run().await?;
-    session_response(&session(&database, user, &id).await?)
+    session_response(&session(&database, user, &id).await?, env)
 }
 
 /// Refresh linked owners before mutations; unlinked community Free works offline.
@@ -687,6 +807,54 @@ mod tests {
         assert_ne!(owner_id(&one), owner_id(&two));
         assert_eq!(owner_id(&one).len(), 64);
     }
+    #[test]
+    fn billing_codes_are_random_normalized_and_navigation_expires_without_consent() {
+        let generated: std::collections::HashSet<_> = (0..1000).map(|_| new_user_code()).collect();
+        assert_eq!(generated.len(), 1000);
+        for code in &generated {
+            assert_eq!(
+                normalize_user_code(&code.to_ascii_lowercase()),
+                Some(code.clone())
+            );
+            assert_eq!(
+                normalize_user_code(&code.replace('-', " ")),
+                Some(code.clone())
+            );
+        }
+        assert!(normalize_user_code("not-a-code").is_none());
+        let database = rusqlite::Connection::open_in_memory().unwrap();
+        database
+            .execute_batch(
+                include_str!("../migrations/0014_billing_sessions.sql")
+                    .split("-- Failed/ambiguous")
+                    .next()
+                    .unwrap(),
+            )
+            .unwrap();
+        database
+            .execute_batch(include_str!(
+                "../migrations/0020_billing_device_navigation.sql"
+            ))
+            .unwrap();
+        database.execute("INSERT INTO billing_sessions(id,owner_iss,owner_sub,action,requested_plan,created_at,expires_at,user_code,authorization_url) VALUES('session','issuer','subject','subscribe','plus',10,20,'ABCDE-FGHJK','https://subscribe.example/authorize/session')", []).unwrap();
+        let lookup = |now: i64| {
+            database.query_row("SELECT authorization_url FROM billing_sessions WHERE user_code=?1 AND state='pending' AND expires_at>?2 AND authorization_url IS NOT NULL", rusqlite::params!["ABCDE-FGHJK", now], |row| row.get::<_, String>(0))
+        };
+        assert!(lookup(19).is_ok());
+        assert!(lookup(20).is_err());
+        assert_eq!(
+            database
+                .query_row("SELECT state FROM billing_sessions", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "pending"
+        );
+        database
+            .execute("UPDATE billing_sessions SET state='cancelled'", [])
+            .unwrap();
+        assert!(lookup(19).is_err());
+    }
+
     #[test]
     fn authorization_links_have_exact_navigation_origin() {
         let config = Configuration {

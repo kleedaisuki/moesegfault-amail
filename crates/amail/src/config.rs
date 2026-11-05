@@ -162,9 +162,17 @@ impl Runtime {
     /// Require reviewed native-client registration for OAuth use.
     /// OAuth 使用前必须具备经审核的原生客户端注册信息。
     pub fn require_oauth(&self) -> Result<()> {
-        if self.client_id.is_empty() || self.redirect_uri.is_empty() {
-            bail!("Identity native client registration missing: set AMAIL_CLIENT_ID and AMAIL_REDIRECT_URI (or config.toml)");
+        if self.client_id.is_empty() {
+            bail!(
+                "Identity native client registration missing: set AMAIL_CLIENT_ID (or config.toml)"
+            );
         }
+        Ok(())
+    }
+
+    /// Callback registration is required only for Authorization Code, not device grants.
+    pub fn require_callback(&self) -> Result<()> {
+        self.require_oauth()?;
         let uri = url::Url::parse(&self.redirect_uri).context("invalid redirect_uri")?;
         if uri.scheme() != "http"
             || uri.host_str() != Some("127.0.0.1")

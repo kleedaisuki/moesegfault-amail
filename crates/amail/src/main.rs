@@ -17,6 +17,7 @@ mod config;
 mod daemon;
 mod discovery;
 mod export;
+mod http;
 mod local_store;
 mod machine;
 mod output;
@@ -172,6 +173,9 @@ enum Command {
     Login {
         #[arg(long)]
         no_browser: bool,
+        /// Sign in on another device without a local browser callback.
+        #[arg(long)]
+        device_code: bool,
     },
     /// Short alias for `auth logout`.
     Logout,
@@ -252,6 +256,9 @@ enum AuthCommand {
     Login {
         #[arg(long)]
         no_browser: bool,
+        /// Sign in on another device without a local browser callback.
+        #[arg(long)]
+        device_code: bool,
     },
     /// Show only non-secret session state.
     Status,
@@ -951,6 +958,22 @@ fn local_profile_operation(command: &Command) -> bool {
     )
 }
 
+/// These operations carry their own hosted human confirmation, not loopback consent.
+fn hosted_confirmation(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Login {
+            device_code: true,
+            ..
+        } | Command::Auth {
+            command: AuthCommand::Login {
+                device_code: true,
+                ..
+            }
+        } | Command::Billing { .. }
+    )
+}
+
 pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
     telemetry::set_enabled(request.telemetry_enabled);
     machine::enable(machine::requested(request.args.clone()));
@@ -981,7 +1004,7 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
         }
     );
     if active.is_none() && !activation && !store.terminal_initialized(&terminal)? {
-        if !cfg.yolo {
+        if !cfg.yolo && !hosted_confirmation(&cli.command) {
             approval::authorize_request(
                 "profile.activate",
                 &format!(
@@ -991,7 +1014,7 @@ pub(crate) fn run_daemon(request: daemon::Request) -> Result<()> {
             )?;
         }
         active = Some(store.activate(&terminal, "user")?);
-    } else if !cfg.yolo && !semantic_mutation(&cli.command) {
+    } else if !cfg.yolo && !semantic_mutation(&cli.command) && !hosted_confirmation(&cli.command) {
         let requested_user = matches!(&cli.command, Command::Profile { command: ProfileCommand::Activate { name } } if name == "user")
             || matches!(&cli.command, Command::Profile { command: ProfileCommand::Release { name:Some(name) } } if name == "user");
         if active
@@ -1304,6 +1327,26 @@ fn command_kind(command: &Command) -> Option<command_journal::CommandKind> {
     })
 }
 
+fn login(cfg: &config::Runtime, no_browser: bool, device_code: bool) -> Result<String> {
+    let result = if device_code {
+        auth::login_device(cfg, no_browser)
+    } else {
+        auth::login(cfg, no_browser)
+    };
+    result.map_err(|error| {
+        if error.downcast_ref::<machine::Failure>().is_some() {
+            return error;
+        }
+        machine::Failure {
+            code: "authentication_failed",
+            next_action: "login",
+            data: json!({}),
+            message: error.to_string(),
+        }
+        .into()
+    })
+}
+
 /// Execute the unchanged public behavior inside a best-effort completion boundary.
 fn execute(mut cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) -> Result<()> {
     let prepared_send = cli.prepared_send.take();
@@ -1324,13 +1367,11 @@ fn execute(mut cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) 
             telemetry::flush_pending(&cfg, attempt_id.as_ref())?;
         }
         Command::Auth { command } => match command {
-            AuthCommand::Login { no_browser } => {
-                auth::login(&cfg, no_browser).map_err(|error| machine::Failure {
-                    code: "authentication_failed",
-                    next_action: "login",
-                    data: json!({}),
-                    message: error.to_string(),
-                })?;
+            AuthCommand::Login {
+                no_browser,
+                device_code,
+            } => {
+                login(&cfg, no_browser, device_code)?;
                 emit(&json!({"authenticated":true}), cli.human)?;
             }
             AuthCommand::Status => {
@@ -1345,13 +1386,11 @@ fn execute(mut cli: Cli, cfg: &config::Runtime, command_id: Option<uuid::Uuid>) 
                 emit(&json!({"authenticated":false}), cli.human)?;
             }
         },
-        Command::Login { no_browser } => {
-            auth::login(&cfg, no_browser).map_err(|error| machine::Failure {
-                code: "authentication_failed",
-                next_action: "login",
-                data: json!({}),
-                message: error.to_string(),
-            })?;
+        Command::Login {
+            no_browser,
+            device_code,
+        } => {
+            login(&cfg, no_browser, device_code)?;
             emit(&json!({"authenticated":true}), cli.human)?;
         }
         Command::Logout => {
@@ -1485,6 +1524,38 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_handoff_uses_hosted_confirmation_without_changing_other_operations() {
+        for args in [
+            vec!["amail", "login", "--device-code", "--no-browser"],
+            vec!["amail", "auth", "login", "--device-code"],
+            vec!["amail", "billing", "subscribe", "plus", "--device-code"],
+            vec!["amail", "billing", "manage", "--device-code"],
+            vec!["amail", "billing", "status"],
+            vec![
+                "amail",
+                "billing",
+                "session",
+                "123e4567-e89b-42d3-a456-426614174000",
+            ],
+        ] {
+            assert!(hosted_confirmation(
+                &Cli::try_parse_from(args).unwrap().command
+            ));
+        }
+        for args in [
+            vec!["amail", "login"],
+            vec!["amail", "auth", "login", "--no-browser"],
+            vec!["amail", "logout"],
+            vec!["amail", "semantic", "enable"],
+            vec!["amail", "delete", "message"],
+        ] {
+            assert!(!hosted_confirmation(
+                &Cli::try_parse_from(args).unwrap().command
+            ));
+        }
+    }
 
     #[test]
     fn send_consent_and_submission_share_the_same_owned_snapshot() {
