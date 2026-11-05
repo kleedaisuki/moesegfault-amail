@@ -23,24 +23,22 @@ the grant. Use the installed CLI's help to check support before requesting this
 new option from an older release.
 
 Discovery must advertise both `device_authorization_endpoint` and the device grant.
-Production and staging discovery advertised both on 2026-11-05. This does not enable
-an individual client: Identity migration `0012_device_authorization.sql` defaults
-existing registrations to `device_authorization_enabled=0`. The Identity operator
-must explicitly enable `amail-cli` and `amail-cli-staging` in their respective
-environment migration streams, preserving their client IDs, sector identifiers,
-subject-salt revisions, scopes and existing loopback redirects. A new client ID
-would change pairwise subjects and Mail ownership; do not create one as a shortcut.
-The upstream registration migrations currently establish the original clients,
-not this opt-in. The reviewed desired manifests are
-[`client-production.json`](../infra/identity/client-production.json) and
-[`client-staging.json`](../infra/identity/client-staging.json). For these existing
-clients, import the exact environment's
-[`enable-device-code-production.sql`](../infra/identity/enable-device-code-production.sql)
-or [`enable-device-code-staging.sql`](../infra/identity/enable-device-code-staging.sql)
-as a new migration in Identity's corresponding environment stream, after shared
-schema 0012, and apply through its normal deployment lane. Do not rerun the
-create-only client generator against an existing registration. These files express
-desired configuration, not proof that the live client was updated. See the
+Production and staging discovery advertise both capabilities. Existing clients
+remain opt-in: Identity migration `0012_device_authorization.sql` defaulted them to
+`device_authorization_enabled=0`. The original `amail-cli-staging` and `amail-cli`
+registrations were enabled on 2026-11-06 (Asia/Singapore) by environment migration
+`0013_amail_device_authorization.sql`, preserving client IDs, sector identifiers,
+subject-salt revisions, scopes and loopback redirects. Identity services were not
+redeployed. The registration-only runs are
+[staging 42069250867](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/42069250867)
+and [production 42069515222](https://github.com/kleedaisuki/moesegfault-indentity/actions/runs/42069515222),
+from [Identity PR33](https://github.com/kleedaisuki/moesegfault-indentity/pull/33).
+
+The reviewed manifests in `infra/identity` describe that desired registration;
+the corresponding UPDATE-only SQL is onboarding input for an existing client,
+not a replacement for its migration/readback receipt. Never create a new client
+ID as a shortcut: that changes pairwise subjects and Mail ownership. Do not rerun
+the create-only generator against an existing registration. See the
 [Identity device integration contract](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/skills/moesegfault-identity/references/device-login.md).
 
 The pending device secret lives only in the initiating process. The human opens
@@ -71,8 +69,8 @@ tokens and preserves existing billing idempotency/session recovery. Neither code
 entry, a new login nor an existing session authorizes spending by itself. See the
 [billing workflow](../skills/amail/references/billing.md).
 
-Billing navigation requires Mail migration `0020_billing_device_navigation.sql`
-before deploying the compatible Worker. It only adds an optional short code to
+Billing navigation uses Mail migration `0020_billing_device_navigation.sql`,
+now applied in both environments before their compatible API deployment. It only adds an optional short code to
 existing owner-scoped sessions; old clients and sessions keep their direct hosted
 links. The code expires with that session and resolves only while it is pending.
 Neither its public lookup page nor redirect changes entitlements; the existing
